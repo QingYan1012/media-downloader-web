@@ -2,7 +2,7 @@
 
 一个跑在本机的多媒体下载与处理工具：FastAPI 单文件后端 + Vue 3 / Element Plus 前端，全部功能在浏览器里操作，数据只落在本机。默认端口 `http://127.0.0.1:8765`。
 
-版本更新记录见 [CHANGELOG.md](CHANGELOG.md)。
+版本更新记录见 [CHANGELOG.md](CHANGELOG.md)。源码仓库：<https://github.com/QingYan1012/media-downloader-web>（GPL-3.0）。
 
 ## 启动
 
