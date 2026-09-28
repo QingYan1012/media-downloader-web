@@ -62,7 +62,7 @@ APP_PY = [
     "diarize_tools.py",
     "voice_tools.py",
 ]
-APP_FILES = ["requirements.txt", "README.md", "CHANGELOG.md", "LICENSE", "Dockerfile", "docker-compose.yml"]
+APP_FILES = ["requirements.txt", "README.md", "README.en.md", "CHANGELOG.md", "LICENSE", "Dockerfile", "docker-compose.yml"]
 APP_DIRS = ["static", "plugins", "extension"]
 TOOLS_FILES = ["ffmpeg.exe", "ffprobe.exe", "N_m3u8DL-RE.exe", "yt-dlp.exe"]
 
