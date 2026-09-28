@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "MediaDownloader Sniffer (GD4B-style)",
+  "version": "1.4.0",
+  "description": "浮层下载 + 嗅探 + 右键发送 + 下载拦截 → 本机 MediaDownloader",
+  "permissions": [
+    "webRequest",
+    "storage",
+    "activeTab",
+    "scripting",
+    "tabs"
+  ],
+  "host_permissions": [
+    "<all_urls>",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "发送媒体到下载器",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

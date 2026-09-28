@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 48" fill="none" role="img" aria-label="MediaDownloader">
+  <defs>
+    <linearGradient id="waveGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#1e1b4b"/>
+      <stop offset="45%" stop-color="#3730a3"/>
+      <stop offset="100%" stop-color="#3b82f6"/>
+    </linearGradient>
+  </defs>
+  <!-- waveform path, ends just before the dot -->
+  <path
+    d="M12 30
+       C28 30 32 18 48 18
+       C64 18 68 36 84 36
+       C100 36 104 12 124 12
+       C144 12 148 32 168 32
+       C184 32 192 22 208 20"
+    stroke="url(#waveGrad)"
+    stroke-width="3.2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    fill="none"
+  />
+  <!-- small end dot -->
+  <circle cx="216" cy="19.5" r="3.2" fill="#3b82f6"/>
+</svg>

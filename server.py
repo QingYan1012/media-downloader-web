@@ -1,0 +1,15643 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+多媒体下载器 Web 版 — FastAPI + Element Plus
+启动: python server.py
+浏览器访问: http://127.0.0.1:8765
+"""
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import threading
+import time
+import uuid
+import zipfile
+from queue import Empty as QueueEmpty, Full as QueueFull, Queue as ThreadQueue
+from dataclasses import asdict, dataclass, field
+from datetime import datetime
+from enum import Enum
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Tuple
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
+
+import requests
+from fastapi import UploadFile, File, FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+
+# -------------------- 路径（工具/Cookie 均在项目目录内）--------------------
+HOME = Path.home()
+APP_DIR = Path(__file__).resolve().parent
+# 便携版的内嵌 Python 带 python312._pth，sys.path 会被锁死在 runtime 里：既不加
+# 入口脚本所在目录，也不认 PYTHONPATH。于是同目录的 music_search / voice_tools 等
+# 全部 ModuleNotFoundError（视频下载不受影响，只有这些按需导入的功能会炸）。
+if str(APP_DIR) not in sys.path:
+    sys.path.insert(0, str(APP_DIR))
+import pkg_update  # noqa: E402  同目录模块，必须等上面的 sys.path 引导之后才导得到
+import risk_control  # noqa: E402  同上：站点风控 / 登录墙 / 限流的判定
+TOOLS_DIR = APP_DIR / "tools"              # FFmpeg、yt-dlp
+COOKIES_DIR = APP_DIR / "cookies"          # Cookie 文件
+DEFAULT_COOKIE_FILE = COOKIES_DIR / "cookies.txt"
+CONFIG_FILE = APP_DIR / "config.json"
+HISTORY_FILE = APP_DIR / "history.json"
+SUBS_FILE = APP_DIR / "subscriptions.json"
+LIVE_MONITORS_FILE = APP_DIR / "live_monitors.json"
+MUSIC_FAVS_FILE = APP_DIR / "music_favorites.json"   # 自建音乐收藏清单（跨源聚合的一单）
+LOG_FILE = APP_DIR / "app.log"
+DEFAULT_DOWNLOAD_DIR = APP_DIR / "Downloads"  # 项目内 Downloads
+WHISPER_DIR = APP_DIR / "Whisper"             # 本地 Whisper 目录
+PLUGINS_DIR = APP_DIR / "plugins"            # URL 解析插件
+
+for _d in (TOOLS_DIR, COOKIES_DIR, DEFAULT_DOWNLOAD_DIR, WHISPER_DIR, PLUGINS_DIR):
+    _d.mkdir(parents=True, exist_ok=True)
+
+
+_PLUGIN_CACHE: Dict[str, Any] = {"mtime": 0.0, "mods": []}
+
+
+def _plugins_dir_mtime() -> float:
+    if not PLUGINS_DIR.is_dir():
+        return 0.0
+    mt = 0.0
+    for path in PLUGINS_DIR.glob("*.py"):
+        try:
+            mt = max(mt, path.stat().st_mtime)
+        except Exception:
+            pass
+    return mt
+
+
+def load_url_plugins(force: bool = False) -> List[Any]:
+    """加载 plugins/*.py（match/resolve）。按目录 mtime 热更新。"""
+    global _PLUGIN_CACHE
+    mt = _plugins_dir_mtime()
+    if not force and _PLUGIN_CACHE["mods"] and abs(mt - float(_PLUGIN_CACHE["mtime"])) < 0.01:
+        return list(_PLUGIN_CACHE["mods"])
+    plugins = []
+    if not PLUGINS_DIR.is_dir():
+        _PLUGIN_CACHE = {"mtime": mt, "mods": plugins}
+        return plugins
+    for path in sorted(PLUGINS_DIR.glob("*.py")):
+        if path.name.startswith("_"):
+            continue
+        try:
+            import importlib.util
+            # 文件名+mtime 作模块名，避免热加载缓存旧代码
+            spec = importlib.util.spec_from_file_location(
+                f"md_plugin_{path.stem}_{int(path.stat().st_mtime)}", path
+            )
+            if not spec or not spec.loader:
+                continue
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            if callable(getattr(mod, "match", None)) and callable(getattr(mod, "resolve", None)):
+                mod.__plugin_file__ = path.name  # type: ignore
+                plugins.append(mod)
+        except Exception as e:
+            print(f"[plugin] load {path.name} failed: {e}")
+    _PLUGIN_CACHE = {"mtime": mt, "mods": plugins}
+    return plugins
+
+
+def list_url_plugins() -> List[dict]:
+    mods = load_url_plugins()
+    out = []
+    for m in mods:
+        out.append({
+            "file": getattr(m, "__plugin_file__", path_name(m)),
+            "name": getattr(m, "NAME", path_name(m)),
+            "description": getattr(m, "DESCRIPTION", ""),
+            "priority": int(getattr(m, "PRIORITY", 100)),
+        })
+    out.sort(key=lambda x: x["priority"])
+    return out
+
+
+def try_resolve_with_plugins(url: str, ctx: Optional[dict] = None) -> Optional[dict]:
+    """返回插件 resolve 结果或 None。按 PRIORITY 升序。"""
+    ctx = dict(ctx or {})
+    mods = load_url_plugins()
+    mods = sorted(mods, key=lambda m: int(getattr(m, "PRIORITY", 100)))
+    for mod in mods:
+        try:
+            if not mod.match(url):
+                continue
+            result = mod.resolve(url, ctx)
+            if result and (result.get("urls") or result.get("url")):
+                if "url" in result and "urls" not in result:
+                    result["urls"] = [result["url"]]
+                result["_plugin"] = getattr(mod, "NAME", path_name(mod))
+                return result
+        except Exception as e:
+            print(f"[plugin] resolve error: {e}")
+    return None
+
+
+def path_name(mod) -> str:
+    try:
+        return Path(getattr(mod, "__file__", "") or "").name or "plugin"
+    except Exception:
+        return "plugin"
+
+def github_mirror_url(url: str) -> str:
+    """GitHub / HF 资源走镜像加速（可在设置 github_mirror 关闭）。"""
+    u = (url or "").strip()
+    if not u.startswith("http"):
+        return u
+    try:
+        mirror = (cfg.data.get("github_mirror") or "").strip()  # type: ignore[name-defined]
+    except Exception:
+        mirror = "https://ghproxy.net/"
+    if not mirror:
+        return u
+    low = u.lower()
+    if not any(
+        x in low
+        for x in (
+            "github.com/",
+            "githubusercontent.com/",
+            "huggingface.co/",
+            "hf.co/",
+        )
+    ):
+        return u
+    if mirror.rstrip("/") in u:
+        return u
+    return mirror.rstrip("/") + "/" + u
+
+
+TLS_FINGERPRINTS = ("chrome131", "chrome120", "safari17_0", "edge101")
+
+
+def _impersonate_on() -> bool:
+    try:
+        return bool(cfg.data.get("http_impersonate", True))  # type: ignore[name-defined]
+    except Exception:
+        return True
+
+
+def _impersonate_get(url: str, *, headers: dict, timeout, **kw):
+    """按 TLS 指纹链依次尝试（chrome→safari→edge），返回 (response, 指纹名)。"""
+    from curl_cffi import requests as creq  # type: ignore
+
+    last: Optional[Exception] = None
+    for fp in TLS_FINGERPRINTS:
+        r = None
+        try:
+            r = creq.get(url, headers=headers, timeout=timeout, impersonate=fp, **kw)
+            r.raise_for_status()
+            return r, fp
+        except Exception as e:
+            last = e
+            if r is not None:
+                try:
+                    r.close()
+                except Exception:
+                    pass
+    raise last  # type: ignore[misc]
+
+
+def http_get_bytes(url: str, timeout: int = 60, headers: Optional[dict] = None) -> bytes:
+    """带 TLS 指纹回退链的 GET，降低 Cloudflare 403。"""
+    headers = dict(headers or {})
+    headers.setdefault(
+        "User-Agent",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    )
+    if _impersonate_on():
+        try:
+            r, _fp = _impersonate_get(url, headers=headers, timeout=timeout)
+            return r.content
+        except Exception:
+            pass
+    r = requests.get(url, headers=headers, timeout=timeout, verify=False)
+    r.raise_for_status()
+    return r.content
+
+
+def _download_with_mirrors(urls: List[str], dest: Path, log: Callable = lambda *a, **k: None,
+                           timeout: int = 180) -> str:
+    """按候选顺序下载二进制（直连 / 各镜像），第一个成功的就是它，返回实际用的地址。"""
+    last: Optional[Exception] = None
+    for i, u in enumerate(urls, 1):
+        try:
+            log(f"下载（{i}/{len(urls)}）：{u}")
+            with requests.get(u, stream=True, timeout=timeout, verify=False) as r:
+                r.raise_for_status()
+                with open(dest, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=256 * 1024):
+                        if chunk:
+                            f.write(chunk)
+            if dest.stat().st_size <= 0:
+                raise OSError("下载内容为空")
+            return u
+        except Exception as e:
+            last = e
+            log(f"该地址没成：{str(e)[:160]}", "warning")
+    raise last or OSError("没有可用下载地址")
+
+
+FFMPEG_ZIP_URL = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+FFMPEG_FALLBACK_API = "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest"
+YTDLP_EXE_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+YTDLP_SRC_ZIP_URL = "https://github.com/yt-dlp/yt-dlp/archive/refs/heads/master.zip"
+YTDLP_LOCAL_PKG = TOOLS_DIR / "yt_dlp"
+YTDLP_LOCAL_EXE = TOOLS_DIR / "yt-dlp.exe"
+SB_CATEGORIES = "sponsor,selfpromo,interaction,intro,outro,preview"
+
+
+def normalize_url(url: str) -> str:
+    """规范化各平台分享链接，便于 yt-dlp 识别"""
+    if not url:
+        return url
+    # 去掉不可见字符、引号、多余空白
+    url = url.strip().strip('"').strip("'")
+    for ch in ("\u200b", "\u200c", "\u200d", "\ufeff", "\xa0"):
+        url = url.replace(ch, "")
+    url = url.strip()
+    u = (url or "").strip()
+    if not u:
+        return u
+    low = u.lower()
+    # 抖音：精选页 modal_id / share / aweme_id
+    if "douyin.com" in low or "iesdouyin.com" in low:
+        for pat in (
+            r"[?&]modal_id=(\d+)",
+            r"/video/(\d+)",
+            r"/share/video/(\d+)",
+            r"[?&]aweme_id=(\d+)",
+            r"/note/(\d+)",
+        ):
+            m = re.search(pat, u)
+            if m:
+                return f"https://www.douyin.com/video/{m.group(1)}"
+    # TikTok
+    if "tiktok.com" in low:
+        m = re.search(r"/video/(\d+)", u)
+        if m:
+            return f"https://www.tiktok.com/video/{m.group(1)}"
+    # 小红书：探索页 / 发现页 / 短链保留完整参数
+    if "xiaohongshu.com" in low or "xhslink.com" in low:
+        m = re.search(r"/explore/([a-zA-Z0-9]+)", u)
+        if m:
+            base = f"https://www.xiaohongshu.com/explore/{m.group(1)}"
+            # 若带 xsec_token 等参数则保留，提高解析成功率
+            qpos = u.find("?")
+            return (base + u[qpos:]) if qpos > 0 else base
+        m = re.search(r"/discovery/item/([a-zA-Z0-9]+)", u)
+        if m:
+            return f"https://www.xiaohongshu.com/explore/{m.group(1)}"
+        m = re.search(r"/user/profile/([a-zA-Z0-9]+)", u)
+        if m:
+            return f"https://www.xiaohongshu.com/user/profile/{m.group(1)}"
+    return _drop_tracking(u)
+
+
+# 这些参数只用于统计来源，删掉不影响解析；留着会让同一条内容因分享参数不同被排成两个任务
+_TRACKING_KEYS = {
+    "gclid", "fbclid", "msclkid", "dclid", "twclid", "yclid", "_ga", "gcref",
+    "ref", "ref_url", "ref_src", "ref_srcid", "refer", "refer_url", "referrer",
+    "sourcefrom", "srcid", "from_source", "from_url", "from_share", "is_story",
+    "share_from", "share_medium", "share_plat", "share_session_id", "share_source",
+    "share_tag", "share_token", "vd_source", "spm_id_from", "time_zone",
+    "web_location", "force_parent", "unique_k", "not_recursive_head",
+}
+_TRACKING_PREFIXES = ("utm_", "spm_")
+# 各站点「只用于分享/统计」的额外参数。B 站的 ?p= ?t=、抖音的 ?modal_id= 是内容参数，绝不进表
+_HOST_TRACKING = {
+    ("youtube.com", "youtu.be"): {"si", "feature", "pp", "app", "start_radio", "embeds", "play_next"},
+    ("twitter.com", "x.com", "fxtwitter.com", "vxtwitter.com", "fixupx.com"): {
+        "s", "t", "c", "lang", "ref_src", "src", "twid",
+    },
+    ("douyin.com", "iesdouyin.com"): {
+        "from", "from_share_to", "is_from_webapp", "sender_device", "enter_method",
+        "activity_count", "app_language", "region",
+    },
+    ("instagram.com", "pinterest.com"): {"igsh", "hl", "igshid"},
+}
+
+
+def _drop_tracking(u: str) -> str:
+    """剥掉跟踪 query 参数、#t= 定位片段和多余尾斜杠；解析不出结构就原样返回。"""
+    try:
+        sp = urlsplit(u)
+        host = (sp.hostname or "").lower()
+    except ValueError:
+        return u
+    if host.startswith("www."):
+        host = host[4:]
+    drop = set(_TRACKING_KEYS)
+    for suffixes, keys in _HOST_TRACKING.items():
+        if any(host == s or host.endswith("." + s) for s in suffixes):
+            drop |= keys
+            break
+    query = sp.query
+    if query:
+        kept = [
+            (k, v)
+            for k, v in parse_qsl(query, keep_blank_values=True)
+            if k.lower() not in drop and not k.lower().startswith(_TRACKING_PREFIXES)
+        ]
+        query = urlencode(kept)
+    frag = "" if sp.fragment.lower().startswith("t=") else sp.fragment
+    path = sp.path[:-1] if len(sp.path) > 1 and sp.path.endswith("/") else sp.path
+    out = urlunsplit((sp.scheme, sp.netloc, path, query, frag))
+    return out or u
+
+
+_BILI_PART_RE = re.compile(r"[?&]p=(\d+)", re.I)
+
+
+def url_dedup_key(url: str) -> str:
+    """「这两条链接是不是同一个东西」的判据：优先用站内 ID，拿不到就用归一化后的 URL。"""
+    u = normalize_url(url)
+    low = u.lower()
+    if "youtube." in low or "youtu.be" in low:
+        vid = extract_youtube_video_id(u)
+        if vid:
+            lst = re.search(r"[?&]list=([\w-]+)", u, re.I)
+            # 带 list= 的是「播单里的这一集」，和不带播单的裸视频不是一回事
+            return f"youtube:{vid.lower()}" + (f"+{lst.group(1).lower()}" if lst else "")
+    m = re.search(r"bilibili\.com/video/(bv[\w]+)", low)
+    if m:
+        p = _BILI_PART_RE.search(u)
+        return f"bili:{m.group(1)}" + (f":p{p.group(1)}" if p and p.group(1) != "1" else "")
+    return u
+
+
+# -------------------- Bilibili 弹幕 / 搜索 --------------------
+_BILI_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Referer": "https://www.bilibili.com",
+    "Origin": "https://www.bilibili.com",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+}
+
+
+def _bili_request_kwargs(proxy: str = "", extra_headers: dict = None, for_search: bool = False) -> dict:
+    """构造 B站 API 请求参数，尽量带上 Cookie / buvid 避免 -412 风控"""
+    headers = dict(_BILI_HEADERS)
+    if for_search:
+        headers["Referer"] = "https://search.bilibili.com/"
+        headers["Origin"] = "https://search.bilibili.com"
+    if extra_headers:
+        headers.update(extra_headers)
+    kw = {"timeout": 15, "headers": headers}
+    pr = http_proxies("", proxy, source="bilibili")
+    if pr:
+        kw["proxies"] = pr
+
+    # 优先使用平台 Cookie 文件
+    cookies = {}
+    try:
+        pc = (cfg.data.get("platform_cookies") or {}).get("bilibili") or {}
+        src = (pc.get("source") or "").strip().lower()
+        cookie_file = (pc.get("file") or "").strip()
+        if not cookie_file:
+            cookie_file = str(platform_cookie_path("bilibili"))
+        if src == "file" and cookie_file and Path(cookie_file).exists():
+            # 简易解析 Netscape cookies.txt
+            for line in Path(cookie_file).read_text(encoding="utf-8", errors="ignore").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split("\t")
+                if len(parts) >= 7:
+                    cookies[parts[5]] = parts[6]
+        elif src == "browser":
+            # 浏览器 Cookie 交给 yt-dlp 处理；API 这里用生成 buvid 兜底
+            pass
+    except Exception:
+        pass
+
+    # 没有真实 Cookie 时生成一个看起来合法的 buvid3，可显著降低 -412
+    if "buvid3" not in cookies:
+        import random
+        import string
+        rand = "".join(random.choices(string.ascii_uppercase + string.digits, k=32))
+        cookies["buvid3"] = f"{rand[:8]}-{rand[8:12]}-{rand[12:16]}-{rand[16:20]}-{rand[20:32]}infoc"
+    if cookies:
+        kw["cookies"] = cookies
+    return kw
+
+
+def check_bilibili_live(room_url: str, proxy: str = "") -> dict:
+    """返回 {live: bool, title, room_id, status_text}"""
+    m = re.search(r"live\.bilibili\.com/(\d+)", room_url)
+    if not m:
+        return {"live": False, "title": "", "room_id": "", "status_text": "非B站直播间"}
+    rid = m.group(1)
+    try:
+        kw = _bili_request_kwargs(proxy=proxy)
+        r = requests.get(
+            f"https://api.live.bilibili.com/room/v1/Room/get_info?room_id={rid}",
+            **kw,
+        )
+        data = (r.json() or {}).get("data") or {}
+        # live_status: 0未开播 1直播中 2轮播
+        st = int(data.get("live_status") or 0)
+        title = data.get("title") or ""
+        live = st == 1
+        text = {0: "等待开播", 1: "直播中", 2: "轮播中"}.get(st, f"状态{st}")
+        return {"live": live, "title": title, "room_id": rid, "status_text": text, "live_status": st}
+    except Exception as e:
+        return {"live": False, "title": "", "room_id": rid, "status_text": f"检测失败: {e}"}
+
+
+def is_bilibili_url(url: str) -> bool:
+    u = (url or "").lower()
+    return any(x in u for x in ("bilibili.com", "b23.tv", "bili2233.cn"))
+
+
+def _extract_bvid(url: str) -> Optional[str]:
+    m = re.search(r"(BV[\w]+)", url, re.I)
+    if m:
+        return m.group(1)
+    m = re.search(r"[?&]bvid=(BV[\w]+)", url, re.I)
+    if m:
+        return m.group(1)
+    return None
+
+
+def _extract_aid(url: str) -> Optional[str]:
+    m = re.search(r"/av(\d+)", url, re.I)
+    if m:
+        return m.group(1)
+    m = re.search(r"[?&]aid=(\d+)", url, re.I)
+    return m.group(1) if m else None
+
+
+def bilibili_fetch_cid(url: str, proxy: str = "") -> Optional[tuple]:
+    """返回 (cid, title) 或 None"""
+    session = requests.Session()
+    session.headers.update(_BILI_HEADERS)
+    pr = http_proxies(url, proxy, source="bilibili")
+    if pr:
+        session.proxies = pr
+    # 短链先展开
+    try:
+        if "b23.tv" in url or "bili2233" in url:
+            r = session.get(url, timeout=15, allow_redirects=True)
+            url = r.url
+    except Exception:
+        pass
+    bvid = _extract_bvid(url)
+    aid = _extract_aid(url)
+    api = None
+    if bvid:
+        api = f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}"
+    elif aid:
+        api = f"https://api.bilibili.com/x/web-interface/view?aid={aid}"
+    if not api:
+        return None
+    try:
+        data = session.get(api, timeout=20).json()
+        if data.get("code") != 0:
+            return None
+        d = data.get("data") or {}
+        pages = d.get("pages") or []
+        cid = pages[0].get("cid") if pages else d.get("cid")
+        title = d.get("title") or "bilibili"
+        if not cid:
+            return None
+        return int(cid), str(title)
+    except Exception:
+        return None
+
+
+def bilibili_download_danmaku_xml(cid: int, proxy: str = "") -> Optional[str]:
+    """下载原始弹幕 XML 文本"""
+    session = requests.Session()
+    session.headers.update(_BILI_HEADERS)
+    pr = http_proxies("", proxy, source="bilibili")
+    if pr:
+        session.proxies = pr
+    urls = [
+        f"https://comment.bilibili.com/{cid}.xml",
+        f"https://api.bilibili.com/x/v1/dm/list.so?oid={cid}",
+    ]
+    for u in urls:
+        try:
+            r = session.get(u, timeout=30)
+            if r.status_code == 200 and r.content and b"<d " in r.content:
+                # bilibili 常为 deflate/utf-8
+                try:
+                    text = r.content.decode("utf-8")
+                except Exception:
+                    text = r.text
+                return text
+        except Exception:
+            continue
+    return None
+
+
+def bilibili_xml_to_ass(xml_text: str, title: str = "danmaku") -> str:
+    """简易 XML → ASS，便于 PotPlayer / MPC 直接加载"""
+    header = f"""[Script Info]
+Title: {title}
+ScriptType: v4.00+
+Collisions: Normal
+PlayResX: 1920
+PlayResY: 1080
+Timer: 100.0000
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Microsoft YaHei,48,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,2,0,2,20,20,20,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+    lines = [header]
+    # <d p="time,mode,size,color,...">text</d>
+    for m in re.finditer(r'<d p="([^"]+)">([^<]*)</d>', xml_text):
+        props, text = m.group(1), m.group(2)
+        parts = props.split(",")
+        if len(parts) < 4:
+            continue
+        try:
+            t = float(parts[0])
+            mode = int(parts[1])
+            color_int = int(parts[3])
+        except Exception:
+            continue
+        # 过滤空
+        text = text.replace("\n", " ").strip()
+        if not text:
+            continue
+        text = text.replace("{", "｛").replace("}", "｝")
+        start = _sec_to_ass(t)
+        end = _sec_to_ass(t + 8.0)
+        # BGR for ASS
+        r = color_int & 0xFF
+        g = (color_int >> 8) & 0xFF
+        b = (color_int >> 16) & 0xFF
+        c = f"&H00{b:02X}{g:02X}{r:02X}"
+        if mode in (4, 5):  # 底端/顶端
+            align = 8 if mode == 5 else 2
+            lines.append(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{{\\an{align}\\c{c}}}{text}\n")
+        else:  # 滚动
+            lines.append(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{{\\move(1920,100,0,100)\\c{c}}}{text}\n")
+    return "".join(lines)
+
+
+def _sec_to_ass(sec: float) -> str:
+    h = int(sec // 3600)
+    m = int((sec % 3600) // 60)
+    s = int(sec % 60)
+    cs = int((sec - int(sec)) * 100)
+    return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
+
+
+def _find_local_whisper_bin() -> Optional[str]:
+    """查找 web_app/Whisper 或 PATH 中的 whisper 可执行文件"""
+    candidates = []
+    if WHISPER_DIR.is_dir():
+        for name in ("whisper.exe", "whisper-cli.exe", "main.exe", "whisper"):
+            p = WHISPER_DIR / name
+            if p.exists():
+                candidates.append(str(p))
+        for p in WHISPER_DIR.rglob("whisper*.exe"):
+            candidates.append(str(p))
+    w = shutil.which("whisper")
+    if w:
+        candidates.append(w)
+    return candidates[0] if candidates else None
+
+
+def _whisper_cfg() -> dict:
+    """从全局配置读取 Whisper 参数。"""
+    try:
+        data = cfg.data  # type: ignore[name-defined]
+    except Exception:
+        data = {}
+    return {
+        "model": (data.get("whisper_model") or "base").strip() or "base",
+        "device": (data.get("whisper_device") or "auto").strip() or "auto",
+        "compute": (data.get("whisper_compute") or "auto").strip() or "auto",
+        "lang": (data.get("local_ai_lang") or "zh").strip() or "zh",
+        "diarize": bool(data.get("diarization_enabled")),
+        "max_speakers": int(data.get("diarization_max_speakers") or 4),
+    }
+
+
+def _whisper_via_faster(
+    media: Path,
+    task: str,
+    lang: str,
+    log: Callable,
+    model_size: str = "",
+    device_pref: str = "auto",
+    compute_pref: str = "auto",
+) -> Optional[Path]:
+    """优先 faster-whisper；模型单例缓存 + CPU/CUDA 优化（类 whisper.app 本地推理）。"""
+    try:
+        from faster_whisper import WhisperModel  # type: ignore
+    except ImportError:
+        return None
+    wc = _whisper_cfg()
+    model_size = (model_size or wc["model"] or "base").strip()
+    device_pref = (device_pref or wc["device"] or "auto").strip().lower()
+    compute_pref = (compute_pref or wc["compute"] or "auto").strip().lower()
+
+    device, ctype = "cpu", "int8"
+    if device_pref == "cpu":
+        device, ctype = "cpu", "int8"
+    elif device_pref in ("cuda", "gpu"):
+        device, ctype = "cuda", "float16"
+    else:
+        try:
+            import torch  # type: ignore
+            if torch.cuda.is_available():
+                device, ctype = "cuda", "float16"
+        except Exception:
+            pass
+    if compute_pref and compute_pref != "auto":
+        ctype = compute_pref
+
+    models_dir = WHISPER_DIR / "models"
+    models_dir.mkdir(parents=True, exist_ok=True)
+    model_path = model_size
+    # 本机 whisper.app / ggml 同级目录、以及 Whisper/models 缓存
+    search_roots = [
+        models_dir,
+        WHISPER_DIR,
+        Path.home() / "Library" / "Application Support" / "whisper",  # mac whisper.app 常见
+        Path.home() / ".cache" / "whisper",
+        Path.home() / ".cache" / "huggingface" / "hub",
+    ]
+    for cand in search_roots:
+        if not cand.is_dir():
+            continue
+        named = cand / model_size
+        if named.is_dir() and (
+            (named / "model.bin").exists()
+            or (named / "config.json").exists()
+            or any(named.glob("*.bin"))
+        ):
+            model_path = str(named)
+            break
+        for sub in cand.iterdir():
+            if not sub.is_dir():
+                continue
+            if model_size in sub.name and (
+                (sub / "model.bin").exists()
+                or (sub / "config.json").exists()
+                or any(sub.glob("*.bin"))
+            ):
+                model_path = str(sub)
+                break
+        else:
+            continue
+        break
+    download_root = str(models_dir)
+    log(f"faster-whisper: model={model_path} device={device} compute={ctype} task={task}")
+
+    # 进程内模型缓存，避免每次重新加载（大幅加速连续转写）
+    global _FW_MODEL_CACHE
+    try:
+        _FW_MODEL_CACHE
+    except NameError:
+        _FW_MODEL_CACHE = {}
+    cache_key = f"{model_path}|{device}|{ctype}"
+    model = _FW_MODEL_CACHE.get(cache_key)
+    if model is None:
+        try:
+            model = WhisperModel(
+                model_path,
+                device=device,
+                compute_type=ctype,
+                download_root=download_root,
+                cpu_threads=max(1, (os.cpu_count() or 4) // 2),
+                num_workers=1,
+            )
+        except Exception as e:
+            if device == "cuda":
+                log(f"CUDA 加载失败，回退 CPU int8: {e}", "warning")
+                device, ctype = "cpu", "int8"
+                cache_key = f"{model_path}|{device}|{ctype}"
+                model = WhisperModel(
+                    model_path, device="cpu", compute_type="int8",
+                    download_root=download_root,
+                    cpu_threads=max(1, (os.cpu_count() or 4) // 2),
+                )
+            else:
+                raise
+        _FW_MODEL_CACHE[cache_key] = model
+        log(f"faster-whisper 模型已缓存: {cache_key}")
+    else:
+        log("faster-whisper 使用缓存模型")
+
+    lang_arg, init_prompt = _whisper_lang_and_prompt(lang)
+    if lang and str(lang).lower() in ("yue", "cantonese", "zh-yue", "粤语", "广东话", "nan", "minnan", "wuu", "wu"):
+        log(f"方言模式: UI={lang} → whisper_lang={lang_arg or 'auto'}")
+    # 推理优化：VAD 切静音、不强制温度、适度 beam
+    kw = dict(
+        task=task,
+        language=lang_arg,
+        beam_size=5 if device == "cuda" else 3,
+        best_of=5 if device == "cuda" else 3,
+        patience=1.0,
+        vad_filter=True,
+        vad_parameters=dict(min_silence_duration_ms=400),
+        condition_on_previous_text=True,
+        compression_ratio_threshold=2.4,
+        no_speech_threshold=0.6,
+    )
+    if init_prompt:
+        kw["initial_prompt"] = init_prompt
+    segments, info = model.transcribe(str(media), **kw)
+    # 写 srt：转写用 .srt；Whisper 官方 translate 仅→英文用 .en.srt
+    out = media.with_suffix(".srt") if task == "transcribe" else media.with_name(media.stem + ".en.srt")
+    segs = [(s.start, s.end, (s.text or "").strip()) for s in segments]
+    segs = [s for s in segs if s[2]]
+    if wc.get("diarize") and segs:
+        prefix = _diarize_prefixes(media, segs, wc.get("max_speakers") or 4, log)
+        if prefix:
+            segs = [(a, b, f"{p} {t}") for (a, b, t), p in zip(segs, prefix)]
+    lines = []
+    for idx, (start, end, text) in enumerate(segs, 1):
+        lines.append(f"{idx}\n{_srt_ts(start)} --> {_srt_ts(end)}\n{text}\n\n")
+    out.write_text("".join(lines), encoding="utf-8")
+    log(f"{'转写' if task == 'transcribe' else '翻译'}完成: {out.name} "
+        f"(lang={getattr(info, 'language', '?')}, {len(segs)} 句)")
+    return out
+
+
+def _diarize_prefixes(media: Path, segs: list, max_speakers: int, log: Callable) -> list:
+    """按声纹给每句字幕贴 [说话人N]。分不出来就返回空列表，字幕保持原样。"""
+    if not segs:
+        return []
+    try:
+        import diarize_tools
+    except Exception as e:
+        log(f"说话人分离模块加载失败: {e}", "warning")
+        return []
+    if not diarize_tools.available():
+        log("说话人分离已跳过：本机没有 ffmpeg 或 numpy", "warning")
+        return []
+    diarize_tools.set_ffmpeg(ffmpeg_mgr.find() or "")
+    labels = diarize_tools.diarize_segments(
+        str(media), [(s[0], s[1]) for s in segs], log=log, max_speakers=max_speakers
+    )
+    if not labels:
+        return []
+    k = len({x for x in labels if x})
+    if k <= 1:
+        log("说话人分离：只听出一个人的音色，未加标记（声音接近时常见）")
+        return []
+    log(f"说话人分离：{len(segs)} 句分成 {k} 个人（轻量声纹，音色接近者可能混标）")
+    return [f"[说话人{x}]" if x else "" for x in labels]
+
+
+def _srt_ts(sec: float) -> str:
+    h = int(sec // 3600)
+    m = int((sec % 3600) // 60)
+    s = int(sec % 60)
+    ms = int((sec - int(sec)) * 1000)
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+# Whisper 官方多语言代码（openai-whisper / faster-whisper）
+WHISPER_LANG_CODES = {
+    "af", "am", "ar", "as", "az", "ba", "be", "bg", "bn", "bo", "br", "bs", "ca", "cs", "cy",
+    "da", "de", "el", "en", "es", "et", "eu", "fa", "fi", "fo", "fr", "gl", "gu", "ha", "haw",
+    "he", "hi", "hr", "ht", "hu", "hy", "id", "is", "it", "ja", "jw", "ka", "kk", "km", "kn",
+    "ko", "la", "lb", "ln", "lo", "lt", "lv", "mg", "mi", "mk", "ml", "mn", "mr", "ms", "mt",
+    "my", "ne", "nl", "nn", "no", "oc", "pa", "pl", "ps", "pt", "ro", "ru", "sa", "sd", "si",
+    "sk", "sl", "sn", "so", "sq", "sr", "su", "sv", "sw", "ta", "te", "tg", "th", "tk", "tl",
+    "tr", "tt", "uk", "ur", "uz", "vi", "yi", "yo", "zh",
+}
+
+# 方言 / 别名 → (whisper_code, initial_prompt 可选)
+# 说明：官方模型无独立「粤语」码，粤语/闽南等走 zh + 提示词；效果因口音与模型大小而异
+WHISPER_LANG_ALIASES = {
+    "zh": ("zh", None),
+    "zh-cn": ("zh", None),
+    "zh-hans": ("zh", None),
+    "zh-tw": ("zh", "這是繁體中文的字幕。"),
+    "zh-hant": ("zh", "這是繁體中文的字幕。"),
+    "chinese": ("zh", None),
+    "mandarin": ("zh", "以下是普通话内容。"),
+    "yue": ("zh", "以下是粤语（广东话）口语内容，请按实际听到的粤语转写。"),
+    "cantonese": ("zh", "以下是粤语（广东话）口语内容，请按实际听到的粤语转写。"),
+    "zh-yue": ("zh", "以下是粤语（广东话）口语内容，请按实际听到的粤语转写。"),
+    "粤语": ("zh", "以下是粤语（广东话）口语内容，请按实际听到的粤语转写。"),
+    "广东话": ("zh", "以下是粤语（广东话）口语内容，请按实际听到的粤语转写。"),
+    "nan": ("zh", "以下是闽南语/台语口语内容。"),
+    "minnan": ("zh", "以下是闽南语/台语口语内容。"),
+    "hokkien": ("zh", "以下是闽南语/台语口语内容。"),
+    "闽南语": ("zh", "以下是闽南语/台语口语内容。"),
+    "wuu": ("zh", "以下是吴语/上海话口语内容。"),
+    "wu": ("zh", "以下是吴语/上海话口语内容。"),
+    "shanghai": ("zh", "以下是吴语/上海话口语内容。"),
+    "吴语": ("zh", "以下是吴语/上海话口语内容。"),
+    "en": ("en", None),
+    "english": ("en", None),
+    "ja": ("ja", None),
+    "jp": ("ja", None),
+    "japanese": ("ja", None),
+    "日文": ("ja", None),
+    "日语": ("ja", None),
+    "ko": ("ko", None),
+    "korean": ("ko", None),
+    "韩文": ("ko", None),
+    "fr": ("fr", None),
+    "de": ("de", None),
+    "es": ("es", None),
+    "ru": ("ru", None),
+    "pt": ("pt", None),
+    "it": ("it", None),
+    "vi": ("vi", None),
+    "th": ("th", None),
+    "ar": ("ar", None),
+    "hi": ("hi", None),
+    "id": ("id", None),
+    "ms": ("ms", None),
+    "tr": ("tr", None),
+    "pl": ("pl", None),
+    "nl": ("nl", None),
+    "sv": ("sv", None),
+    "uk": ("uk", None),
+    "he": ("he", None),
+    "fa": ("fa", None),
+    "cs": ("cs", None),
+    "ro": ("ro", None),
+    "hu": ("hu", None),
+    "el": ("el", None),
+    "bg": ("bg", None),
+    "fi": ("fi", None),
+    "da": ("da", None),
+    "no": ("no", None),
+    "nn": ("nn", None),
+    "tl": ("tl", None),
+    "fil": ("tl", None),
+    "my": ("my", None),
+    "km": ("km", None),
+    "lo": ("lo", None),
+    "yue-hint": ("zh", "以下是粤语口语。"),
+}
+
+
+def _normalize_whisper_lang(lang: str) -> Optional[str]:
+    """映射 UI 语言到 Whisper 代码；auto → None。返回 code 或 None。"""
+    code, _ = _whisper_lang_and_prompt(lang)
+    return code
+
+
+def _whisper_lang_and_prompt(lang: str) -> tuple:
+    """返回 (language_code|None, initial_prompt|None)。"""
+    if not lang or str(lang).strip().lower() in ("auto", "none", "detect", ""):
+        return None, None
+    low = str(lang).strip().lower().replace("_", "-")
+    if low in WHISPER_LANG_ALIASES:
+        return WHISPER_LANG_ALIASES[low]
+    # 直接是官方两字母代码
+    if low in WHISPER_LANG_CODES:
+        return low, None
+    if len(low) <= 3 and low.isalpha():
+        return low, None
+    return None, None
+
+
+def parse_srt(text: str) -> List[dict]:
+    """解析 SRT → [{idx, start, end, text}, ...]"""
+    blocks = re.split(r"\n\s*\n", (text or "").replace("\r\n", "\n").strip())
+    cues = []
+    for block in blocks:
+        lines = [ln for ln in block.split("\n") if ln.strip() is not None]
+        if len(lines) < 2:
+            continue
+        # 可能无序号行
+        if "-->" in lines[0]:
+            timing, body = lines[0], lines[1:]
+            idx = len(cues) + 1
+        elif len(lines) >= 2 and "-->" in lines[1]:
+            try:
+                idx = int(lines[0].strip())
+            except Exception:
+                idx = len(cues) + 1
+            timing, body = lines[1], lines[2:]
+        else:
+            continue
+        text_body = "\n".join(body).strip()
+        if not text_body:
+            continue
+        cues.append({"idx": idx, "timing": timing.strip(), "text": text_body})
+    return cues
+
+
+def write_srt(cues: List[dict]) -> str:
+    parts = []
+    for i, c in enumerate(cues, 1):
+        parts.append(f"{i}\n{c.get('timing') or '00:00:00,000 --> 00:00:00,000'}\n{c.get('text') or ''}\n")
+    return "\n".join(parts) + ("\n" if parts else "")
+
+
+def _char_units(ch: str) -> float:
+    """显示宽度权重：CJK / 全角标点 / emoji 记 1，半角记 0.5。"""
+    o = ord(ch)
+    wide = (
+        0x1100 <= o <= 0x115F
+        or 0x2E80 <= o <= 0x303F
+        or 0x3041 <= o <= 0x33FF
+        or 0x3400 <= o <= 0x4DBF
+        or 0x4E00 <= o <= 0x9FFF
+        or 0xA960 <= o <= 0xD7FF
+        or 0xF900 <= o <= 0xFAFF
+        or 0xFE30 <= o <= 0xFE6F
+        or 0xFF00 <= o <= 0xFF60
+        or 0xFFE0 <= o <= 0xFFE6
+        or o >= 0x1F000
+    )
+    return 1.0 if wide else 0.5
+
+
+def text_units(s: str) -> float:
+    return sum(_char_units(c) for c in (s or ""))
+
+
+_BREAK_AFTER = set("，。！？；：、,.)）]》」”’-—·/、")
+_NO_LINE_START = set("，。！？；：、,.)）]》」”’%…—/")
+
+
+def _split_balanced(line: str, max_units: float, k: int) -> List[str]:
+    """把一行按显示宽度等分成最多 k 段，断点优先落在标点/词边界，且不留行首禁排标点。"""
+    chars = list(line)
+    n = len(chars)
+    if k <= 1 or n < 2:
+        return [line]
+    pref = [0.0] * (n + 1)
+    for i, ch in enumerate(chars):
+        pref[i + 1] = pref[i] + _char_units(ch)
+    total = pref[n]
+    if total <= max_units:
+        return [line]
+    cuts = []
+    for i in range(1, n):
+        prev, cur = chars[i - 1], chars[i]
+        if cur in _NO_LINE_START:
+            continue
+        if prev in _BREAK_AFTER:
+            score = 3
+        elif prev == " " or cur == " ":
+            score = 2
+        elif _char_units(cur) == 1.0 and _char_units(prev) == 1.0:
+            score = 1
+        else:
+            continue
+        cuts.append((i, score))
+    if not cuts:
+        step = max(1, n // k)
+        idxs = [step * (j + 1) for j in range(k - 1)]
+    else:
+        idxs = []
+        prev_i = 0
+        for seg in range(1, k):
+            ideal = total * seg / k
+            floor_w = total - max_units * (k - seg)  # 剩余段落得放得下
+            ceil_w = pref[prev_i] + max_units        # 当前段别超标
+
+            def cost(ic):
+                i, sc = ic
+                w = pref[i]
+                pen = 0.0
+                if w < floor_w:
+                    pen += (floor_w - w) * 4
+                if w > ceil_w:
+                    pen += (w - ceil_w) * 4
+                return pen + abs(w - ideal) - 0.9 * sc
+
+            avail = [ic for ic in cuts if ic[0] > prev_i]
+            if not avail:
+                break
+            prev_i = min(avail, key=cost)[0]
+            idxs.append(prev_i)
+    pieces = []
+    prev = 0
+    for i in sorted(set(idxs)):
+        pieces.append(line[prev:i].strip())
+        prev = i
+    pieces.append(line[prev:].strip())
+    return [p for p in pieces if p]
+
+
+def wrap_subtitle_text(text: str, max_units: float = 16.0, max_lines: int = 3) -> str:
+    """按显示宽度加权换行：中文记 1、英文记 0.5，每行不超宽，整条最多 max_lines 行。"""
+    lines = [ln.strip() for ln in (text or "").split("\n") if ln.strip()]
+    if not lines:
+        return ""
+    if max_lines <= 1:
+        return "\n".join(lines)
+    out: List[str] = []
+    for ln in lines:
+        need = int(-(-text_units(ln) // max_units))
+        if need <= 1:
+            out.append(ln)
+            continue
+        out.extend(_split_balanced(ln, max_units, min(need, max_lines)))
+    if len(out) > max_lines:
+        tail = out[max_lines - 1 :]
+        merged = tail[0]
+        for part in tail[1:]:
+            seam = " " if not (part and _char_units(merged[-1]) == 1.0 and _char_units(part[0]) == 1.0) else ""
+            merged = merged + seam + part
+        out = out[: max_lines - 1] + [merged]
+    return "\n".join(out)
+
+
+def wrap_cues(cues: List[dict], max_units: float = 16.0, max_lines: int = 3) -> List[dict]:
+    out = []
+    for c in cues:
+        d = dict(c)
+        d["text"] = wrap_subtitle_text(c.get("text") or "", max_units, max_lines)
+        out.append(d)
+    return out
+
+
+_LANG_SUFFIX_RE = re.compile(r"\.(zh|zh-cn|zh-hans|zh-tw|en|en-us|ja|ko|fr|de|es|ru|pt|vi|th|ar|hi|translated)$", re.I)
+
+
+def _lang_suffix_of(p: Path) -> str:
+    m = re.search(r"\.([a-z]{2}(?:[-_][a-z]{2,4})?)$", p.stem, re.I)
+    return (m.group(1) if m else "").lower()
+
+
+def _push_cand(out: list, cand: Path, self_resolved) -> None:
+    try:
+        if not cand.is_file() or cand.resolve() == self_resolved:
+            return
+        low = cand.name.lower()
+        if ".bi." in low or ".sync" in low or "polished" in low:
+            return
+        out.append((cand.stat().st_mtime, cand))
+    except Exception:
+        return
+
+
+def find_subtitle_counterpart(srt_path) -> Optional[Path]:
+    """找同一字幕的另一路文本：原文 ↔ 机翻译文。"""
+    p = Path(srt_path)
+    try:
+        self_resolved = p.resolve()
+    except Exception:
+        return None
+    dirn = p.parent
+
+    # 1) 手上这份像派生译文：demo.en.zh.srt → demo.en.srt
+    base = _LANG_SUFFIX_RE.sub("", p.stem)
+    if base != p.stem:
+        tier1: list = []
+        _push_cand(tier1, dirn / (base + ".srt"), self_resolved)
+        if tier1:
+            return min(tier1, key=lambda x: x[0])[1]
+
+    # 2) 手上这份像原文：demo.en.srt → demo.en.<lang>.srt
+    tier2: list = []
+    for cand in dirn.glob(p.stem + ".*.srt"):
+        if _LANG_SUFFIX_RE.search(cand.stem):
+            _push_cand(tier2, cand, self_resolved)
+    if tier2:
+        return max(tier2, key=lambda x: x[0])[1]
+
+    # 3) 同主干的其它语言兄弟：demo.zh.srt ↔ demo.en.srt
+    stem = _LANG_SUFFIX_RE.sub("", p.stem)
+    mine = _lang_suffix_of(p)
+    tier3: list = []
+    if stem:
+        for cand in list(dirn.glob(stem + ".*.srt")) + [dirn / (stem + ".srt")]:
+            if _LANG_SUFFIX_RE.sub("", cand.stem).lower() != stem.lower():
+                continue
+            if _lang_suffix_of(cand) == mine:
+                continue
+            _push_cand(tier3, cand, self_resolved)
+    if tier3:
+        return min(tier3, key=lambda x: x[0])[1]
+    return None
+
+
+def merge_bilingual_cues(a_cues: List[dict], b_cues: List[dict]) -> List[dict]:
+    """把两路字幕合成双语字幕，时间轴取第一条，行序为 a 在上、b 在下。"""
+    merged = []
+    for i, c in enumerate(a_cues):
+        text = (c.get("text") or "").strip()
+        other = (b_cues[i].get("text") or "").strip() if i < len(b_cues) else ""
+        if other:
+            text = f"{text}\n{other}" if text else other
+        if not text:
+            continue
+        merged.append({"idx": i + 1, "timing": c.get("timing"), "text": text})
+    return merged
+
+
+def _srt_ts_to_ass_ts(ts: str) -> str:
+    ts = (ts or "").strip().replace(".", ",")
+    m = re.match(r"(\d+):(\d+):(\d+),(\d+)", ts)
+    if not m:
+        return "0:00:00.00"
+    h, mi, s, ms = m.groups()
+    return f"{int(h)}:{mi}:{s}.{int(ms) // 10:02d}"
+
+
+def srt_to_ass(
+    top_cues: List[dict],
+    bottom_cues: Optional[List[dict]] = None,
+    *,
+    title: str = "",
+    main_style: Optional[dict] = None,
+) -> str:
+    """SRT 列表 → ASS 文本。top 走顶部小字号次样式，bottom 走底部主样式。
+
+    main_style 只覆盖主样式（烧字幕时用）；不传就是原来双语导出的样子。
+    """
+    st = {"font": "Noto Sans CJK SC", "fontsize": 44, "align": 2, "marginv": 36, "outline": 2.2}
+    st.update({k: v for k, v in (main_style or {}).items() if k in st})
+    head = (
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        "PlayResX: 1280\nPlayResY: 720\nScaledBorderAndShadow: yes\n"
+        f"Title: {title or 'bilingual subtitles'}\n\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, "
+        "BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, "
+        "BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        f"Style: Main,{st['font']},{st['fontsize']},&H00FFFFFF,&H000000FF,&H00101010,&H7F000000,"
+        f"-1,0,0,0,100,100,0,0,1,{st['outline']},1.2,{st['align']},40,40,{st['marginv']},1\n"
+        "Style: Side,Noto Sans CJK SC,32,&H00C8C8C8,&H000000FF,&H00101010,&H7F000000,"
+        "0,0,0,0,100,100,0,0,1,1.8,1.0,8,40,40,32,1\n\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    )
+    rows = []
+    for c in bottom_cues or []:
+        timing = c.get("timing") or ""
+        parts = re.split(r"\s*-->\s*", timing)
+        if len(parts) != 2:
+            continue
+        text = (c.get("text") or "").replace("\n", "\\N")
+        rows.append(
+            f"Dialogue: 0,{_srt_ts_to_ass_ts(parts[0])},{_srt_ts_to_ass_ts(parts[1])},Main,,0,0,0,,{text}"
+        )
+    for c in top_cues or []:
+        timing = c.get("timing") or ""
+        parts = re.split(r"\s*-->\s*", timing)
+        if len(parts) != 2:
+            continue
+        text = (c.get("text") or "").replace("\n", "\\N")
+        rows.append(
+            f"Dialogue: 0,{_srt_ts_to_ass_ts(parts[0])},{_srt_ts_to_ass_ts(parts[1])},Side,,0,0,0,,{text}"
+        )
+    return head + "\n".join(rows) + "\n"
+
+
+def write_vtt(cues: List[dict]) -> str:
+    lines = ["WEBVTT", ""]
+    for i, c in enumerate(cues, 1):
+        timing = re.sub(r"\s*-->\s*", " --> ", (c.get("timing") or "00:00:00,000 --> 00:00:00,000"))
+        lines.append(str(i))
+        lines.append(timing.replace(",", "."))
+        lines.append((c.get("text") or "").replace("\r", ""))
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _srt_ts_to_ms(ts: str) -> int:
+    """00:01:02,300 或 00:01:02.300 → 毫秒"""
+    ts = (ts or "").strip().replace(".", ",")
+    m = re.match(r"(\d+):(\d+):(\d+),(\d+)", ts)
+    if not m:
+        return 0
+    h, mi, s, ms = int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
+    if ms < 10:
+        ms *= 100
+    elif ms < 100:
+        ms *= 10
+    return ((h * 60 + mi) * 60 + s) * 1000 + ms
+
+
+def _ms_to_srt_ts(ms: int) -> str:
+    ms = max(0, int(ms))
+    h = ms // 3600000
+    ms %= 3600000
+    mi = ms // 60000
+    ms %= 60000
+    s = ms // 1000
+    milli = ms % 1000
+    return f"{h:02d}:{mi:02d}:{s:02d},{milli:03d}"
+
+
+def shift_srt_cues(
+    cues: List[dict],
+    *,
+    offset_ms: int = 0,
+    scale: float = 1.0,
+) -> List[dict]:
+    """
+    时间轴校准：
+    - offset_ms: 整体平移（正=延后，负=提前）
+    - scale: 以第一条起点为锚缩放（>1 拉长，<1 压缩），用于片速略不一致
+    """
+    scale = float(scale) if scale else 1.0
+    if scale <= 0:
+        scale = 1.0
+    # 解析每条 start/end
+    parsed = []
+    for c in cues:
+        timing = c.get("timing") or ""
+        if "-->" not in timing:
+            parsed.append(c)
+            continue
+        left, right = [x.strip() for x in timing.split("-->", 1)]
+        # 去掉可能的 position 后缀
+        right = right.split(" ")[0].strip()
+        t0 = _srt_ts_to_ms(left)
+        t1 = _srt_ts_to_ms(right)
+        parsed.append({**c, "_t0": t0, "_t1": t1})
+
+    anchor = None
+    for c in parsed:
+        if "_t0" in c:
+            anchor = c["_t0"]
+            break
+    if anchor is None:
+        anchor = 0
+
+    out = []
+    for c in parsed:
+        if "_t0" not in c:
+            out.append({"timing": c.get("timing"), "text": c.get("text")})
+            continue
+        t0, t1 = c["_t0"], c["_t1"]
+        if abs(scale - 1.0) > 1e-9:
+            t0 = int(anchor + (t0 - anchor) * scale)
+            t1 = int(anchor + (t1 - anchor) * scale)
+        t0 = max(0, t0 + int(offset_ms))
+        t1 = max(t0 + 40, t1 + int(offset_ms))  # 至少 40ms 时长
+        out.append({
+            "timing": f"{_ms_to_srt_ts(t0)} --> {_ms_to_srt_ts(t1)}",
+            "text": c.get("text") or "",
+        })
+    return out
+
+
+def calibrate_srt_file(
+    srt_path: str,
+    *,
+    offset_ms: int = 0,
+    offset_sec: float = 0.0,
+    scale: float = 1.0,
+    inplace: bool = False,
+    log: Callable = print,
+) -> str:
+    """校准 SRT 时间轴，返回输出路径。"""
+    p = Path(srt_path)
+    if not p.is_file():
+        raise FileNotFoundError(str(p))
+    total_ms = int(offset_ms) + int(float(offset_sec) * 1000)
+    cues = parse_srt(p.read_text(encoding="utf-8", errors="ignore"))
+    if not cues:
+        raise RuntimeError("SRT 无有效条目")
+    new_cues = shift_srt_cues(cues, offset_ms=total_ms, scale=scale)
+    if inplace:
+        out = p
+    else:
+        tag = []
+        if total_ms:
+            tag.append(f"{'+' if total_ms >= 0 else ''}{total_ms}ms")
+        if abs(scale - 1.0) > 1e-9:
+            tag.append(f"x{scale:.4g}")
+        suffix = "_".join(tag) if tag else "calibrated"
+        out = p.with_name(f"{p.stem}.sync{suffix}.srt")
+    out.write_text(write_srt(new_cues), encoding="utf-8")
+    log(f"时间轴校准: {p.name} → {out.name} (offset={total_ms}ms scale={scale})")
+    return str(out)
+
+
+GLOSSARY_SEP_RE = re.compile(r"\s*(?:=>|→|->|∶|：|:=|=|:)\s*")
+
+
+def parse_glossary(raw: Optional[str] = None) -> List[Tuple[str, str]]:
+    """把术语表文本解析成 (原文, 译文) 列表；不传 raw 则读全局设置。"""
+    text = raw if raw is not None else (cfg.data.get("subtitle_glossary") or "")
+    pairs: List[Tuple[str, str]] = []
+    seen: set = set()
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or line.startswith("//"):
+            continue
+        parts = GLOSSARY_SEP_RE.split(line, maxsplit=1)
+        if len(parts) != 2:
+            continue
+        term, value = parts[0].strip(), parts[1].strip()
+        if not term or not value:
+            continue
+        key = term.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        pairs.append((term, value))
+    return pairs
+
+
+def glossary_prompt_block(pairs: Optional[List[Tuple[str, str]]] = None) -> str:
+    """LLM 翻译时的术语约束段。"""
+    if pairs is None:
+        pairs = parse_glossary()
+    if not pairs:
+        return ""
+    rows = "\n".join(f"- {a} => {b}" for a, b in pairs)
+    return (
+        "\n\nTERMINOLOGY (mandatory, take precedence over your own judgement). "
+        "Whenever a source term below appears, render it exactly as given:\n"
+        f"{rows}\n"
+        "Never re-translate or localize these terms, and keep their capitalization."
+    )
+
+
+def _glossary_term_re(term: str) -> "re.Pattern[str]":
+    escaped = re.escape(term)
+    if re.fullmatch(r"[A-Za-z0-9 ._'\-()+&%]+", term):
+        return re.compile(rf"(?<![A-Za-z0-9]){escaped}(?![A-Za-z0-9])", re.I)
+    return re.compile(escaped)
+
+
+def apply_glossary(text: str, pairs: List[Tuple[str, str]]) -> str:
+    """翻译后兜底：源术语若被原样保留（或大小写变了），强制换成指定译文。"""
+    if not text or not pairs:
+        return text
+    out = text
+    for term, value in pairs:
+        if term == value:
+            continue
+        rx = _glossary_term_re(term)
+        candidate, n = rx.subn(lambda m: value, out)
+        if n:
+            out = candidate
+    return out
+
+
+def _translate_batch_deepl(texts: List[str], target: str, source: str = "", log: Callable = print) -> List[str]:
+    key = (cfg.data.get("deepl_api_key") or "").strip()
+    if not key:
+        raise RuntimeError("未配置 DeepL API Key（设置 → 字幕翻译）")
+    # free: https://api-free.deepl.com  pro: https://api.deepl.com
+    base = (cfg.data.get("deepl_api_url") or "").strip() or (
+        "https://api-free.deepl.com" if key.endswith(":fx") or "free" in key.lower() else "https://api.deepl.com"
+    )
+    if key.endswith(":fx"):
+        base = "https://api-free.deepl.com"
+    url = base.rstrip("/") + "/v2/translate"
+    tgt = (target or "ZH").upper()
+    if tgt in ("ZH-HANS", "ZH-CN", "CHINESE"):
+        tgt = "ZH"
+    if tgt in ("JA", "JP"):
+        tgt = "JA"
+    if tgt in ("EN", "EN-US", "EN-GB"):
+        tgt = "EN-US"
+    data = [("text", t) for t in texts]
+    data.append(("target_lang", tgt))
+    src = (source or "").upper()
+    if src and src not in ("AUTO", ""):
+        if src in ("ZH-HANS", "ZH-CN"):
+            src = "ZH"
+        if src == "JP":
+            src = "JA"
+        data.append(("source_lang", src))
+    headers = {"Authorization": f"DeepL-Auth-Key {key}"}
+    r = requests.post(url, data=data, headers=headers, timeout=120)
+    if r.status_code >= 400:
+        raise RuntimeError(f"DeepL HTTP {r.status_code}: {r.text[:300]}")
+    out = r.json().get("translations") or []
+    if len(out) != len(texts):
+        log(f"DeepL 返回条数 {len(out)} ≠ 请求 {len(texts)}", "warning")
+    return [(x.get("text") or "") for x in out]
+
+
+def _mt_target_name(target: str) -> str:
+    return {
+        "zh": "Simplified Chinese",
+        "zh-cn": "Simplified Chinese",
+        "zh-tw": "Traditional Chinese",
+        "en": "English",
+        "ja": "Japanese",
+        "ko": "Korean",
+        "fr": "French",
+        "de": "German",
+        "es": "Spanish",
+        "ru": "Russian",
+        "pt": "Portuguese",
+        "vi": "Vietnamese",
+        "th": "Thai",
+        "ar": "Arabic",
+        "hi": "Hindi",
+    }.get((target or "zh").lower(), target or "Simplified Chinese")
+
+
+def _parse_numbered_lines(content: str, n: int, fallback: List[str]) -> List[str]:
+    lines = [ln.strip() for ln in (content or "").split("\n") if ln.strip()]
+    cleaned = []
+    for ln in lines:
+        m = re.match(r"^\d+[\.\)]\s*(.*)$", ln)
+        cleaned.append(m.group(1) if m else ln)
+    while len(cleaned) < n:
+        cleaned.append(fallback[len(cleaned)] if len(cleaned) < len(fallback) else "")
+    return cleaned[:n]
+
+
+def _translate_batch_openai(texts: List[str], target: str, source: str = "", log: Callable = print) -> List[str]:
+    key = (cfg.data.get("openai_api_key") or "").strip()
+    if not key:
+        raise RuntimeError("未配置 OpenAI API Key（设置 → 字幕翻译）")
+    base = (cfg.data.get("openai_base_url") or "https://api.openai.com/v1").rstrip("/")
+    model = (cfg.data.get("openai_model") or "gpt-4o-mini").strip()
+    target_name = _mt_target_name(target)
+    src_hint = source or "auto-detect"
+    system = (
+        "You are a professional subtitle translator. "
+        f"Translate each line to {target_name}. "
+        "Keep the same number of lines, one translation per line, no numbering, no explanation. "
+        "Preserve names/terms when appropriate."
+        + glossary_prompt_block()
+    )
+    results: List[str] = []
+    batch_size = 40
+    for i in range(0, len(texts), batch_size):
+        chunk = texts[i : i + batch_size]
+        user = f"Source language hint: {src_hint}\n\n" + "\n".join(
+            f"{j+1}. {t}" for j, t in enumerate(chunk)
+        )
+        payload = {
+            "model": model,
+            "temperature": 0.2,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        }
+        r = requests.post(
+            f"{base}/chat/completions",
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=180,
+        )
+        if r.status_code >= 400:
+            raise RuntimeError(f"OpenAI HTTP {r.status_code}: {r.text[:300]}")
+        content = (((r.json().get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+        results.extend(_parse_numbered_lines(content, len(chunk), chunk))
+        log(f"OpenAI 已译 {min(i+batch_size, len(texts))}/{len(texts)}")
+    return results
+
+
+def _translate_batch_claude(texts: List[str], target: str, source: str = "", log: Callable = print) -> List[str]:
+    key = (cfg.data.get("anthropic_api_key") or "").strip()
+    if not key:
+        raise RuntimeError("未配置 Anthropic API Key（Claude）")
+    model = (cfg.data.get("anthropic_model") or "claude-sonnet-4-20250514").strip()
+    target_name = _mt_target_name(target)
+    src_hint = source or "auto-detect"
+    system = (
+        "You are a professional subtitle translator. "
+        f"Translate each line to {target_name}. "
+        "Same number of lines, one per line, no numbering or commentary."
+        + glossary_prompt_block()
+    )
+    results: List[str] = []
+    batch_size = 40
+    for i in range(0, len(texts), batch_size):
+        chunk = texts[i : i + batch_size]
+        user = f"Source language hint: {src_hint}\n\n" + "\n".join(
+            f"{j+1}. {t}" for j, t in enumerate(chunk)
+        )
+        r = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": key,
+                "anthropic-version": "2023-06-01",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": model,
+                "max_tokens": 4096,
+                "temperature": 0.2,
+                "system": system,
+                "messages": [{"role": "user", "content": user}],
+            },
+            timeout=180,
+        )
+        if r.status_code >= 400:
+            raise RuntimeError(f"Claude HTTP {r.status_code}: {r.text[:300]}")
+        parts = r.json().get("content") or []
+        content = ""
+        for p in parts:
+            if isinstance(p, dict) and p.get("type") == "text":
+                content += p.get("text") or ""
+        results.extend(_parse_numbered_lines(content, len(chunk), chunk))
+        log(f"Claude 已译 {min(i+batch_size, len(texts))}/{len(texts)}")
+    return results
+
+
+def _translate_batch_gemini(texts: List[str], target: str, source: str = "", log: Callable = print) -> List[str]:
+    key = (cfg.data.get("gemini_api_key") or "").strip()
+    if not key:
+        raise RuntimeError("未配置 Gemini API Key")
+    model = (cfg.data.get("gemini_model") or "gemini-2.0-flash").strip()
+    target_name = _mt_target_name(target)
+    src_hint = source or "auto-detect"
+    results: List[str] = []
+    batch_size = 40
+    glossary_block = glossary_prompt_block()
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+    for i in range(0, len(texts), batch_size):
+        chunk = texts[i : i + batch_size]
+        prompt = (
+            f"Professional subtitle translation to {target_name}. "
+            "Same number of lines, one translation per line, no numbers/comments.\n"
+            f"Source hint: {src_hint}{glossary_block}\n\n"
+            + "\n".join(f"{j+1}. {t}" for j, t in enumerate(chunk))
+        )
+        r = requests.post(
+            url,
+            headers={"Content-Type": "application/json"},
+            json={
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"temperature": 0.2},
+            },
+            timeout=180,
+        )
+        if r.status_code >= 400:
+            raise RuntimeError(f"Gemini HTTP {r.status_code}: {r.text[:300]}")
+        cands = r.json().get("candidates") or []
+        content = ""
+        try:
+            content = cands[0]["content"]["parts"][0]["text"]
+        except Exception:
+            content = ""
+        results.extend(_parse_numbered_lines(content, len(chunk), chunk))
+        log(f"Gemini 已译 {min(i+batch_size, len(texts))}/{len(texts)}")
+    return results
+
+
+def _google_lang_code(code: str) -> str:
+    c = (code or "zh").lower()
+    return {
+        "zh": "zh-CN",
+        "zh-cn": "zh-CN",
+        "zh-tw": "zh-TW",
+        "en": "en",
+        "ja": "ja",
+        "ko": "ko",
+        "fr": "fr",
+        "de": "de",
+        "es": "es",
+        "ru": "ru",
+        "pt": "pt",
+        "vi": "vi",
+        "th": "th",
+        "ar": "ar",
+        "hi": "hi",
+        "auto": "",
+    }.get(c, c)
+
+
+def _translate_batch_google(texts: List[str], target: str, source: str = "", log: Callable = print) -> List[str]:
+    """Google Cloud Translation API v2（API Key）。"""
+    key = (cfg.data.get("google_translate_api_key") or "").strip()
+    if not key:
+        raise RuntimeError("未配置 Google Translate API Key")
+    target_c = _google_lang_code(target) or "zh-CN"
+    source_c = _google_lang_code(source) if source and source not in ("auto", "") else None
+    results: List[str] = []
+    batch_size = 50  # v2 单次建议不要过大
+    url = "https://translation.googleapis.com/language/translate/v2"
+    for i in range(0, len(texts), batch_size):
+        chunk = texts[i : i + batch_size]
+        params = {"key": key}
+        data = {"q": chunk, "target": target_c, "format": "text"}
+        if source_c:
+            data["source"] = source_c
+        r = requests.post(url, params=params, json=data, timeout=120)
+        if r.status_code >= 400:
+            raise RuntimeError(f"Google Translate HTTP {r.status_code}: {r.text[:300]}")
+        tr = ((r.json().get("data") or {}).get("translations")) or []
+        for j, item in enumerate(tr):
+            results.append(item.get("translatedText") or chunk[j])
+        while len(results) < i + len(chunk):
+            results.append(chunk[len(results) - i])
+        log(f"Google 已译 {min(i+batch_size, len(texts))}/{len(texts)}")
+    return results[: len(texts)]
+
+
+def _translate_batch_azure(texts: List[str], target: str, source: str = "", log: Callable = print) -> List[str]:
+    key = (cfg.data.get("azure_translator_key") or "").strip()
+    region = (cfg.data.get("azure_translator_region") or "global").strip()
+    if not key:
+        raise RuntimeError("未配置 Azure Translator Key")
+    endpoint = (cfg.data.get("azure_translator_endpoint") or "https://api.cognitive.microsofttranslator.com").rstrip("/")
+    tgt = _google_lang_code(target).replace("zh-CN", "zh-Hans").replace("zh-TW", "zh-Hant") or "zh-Hans"
+    src = _google_lang_code(source).replace("zh-CN", "zh-Hans") if source and source not in ("auto", "") else None
+    results: List[str] = []
+    batch_size = 50
+    headers = {
+        "Ocp-Apim-Subscription-Key": key,
+        "Ocp-Apim-Subscription-Region": region,
+        "Content-Type": "application/json",
+    }
+    for i in range(0, len(texts), batch_size):
+        chunk = texts[i : i + batch_size]
+        params = {"api-version": "3.0", "to": tgt}
+        if src:
+            params["from"] = src
+        body = [{"text": t} for t in chunk]
+        r = requests.post(f"{endpoint}/translate", params=params, headers=headers, json=body, timeout=120)
+        if r.status_code >= 400:
+            raise RuntimeError(f"Azure Translator HTTP {r.status_code}: {r.text[:300]}")
+        arr = r.json() if isinstance(r.json(), list) else []
+        for j, item in enumerate(arr):
+            trs = item.get("translations") or []
+            results.append((trs[0].get("text") if trs else None) or chunk[j])
+        log(f"Azure 已译 {min(i+batch_size, len(texts))}/{len(texts)}")
+    return results[: len(texts)]
+
+
+def translate_srt_file(
+    srt_path: str,
+    *,
+    provider: str = "",
+    target_lang: str = "zh",
+    source_lang: str = "",
+    log: Callable = print,
+) -> str:
+    """
+    将已有 SRT 机翻为新文件。
+    provider: deepl | openai | claude | gemini | google | azure
+    """
+    p = Path(srt_path)
+    if not p.is_file():
+        raise FileNotFoundError(str(p))
+    cues = parse_srt(p.read_text(encoding="utf-8", errors="ignore"))
+    if not cues:
+        raise RuntimeError("SRT 无有效条目")
+    provider = (provider or cfg.data.get("subtitle_translate_provider") or "deepl").strip().lower()
+    target_lang = (target_lang or cfg.data.get("subtitle_target_lang") or "zh").strip()
+    texts = [c["text"] for c in cues]
+    glossary = parse_glossary()
+    if glossary:
+        log(f"字幕机翻: 术语表已启用（{len(glossary)} 条）")
+    log(f"字幕机翻: {p.name} → {target_lang} prefer={provider}（{len(texts)} 条）")
+
+    def _dt_fn(tx, tgt, src, lg):
+        from voice_tools import translate_batch_deep_translator
+        return translate_batch_deep_translator(tx, tgt, src or "auto", lg)
+
+    fns = {
+        "deepl": lambda tx, tgt, src, lg: _translate_batch_deepl(tx, tgt, src, lg),
+        "openai": lambda tx, tgt, src, lg: _translate_batch_openai(tx, tgt, src, lg),
+        "gpt": lambda tx, tgt, src, lg: _translate_batch_openai(tx, tgt, src, lg),
+        "openrouter": lambda tx, tgt, src, lg: _translate_batch_openai(tx, tgt, src, lg),
+        "claude": lambda tx, tgt, src, lg: _translate_batch_claude(tx, tgt, src, lg),
+        "anthropic": lambda tx, tgt, src, lg: _translate_batch_claude(tx, tgt, src, lg),
+        "gemini": lambda tx, tgt, src, lg: _translate_batch_gemini(tx, tgt, src, lg),
+        "google-ai": lambda tx, tgt, src, lg: _translate_batch_gemini(tx, tgt, src, lg),
+        "google": lambda tx, tgt, src, lg: _translate_batch_google(tx, tgt, src, lg),
+        "google-translate": lambda tx, tgt, src, lg: _translate_batch_google(tx, tgt, src, lg),
+        "azure": lambda tx, tgt, src, lg: _translate_batch_azure(tx, tgt, src, lg),
+        "microsoft": lambda tx, tgt, src, lg: _translate_batch_azure(tx, tgt, src, lg),
+        "deep_translator": _dt_fn,
+        "deep-translator": _dt_fn,
+        "free": _dt_fn,
+    }
+    auto_fb = cfg.data.get("translate_auto_fallback", True)
+    if auto_fb:
+        from voice_tools import translate_with_fallback
+        translated, used = translate_with_fallback(
+            texts, preferred=provider, target_lang=target_lang,
+            source_lang=source_lang, translate_fns=fns, log=log,
+        )
+        log(f"机翻实际使用引擎: {used}")
+    else:
+        fn = fns.get(provider)
+        if not fn:
+            raise RuntimeError(f"不支持的翻译引擎: {provider}")
+        translated = fn(texts, target_lang, source_lang, log)
+
+    timings = [c.get("timing") for c in cues]
+    fixed = 0
+    for c, t in zip(cues, translated):
+        t = t or c["text"]
+        if glossary:
+            g = apply_glossary(t, glossary)
+            if g != t:
+                fixed += 1
+                t = g
+        c["text"] = t
+    if glossary and fixed:
+        log(f"术语表统一了 {fixed} 条字幕的译名")
+
+    max_units = float(cfg.data.get("subtitle_wrap_width") or 16)
+    max_units = max(8.0, min(40.0, max_units))
+    do_wrap = bool(cfg.data.get("subtitle_wrap", True))
+    if do_wrap:
+        trans_cues = wrap_cues(cues, max_units)
+        orig_cues = wrap_cues([{"timing": tm, "text": tx} for tm, tx in zip(timings, texts)], max_units)
+        log(f"字幕换行: 每行 ≤{max_units:g} 个全角宽（中英文按显示宽度加权）")
+    else:
+        trans_cues = [dict(c) for c in cues]
+        orig_cues = [{"timing": tm, "text": tx} for tm, tx in zip(timings, texts)]
+
+    suffix = target_lang.lower().replace("en-us", "en").replace("zh-cn", "zh").replace("zh-hans", "zh")
+    out = p.with_name(p.stem + f".{suffix}.srt")
+    if out.resolve() == p.resolve():
+        out = p.with_name(p.stem + ".translated.srt")
+    out.write_text(write_srt(trans_cues), encoding="utf-8")
+    log(f"机翻完成: {out.name}")
+
+    export_set = str(cfg.data.get("subtitle_export_set") or "single").strip().lower()
+    if export_set in ("bilingual", "all", "full", "双语", "全部"):
+        bi_trans = wrap_cues(cues, max_units, 2) if do_wrap else trans_cues
+        bi_orig = wrap_cues([{"timing": tm, "text": tx} for tm, tx in zip(timings, texts)], max_units, 2) if do_wrap else orig_cues
+        bi = merge_bilingual_cues(bi_trans, bi_orig)
+        bi_srt = p.with_name(f"{p.stem}.{suffix}.bi.srt")
+        bi_srt.write_text(write_srt(bi), encoding="utf-8")
+        log(f"双语字幕(译上原下): {bi_srt.name}")
+        if export_set in ("all", "full"):
+            bi_vtt = p.with_name(f"{p.stem}.{suffix}.bi.vtt")
+            bi_vtt.write_text(write_vtt(bi), encoding="utf-8")
+            log(f"双语字幕 VTT: {bi_vtt.name}")
+            bi_ass = p.with_name(f"{p.stem}.{suffix}.bi.ass")
+            bi_ass.write_text(
+                srt_to_ass(wrap_cues(bi_orig, max_units * 1.6, 1), bi_trans, title=p.stem),
+                encoding="utf-8",
+            )
+            log(f"双语字幕 ASS(译文居下/原文居上): {bi_ass.name}")
+    return str(out)
+
+
+def run_local_ai_on_file(
+    media_path: str,
+    *,
+    transcribe: bool = True,
+    translate: bool = False,
+    lang: str = "zh",
+    log: Callable = print,
+    model: str = "",
+    device: str = "",
+    compute: str = "",
+) -> List[str]:
+    """
+    本地 AI 转写/翻译：
+    1) faster-whisper（可配置模型/设备）
+    2) web_app/Whisper 目录内可执行文件
+    3) PATH 中的 whisper CLI
+    """
+    out_files: List[str] = []
+    p = Path(media_path)
+    if not p.exists():
+        return out_files
+
+    wc = _whisper_cfg()
+    model = model or wc["model"]
+    device = device or wc["device"]
+    compute = compute or wc["compute"]
+    lang = lang or wc["lang"]
+
+    # 1) faster-whisper
+    if transcribe:
+        try:
+            r = _whisper_via_faster(
+                p, "transcribe", lang, log,
+                model_size=model, device_pref=device, compute_pref=compute,
+            )
+            if r and r.exists():
+                out_files.append(str(r))
+                transcribe = False  # 已完成
+        except Exception as e:
+            log(f"faster-whisper 转写失败，尝试 CLI: {e}", "warning")
+    if translate:
+        try:
+            r = _whisper_via_faster(
+                p, "translate", lang, log,
+                model_size=model, device_pref=device, compute_pref=compute,
+            )
+            if r and r.exists():
+                out_files.append(str(r))
+                translate = False
+        except Exception as e:
+            log(f"faster-whisper 翻译失败，尝试 CLI: {e}", "warning")
+
+    if not transcribe and not translate:
+        return out_files
+
+    # 2/3) CLI
+    whisper = _find_local_whisper_bin()
+    if not whisper:
+        log(
+            "本地 AI: 未找到 faster-whisper 或 Whisper 可执行文件。"
+            f"请 pip install faster-whisper 或把程序放到 {WHISPER_DIR}",
+            "warning",
+        )
+        return out_files
+    out_dir = str(p.parent)
+    base_cmd = [whisper, str(p), "--output_dir", out_dir, "--output_format", "srt"]
+    if transcribe:
+        cmd = base_cmd + ["--task", "transcribe"]
+        if lang and lang not in ("auto", ""):
+            cmd += ["--language", "Chinese" if lang in ("zh", "chinese") else lang]
+        log(f"Whisper CLI 转写: {cmd[0]}")
+        try:
+            kw: dict = {"capture_output": True, "timeout": 7200}
+            if sys.platform == "win32":
+                kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            subprocess.run(cmd, **kw)
+            srt = p.with_suffix(".srt")
+            if srt.exists():
+                out_files.append(str(srt))
+                log(f"转写完成: {srt.name}")
+        except Exception as e:
+            log(f"转写异常: {e}", "warning")
+    if translate:
+        cmd = base_cmd + ["--task", "translate"]
+        log(f"Whisper CLI 翻译: {cmd[0]}")
+        try:
+            kw = {"capture_output": True, "timeout": 7200}
+            if sys.platform == "win32":
+                kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            subprocess.run(cmd, **kw)
+            srt = p.with_suffix(".srt")
+            en_srt = p.with_name(p.stem + ".en.srt")
+            if srt.exists():
+                try:
+                    shutil.copy(srt, en_srt)
+                    out_files.append(str(en_srt))
+                    log(f"翻译完成: {en_srt.name}")
+                except Exception:
+                    out_files.append(str(srt))
+        except Exception as e:
+            log(f"翻译异常: {e}", "warning")
+    return out_files
+
+
+def download_bilibili_danmaku(url: str, out_dir: str, base_name: str, proxy: str = "", log: Callable = print) -> List[str]:
+    """下载 bilibili 弹幕，保存 xml + ass，返回文件路径列表"""
+    if not is_bilibili_url(url):
+        return []
+    meta = bilibili_fetch_cid(url, proxy)
+    if not meta:
+        log(f"弹幕: 无法解析 cid — {url}", "warning")
+        return []
+    cid, title = meta
+    xml_text = bilibili_download_danmaku_xml(cid, proxy)
+    if not xml_text:
+        log(f"弹幕: 下载 XML 失败 cid={cid}", "warning")
+        return []
+    Path(out_dir).mkdir(parents=True, exist_ok=True)
+    safe = re.sub(r'[<>:"/\\|?*]', "_", base_name or title)[:80]
+    xml_path = Path(out_dir) / f"{safe}.danmaku.xml"
+    ass_path = Path(out_dir) / f"{safe}.danmaku.ass"
+    xml_path.write_text(xml_text, encoding="utf-8")
+    try:
+        ass_path.write_text(bilibili_xml_to_ass(xml_text, title), encoding="utf-8")
+    except Exception as e:
+        log(f"弹幕 ASS 转换失败: {e}", "warning")
+        return [str(xml_path)]
+    log(f"弹幕已保存: {xml_path.name} / {ass_path.name}")
+    return [str(xml_path), str(ass_path)]
+
+
+def _find_recent_media_files(out_dir: str, hint: str = "", within_sec: int = 86400) -> List[str]:
+    """在下载目录找最近生成的媒体文件（直播结束收尾用）"""
+    root = Path(out_dir)
+    if not root.is_dir():
+        return []
+    now = time.time()
+    hint_tokens = []
+    if hint:
+        hint_tokens = re.findall(r"\d{5,}", hint) + [hint[-20:].lower()]
+    exts = {".flv", ".mp4", ".mkv", ".ts", ".webm", ".m4a", ".mp3"}
+    found = []
+    for p in root.iterdir():
+        if not p.is_file():
+            continue
+        name = p.name
+        low = name.lower()
+        if low.endswith(".part"):
+            # 一并纳入，由 finalize 处理
+            pass
+        suf = p.suffix.lower()
+        if suf not in exts and not low.endswith(".part"):
+            continue
+        try:
+            if now - p.stat().st_mtime > within_sec:
+                continue
+        except Exception:
+            continue
+        if hint_tokens:
+            if not any(tok and tok in name for tok in hint_tokens):
+                continue
+        found.append(p)
+    found.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+    return [str(p) for p in found]
+
+
+def finalize_part_files(out_dir: str, hint: str = "", log: Callable = print) -> List[str]:
+    """结束直播后：把 .part 收成可播放文件（改名 + 可选封装 mkv）"""
+    root = Path(out_dir)
+    if not root.is_dir():
+        return []
+    done = []
+    hint_low = (hint or "").lower().strip()
+    candidates = []
+    for p in root.iterdir():
+        if not p.is_file():
+            continue
+        name = p.name
+        if not (name.endswith(".part") or name.endswith(".ytdl")):
+            continue
+        if hint_low:
+            # 房间号或关键词命中优先；hint 为空则处理全部
+            if hint_low not in name.lower() and not any(
+                tok and tok in name for tok in re.findall(r"\d{5,}", hint_low)
+            ):
+                # 仍允许：无匹配时若只有少量 part 也处理
+                pass
+        candidates.append(p)
+
+    for part in sorted(candidates, key=lambda x: x.stat().st_mtime, reverse=True):
+        try:
+            if part.name.endswith(".ytdl"):
+                part.unlink(missing_ok=True)
+                continue
+            # file.flv.part → file.flv
+            final_name = part.name
+            if final_name.endswith(".part"):
+                final_name = final_name[:-5]
+            final = part.with_name(final_name)
+            if final.exists():
+                # 若成品已存在且不更小，删 part
+                if final.stat().st_size >= part.stat().st_size * 0.9:
+                    part.unlink(missing_ok=True)
+                    done.append(str(final))
+                    continue
+                final = part.with_name(f"{final.stem}_fixed{final.suffix}")
+            try:
+                part.rename(final)
+            except Exception:
+                import shutil
+                shutil.copy2(part, final)
+                try:
+                    part.unlink()
+                except Exception:
+                    pass
+            log(f"已收尾临时文件 → {final.name}")
+            done.append(str(final))
+            # flv/ts → mkv 便于通用播放器
+            if final.suffix.lower() in (".flv", ".ts") and ffmpeg_mgr.find():
+                mkv = final.with_suffix(".mkv")
+                if not mkv.exists():
+                    try:
+                        import subprocess
+                        cmd = [
+                            ffmpeg_mgr.find(), "-y", "-err_detect", "ignore_err",
+                            "-i", str(final), "-c", "copy",
+                            "-avoid_negative_ts", "make_zero", str(mkv),
+                        ]
+                        subprocess.run(cmd, capture_output=True, timeout=900)
+                        if mkv.exists() and mkv.stat().st_size > 1024:
+                            log(f"已封装为 {mkv.name}")
+                            done.append(str(mkv))
+                    except Exception as e:
+                        log(f"封装 mkv 跳过: {e}", "warning")
+        except Exception as e:
+            log(f"收尾 {part.name} 失败: {e}", "warning")
+    return done
+
+
+def _ass_time(sec: float) -> str:
+    sec = max(0.0, float(sec))
+    h = int(sec // 3600)
+    m = int((sec % 3600) // 60)
+    s = sec % 60
+    return f"{h}:{m:02d}:{s:05.2f}"
+
+
+def _srt_time(sec: float) -> str:
+    sec = max(0.0, float(sec))
+    h = int(sec // 3600)
+    m = int((sec % 3600) // 60)
+    s = int(sec % 60)
+    ms = int(round((sec - int(sec)) * 1000))
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+def write_chat_subtitle_files(
+    base_path: Path,
+    messages: List[dict],
+    title: str = "live chat",
+    duration_each: float = 4.0,
+) -> List[str]:
+    """
+    把聊天列表写成播放器可读字幕：
+    - .ass（推荐，弹幕风）
+    - .srt（通用）
+    messages: {time, user, text, t_sec?}
+    """
+    if not messages:
+        return []
+    out = []
+    # 为每条分配时间轴：优先 t_sec，否则顺序递增
+    timed = []
+    cursor = 0.0
+    for i, m in enumerate(messages):
+        text = (m.get("text") or "").strip()
+        if not text:
+            continue
+        user = (m.get("user") or "").strip()
+        line = f"{user}: {text}" if user else text
+        line = line.replace("\n", " ").replace("{", "(").replace("}", ")")
+        t0 = m.get("t_sec")
+        if t0 is None:
+            t0 = cursor
+        try:
+            t0 = float(t0)
+        except Exception:
+            t0 = cursor
+        t1 = t0 + duration_each
+        timed.append((t0, t1, line))
+        cursor = t0 + 0.6
+
+    if not timed:
+        return []
+
+    # ASS
+    ass_path = base_path.with_suffix(".ass")
+    try:
+        header = (
+            "[Script Info]\n"
+            f"Title: {title}\n"
+            "ScriptType: v4.00+\n"
+            "PlayResX: 1920\n"
+            "PlayResY: 1080\n"
+            "WrapStyle: 0\n"
+            "ScaledBorderAndShadow: yes\n\n"
+            "[V4+ Styles]\n"
+            "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
+            "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+            "Alignment, MarginL, MarginR, MarginV, Encoding\n"
+            "Style: Default,Microsoft YaHei,42,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,"
+            "0,0,0,0,100,100,0,0,1,2,1,2,20,20,40,1\n\n"
+            "[Events]\n"
+            "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+        )
+        events = []
+        for t0, t1, line in timed:
+            events.append(
+                f"Dialogue: 0,{_ass_time(t0)},{_ass_time(t1)},Default,,0,0,0,,{line}"
+            )
+        ass_path.write_text(header + "\n".join(events) + "\n", encoding="utf-8-sig")
+        out.append(str(ass_path))
+    except Exception:
+        pass
+
+    # SRT
+    srt_path = base_path.with_suffix(".srt")
+    try:
+        blocks = []
+        for i, (t0, t1, line) in enumerate(timed, 1):
+            blocks.append(f"{i}\n{_srt_time(t0)} --> {_srt_time(t1)}\n{line}\n")
+        srt_path.write_text("\n".join(blocks), encoding="utf-8-sig")
+        out.append(str(srt_path))
+    except Exception:
+        pass
+    return out
+
+
+def live_stream_pref_for_url(url: str, cfg_data: dict) -> str:
+    """根据平台返回直播流偏好: auto|hls|flv|dash"""
+    low = (url or "").lower()
+    if "live.bilibili.com" in low or "bilibili.com" in low:
+        return (cfg_data.get("live_stream_pref_bilibili") or "flv").lower()
+    if "youtube.com" in low or "youtu.be" in low:
+        return (cfg_data.get("live_stream_pref_youtube") or "dash").lower()
+    if "douyin.com" in low or "iesdouyin.com" in low or "tiktok.com" in low:
+        return (cfg_data.get("live_stream_pref_douyin") or "hls").lower()
+    if "twitch.tv" in low:
+        return (cfg_data.get("live_stream_pref_twitch") or "hls").lower()
+    return (cfg_data.get("live_stream_pref_default") or "auto").lower()
+
+
+def live_format_selector(pref: str, *, platform_hint: str = "") -> str:
+    """
+    把流偏好转成 yt-dlp format 串。
+    flv: 倾向 http-flv
+    hls: 倾向 m3u8
+    dash: 分轨 bestvideo+bestaudio
+    auto: 通用 best
+    """
+    p = (pref or "auto").lower()
+    if p == "flv":
+        # 优先带 flv 的格式，否则退回 best
+        return "best[protocol*=http]/best[ext=flv]/best/bestvideo+bestaudio/best"
+    if p == "hls":
+        return "best[protocol*=m3u8]/best[protocol*=hls]/best/bestvideo+bestaudio/best"
+    if p == "dash":
+        return "bestvideo+bestaudio/best[protocol*=http]/best"
+    return "best/bestvideo+bestaudio/best"
+
+
+def extract_bilibili_live_room_id(url: str) -> Optional[str]:
+    m = re.search(r"live\.bilibili\.com/(\d+)", url or "")
+    return m.group(1) if m else None
+
+
+def extract_youtube_video_id(url: str) -> Optional[str]:
+    u = url or ""
+    m = re.search(r"(?:v=|/live/|youtu\.be/)([\w-]{11})", u)
+    return m.group(1) if m else None
+
+
+def extract_twitch_channel(url: str) -> Optional[str]:
+    m = re.search(r"(?:twitch\.tv/)([A-Za-z0-9_]+)", url or "", re.I)
+    if not m:
+        return None
+    ch = m.group(1)
+    if ch.lower() in ("videos", "directory", "downloads", "settings", "login"):
+        return None
+    return ch
+
+
+def fetch_bilibili_live_chat_history(room_id: str, proxy: str = "") -> List[dict]:
+    """拉取 B站直播间近期弹幕/聊天（官方历史接口）"""
+    if not room_id:
+        return []
+    try:
+        kw = _bili_request_kwargs(proxy=proxy)
+        r = requests.get(
+            "https://api.live.bilibili.com/xlive/web-room/v1/dM/gethistory",
+            params={"roomid": room_id},
+            **kw,
+        )
+        j = r.json() or {}
+        data = j.get("data") or {}
+        msgs = []
+        for it in (data.get("room") or []):
+            msgs.append({
+                "time": it.get("timeline") or it.get("ts") or "",
+                "user": it.get("nickname") or it.get("uname") or "",
+                "text": it.get("text") or "",
+                "uid": it.get("uid") or "",
+            })
+        return msgs
+    except Exception:
+        return []
+
+
+def convert_youtube_live_chat_json_to_txt(json_path: Path, txt_path: Path) -> int:
+    """把 yt-dlp 下载的 YouTube live_chat json/json3 转成可读 txt"""
+    count = 0
+    try:
+        raw = json_path.read_text(encoding="utf-8", errors="ignore")
+        data = json.loads(raw)
+    except Exception:
+        return 0
+    lines = []
+    # json3 结构：events 列表
+    events = data.get("events") or data.get("replayChatItemAction") or []
+    if isinstance(data, list):
+        events = data
+    for ev in events:
+        try:
+            if not isinstance(ev, dict):
+                continue
+            # youtube json3 live_chat
+            segs = (
+                ((ev.get("message") or {}).get("runs") or [])
+                or ((ev.get("a11y_message") or "").split() and [])
+            )
+            text = ""
+            if segs:
+                text = "".join(s.get("text") or "" for s in segs if isinstance(s, dict))
+            if not text:
+                text = ev.get("message") or ev.get("a11y_message") or ""
+                if isinstance(text, dict):
+                    text = "".join(
+                        (r.get("text") or "") for r in (text.get("runs") or []) if isinstance(r, dict)
+                    )
+            author = ""
+            auth = ev.get("author") or ev.get("author_external_channel_id") or ""
+            if isinstance(auth, dict):
+                author = auth.get("name") or auth.get("id") or ""
+            else:
+                author = str(auth or "")
+            ts = ev.get("timestamp") or ev.get("time_text") or ev.get("t") or ""
+            if not text:
+                # replayChatItemAction 嵌套
+                actions = (ev.get("replayChatItemAction") or {}).get("actions") or []
+                for act in actions:
+                    item = (
+                        (act.get("addChatItemAction") or {}).get("item")
+                        or {}
+                    )
+                    live = item.get("liveChatTextMessageRenderer") or item.get(
+                        "liveChatPaidMessageRenderer"
+                    ) or {}
+                    runs = ((live.get("message") or {}).get("runs")) or []
+                    text = "".join(r.get("text") or "" for r in runs)
+                    author = ((live.get("authorName") or {}).get("simpleText")) or author
+                    ts = live.get("timestampText", {}).get("simpleText") or ts
+            if text:
+                lines.append(f"[{ts}] {author}: {text}")
+                count += 1
+        except Exception:
+            continue
+    if lines:
+        txt_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return count
+
+
+def harvest_ytdlp_live_chat_files(out_dir: str, log: Callable = print) -> List[str]:
+    """扫描下载目录，把 live_chat 转成 .chat.txt / .ass / .srt（播放器可读）"""
+    root = Path(out_dir)
+    if not root.is_dir():
+        return []
+    out = []
+    for p in root.iterdir():
+        if not p.is_file():
+            continue
+        name = p.name.lower()
+        if "live_chat" not in name:
+            continue
+        if p.suffix.lower() not in (".json", ".json3", ".vtt", ".srv3", ".ttml"):
+            continue
+        txt = p.with_name(p.stem + ".chat.txt")
+        msgs: List[dict] = []
+        if p.suffix.lower() in (".json", ".json3"):
+            n = convert_youtube_live_chat_json_to_txt(p, txt)
+            if n:
+                log(f"YouTube 聊天已转换: {txt.name} ({n} 条)")
+                out.append(str(txt))
+                # 再从 txt 粗解析为 msgs 生成 ass
+                try:
+                    for i, line in enumerate(txt.read_text(encoding="utf-8", errors="ignore").splitlines()):
+                        line = line.strip()
+                        if not line or line.startswith("#"):
+                            continue
+                        user, text = "", line
+                        if "]: " in line:
+                            # [ts] user: text
+                            try:
+                                rest = line.split("]", 1)[1].strip()
+                                if ": " in rest:
+                                    user, text = rest.split(": ", 1)
+                                else:
+                                    text = rest
+                            except Exception:
+                                text = line
+                        msgs.append({"user": user, "text": text, "t_sec": float(i) * 0.8})
+                except Exception:
+                    pass
+        else:
+            try:
+                content = p.read_text(encoding="utf-8", errors="ignore")
+                txt.write_text(content, encoding="utf-8")
+                out.append(str(txt))
+                # vtt 可能已可播放，再复制一份 ass 文件名便于寻找
+                for i, line in enumerate(content.splitlines()):
+                    line = line.strip()
+                    if not line or line.startswith("WEBVTT") or "-->" in line or line.isdigit():
+                        continue
+                    msgs.append({"user": "", "text": line, "t_sec": float(i) * 0.5})
+            except Exception:
+                pass
+        if msgs:
+            paths = write_chat_subtitle_files(txt, msgs, title=p.stem)
+            out.extend(paths)
+    return out
+
+
+# 直播聊天抓取线程：task_id -> stop_event
+_live_chat_stop: Dict[str, threading.Event] = {}
+
+
+def start_live_chat_capture(task_id: str, url: str, out_dir: str, log: Callable = print) -> str:
+    """
+    多平台直播聊天/弹幕抓取：
+    - B站：历史弹幕 API 轮询
+    - Twitch：IRC 聊天
+    - YouTube：依赖 yt-dlp 写 live_chat 字幕 + 结束时转换；同时尝试轻量轮询
+    - 其它：尽量用 yt-dlp live_chat 字幕（在下载选项里开启）
+    """
+    Path(out_dir).mkdir(parents=True, exist_ok=True)
+    low = (url or "").lower()
+    stop_ev = threading.Event()
+    _live_chat_stop[task_id] = stop_ev
+    plat = detect_platform(url)
+    stamp = task_id[:8]
+
+    # ---- B站 ----
+    room_id = extract_bilibili_live_room_id(url)
+    if room_id:
+        chat_path = Path(out_dir) / f"live_bilibili_{room_id}_{stamp}.chat.txt"
+        seen = set()
+        collected: List[dict] = []
+        t0 = time.time()
+
+        def loop_bili():
+            proxy = resolve_proxy(source="bilibili")
+            log(f"[{stamp}] 抓取 B站直播弹幕 room={room_id}")
+            try:
+                with chat_path.open("a", encoding="utf-8") as f:
+                    f.write(f"# bilibili live chat room={room_id} start={datetime.now().isoformat()}\n")
+                    while not stop_ev.is_set():
+                        try:
+                            for m in fetch_bilibili_live_chat_history(room_id, proxy):
+                                key = f"{m.get('time')}|{m.get('user')}|{m.get('text')}"
+                                if key in seen or not (m.get("text") or "").strip():
+                                    continue
+                                seen.add(key)
+                                item = {
+                                    "time": m.get("time") or "",
+                                    "user": m.get("user") or "",
+                                    "text": m.get("text") or "",
+                                    "t_sec": max(0.0, time.time() - t0),
+                                }
+                                collected.append(item)
+                                f.write(f"[{item['time']}] {item['user']}: {item['text']}\n")
+                                f.flush()
+                                # 每 15 条刷新一次播放器可读字幕，避免结束时丢失
+                                if len(collected) % 15 == 0:
+                                    write_chat_subtitle_files(
+                                        chat_path, collected, title=f"bilibili-{room_id}"
+                                    )
+                        except Exception:
+                            pass
+                        stop_ev.wait(3.0)
+                    f.write(f"# end={datetime.now().isoformat()} count≈{len(seen)}\n")
+                # 播放器可读 ASS/SRT（最终完整版）
+                paths = write_chat_subtitle_files(
+                    chat_path, collected, title=f"bilibili-{room_id}"
+                )
+                if paths:
+                    log(f"[{stamp}] 弹幕字幕已保存: {', '.join(Path(p).name for p in paths)}")
+                elif collected:
+                    log(f"[{stamp}] 已抓取 {len(collected)} 条弹幕 → {chat_path.name}")
+                else:
+                    log(f"[{stamp}] 本场未抓到弹幕（接口可能为空，请确认 Cookie/房间）", "warning")
+            finally:
+                _live_chat_stop.pop(task_id, None)
+                log(f"[{stamp}] B站聊天已保存: {chat_path.name}")
+
+        threading.Thread(target=loop_bili, daemon=True).start()
+        return str(chat_path)
+
+    # ---- Twitch IRC ----
+    tw_ch = extract_twitch_channel(url)
+    if tw_ch and "twitch.tv" in low:
+        chat_path = Path(out_dir) / f"live_twitch_{tw_ch}_{stamp}.chat.txt"
+        collected: List[dict] = []
+        t0 = time.time()
+
+        def loop_twitch():
+            log(f"[{stamp}] 抓取 Twitch 聊天 channel={tw_ch}")
+            import socket
+            try:
+                with chat_path.open("a", encoding="utf-8") as f:
+                    f.write(f"# twitch chat #{tw_ch} start={datetime.now().isoformat()}\n")
+                    while not stop_ev.is_set():
+                        sock = None
+                        try:
+                            sock = socket.create_connection(("irc.chat.twitch.tv", 6667), timeout=15)
+                            sock.settimeout(10)
+                            nick = "justinfan%d" % (10000 + (hash(task_id) % 50000))
+                            sock.sendall(f"PASS SCHMOOPIIE\r\nNICK {nick}\r\n".encode())
+                            sock.sendall(f"JOIN #{tw_ch.lower()}\r\n".encode())
+                            buf = b""
+                            while not stop_ev.is_set():
+                                try:
+                                    chunk = sock.recv(4096)
+                                    if not chunk:
+                                        break
+                                    buf += chunk
+                                    while b"\r\n" in buf:
+                                        line, buf = buf.split(b"\r\n", 1)
+                                        text = line.decode("utf-8", errors="ignore")
+                                        if text.startswith("PING"):
+                                            sock.sendall(text.replace("PING", "PONG").encode() + b"\r\n")
+                                            continue
+                                        if "PRIVMSG" in text:
+                                            try:
+                                                user = text.split("!", 1)[0].lstrip(":")
+                                                msg = text.split("PRIVMSG", 1)[1].split(":", 1)[1]
+                                                ts = datetime.now().strftime("%H:%M:%S")
+                                                item = {
+                                                    "time": ts,
+                                                    "user": user,
+                                                    "text": msg,
+                                                    "t_sec": max(0.0, time.time() - t0),
+                                                }
+                                                collected.append(item)
+                                                f.write(f"[{ts}] {user}: {msg}\n")
+                                                f.flush()
+                                            except Exception:
+                                                pass
+                                except socket.timeout:
+                                    continue
+                                except Exception:
+                                    break
+                        except Exception as e:
+                            log(f"[{stamp}] Twitch IRC 重连: {e}", "warning")
+                            stop_ev.wait(5.0)
+                        finally:
+                            if sock:
+                                try:
+                                    sock.close()
+                                except Exception:
+                                    pass
+                    f.write(f"# end={datetime.now().isoformat()}\n")
+                paths = write_chat_subtitle_files(
+                    chat_path, collected, title=f"twitch-{tw_ch}"
+                )
+                if paths:
+                    log(f"[{stamp}] Twitch 字幕已保存: {', '.join(Path(p).name for p in paths)}")
+            finally:
+                _live_chat_stop.pop(task_id, None)
+                log(f"[{stamp}] Twitch 聊天已保存: {chat_path.name}")
+
+        threading.Thread(target=loop_twitch, daemon=True).start()
+        return str(chat_path)
+
+    # ---- YouTube / 其它：旁路用 yt-dlp 拉 live_chat，并结束时转换目录内字幕 ----
+    chat_path = Path(out_dir) / f"live_{plat}_{stamp}.chat.txt"
+    yt_id = extract_youtube_video_id(url)
+
+    def loop_ytdlp_chat():
+        log(f"[{stamp}] 启用通用直播聊天抓取 platform={plat}")
+        try:
+            with chat_path.open("a", encoding="utf-8") as f:
+                f.write(
+                    f"# live chat platform={plat} url={url} start={datetime.now().isoformat()}\n"
+                    f"# YouTube 等平台主要依赖 yt-dlp 的 live_chat 字幕，结束录制后自动转换\n"
+                )
+            # 周期性尝试只拉 live_chat（不下载视频）
+            while not stop_ev.is_set():
+                try:
+                    if yt_id or plat in ("youtube", "default"):
+                        import yt_dlp
+                        yopts = {
+                            "skip_download": True,
+                            "writesubtitles": True,
+                            "writeautomaticsub": False,
+                            "subtitleslangs": ["live_chat"],
+                            "subtitlesformat": "json3/json/vtt/best",
+                            "outtmpl": str(Path(out_dir) / f"%(title).60B [{stamp}].%(ext)s"),
+                            "quiet": True,
+                            "no_warnings": True,
+                            "ignoreerrors": True,
+                        }
+                        # 带 cookie
+                        try:
+                            pc = (cfg.data.get("platform_cookies") or {}).get("youtube") or {}
+                            cf = (pc.get("file") or "").strip()
+                            if cf and Path(cf).exists():
+                                yopts["cookiefile"] = cf
+                            elif (cfg.data.get("cookie_source") or "") == "file":
+                                cf = (cfg.data.get("cookie_file") or "").strip()
+                                # 默认值指向 cookies/cookies.txt，全新环境里它可能不存在
+                                if cf and Path(cf).exists():
+                                    yopts["cookiefile"] = cf
+                        except Exception:
+                            pass
+                        po = task_proxy_override(cfg.data) or ydl_proxy_opt(url)
+                        if po is not None:
+                            yopts["proxy"] = po
+                        with yt_dlp.YoutubeDL(yopts) as ydl:
+                            ydl.download([url])
+                        harvest_ytdlp_live_chat_files(out_dir, log=log)
+                except Exception as e:
+                    log(f"[{stamp}] live_chat 拉取: {e}", "info")
+                # YouTube live_chat 文件会持续更新；不要太频繁
+                stop_ev.wait(45.0)
+            harvest_ytdlp_live_chat_files(out_dir, log=log)
+            try:
+                with chat_path.open("a", encoding="utf-8") as f:
+                    f.write(f"# end={datetime.now().isoformat()}\n")
+            except Exception:
+                pass
+        finally:
+            _live_chat_stop.pop(task_id, None)
+            log(f"[{stamp}] 通用聊天抓取结束: {chat_path.name}")
+
+    threading.Thread(target=loop_ytdlp_chat, daemon=True).start()
+    return str(chat_path)
+
+
+def stop_live_chat_capture(task_id: str):
+    ev = _live_chat_stop.get(task_id)
+    if ev:
+        ev.set()
+
+
+# -------------------- NAS / WebDAV 存储转存 --------------------
+def _webdav_join(base: str, *parts: str) -> str:
+    base = (base or "").rstrip("/") + "/"
+    for p in parts:
+        p = (p or "").strip("/")
+        if p:
+            base = base.rstrip("/") + "/" + p
+    return base
+
+
+def webdav_upload_file(
+    local_path: str,
+    remote_url: str,
+    user: str = "",
+    password: str = "",
+    remote_dir: str = "/",
+    log: Callable = print,
+) -> str:
+    """上传文件到 WebDAV（群晖 / 威联通 / Nextcloud / Alist 等）"""
+    lp = Path(local_path)
+    if not lp.is_file():
+        raise FileNotFoundError(local_path)
+    base = (remote_url or "").strip()
+    if not base:
+        raise ValueError("WebDAV URL 为空")
+    if not base.endswith("/"):
+        base += "/"
+    dest_dir = (remote_dir or "/").strip() or "/"
+    # 确保目录存在（MKCOL 逐级）
+    auth = (user, password) if user else None
+    segments = [s for s in dest_dir.strip("/").split("/") if s]
+    cur = base
+    for seg in segments:
+        cur = cur.rstrip("/") + "/" + seg
+        try:
+            requests.request("MKCOL", cur, auth=auth, timeout=30)
+        except Exception:
+            pass
+    dest = cur.rstrip("/") + "/" + lp.name
+    with lp.open("rb") as f:
+        r = requests.put(dest, data=f, auth=auth, timeout=600)
+    if r.status_code not in (200, 201, 204):
+        raise RuntimeError(f"WebDAV 上传失败 HTTP {r.status_code}: {r.text[:200]}")
+    log(f"WebDAV 已上传: {lp.name} → {dest}")
+    return dest
+
+
+def transfer_to_storage(local_path: str, cfg_data: dict, log: Callable = print) -> dict:
+    """
+    下载完成后转存：
+    - NAS 路径：复制/移动到本地挂载或 UNC 路径
+    - WebDAV：上传到网盘/NAS WebDAV
+    """
+    result = {"nas": "", "webdav": "", "action": cfg_data.get("storage_post_action") or "none"}
+    action = (cfg_data.get("storage_post_action") or "none").lower()
+    if action not in ("copy", "move"):
+        action = "copy" if (
+            cfg_data.get("storage_nas_enabled") or cfg_data.get("storage_webdav_enabled")
+        ) else "none"
+    if action == "none":
+        return result
+    lp = Path(local_path)
+    if not lp.is_file():
+        return result
+
+    # NAS / 网络路径
+    if cfg_data.get("storage_nas_enabled"):
+        nas = (cfg_data.get("storage_nas_path") or "").strip()
+        if nas:
+            try:
+                dest_dir = Path(nas)
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                dest = dest_dir / lp.name
+                import shutil
+                if action == "move":
+                    shutil.move(str(lp), str(dest))
+                else:
+                    shutil.copy2(str(lp), str(dest))
+                result["nas"] = str(dest)
+                log(f"已转存 NAS: {dest}")
+            except Exception as e:
+                log(f"NAS 转存失败: {e}", "warning")
+
+    # WebDAV
+    if cfg_data.get("storage_webdav_enabled"):
+        try:
+            dest = webdav_upload_file(
+                str(lp),
+                remote_url=cfg_data.get("storage_webdav_url") or "",
+                user=cfg_data.get("storage_webdav_user") or "",
+                password=cfg_data.get("storage_webdav_pass") or "",
+                remote_dir=cfg_data.get("storage_webdav_path") or "/",
+                log=log,
+            )
+            result["webdav"] = dest
+            # 仅 WebDAV 且 move：上传成功后删本地（未做 NAS move 时）
+            if action == "move" and not result.get("nas"):
+                try:
+                    lp.unlink(missing_ok=True)
+                except Exception:
+                    pass
+        except Exception as e:
+            log(f"WebDAV 转存失败: {e}", "warning")
+    return result
+
+
+def _local_ytdlp_ok() -> bool:
+    """tools/yt_dlp 是否完整可用（必须有 youtube 提取器）"""
+    if not YTDLP_LOCAL_PKG.is_dir() or not (YTDLP_LOCAL_PKG / "__init__.py").exists():
+        return False
+    # 关键标志：youtube 提取器文件存在
+    yt_ie = YTDLP_LOCAL_PKG / "extractor" / "youtube.py"
+    yt_ie2 = YTDLP_LOCAL_PKG / "extractor" / "youtube" / "__init__.py"
+    if not yt_ie.exists() and not yt_ie2.exists():
+        return False
+    return True
+
+
+def _prefer_local_ytdlp(force_clear: bool = False):
+    for k in list(sys.modules):
+        if k == "yt_dlp" or k.startswith("yt_dlp."):
+            del sys.modules[k]
+    if force_clear:
+        return
+    if _local_ytdlp_ok():
+        p = str(TOOLS_DIR)
+        if p not in sys.path:
+            sys.path.insert(0, p)
+
+
+_prefer_local_ytdlp()
+
+
+# -------------------- 模型 --------------------
+class TaskStatus(str, Enum):
+    QUEUED = "queued"
+    DOWNLOADING = "downloading"
+    FINISHED = "finished"
+    FAILED = "failed"
+    STOPPED = "stopped"
+    PAUSED = "paused"
+    LATER = "later"  # 稍后下载：不自动进入 pending，需手动启动
+
+
+@dataclass
+class DownloadTask:
+    id: str
+    url: str
+    title: str = "等待中..."
+    status: str = TaskStatus.QUEUED.value
+    progress: float = 0.0
+    speed: str = ""
+    eta: str = ""
+    error_msg: str = ""
+    filepath: str = ""
+    res_label: str = ""
+    is_live: bool = False
+    started_at: str = ""
+    chat_file: str = ""
+    pinned: bool = False  # 置顶
+    priority: int = 0     # 越大越靠前；置顶时自动抬高
+    created_at: str = ""  # 入队时间，用于排序
+    queue_name: str = "default"  # 命名队列：default / night / subscribe ...
+    retry_count: int = 0       # 已重试次数
+    max_retries: int = 3       # 最大重试
+    resume_hint: str = ""      # 断点提示：续传 / 新任务 / 有.part
+
+    def to_dict(self):
+        d = asdict(self)
+        elapsed = 0
+        if self.started_at:
+            try:
+                t0 = datetime.fromisoformat(self.started_at)
+                elapsed = max(0, int((datetime.now() - t0).total_seconds()))
+            except Exception:
+                elapsed = 0
+        d["elapsed_sec"] = elapsed
+        # 仅进行中任务且线程仍在跑才显示「聊天记录中」
+        capturing = False
+        try:
+            if self.status in (
+                TaskStatus.DOWNLOADING.value,
+                TaskStatus.QUEUED.value,
+                TaskStatus.PAUSED.value,
+            ):
+                capturing = self.id in _live_chat_stop
+        except Exception:
+            capturing = False
+        d["chat_capturing"] = capturing
+        return d
+
+
+class ConfigManager:
+    DEFAULTS = {
+        "download_dir": str(DEFAULT_DOWNLOAD_DIR),
+        "video_quality": "best",
+        "audio_quality": "best",
+        "format": "mkv",
+        "embed_sub": True,
+        "audio_only": False,
+        "proxy": "",
+        "proxy_mode": "auto",  # auto=按平台判断 always=全部走代理 none=交回系统
+        "proxy_by_platform": {},  # {平台键: true 走代理 / false 强制直连}，仅 auto 时生效
+        "cookie_source": "file",
+        "cookie_browser": "chrome",
+        # 默认使用项目内 cookies/cookies.txt
+        "cookie_file": str(DEFAULT_COOKIE_FILE),
+        "concurrent": 3,
+        "sponsorblock": "off",
+        "filename_template": "%(title).60B [%(id)s].%(ext)s",
+        "embed_thumb": True,
+        "embed_meta": True,
+        "embed_chapters": True,
+        "local_ai_transcribe": False,
+        "local_ai_translate": False,
+        "local_ai_lang": "auto",
+        # 本地语音识别（faster-whisper）
+        "whisper_model": "base",  # tiny|base|small|medium|large-v3
+        "whisper_device": "auto",  # auto|cuda|cpu
+        "whisper_compute": "auto",  # auto|float16|int8|int8_float16
+        # 说话人分离：给转写字幕按声纹贴 [说话人N]，纯 numpy 轻量版，默认关
+        "diarization_enabled": False,
+        "diarization_max_speakers": 4,  # 2-8，最多分几个人
+        "hf_token": "",  # HuggingFace Token，可选，加速/提高模型下载限额
+        # 字幕机翻（DeepL / OpenAI）
+        "subtitle_translate_provider": "deepl",  # deepl|openai|claude|gemini|google|azure|none
+        "subtitle_target_lang": "zh",
+        "subtitle_glossary": "",  # 术语表：一行一条「原文 -> 译文」，# 开头为注释
+        "subtitle_wrap": True,  # 成品字幕按显示宽度加权换行（中 1 / 英 0.5）
+        "subtitle_wrap_width": 16,  # 每行最多多少个全角宽
+        "subtitle_export_set": "single",  # single|bilingual|all 单语 / +双语SRT / +VTT+ASS
+        "deepl_api_key": "",
+        "deepl_api_url": "",  # 空则按 key 自动 free/pro
+        "openai_api_key": "",
+        "openai_base_url": "https://api.openai.com/v1",
+        "openai_model": "gpt-4o-mini",
+        "anthropic_api_key": "",
+        "anthropic_model": "claude-sonnet-4-20250514",
+        "gemini_api_key": "",
+        "gemini_model": "gemini-2.0-flash",
+        "google_translate_api_key": "",
+        "azure_translator_key": "",
+        "azure_translator_region": "eastasia",
+        "azure_translator_endpoint": "https://api.cognitive.microsofttranslator.com",
+        "local_ai_mt_after_transcribe": False,  # 转写后自动机翻（非 Whisper translate）
+        "subtitle_first": True,   # 优先平台/旁路字幕，Whisper 兜底
+        "ai_polish": False,       # LLM 润色转写
+        "ai_summarize": False,    # LLM 摘要
+        "summary_lang": "zh",
+        "skip_downloaded": True,
+        "verify_download": True,    # 下载完体检文件：网页伪装/空壳/截断
+        "allow_playlist": False,
+        "playlist_start": 0,
+        "playlist_end": 0,
+        "playlist_items": "",
+        "max_retries": 3,
+        "musicdl_cookies": "",
+        # 各音乐平台自己的登录 Cookie：{平台: {"cookie": "k=v; ...", "via": "扫码登录", "at": "..."}}
+        # 只写进本机 config.json，分享包与日志都不带值
+        "music_platform_cookies": {},
+        "musicdl_sources": [],
+        "music_filename_template": "{artist}/{name} - {artist}",
+        "music_embed_metadata": False,
+        "music_hide_unavailable": True,
+        "music_include_local": False,
+        "music_playlist_mode": "fast",
+        # 搬运版守门：默认关。Spotify/Apple 的音频本来就只能经转链站从 YouTube 取回，
+        # 默认开会把整张歌单拦空；它拦的是"取回的元数据对不上歌单标注"那几首。
+        "music_block_reupload": False,
+        # 无损参照：附带查 Qobuz/Tidal 官方曲库的元数据（ISRC/时长/位深/官方链接）。
+        # 每次搜索多问一次外部站，所以默认关；参照行只读，音频一律不从这里下。
+        "music_include_reference": False,
+        # 音质要求：默认「不限」。musicdl 各源的档位阶梯写死在它自己代码里，钉不住，
+        # 所以这一项只用于「多候选挑达标的那条」与「下完核对成品实际档位」，见 music_search.norm_quality_spec
+        "music_quality_spec": {"format": "", "min_bit_depth": 0,
+                               "min_sample_rate": 0, "min_bitrate": 0, "strict": False},
+        "acoustid_api_key": "",
+        "acoustid_min_score": 0.5,
+        "musicdl_strategy": {
+            "mode": "parallel",
+            "search_size": 12,
+            "max_retries": 3,
+            "connect_timeout": 10,
+            "read_timeout": 30,
+            "threads_per_source": 5,
+            "order": "as_is",
+            "dedupe": "global",
+            "per_source_budget": 180,
+        },
+        "backoff_base": 30,
+        "backoff_max": 600,
+        "backoff_jitter": 0.25,
+        "speed_limit": "",
+        "write_description": False,
+        "write_info_json": False,
+        "write_sub_files": True,
+        "dark_mode": False,
+        # 2027 年度色主题：blue / orange / pink / green / clay
+        "ui_theme": "blue",
+        # 留空则优先使用 tools/ 下的 ffmpeg
+        "ffmpeg_path": "",
+        "retry_on_429": True,
+        "subtitle_langs": "all",
+        # Telegram
+        "telegram_enabled": False,
+        "telegram_bot_token": "",
+        "telegram_chat_id": "",
+        "telegram_notify_done": True,
+        "telegram_notify_fail": True,
+        "telegram_notify_sub": True,
+        "telegram_commands_enabled": True,
+        "telegram_offset": 0,
+        # Telegram 用户会话（MTProto）：翻私有/需登录频道的历史并下载，与上面的机器人通知无关
+        "tgmt_api_id": "",
+        "tgmt_api_hash": "",
+        "tgmt_session_name": "media_downloader",
+        "tgmt_proxy": "",  # 留空=直连；Python 不读注册表代理，被墙时要填 socks5 的 host:port
+        "tgmt_skip_seen": True,
+        "tgmt_ack": [],  # 已确认过「限制保存内容」的频道 peer 列表
+        # 订阅
+        "sub_interval_min": 60,
+        "sub_auto_download": True,
+        # 直播
+        "live_from_start": True,
+        # 多平台 Cookie：platform -> {source, file, browser, status}
+        "platform_cookies": {},
+        # 风控
+        "risk_delay_sec": 1.0,
+        "risk_max_per_host": 2,
+        "risk_cooldown_429": 60,
+        "risk_user_agent": "",
+        "risk_preset": "standard",  # fast | standard | safe | extreme
+        "concurrent_fragments": 4,
+        "fragment_min_size_mb": 20,
+        "risk_api_rate": 4,
+        "sub_scan_delay_sec": 10,
+        # 命名队列与同域并发
+        "named_queues": ["default", "night", "subscribe", "sniff"],
+        "max_per_host": 2,
+        "adaptive_throttle": True,  # 命中 429 后自动把该站点并发降到 1 并冷却
+        "global_speed_limit": "",  # 全局限速，如 2M；空=不限
+        # 解析插件
+        "plugins_enabled": True,
+        # aria2 可选后端
+        "aria2_enabled": False,
+        "aria2_rpc": "http://127.0.0.1:6800/jsonrpc",
+        "aria2_secret": "",
+        "aria2_split": 8,
+        "aria2_for_large_mb": 50,  # 直链超过该 MB 自动尝试 aria2（即使未全局开启）
+        "http_impersonate": True,  # 用 curl_cffi 模拟浏览器 TLS，降低 403
+        "po_provider_enabled": False,  # 有 bgutil PO Token 服务时才试需要票的播放器客户端
+        "po_provider_url": "http://127.0.0.1:4416",
+        "yt_player_clients": "default,web_safari,tv,android,ios",  # 从左到右回退，被拒时换下一个
+        "github_mirror": "https://ghproxy.net/",  # GitHub/HF 下载镜像前缀，空=直连
+        "pip_mirror": "https://pypi.tuna.tsinghua.edu.cn/simple",  # 程序内 pip 更新依赖的镜像源，空=官方
+        # 订阅首次可下最近 N 条（0=只记 ID）
+        "sub_first_download_n": 0,
+
+        "serverchan_sendkey": "",
+        # 企业微信
+        "wecom_enabled": False,
+        "wecom_corp_id": "",
+        "wecom_corp_secret": "",
+        "wecom_agent_id": "",
+        "wecom_touser": "@all",
+        "wecom_notify_done": True,
+        "wecom_notify_fail": True,
+        "wecom_notify_sub": False,
+        # NAS / 网盘存储
+        "storage_post_action": "none",  # none | copy | move
+        "storage_nas_enabled": False,
+        "storage_nas_path": "",  # 如 \\\\NAS\\media 或 /mnt/nas/downloads 或 Z:/Videos
+        "storage_webdav_enabled": False,
+        "storage_webdav_url": "",  # https://nas.example.com/webdav/ or alist
+        "storage_webdav_user": "",
+        "storage_webdav_pass": "",
+        "storage_webdav_path": "/",  # 远端子目录
+        # SSL：抖音等 CDN 证书域名不匹配时需关闭校验
+        "nocheckcertificate": True,
+        # 直播流偏好：auto | hls | flv | dash
+        "live_stream_pref_bilibili": "flv",
+        "live_stream_pref_youtube": "dash",
+        "live_stream_pref_douyin": "hls",
+        "live_stream_pref_twitch": "hls",
+        "live_stream_pref_default": "auto",
+        "live_stream_fallback": True,
+    }
+
+    def __init__(self):
+        self.data = dict(self.DEFAULTS)
+        self.load()
+
+    def load(self):
+        if CONFIG_FILE.exists():
+            try:
+                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                    self.data.update(json.load(f))
+            except Exception:
+                pass
+
+    def save(self):
+        try:
+            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                json.dump(self.data, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+
+# 平台识别与默认 cookie 文件名
+PLATFORM_RULES = [
+    ("youtube", ("youtube.com", "youtu.be", "youtube-nocookie.com")),
+    ("telegram", ("t.me/", "telegram.me/", "telegram.org", "telesco.pe")),
+    ("bilibili", ("bilibili.com", "b23.tv", "bilivideo.com")),
+    ("douyin", ("douyin.com", "iesdouyin.com", "tiktok.com")),
+    ("xiaohongshu", ("xiaohongshu.com", "xhslink.com")),
+    ("instagram", ("instagram.com",)),
+    ("twitter", ("twitter.com", "x.com")),
+    ("pinterest", ("pinterest.com", "pin.it")),
+    ("weixin", ("channels.weixin.qq.com", "weixin.qq.com")),
+    ("xinpianchang", ("xinpianchang.com",)),
+]
+PLATFORM_LABELS = {
+    "youtube": "YouTube",
+    "telegram": "Telegram",
+    "bilibili": "B站",
+    "douyin": "抖音/TikTok",
+    "xiaohongshu": "小红书",
+    "instagram": "Instagram",
+    "twitter": "Twitter/X",
+    "pinterest": "Pinterest",
+    "weixin": "微信视频号",
+    "xinpianchang": "新片场",
+    "default": "默认/其它",
+}
+
+
+def detect_platform(url: str) -> str:
+    low = (url or "").lower()
+    for name, domains in PLATFORM_RULES:
+        if any(d in low for d in domains):
+            return name
+    return "default"
+
+
+def platform_cookie_path(platform: str) -> Path:
+    return COOKIES_DIR / f"{platform}_cookies.txt"
+
+
+# --------------------------------------------------------------- 代理策略
+# 本机常年挂着注册表代理（127.0.0.1:789x），requests / urllib / yt-dlp 会自动走它。
+# 老做法"填了代理就全都走代理"会让 B 站、网易云这些国内站点也跟着绕一圈：代理节点一抖，
+# 整批任务一起挂；反过来强制直连又会杀掉 YouTube 这类必须出国的站。
+# 所以按平台判三档：proxy=走代理（没填就取系统代理）、direct=强制直连、
+# inherit=不干预（跟随系统，认不出归属的站用它，免得把能下的东西判死）。
+PROXY_MODES = ("auto", "always", "none")
+UI_THEMES = ("blue", "orange", "pink", "green", "clay")
+PROXY_DIRECT = "direct"  # 传给只收代理字符串的下游（music_search）的"强制直连"哨兵
+
+# 国内直连通常不通、必须走代理的站点
+PROXY_NEEDED_PLATFORMS = {
+    "youtube", "instagram", "twitter", "pinterest", "tiktok",
+    "facebook", "telegram", "reddit", "twitch",
+}
+# 国内能直连、绕代理只会更慢更不稳的站点
+PROXY_DIRECT_PLATFORMS = {
+    "bilibili", "douyin", "xiaohongshu", "weixin", "xinpianchang",
+}
+# 音乐源同理：Spotify 之类必须出国，腾讯系/网易云直连更快。Apple 国内可达，算直连档。
+PROXY_NEEDED_SOURCES = {
+    "SpotifyMusicClient", "SoundCloudMusicClient", "DeezerMusicClient", "QobuzMusicClient",
+    "TIDALMusicClient", "JooxMusicClient", "MOOVMusicClient", "StreetVoiceMusicClient",
+    "JioSaavnMusicClient", "JamendoMusicClient", "AudiusMusicClient", "FMAMusicClient",
+    "CCMixterMusicClient", "SunoMusicClient",
+}
+PROXY_DIRECT_SOURCES = {
+    "NeteaseMusicClient", "QQMusicClient", "KugouMusicClient", "KuwoMusicClient",
+    "MiguMusicClient", "QianqianMusicClient", "FiveSingMusicClient", "BodianMusicClient",
+    "SodaMusicClient", "AppleMusicClient",
+}
+# PLATFORM_RULES 把 TikTok 和抖音并成同一个 cookie 键（同属字节），但代理归属相反
+PROXY_TIKTOK_HINT = "tiktok"
+
+
+def system_proxy_detail() -> tuple:
+    """(系统代理地址, 来源说明) —— 来源要能说出口，用户才知道该去哪儿改。"""
+    import os
+    for k in ("https_proxy", "http_proxy"):
+        v = (os.environ.get(k) or "").strip()
+        if v and v.lower() != "none":
+            return v, f"环境变量 {k.upper()}"
+    try:
+        import urllib.request
+        px = urllib.request.getproxies() or {}
+        v = str(px.get("https") or px.get("http") or "")
+        if v:
+            name = {"win32": "Windows 系统代理设置", "darwin": "macOS 网络代理设置"}.get(
+                sys.platform, "系统代理设置"
+            )
+            return v, name
+    except Exception:
+        pass
+    return "", ""
+
+
+def system_proxy() -> str:
+    """注册表 / 环境变量里已生效的 HTTP(S) 代理，没有则 ""。"""
+    return system_proxy_detail()[0]
+
+
+def proxy_platform_key(url: str) -> str:
+    """代理归属用的平台键：比 detect_platform 多把 TikTok 拆出来。"""
+    low = (url or "").lower()
+    if PROXY_TIKTOK_HINT in low:
+        return "tiktok"
+    return detect_platform(url)
+
+
+def proxy_needs_override(key: str, cfg_data: dict) -> Optional[bool]:
+    """用户在设置里对该平台手动指定的走/不走代理，没指定返回 None。"""
+    table = cfg_data.get("proxy_by_platform") or {}
+    if isinstance(table, dict):
+        return table.get(key) if isinstance(table.get(key), bool) else None
+    return None
+
+
+def _decide_by_key(key: str, d: dict) -> tuple:
+    mode = str(d.get("proxy_mode") or "auto")
+    if mode == "none":                      # 全部交回系统，本程序不加判断
+        return ("inherit", "")
+    if mode != "always":
+        forced = proxy_needs_override(key, d)
+        if forced is False:
+            return ("direct", "")
+        if forced is not True:
+            if key in PROXY_NEEDED_SOURCES or key in PROXY_NEEDED_PLATFORMS:
+                pass
+            elif key in PROXY_DIRECT_SOURCES or key in PROXY_DIRECT_PLATFORMS:
+                return ("direct", "")
+            else:
+                # 认不出归属：用户手填的代理照用，但不把系统代理硬塞给它
+                fp = (d.get("proxy") or "").strip()
+                return ("proxy", fp) if fp else ("inherit", "")
+    px = (d.get("proxy") or "").strip() or system_proxy()
+    if not px:
+        return ("inherit", "")              # 该走代理但一个都没有：交给系统
+    return ("proxy", px)
+
+
+def proxy_decision(target: str = "", source: str = "", cfg_data: dict = None) -> tuple:
+    """该目标/该源该怎么连：("proxy", 地址) | ("direct", "") | ("inherit", "")。"""
+    d = cfg.data if cfg_data is None else cfg_data
+    key = (source or "").strip() or proxy_platform_key(target)
+    return _decide_by_key(key, d)
+
+
+def resolve_proxy(target: str = "", source: str = "", cfg_data: dict = None) -> str:
+    """下游只吃代理字符串的地方用这个（拿不到"强制直连"这层意思）。"""
+    m, px = proxy_decision(target, source, cfg_data)
+    return px if m == "proxy" else ""
+
+
+def music_proxy(target: str = "", source: str = "", cfg_data: dict = None) -> str:
+    """给 music_search 用：地址 / PROXY_DIRECT / ""（不干预）。"""
+    m, px = proxy_decision(target, source, cfg_data)
+    return px if m == "proxy" else (PROXY_DIRECT if m == "direct" else "")
+
+
+def music_proxy_for_source(src: str) -> str:
+    """一个 musicdl 源该走哪个代理（源名可以是 Netease 这种短名）。"""
+    name = str(src or "").strip()
+    if name and not name.endswith("Client"):
+        try:
+            from music_search import normalize_source_name
+            name = normalize_source_name(name)
+        except Exception:
+            pass
+    return music_proxy(source=name)
+
+
+def music_proxy_resolver(explicit: str = "") -> Callable[[str], str]:
+    """搜索/下载按源问代理；调用方显式给了地址就一律用它。"""
+    e = (explicit or "").strip()
+    if e:
+        return lambda src: e
+    return music_proxy_for_source
+
+
+def requests_proxies(target: str = "", source: str = "",
+                     cfg_data: dict = None) -> Optional[dict]:
+    """requests 的 proxies 参数；None 表示别传，让它跟随环境。"""
+    m, px = proxy_decision(target, source, cfg_data)
+    if m == "proxy":
+        return {"http": px, "https": px}
+    if m == "direct":
+        return {"http": None, "https": None}
+    return None
+
+
+def http_proxies(url: str = "", proxy_override: str = "", source: str = "") -> Optional[dict]:
+    """显式代理参数（含 PROXY_DIRECT 哨兵）优先，其次按平台策略。"""
+    po = (proxy_override or "").strip()
+    if po == PROXY_DIRECT:
+        return {"http": None, "https": None}
+    if po:
+        return {"http": po, "https": po}
+    return requests_proxies(url, source)
+
+
+def proxy_arg(url: str = "", proxy_override: str = "", source: str = "") -> str:
+    """只吃代理字符串的下游（aria2 --custom-proxy / 插件 / musicdl）用的地址。"""
+    po = (proxy_override or "").strip()
+    if po:
+        return "" if po == PROXY_DIRECT else po
+    return resolve_proxy(url, source)
+
+
+def task_proxy_override(opts: dict) -> str:
+    """任务级代理覆写；和全局设置里的代理是同一个值就不算覆写。"""
+    tp = ((opts or {}).get("proxy") or "").strip()
+    return tp if tp and tp != (cfg.data.get("proxy") or "").strip() else ""
+
+
+def ydl_proxy_opt(target: str = "", source: str = "", cfg_data: dict = None) -> Optional[str]:
+    """yt-dlp 的 opts["proxy"]：None=跟随系统，""=强制直连，其它=走该代理。"""
+    m, px = proxy_decision(target, source, cfg_data)
+    if m == "proxy":
+        return px
+    return "" if m == "direct" else None
+
+
+def apply_proxy_env(env: dict, target: str = "", source: str = "",
+                    cfg_data: dict = None, proxy_override: str = "") -> dict:
+    """子进程（ffmpeg / aria2）的代理环境：直连档要把继承来的变量清掉才真走得成直连。"""
+    po = (proxy_override or "").strip()
+    if po == PROXY_DIRECT:
+        m, px = "direct", ""
+    elif po:
+        m, px = "proxy", po
+    else:
+        m, px = proxy_decision(target, source, cfg_data)
+    if m == "direct":
+        for k in ("http_proxy", "https_proxy", "all_proxy",
+                  "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+            env.pop(k, None)
+        env["no_proxy"] = "*"
+        env["NO_PROXY"] = "*"
+    elif m == "proxy":
+        env["http_proxy"] = px
+        env["https_proxy"] = px
+        env["HTTP_PROXY"] = px
+        env["HTTPS_PROXY"] = px
+    return env
+
+
+LOG_KEEP_DAYS = 7
+
+
+def _prune_old_logs() -> int:
+    """删除超过 LOG_KEEP_DAYS 天的按天归档（app-YYYY-MM-DD.log），按修改时间判断。"""
+    cutoff = time.time() - LOG_KEEP_DAYS * 86400
+    n = 0
+    try:
+        files = list(APP_DIR.glob("app-*.log"))
+    except Exception:
+        return 0
+    for p in files:
+        try:
+            if p.stat().st_mtime < cutoff:
+                p.unlink()
+                n += 1
+        except Exception:
+            pass
+    return n
+
+
+class LogManager:
+    def __init__(self, max_entries: int = 500):
+        self.entries: List[dict] = []
+        self.max_entries = max_entries
+        self._lock = threading.Lock()
+        self._seq = 0  # 单调递增，clear() 不回头，SSE 靠它判断有没有新行
+        self._day = datetime.now().strftime("%Y-%m-%d")
+        removed = _prune_old_logs()
+        if removed:
+            self.log(f"已清理 {removed} 个超过 {LOG_KEEP_DAYS} 天的日志归档", "info")
+
+    def _rollover_locked(self, today: str):
+        """跨天时把昨天的 app.log 归档，保证单个文件内最多只有一天的内容（持锁调用）"""
+        target = APP_DIR / f"app-{self._day}.log"
+        try:
+            if LOG_FILE.exists():
+                if target.exists():
+                    with open(target, "a", encoding="utf-8") as dst, open(LOG_FILE, "r", encoding="utf-8") as src:
+                        shutil.copyfileobj(src, dst)
+                    LOG_FILE.unlink()
+                else:
+                    LOG_FILE.rename(target)
+        except Exception:
+            pass
+        self._day = today
+
+    def log(self, message: str, level: str = "info"):
+        with self._lock:
+            self._seq += 1
+            entry = {
+                "seq": self._seq,
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "level": level,
+                "message": message,
+            }
+            self.entries.append(entry)
+            if len(self.entries) > self.max_entries:
+                self.entries = self.entries[-self.max_entries :]
+            today = entry["time"][:10]
+            if today != self._day:
+                self._rollover_locked(today)
+        try:
+            with open(LOG_FILE, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+
+    def get(self, level: str = "", search: str = "") -> List[dict]:
+        with self._lock:
+            result = list(self.entries)
+        if level and level != "all":
+            result = [e for e in result if e["level"] == level]
+        if search:
+            s = search.lower()
+            result = [e for e in result if s in e["message"].lower()]
+        return result[-200:]
+
+    def clear(self):
+        with self._lock:
+            self.entries.clear()
+
+
+class HistoryManager:
+    def __init__(self, max_entries: int = 300):
+        self.history: List[dict] = []
+        self.max_entries = max_entries
+        self._lock = threading.Lock()
+        self.load()
+
+    def load(self):
+        if HISTORY_FILE.exists():
+            try:
+                with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                    self.history = json.load(f)
+            except Exception:
+                self.history = []
+
+    def save(self):
+        try:
+            with self._lock:
+                data = self.history[-self.max_entries :]
+            with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    def add(self, item: dict):
+        with self._lock:
+            self.history.insert(0, item)
+        self.save()
+
+    def get(self, keyword: str = "") -> List[dict]:
+        with self._lock:
+            if not keyword:
+                return list(self.history[:100])
+            kw = keyword.lower()
+            return [
+                h
+                for h in self.history
+                if kw in h.get("title", "").lower() or kw in h.get("url", "").lower()
+            ][:100]
+
+    def clear(self):
+        with self._lock:
+            self.history.clear()
+        self.save()
+
+    def stats(self) -> dict:
+        with self._lock:
+            hist = list(self.history)
+        total = len(hist)
+        success = sum(1 for h in hist if h.get("status") == "finished")
+        failed = sum(1 for h in hist if h.get("status") == "failed")
+        return {
+            "total": total,
+            "success": success,
+            "failed": failed,
+            "success_rate": f"{success / total * 100:.1f}%" if total else "0%",
+        }
+
+
+# -------------------- FFmpeg --------------------
+class FFmpegManager:
+    def __init__(self, log: Callable = print):
+        self.log = log
+        self.manual_path = ""
+        self.local_bin = TOOLS_DIR / ("ffmpeg.exe" if sys.platform == "win32" else "ffmpeg")
+
+    def find(self, manual: str = "") -> Optional[str]:
+        # 1) 用户手动指定
+        if manual and Path(manual).exists():
+            return str(Path(manual).resolve())
+        # 2) 项目 tools/ 目录（优先）
+        if self.local_bin.exists():
+            return str(self.local_bin.resolve())
+        try:
+            name = "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"
+            for p in TOOLS_DIR.rglob(name):
+                if p.is_file():
+                    return str(p.resolve())
+        except Exception:
+            pass
+        # 3) 系统 PATH
+        return shutil.which("ffmpeg")
+
+    def version(self) -> str:
+        path = self.find(self.manual_path)
+        if not path:
+            return "未找到"
+        try:
+            kwargs: dict = {
+                "args": [path, "-version"],
+                "capture_output": True,
+                "timeout": 12,
+            }
+            if sys.platform == "win32":
+                kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                kwargs["encoding"] = "utf-8"
+                kwargs["errors"] = "replace"
+            else:
+                kwargs["text"] = True
+            r = subprocess.run(**kwargs)
+            out, err = r.stdout or "", r.stderr or ""
+            if isinstance(out, bytes):
+                out = out.decode("utf-8", errors="replace")
+            if isinstance(err, bytes):
+                err = err.decode("utf-8", errors="replace")
+            text = f"{out}\n{err}"
+            m = re.search(r"ffmpeg version\s+([^\s]+)", text, re.I)
+            if m:
+                return m.group(1)
+            for line in text.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                m2 = re.search(r"version\s+([^\s]+)", line, re.I)
+                if m2:
+                    return m2.group(1)
+                return line[:48]
+            return f"无法解析 (code={r.returncode})"
+        except FileNotFoundError:
+            return "文件无效"
+        except subprocess.TimeoutExpired:
+            return "检测超时"
+        except Exception as e:
+            return f"检测失败:{type(e).__name__}"
+
+    def location_for_ytdlp(self) -> Optional[str]:
+        path = self.find(self.manual_path)
+        return str(Path(path).parent) if path else None
+
+    def update(self) -> bool:
+        self.log(f"FFmpeg 更新: 下载至 {TOOLS_DIR}")
+        if sys.platform != "win32":
+            self.log("非 Windows 请用系统包管理器安装 ffmpeg")
+            return self.find() is not None
+        tmp_zip = TOOLS_DIR / "ffmpeg_dl.zip"
+        try:
+            with requests.get(FFMPEG_ZIP_URL, stream=True, timeout=120) as r:
+                r.raise_for_status()
+                with open(tmp_zip, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=256 * 1024):
+                        if chunk:
+                            f.write(chunk)
+            with zipfile.ZipFile(tmp_zip, "r") as zf:
+                for name in zf.namelist():
+                    if Path(name).name.lower() in ("ffmpeg.exe", "ffprobe.exe"):
+                        dest = TOOLS_DIR / Path(name).name
+                        with zf.open(name) as src, open(dest, "wb") as dst:
+                            shutil.copyfileobj(src, dst)
+            tmp_zip.unlink(missing_ok=True)
+            if not self.local_bin.exists():
+                return self._update_btbn()
+            self.log(f"FFmpeg 已就绪: {self.version()}")
+            return True
+        except Exception as e:
+            self.log(f"官方源失败: {e}，尝试备用源...")
+            try:
+                return self._update_btbn()
+            except Exception as e2:
+                self.log(f"备用源失败: {e2}")
+                return False
+        finally:
+            tmp_zip.unlink(missing_ok=True)
+
+    def _update_btbn(self) -> bool:
+        api = requests.get(FFMPEG_FALLBACK_API, timeout=30)
+        api.raise_for_status()
+        data = api.json()
+        asset_url = None
+        for a in data.get("assets", []):
+            name = a.get("name", "")
+            if "win64" in name and "essentials" in name and name.endswith(".zip"):
+                asset_url = a.get("browser_download_url")
+                break
+        if not asset_url:
+            raise RuntimeError("未找到合适的 BtbN 包")
+        try:
+            gh = str(cfg.data.get("github_mirror") or "")
+        except Exception:
+            gh = ""
+        tmp_zip = TOOLS_DIR / "ffmpeg_btbn.zip"
+        _download_with_mirrors(
+            pkg_update.github_url_candidates(asset_url, gh), tmp_zip,
+            log=self.log, timeout=300,
+        )
+        with zipfile.ZipFile(tmp_zip, "r") as zf:
+            for name in zf.namelist():
+                if Path(name).name.lower() in ("ffmpeg.exe", "ffprobe.exe"):
+                    dest = TOOLS_DIR / Path(name).name
+                    with zf.open(name) as src, open(dest, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+        tmp_zip.unlink(missing_ok=True)
+        return self.local_bin.exists()
+
+
+def find_n_m3u8dl() -> Optional[str]:
+    """查找 N_m3u8DL-RE 专用 HLS/DASH 引擎（Ghost 同款思路）"""
+    names = (
+        "N_m3u8DL-RE.exe", "N_m3u8DL-RE",
+        "N_m3u8DL-CLI.exe", "N_m3u8DL-CLI",
+        "m3u8dl.exe", "m3u8dl",
+    )
+    for n in names:
+        p = TOOLS_DIR / n
+        if p.is_file():
+            return str(p)
+    for n in names:
+        found = shutil.which(n)
+        if found:
+            return found
+    # 递归 tools
+    for n in names:
+        for p in TOOLS_DIR.rglob(n):
+            if p.is_file():
+                return str(p)
+    return None
+
+
+def n_m3u8dl_version() -> str:
+    path = find_n_m3u8dl()
+    if not path:
+        return "未安装"
+    try:
+        kw: dict = {"capture_output": True, "timeout": 8, "text": True}
+        if sys.platform == "win32":
+            kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        r = subprocess.run([path, "--version"], **kw)
+        out = ((r.stdout or "") + (r.stderr or "")).strip()
+        # 取第一行版本号
+        line = (out.splitlines() or [""])[0].strip()
+        return line[:80] if line else Path(path).name
+    except Exception:
+        return Path(path).name
+
+
+def _n_m3u8dl_asset_name() -> str:
+    """按当前平台选择资源 id，如 win-x64 / linux-x64"""
+    machine = ""
+    try:
+        machine = (os.uname().machine if hasattr(os, "uname") else "").lower()
+    except Exception:
+        pass
+    if sys.platform == "win32":
+        arch = (os.environ.get("PROCESSOR_ARCHITECTURE") or platform_machine_safe()).lower()
+        if "arm" in arch:
+            return "win-arm64"
+        return "win-x64"
+    if sys.platform == "darwin":
+        if "arm" in machine or "aarch64" in machine:
+            return "osx-arm64"
+        return "osx-x64"
+    if "aarch64" in machine or "arm64" in machine:
+        return "linux-arm64"
+    return "linux-x64"
+
+
+def platform_machine_safe() -> str:
+    try:
+        import platform
+        return platform.machine() or ""
+    except Exception:
+        return ""
+
+
+# 固定直链（避免 GitHub API 403 rate limit），可按需改版本号
+# 来源: https://github.com/nilaoda/N_m3u8DL-RE/releases/tag/v0.6.0-beta
+_NM3U8DL_TAG = "v0.6.0-beta"
+_NM3U8DL_DATE = "20260629"
+_NM3U8DL_DIRECT = {
+    "win-x64": f"https://github.com/nilaoda/N_m3u8DL-RE/releases/download/{_NM3U8DL_TAG}/N_m3u8DL-RE_{_NM3U8DL_TAG}_win-x64_{_NM3U8DL_DATE}.zip",
+    "win-arm64": f"https://github.com/nilaoda/N_m3u8DL-RE/releases/download/{_NM3U8DL_TAG}/N_m3u8DL-RE_{_NM3U8DL_TAG}_win-arm64_{_NM3U8DL_DATE}.zip",
+    "win-NT6.0-x86": f"https://github.com/nilaoda/N_m3u8DL-RE/releases/download/{_NM3U8DL_TAG}/N_m3u8DL-RE_{_NM3U8DL_TAG}_win-NT6.0-x86_{_NM3U8DL_DATE}.zip",
+    "linux-x64": f"https://github.com/nilaoda/N_m3u8DL-RE/releases/download/{_NM3U8DL_TAG}/N_m3u8DL-RE_{_NM3U8DL_TAG}_linux-x64_{_NM3U8DL_DATE}.tar.gz",
+    "linux-arm64": f"https://github.com/nilaoda/N_m3u8DL-RE/releases/download/{_NM3U8DL_TAG}/N_m3u8DL-RE_{_NM3U8DL_TAG}_linux-arm64_{_NM3U8DL_DATE}.tar.gz",
+    "osx-x64": f"https://github.com/nilaoda/N_m3u8DL-RE/releases/download/{_NM3U8DL_TAG}/N_m3u8DL-RE_{_NM3U8DL_TAG}_osx-x64_{_NM3U8DL_DATE}.tar.gz",
+    "osx-arm64": f"https://github.com/nilaoda/N_m3u8DL-RE/releases/download/{_NM3U8DL_TAG}/N_m3u8DL-RE_{_NM3U8DL_TAG}_osx-arm64_{_NM3U8DL_DATE}.tar.gz",
+}
+# ghproxy 等镜像前缀（国内/限流时自动尝试）
+_NM3U8DL_MIRRORS = (
+    "",  # 官方
+    "https://ghproxy.net/",
+    "https://mirror.ghproxy.com/",
+    "https://gh.ddlc.top/",
+)
+
+
+def _extract_n_m3u8dl_archive(tmp: Path, name: str, log: Callable) -> bool:
+    """从 zip/tar.gz 解出可执行文件到 tools/"""
+    installed = False
+    if name.endswith(".zip") or tmp.suffix.lower() == ".zip":
+        with zipfile.ZipFile(tmp, "r") as zf:
+            for member in zf.namelist():
+                base = Path(member).name
+                if not base:
+                    continue
+                low = base.lower()
+                if "n_m3u8dl" in low or (sys.platform == "win32" and low.endswith(".exe") and "m3u8" in low):
+                    dest = TOOLS_DIR / base
+                    with zf.open(member) as src, open(dest, "wb") as out:
+                        shutil.copyfileobj(src, out)
+                    if sys.platform != "win32":
+                        try:
+                            dest.chmod(0o755)
+                        except Exception:
+                            pass
+                    log(f"已安装: {dest.name}")
+                    installed = True
+    elif ".tar" in name or tmp.suffixes[-2:] == [".tar", ".gz"] or name.endswith(".tgz"):
+        import tarfile
+        with tarfile.open(tmp, "r:gz") as tf:
+            for member in tf.getmembers():
+                base = Path(member.name).name
+                if not base or not member.isfile():
+                    continue
+                if "n_m3u8dl" in base.lower():
+                    dest = TOOLS_DIR / base
+                    src = tf.extractfile(member)
+                    if src:
+                        with open(dest, "wb") as out:
+                            shutil.copyfileobj(src, out)
+                    try:
+                        dest.chmod(0o755)
+                    except Exception:
+                        pass
+                    log(f"已安装: {dest.name}")
+                    installed = True
+    return installed
+
+
+def update_n_m3u8dl(log: Callable = print) -> str:
+    """下载 N_m3u8DL-RE 到 tools/：优先固定直链（不走 API），避免 403 rate limit。"""
+    rid = _n_m3u8dl_asset_name()
+    url = _NM3U8DL_DIRECT.get(rid)
+    if not url:
+        return f"当前平台 {rid} 无预置下载地址"
+
+    name = url.rsplit("/", 1)[-1]
+    log(f"准备下载 N_m3u8DL-RE {_NM3U8DL_TAG} ({rid}) …")
+
+    tmp = TOOLS_DIR / f"_nm3u8dl_dl{Path(name).suffix if Path(name).suffix else '.bin'}"
+    if name.endswith(".tar.gz"):
+        tmp = TOOLS_DIR / "_nm3u8dl_dl.tar.gz"
+
+    last_err = ""
+    downloaded = False
+    mirror_list = list(_NM3U8DL_MIRRORS)
+    # 设置中的 github_mirror 优先
+    try:
+        gm = (cfg.data.get("github_mirror") or "").strip()
+        if gm:
+            mirror_list = [gm if gm.endswith("/") else gm + "/"] + [m for m in mirror_list if m != gm]
+    except Exception:
+        pass
+    for mirror in mirror_list:
+        full = (mirror + url) if mirror else url
+        try:
+            log(f"尝试: {full[:80]}…")
+            with requests.get(
+                full,
+                stream=True,
+                timeout=300,
+                headers={"User-Agent": "Mozilla/5.0 MediaDownloader-Web"},
+                allow_redirects=True,
+            ) as resp:
+                if resp.status_code != 200:
+                    last_err = f"HTTP {resp.status_code}"
+                    log(f"失败 {last_err}", "warning")
+                    continue
+                with open(tmp, "wb") as f:
+                    for chunk in resp.iter_content(chunk_size=256 * 1024):
+                        if chunk:
+                            f.write(chunk)
+            if tmp.exists() and tmp.stat().st_size > 10000:
+                downloaded = True
+                log(f"下载完成 ({tmp.stat().st_size // 1024} KB)")
+                break
+            last_err = "文件过小或为空"
+        except Exception as e:
+            last_err = str(e)
+            log(f"下载异常: {e}", "warning")
+            continue
+
+    if not downloaded:
+        tmp.unlink(missing_ok=True)
+        return (
+            f"下载失败: {last_err}。"
+            f"可手动下载后放到 tools/：\n{url}"
+        )
+
+    try:
+        ok = _extract_n_m3u8dl_archive(tmp, name, log)
+        if not ok:
+            return "解压后未找到 N_m3u8DL-RE 可执行文件"
+    except Exception as e:
+        return f"解压失败: {e}"
+    finally:
+        tmp.unlink(missing_ok=True)
+
+    ver = n_m3u8dl_version()
+    return f"成功 {_NM3U8DL_TAG} → {ver}"
+
+
+def _probe_hls_playlist(url: str, headers: Optional[dict] = None, proxy: str = "") -> tuple:
+    """
+    预取播放列表，确认是 m3u8 内容。返回 (ok, text_or_err, final_url)。
+    """
+    hdrs = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        ),
+        "Accept": "*/*",
+    }
+    if headers:
+        hdrs.update(headers)
+    proxies = http_proxies(url, proxy)
+    try:
+        r = requests.get(
+            url,
+            headers=hdrs,
+            proxies=proxies,
+            timeout=25,
+            verify=False,
+            allow_redirects=True,
+        )
+        if r.status_code >= 400:
+            return False, f"HTTP {r.status_code}", url
+        text = (r.text or "")[:8000]
+        low = text.lstrip().lower()
+        if "#extm3u" in low or "#ext-x-" in low or "#extinf" in low:
+            return True, text, str(r.url)
+        # 有些返回 gzip 乱码已由 requests 解码；仍不像列表
+        return False, f"内容不像 m3u8（前 80 字: {text[:80]!r}）", str(r.url)
+    except Exception as e:
+        return False, str(e), url
+
+
+def download_hls_with_engine(
+    m3u8_url: str,
+    out_dir: str,
+    title: str = "",
+    proxy: str = "",
+    headers: Optional[dict] = None,
+    log: Callable = print,
+    stop_flag: Optional[Callable[[], bool]] = None,
+    progress_cb: Optional[Callable] = None,
+    task_id: str = "",
+    key_info: str = "",
+) -> tuple:
+    """
+    专用 HLS 引擎下载：优先 N_m3u8DL-RE，其次 ffmpeg。
+    key_info 是 16 进制 AES-128 密钥（猫抓「抓取密钥」推来的那种），空则按列表自带方式解密。
+    返回 (ok: bool, filepath: str)
+    """
+    out_path = Path(out_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+    safe = safe_filename_component(title or "hls", 60)
+    dest_base = out_path / safe
+
+    def _prog(pct: float):
+        if progress_cb and task_id:
+            try:
+                progress_cb(task_id, pct, "", "")
+            except Exception:
+                pass
+
+    _prog(2)
+    log(f"HLS 探测播放列表…")
+    ok_probe, body, final_url = _probe_hls_playlist(m3u8_url, headers=headers, proxy=proxy)
+    if not ok_probe:
+        log(f"HLS 播放列表不可用: {body}", "error")
+        return False, ""
+    log(f"HLS 列表 OK（{len(body)} 字节）→ 开始拉流")
+    _prog(8)
+    # 使用探测后的最终 URL（含重定向）
+    m3u8_url = final_url or m3u8_url
+
+    def _poll_hls_proc(proc) -> None:
+        """拉流期间按输出文件大小更新进度，避免界面一直停在 10%。"""
+        deadline = time.time() + 7200
+        last_sz = 0
+        while proc.poll() is None:
+            if stop_flag and stop_flag():
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                log("用户停止 HLS", "warning")
+                return
+            if time.time() > deadline:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                log("HLS 超时已终止", "warning")
+                return
+            try:
+                cands = [
+                    p
+                    for p in list(out_path.glob(f"{safe}.*")) + list(out_path.glob(f"{safe}*"))
+                    if p.is_file()
+                    and p.suffix.lower() in (".mp4", ".mkv", ".ts", ".m4s", ".flv", ".part")
+                ]
+                if cands:
+                    best = max(cands, key=lambda p: p.stat().st_size)
+                    sz = best.stat().st_size
+                    if sz > last_sz:
+                        last_sz = sz
+                        _prog(min(90.0, 12.0 + (sz / (80 * 1024 * 1024)) * 75))
+            except Exception:
+                pass
+            time.sleep(1.0)
+
+    engine = find_n_m3u8dl()
+    if engine:
+        log(f"HLS 专用引擎: {Path(engine).name}（拉流中…）")
+        cmd = [
+            engine,
+            m3u8_url,
+            "--save-dir", str(out_path),
+            "--save-name", safe,
+            "--auto-select",
+            "--thread-count", "8",
+            "--download-retry-count", "5",
+            "--http-request-timeout", "30",
+        ]
+        po = proxy_arg(m3u8_url, proxy)
+        if po:
+            cmd += ["--custom-proxy", po]
+        if key_info:
+            cmd += ["--key", key_info]
+            log("已带上外部获取的 HLS 解密钥（猫抓「抓取密钥」或界面填写）")
+        if headers:
+            for k, v in headers.items():
+                cmd += ["--header", f"{k}: {v}"]
+        try:
+            _prog(10)
+            kw: dict = {"stdout": subprocess.PIPE, "stderr": subprocess.PIPE}
+            if sys.platform == "win32":
+                kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            proc = subprocess.Popen(cmd, **kw)
+            _poll_hls_proc(proc)
+            stdout, stderr = b"", b""
+            try:
+                stdout, stderr = proc.communicate(timeout=60)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            candidates = [
+                p
+                for p in list(out_path.glob(f"{safe}.*")) + list(out_path.glob(f"{safe}*"))
+                if p.is_file()
+                and p.suffix.lower() in (".mp4", ".mkv", ".ts", ".m4s", ".flv")
+                and p.stat().st_size > 10_000
+            ]
+            if candidates:
+                best = max(candidates, key=lambda p: p.stat().st_size)
+                log(f"N_m3u8DL 完成: {best.name} ({best.stat().st_size // 1024} KB)")
+                _prog(100)
+                return True, str(best)
+            err = (stderr or stdout or b"").decode("utf-8", errors="ignore")[-500:]
+            log(f"N_m3u8DL 失败 rc={proc.returncode}: {err}", "warning")
+        except Exception as e:
+            log(f"N_m3u8DL 异常: {e}", "warning")
+
+    # 回退 ffmpeg
+    ff = None
+    try:
+        ff = ffmpeg_mgr.find()
+    except Exception:
+        pass
+    if not ff:
+        for name in ("ffmpeg.exe", "ffmpeg"):
+            p = TOOLS_DIR / name
+            if p.is_file():
+                ff = str(p)
+                break
+        if not ff:
+            ff = shutil.which("ffmpeg")
+    if not ff:
+        log("未找到 N_m3u8DL-RE 或 ffmpeg，无法下载 HLS", "error")
+        return False, ""
+
+    out_file = dest_base.with_suffix(".mp4")
+    log(f"HLS 回退 ffmpeg → {out_file.name}")
+    # 将 header 传给 ffmpeg
+    cmd = [
+        ff, "-y", "-hide_banner", "-loglevel", "warning",
+        "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
+        "-rw_timeout", "30000000",
+    ]
+    if headers:
+        # ffmpeg: -headers "Referer: xxx\r\nUser-Agent: xxx\r\n"
+        hlines = "".join(f"{k}: {v}\r\n" for k, v in headers.items())
+        cmd += ["-headers", hlines]
+    if key_info:
+        cmd += ["-decryption_key", key_info]
+        log("已带上外部获取的 HLS 解密钥（ffmpeg -decryption_key）")
+    cmd += ["-i", m3u8_url, "-c", "copy", "-bsf:a", "aac_adtstoasc", str(out_file)]
+    env = apply_proxy_env(os.environ.copy(), m3u8_url, proxy_override=proxy)
+    try:
+        _prog(15)
+        kw: dict = {"capture_output": True, "timeout": 7200, "env": env}
+        if sys.platform == "win32":
+            kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        r = subprocess.run(cmd, **kw)
+        if out_file.exists() and out_file.stat().st_size > 10_000:
+            log(f"ffmpeg HLS 完成: {out_file.name} ({out_file.stat().st_size // 1024} KB)")
+            _prog(100)
+            return True, str(out_file)
+        err = (r.stderr or b"").decode("utf-8", errors="ignore")[-500:]
+        log(f"ffmpeg HLS 失败 rc={r.returncode}: {err}", "error")
+        return False, ""
+    except subprocess.TimeoutExpired:
+        log("ffmpeg HLS 超时", "error")
+        return False, ""
+    except Exception as e:
+        log(f"ffmpeg HLS 异常: {e}", "error")
+        return False, ""
+
+
+def safe_filename_component(s: str, max_len: int = 60) -> str:
+    """Windows 安全文件名片段：去掉 <>:"/\\|?* 及全角同形字符，限制长度。"""
+    if not s:
+        return "download"
+    s = str(s)
+    # 全角标点 → 安全替代（Errno 22 常见来源）
+    trans = str.maketrans({
+        "：": "-", "？": "", "｜": "-", "＊": "", "＂": "",
+        "“": "", "”": "", "‘": "", "’": "",
+        "＜": "", "＞": "", "／": "_", "＼": "_",
+        "<": "", ">": "", "|": "-", "?": "", "*": "",
+        "/": "_", "\\": "_", '"': "", ":": "-",
+        "\n": " ", "\r": " ", "\t": " ", "\x00": "",
+    })
+    s = s.translate(trans)
+    s = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", s)
+    s = re.sub(r"\s+", " ", s).strip(" .")
+    # 去掉 Windows 保留名
+    if s.upper() in {"CON", "PRN", "AUX", "NUL", "COM1", "LPT1"}:
+        s = f"_{s}"
+    if len(s) > max_len:
+        s = s[:max_len].rstrip(" .")
+    return s or "download"
+
+
+# -------------------- 下载引擎 --------------------
+PO_DEFAULT_URL = "http://127.0.0.1:4416"
+# 这些客户端没有 PO Token 基本拿不到流，服务不通就别浪费时间试
+PO_ONLY_CLIENTS = ("web", "mweb", "tv", "web_embedded")
+# yt-dlp 报这些通常不是链接坏了，而是播放器/BOT 校验挡路 → 值得换个 player_client
+PLAYER_ERR_KEYS = (
+    "sign in to confirm",
+    "not a bot",
+    "please sign in",
+    "login required",
+    "player response",
+    "po token",
+    "getpot",
+    "requested format is not available",
+    "precondition failed",
+    "403 forbidden",
+)
+_PO_CACHE: Dict = {"ts": 0.0, "ok": False, "installed": False, "detail": "", "url": PO_DEFAULT_URL}
+
+
+def _pot_plugin_installed() -> bool:
+    import importlib.util
+
+    for mod in ("bgutil_ytdlp_pot_provider", "bgutil_ytdlp_pot_provider_plugin"):
+        try:
+            if importlib.util.find_spec(mod) is not None:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _po_err_cn(e: Exception) -> str:
+    low = str(e or "").lower()
+    if "read timed out" in low or "readtimeout" in low:
+        return "探测超时（服务没响应）"
+    if "getaddrinfo" in low or "name resolution" in low or "failed to resolve" in low:
+        return "地址无法解析（检查服务 URL）"
+    if ("connecttimeout" in low or "max retries exceeded" in low
+            or "connection refused" in low or "newconnectionerror" in low
+            or "failed to establish" in low):
+        return "连不上该地址（服务没启动或端口不对）"
+    return str(e)[:100]
+
+
+def po_token_health(*, force: bool = False, timeout: float = 2.5,
+                    cfg_override: Optional[dict] = None) -> Dict:
+    """PO Token 服务健康门控：插件装了且 /ping 通才认为可用（结果缓存 60s）。"""
+    now = time.time()
+    src = cfg_override if isinstance(cfg_override, dict) else cfg.data  # type: ignore[name-defined]
+    url = str(src.get("po_provider_url") or PO_DEFAULT_URL).strip().rstrip("/") or PO_DEFAULT_URL
+    if not force and not src.get("po_provider_enabled"):
+        return {"ts": now, "ok": False, "installed": _PO_CACHE.get("installed", False),
+                "detail": "未启用", "url": url, "cached": True}
+    if (not force and url == str(_PO_CACHE.get("url") or "")
+            and now - float(_PO_CACHE.get("ts") or 0) < 60):
+        return dict(_PO_CACHE, cached=True)
+    installed = _pot_plugin_installed()
+    ok = False
+    detail = ""
+    try:
+        r = requests.get(url + "/ping", timeout=timeout, verify=False)
+        ok = r.status_code == 200
+        detail = f"HTTP {r.status_code} {(r.text or '').strip()[:30]}"
+        if ok and not installed:
+            detail += "（未装 bgutil 插件，拿不到票）"
+    except Exception as e:
+        detail = _po_err_cn(e)
+    _PO_CACHE.update({"ts": now, "ok": ok, "installed": installed, "detail": detail, "url": url})
+    return dict(_PO_CACHE, cached=False)
+
+
+class DownloaderEngine:
+    def __init__(self, log_cb=None, ffmpeg_mgr: FFmpegManager = None):
+        self.log = log_cb or (lambda m, level="info": print(m))
+        self.ffmpeg = ffmpeg_mgr or FFmpegManager()
+        self._stop_flags: Dict[str, bool] = {}
+        # download() 只返回 (ok, path)，失败原因先按任务暂存在这里，交给队列写进任务卡
+        self._err_notes: Dict[str, str] = {}
+        self.max_retries = 3
+        self.base_delay = 30  # 429 指数退避基数（秒）
+        self.backoff_max = 600
+        self.backoff_jitter = 0.25
+
+    def note_error(self, task_id: str, msg: str):
+        clean = re.sub(r"\x1b\[[0-9;]*m", "", str(msg or "")).strip()
+        if clean and task_id:
+            self._err_notes[task_id] = clean[:600]
+
+    def pop_error(self, task_id: str) -> str:
+        return self._err_notes.pop(task_id or "", "")
+
+    def check_ytdlp(self) -> str:
+        _prefer_local_ytdlp()
+        try:
+            import yt_dlp
+            ver = getattr(yt_dlp.version, "__version__", None) or getattr(yt_dlp, "version", None)
+            if callable(ver):
+                ver = ver()
+            if not ver:
+                from yt_dlp.version import __version__ as ver
+            # 探测是否真有 youtube 提取器
+            try:
+                from yt_dlp.extractor import gen_extractor_classes
+                names = {c.IE_NAME for c in gen_extractor_classes() if getattr(c, "IE_NAME", None)}
+                if "youtube" not in names and "Youtube" not in names:
+                    note = " (extractors incomplete!)"
+                    if YTDLP_LOCAL_PKG.is_dir():
+                        note = " (local broken)"
+                    return f"{ver}{note}"
+            except Exception:
+                pass
+            note = " (local)" if _local_ytdlp_ok() else ""
+            return f"{ver}{note}"
+        except Exception:
+            try:
+                _prefer_local_ytdlp(force_clear=True)
+                from yt_dlp.version import __version__
+                return f"{__version__} (pip)"
+            except Exception:
+                return "not found"
+
+    def update_ytdlp(self) -> str:
+        self.log(f"yt-dlp 更新 → {TOOLS_DIR}")
+        gh = ""
+        idx = ""
+        try:
+            gh = str(cfg.data.get("github_mirror") or "")
+            idx = str(cfg.data.get("pip_mirror") or "")
+        except Exception:
+            pass
+        try:
+            exe_urls = pkg_update.github_url_candidates(YTDLP_EXE_URL, gh)
+            src_urls = pkg_update.github_url_candidates(YTDLP_SRC_ZIP_URL, gh)
+            _download_with_mirrors(exe_urls, YTDLP_LOCAL_EXE, log=self.log, timeout=180)
+            _download_with_mirrors(src_urls, TOOLS_DIR / "yt_dlp_src.zip", log=self.log, timeout=300)
+            tmp_zip = TOOLS_DIR / "yt_dlp_src.zip"
+            if YTDLP_LOCAL_PKG.exists():
+                shutil.rmtree(YTDLP_LOCAL_PKG, ignore_errors=True)
+            with zipfile.ZipFile(tmp_zip, "r") as zf:
+                for name in zf.namelist():
+                    if "/yt_dlp/" not in name.replace("\\", "/"):
+                        continue
+                    parts = Path(name).parts
+                    try:
+                        idx2 = parts.index("yt_dlp")
+                    except ValueError:
+                        continue
+                    rel = Path(*parts[idx2:])
+                    dest = TOOLS_DIR / rel
+                    if name.endswith("/"):
+                        dest.mkdir(parents=True, exist_ok=True)
+                    else:
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        with zf.open(name) as src, open(dest, "wb") as dst:
+                            shutil.copyfileobj(src, dst)
+            tmp_zip.unlink(missing_ok=True)
+            _prefer_local_ytdlp()
+            ver = self.check_ytdlp()
+            self.log(f"yt-dlp 已就绪: {ver}")
+            return "updated"
+        except Exception as e:
+            self.log(f"yt-dlp 直连/镜像下载都失败: {e}，改用 pip 更新", "warning")
+            ok, res = pkg_update.pip_install(["yt-dlp"], log=self.log, mirror=idx)
+            if ok:
+                _prefer_local_ytdlp(force_clear=True)
+                return "updated (pip)"
+            return str(res)
+
+    def _cookie_source(self, cfg: dict, url: str = "") -> tuple:
+        """该 URL 实际能用的 Cookie：("browser", 浏览器名) / ("file", 路径) / (None, None)。
+        只选了来源但文件不存在时算「没有 Cookie」。"""
+        plat = detect_platform(url) if url else "default"
+        pc = (cfg.get("platform_cookies") or {}).get(plat) or {}
+        src = (pc.get("source") or cfg.get("cookie_source") or "none").strip().lower()
+        if src == "browser":
+            return "browser", (pc.get("browser") or cfg.get("cookie_browser") or "chrome").strip().lower()
+        if src == "file":
+            f = (pc.get("file") or cfg.get("cookie_file") or "").strip()
+            if not f:
+                f = str(platform_cookie_path(plat))
+            if f and Path(f).exists():
+                return "file", f
+        return None, None
+
+    def _yt_player_chain(self, cfg: dict, url: str = "") -> Tuple[List[str], str]:
+        """YouTube player_client 回退链：按设置顺序，Cookie/PO 健康度会剪掉注定失败的客户端。"""
+        raw = str(cfg.get("yt_player_clients") or "default,web_safari,android,ios,tv")
+        chain = [x.strip().lower() for x in re.split(r"[,\n/]| +", raw) if x.strip()]
+        chain = list(dict.fromkeys(chain)) or ["default"]
+        notes = []
+        if self._cookie_source(cfg, url)[0]:
+            kept = [c for c in chain if c not in ("android", "ios")]
+            if kept and len(kept) != len(chain):
+                notes.append("带 Cookie，已跳过 android/ios")
+            chain = kept or ["default"]
+        po_on = bool(cfg.get("po_provider_enabled"))
+        if po_on and not po_token_health(cfg_override=cfg)["ok"]:
+            kept = [c for c in chain if c not in PO_ONLY_CLIENTS]
+            if kept and len(kept) != len(chain):
+                notes.append("PO Token 服务未响应，已跳过 " + "/".join(PO_ONLY_CLIENTS))
+            chain = kept or chain
+        return chain, "；".join(notes)
+
+    def _log_proxy_decision(self, task_id: str, url: str, cfg: dict):
+        key = proxy_platform_key(url)
+        ov = (cfg.get("proxy_by_platform") or {}).get(key)
+        mode, px = proxy_decision(url, cfg_data=cfg)
+        tp = task_proxy_override(cfg)
+        txt = f"任务指定 {tp}" if tp else ({"proxy": f"走 {px}", "direct": "强制直连"}.get(mode) or "跟随系统")
+        self.log(
+            f"[{task_id[:8]}] 代理: {txt}"
+            f"（{key}，{'手动覆写' if isinstance(ov, bool) else cfg.get('proxy_mode') or 'auto'}）"
+        )
+
+    def _ydl_opts(self, cfg: dict, *, for_info: bool = False, player_clients=None, url: str = "") -> dict:
+        opts: dict = {
+            "quiet": True,
+            "no_warnings": True,
+            "noprogress": for_info,
+            "noplaylist": for_info,
+            "ignore_no_formats_error": True,
+            "skip_download": for_info,
+            "socket_timeout": 30,
+            "retries": 3,
+            "fragment_retries": 3,
+            "extractor_retries": 3,
+        }
+        # SSL：国内 CDN Hostname mismatch 极常见，默认跳过证书校验
+        # （含 live.bilibili 实际拉到 bytefcdn 等节点）
+        if cfg.get("nocheckcertificate", True) is not False:
+            opts["nocheckcertificate"] = True
+            try:
+                opts["legacy_server_connect"] = True
+            except Exception:
+                pass
+            # 全局放宽 Python SSL（yt-dlp/urllib 均受益）
+            try:
+                import ssl as _ssl
+                _ssl._create_default_https_context = _ssl._create_unverified_context
+            except Exception:
+                pass
+        # 风控 UA + 任务级 http_headers（中途可改）
+        hdrs = dict(cfg.get("http_headers") or {})
+        ua = (cfg.get("risk_user_agent") or cfg.get("user_agent") or "").strip()
+        if ua and "User-Agent" not in hdrs:
+            hdrs["User-Agent"] = ua
+        if cfg.get("referer") and "Referer" not in hdrs:
+            hdrs["Referer"] = cfg.get("referer")
+        if cfg.get("cookie") and "Cookie" not in hdrs:
+            hdrs["Cookie"] = cfg.get("cookie")
+        if hdrs:
+            opts["http_headers"] = hdrs
+        # 多平台 Cookie：按 URL 域名优先
+        ck_kind, ck_val = self._cookie_source(cfg, url)
+        if player_clients is None and not ck_kind:
+            player_clients, _note = self._yt_player_chain(cfg, url)
+            player_clients = player_clients[:1]
+        if player_clients is not None:
+            ea = dict(opts.get("extractor_args") or {})
+            yt = dict(ea.get("youtube") or {})
+            yt["player_client"] = list(player_clients)
+            ea["youtube"] = yt
+            opts["extractor_args"] = ea
+        ffdir = self.ffmpeg.location_for_ytdlp()
+        if ffdir:
+            opts["ffmpeg_location"] = ffdir
+        # 代理：任务级覆写最优先，其次按平台策略（ydl_proxy_opt 返回 "" 是 yt-dlp 的强制直连
+        # 语义，None 才是不干预）
+        tp = task_proxy_override(cfg)
+        px = tp or ydl_proxy_opt(url)
+        if px is not None:
+            opts["proxy"] = px
+        if ck_kind == "browser":
+            opts["cookiesfrombrowser"] = (ck_val, None, None, None)
+        elif ck_kind == "file":
+            opts["cookiefile"] = ck_val
+        if for_info:
+            return opts
+        # 是否下载播放列表（默认否：只下单条）
+        opts["noplaylist"] = not bool(cfg.get("allow_playlist", False))
+        # 播放列表区间（lux 风格 start/end/items）
+        try:
+            ps = int(cfg.get("playlist_start") or 0)
+            if ps > 0:
+                opts["playliststart"] = ps
+                opts["noplaylist"] = False
+        except Exception:
+            pass
+        try:
+            pe = int(cfg.get("playlist_end") or 0)
+            if pe > 0:
+                opts["playlistend"] = pe
+                opts["noplaylist"] = False
+        except Exception:
+            pass
+        items = (cfg.get("playlist_items") or "").strip()
+        if items:
+            opts["playlist_items"] = items
+            opts["noplaylist"] = False
+        opts["updatetime"] = False
+        # 限速：任务级优先，否则全局限速（如 2M / 500K）
+        sl = (cfg.get("speed_limit") or cfg.get("global_speed_limit") or "").strip().upper()
+        if sl:
+            try:
+                if sl.endswith("M"):
+                    opts["ratelimit"] = int(float(sl[:-1]) * 1024 * 1024)
+                elif sl.endswith("K"):
+                    opts["ratelimit"] = int(float(sl[:-1]) * 1024)
+                else:
+                    opts["ratelimit"] = int(float(sl))
+            except Exception:
+                pass
+        # 写出描述 / info.json
+        if cfg.get("write_description"):
+            opts["writedescription"] = True
+        if cfg.get("write_info_json"):
+            opts["writeinfojson"] = True
+        # 跳过已下载（MediaSync 同类能力）
+        if cfg.get("skip_downloaded", True):
+            arch = Path(cfg.get("download_dir") or DEFAULT_DOWNLOAD_DIR) / "download_archive.txt"
+            try:
+                arch.parent.mkdir(parents=True, exist_ok=True)
+                opts["download_archive"] = str(arch)
+            except Exception:
+                pass
+        # 嵌入类选项：embedthumbnail / embedmetadata / sponsorblock_remove 这些名字只是
+        # 命令行参数，CLI 层会把它们翻译成 postprocessors 再交给 YoutubeDL；当 params 直接
+        # 传进去没人读，所以必须走 postprocessors，否则「嵌入…」全是空操作。
+        pps: List[Dict[str, Any]] = []
+        sb = (cfg.get("sponsorblock") or "off").strip().lower()
+        if sb in ("remove", "mark"):
+            sb_cats = set(SB_CATEGORIES.split(","))
+            pps.append({"key": "SponsorBlock", "categories": sb_cats, "when": "after_filter"})
+            pps.append({
+                "key": "ModifyChapters",
+                "remove_sponsor_segments": sb_cats if sb == "remove" else set(),
+            })
+        if cfg.get("embed_meta", True) or cfg.get("embed_chapters", True):
+            pps.append({
+                "key": "FFmpegMetadata",
+                "add_metadata": bool(cfg.get("embed_meta", True)),
+                "add_chapters": bool(cfg.get("embed_chapters", True)),
+            })
+        # EmbedThumbnailPP 只负责「把已落到磁盘的缩略图塞进容器」；缩略图没人下载时
+        # 它只会说一句 "There are no thumbnails on disk" 就静默跳过。CLI 的
+        # --embed-thumbnail 会顺手打开 writethumbnail，直传 params 时得自己做。
+        if cfg.get("embed_thumb", True):
+            opts["writethumbnail"] = True
+            pps.append({"key": "EmbedThumbnail", "already_have_thumbnail": False})
+        if pps:
+            opts["postprocessors"] = pps
+        return opts
+
+    @staticmethod
+    def _resolve_format(media, video_q, audio_q, audio_only, prefer_codec: str = "auto"):
+        """
+        生成 yt-dlp format 选择串。
+        注意：YouTube 上仅返回 progressive（如 format 18=360p）时，不能直接用 format_id，
+        必须用 bv*+ba 表达式让 yt-dlp 再协商自适应流，否则会一直下到 360p。
+        """
+        audio_cap = {"320k": 320, "256k": 256, "192k": 192, "128k": 128}.get(audio_q)
+        pref = (prefer_codec or "auto").lower()
+        if pref == "avc":
+            codec_f = "[vcodec^=avc1][vcodec^=avc]"
+            # yt-dlp 过滤器用 / 串联备选
+            vcodec_pref = "[vcodec^=avc1]/[vcodec*=avc]"
+        elif pref == "vp9":
+            vcodec_pref = "[vcodec*=vp9]/[vcodec*=vp09]"
+        elif pref == "av1":
+            vcodec_pref = "[vcodec*=av01]/[vcodec*=av1]"
+        else:
+            vcodec_pref = ""
+
+        if audio_only:
+            if audio_cap:
+                return f"ba[abr<={audio_cap}]/bestaudio/best"
+            return "bestaudio/best"
+
+        height_map = {"4K": 2160, "1440p": 1440, "1080p": 1080, "720p": 720, "480p": 480, "360p": 360}
+        max_h = height_map.get(video_q)
+
+        # 检查列表里是否有真正的「分离视频流」（非 progressive）
+        separate_vids = [
+            f for f in (media or [])
+            if f.get("vcodec") and f.get("vcodec") != "none"
+            and (not f.get("acodec") or f.get("acodec") == "none")
+            and (f.get("height") or 0) > 0
+        ]
+        best_listed_h = max((f.get("height") or 0 for f in separate_vids), default=0)
+
+        # 列表只有低清 progressive（常见于客户端受限只返回 format 18）时，强制用表达式
+        use_expr = True
+        if separate_vids and best_listed_h >= (max_h or 1080):
+            # 列表足够完整时，可精确拼 format_id
+            vids = separate_vids
+            if max_h:
+                vids = [f for f in vids if (f.get("height") or 0) <= max_h] or vids
+            if vcodec_pref:
+                keys = {"avc": ("avc", "h264", "avc1"), "vp9": ("vp9", "vp09"), "av1": ("av01", "av1")}.get(pref, ())
+                filtered = [f for f in vids if any(k in (f.get("vcodec") or "").lower() for k in keys)]
+                if filtered:
+                    vids = filtered
+            auds = [
+                f for f in (media or [])
+                if f.get("acodec") and f.get("acodec") != "none"
+                and (not f.get("vcodec") or f.get("vcodec") == "none")
+            ]
+            if audio_cap:
+                capped = [f for f in auds if (f.get("abr") or f.get("tbr") or 9999) <= audio_cap]
+                if capped:
+                    auds = capped
+            if vids and auds:
+                v0 = sorted(vids, key=lambda f: (f.get("height") or 0, f.get("tbr") or 0), reverse=True)[0]
+                a0 = sorted(auds, key=lambda f: f.get("abr") or f.get("tbr") or 0, reverse=True)[0]
+                return f"{v0['format_id']}+{a0['format_id']}"
+
+        # 默认：可靠的 format 表达式（避免锁死在 360p progressive）
+        if max_h:
+            if vcodec_pref:
+                return (
+                    f"bv*{vcodec_pref}[height<={max_h}]+ba/"
+                    f"bv*[height<={max_h}]+ba/"
+                    f"b[height<={max_h}]/bv*+ba/b"
+                )
+            return f"bv*[height<={max_h}]+ba/b[height<={max_h}]/bv*+ba/b"
+        # best
+        if vcodec_pref:
+            return f"bv*{vcodec_pref}+ba/bv*+ba/b"
+        return "bv*+ba/b"
+
+    # 解析结果短缓存，避免重复点「解析」反复打平台
+    _info_cache: Dict[str, tuple] = {}
+    _INFO_CACHE_TTL = 180  # 秒
+
+    def get_info(self, url: str, cfg: dict) -> Optional[Dict]:
+        import yt_dlp
+        import time as _time
+
+        url = normalize_url(url)
+        cache_key = url
+        now = _time.time()
+        cached = self._info_cache.get(cache_key)
+        if cached and now - cached[0] < self._INFO_CACHE_TTL:
+            return cached[1]
+
+        # 抖音/TikTok 短链展开（限制超时）
+        try:
+            if any(x in url.lower() for x in ("v.douyin.com", "v.kuaishou.com", "vm.tiktok.com")):
+                kw = {"timeout": 8, "allow_redirects": True, "headers": {"User-Agent": _BILI_HEADERS["User-Agent"]}}
+                pr = http_proxies(url, task_proxy_override(cfg))
+                if pr:
+                    kw["proxies"] = pr
+                r = requests.get(url, **kw)
+                if r.url:
+                    url = normalize_url(r.url)
+        except Exception:
+            pass
+
+        low = url.lower()
+        is_youtube = any(x in low for x in ("youtube.com", "youtu.be", "youtube-nocookie.com"))
+        is_bili = "bilibili.com" in low or "b23.tv" in low
+        # YouTube 才多客户端；其它平台一次即可（失败再补 1 次）
+        if is_youtube:
+            # 带 Cookie 时 yt-dlp 会跳过 android/ios（这两个客户端不支持 Cookie）。
+            # default 给完整 DASH（可到 4K，且带 filesize）；web_safari 给 HLS，
+            # 部分被限制的视频只从 HLS 吐高清。两者一次取并集最稳。
+            yt_has_ck = bool(self._cookie_source(cfg, url)[0])
+            first = ["default", "web_safari"]
+            if yt_has_ck:
+                client_tries = [first, None]
+            else:
+                client_tries = [first, ["android", "web"], ["ios", "web"], None]
+        else:
+            client_tries = [None]
+
+        last_err = None
+        used_fallback_pip = False
+
+        def _run_tries():
+            nonlocal last_err
+            import yt_dlp
+
+            for clients in client_tries:
+                try:
+                    opts = self._ydl_opts(cfg, for_info=True, player_clients=clients, url=url)
+                    opts.pop("format", None)
+                    opts["socket_timeout"] = 12
+                    opts["retries"] = 1
+                    opts["fragment_retries"] = 1
+                    opts["extractor_retries"] = 1
+                    opts["skip_download"] = True
+                    opts["extract_flat"] = "in_playlist"
+                    opts["writesubtitles"] = False
+                    opts["writeautomaticsub"] = False
+                    opts["ignoreerrors"] = True
+                    with yt_dlp.YoutubeDL(opts) as ydl:
+                        info = ydl.extract_info(url, download=False)
+                        if not info:
+                            continue
+                        if info.get("_type") == "playlist" or "entries" in info:
+                            entries = [e for e in (info.get("entries") or []) if e]
+                            # 空列表时再试一次非 flat
+                            if not entries:
+                                try:
+                                    opts2 = dict(opts)
+                                    opts2["extract_flat"] = False
+                                    opts2["playlistend"] = 100
+                                    with yt_dlp.YoutubeDL(opts2) as ydl2:
+                                        info2 = ydl2.extract_info(url, download=False)
+                                    if info2:
+                                        entries = [e for e in (info2.get("entries") or []) if e]
+                                        info = info2
+                                except Exception as _:
+                                    pass
+                            result = {
+                                "_type": "playlist",
+                                "title": info.get("title") or "Playlist",
+                                "uploader": info.get("uploader") or info.get("channel") or "",
+                                "webpage_url": info.get("webpage_url") or url,
+                                "thumbnail": info.get("thumbnail") or "",
+                                "entries": entries,
+                                "_md_clients": clients,
+                            }
+                            self._info_cache[cache_key] = (now, result)
+                            return result
+                        fmts = info.get("formats") or []
+                        if is_youtube and not fmts:
+                            last_err = "No video formats found"
+                            self.log(f"客户端 {clients} 无格式，尝试下一个", "warning")
+                            continue
+                        # YouTube：评估最高可用高度（兼容 height 缺失、仅有 resolution 的情况）
+                        if is_youtube and fmts:
+                            def _h(ff):
+                                h = ff.get("height") or 0
+                                if h:
+                                    return int(h)
+                                res = str(ff.get("resolution") or "")
+                                m = re.search(r"(\d{3,4})", res)
+                                return int(m.group(1)) if m else 0
+
+                            sep_h = 0
+                            any_h = 0
+                            for f in fmts:
+                                vc = (f.get("vcodec") or "none")
+                                ac = (f.get("acodec") or "none")
+                                hh = _h(f)
+                                any_h = max(any_h, hh)
+                                # 分离视频流，或带高度的视频轨
+                                if vc != "none" and (ac == "none" or hh >= 720):
+                                    sep_h = max(sep_h, hh)
+                            # 只有确实「什么高清都没有」才换客户端；不要误杀 1080 列表
+                            if any_h >= 720 or sep_h >= 480:
+                                info["_md_clients"] = clients
+                                self._info_cache[cache_key] = (now, info)
+                                return info
+                            last_err = f"only low progressive (any_h={any_h}, sep_h={sep_h})"
+                            self.log(
+                                f"客户端 {clients} 最高约 {any_h}p，尝试下一个",
+                                "warning",
+                            )
+                            info["_md_clients"] = clients
+                            if not getattr(self, "_info_fallback", None):
+                                self._info_fallback = info
+                            continue
+                        info["_md_clients"] = clients
+                        self._info_cache[cache_key] = (now, info)
+                        return info
+                except Exception as e:
+                    last_err = str(e)
+                    err_l = last_err.lower()
+                    # 本地 yt_dlp 损坏时立即跳出，改用 pip 版
+                    if "no suitable extractor" in err_l or "unsupported url" in err_l:
+                        raise
+                    continue
+            return None
+
+        self._info_fallback = None
+        try:
+            result = _run_tries()
+            if result:
+                return result
+        except Exception as e:
+            last_err = str(e)
+
+        # 回退：丢弃可能损坏的 tools/yt_dlp，改用系统/pip 安装的版本
+        if last_err and ("no suitable extractor" in last_err.lower() or "unsupported url" in last_err.lower()):
+            self.log("本地 yt-dlp 可能损坏，回退到系统/pip 版本重试", "warning")
+            try:
+                _prefer_local_ytdlp(force_clear=True)
+                used_fallback_pip = True
+                result = _run_tries()
+                if result:
+                    return result
+            except Exception as e:
+                last_err = str(e)
+
+        # 所有客户端都只有低清时，退回最后一次可用信息（仍可下 360p，总比失败强）
+        if getattr(self, "_info_fallback", None):
+            fb = self._info_fallback
+            self._info_fallback = None
+            self.log("未能拿到高清格式列表，将使用可用的低清/渐进流", "warning")
+            self._info_cache[cache_key] = (now, fb)
+            return fb
+
+        if last_err:
+            tip = " | 请点「更新 yt-dlp」或 pip install -U yt-dlp" if used_fallback_pip or "extractor" in last_err.lower() else ""
+            self.log(f"提取失败: {last_err[:160]}{tip}", "warning")
+        return None
+
+    def download(
+        self,
+        task_id: str,
+        url: str,
+        out_dir: str,
+        cfg: dict,
+        video_q: str,
+        audio_q: str,
+        fmt: str,
+        audio_only: bool,
+        embed_sub: bool,
+        sub_langs: str = "all",
+        progress_cb=None,
+        force_format: str = None,
+        download_section: str = None,
+        is_live: bool = False,
+    ):
+        self._stop_flags[task_id] = False
+        self._err_notes.pop(task_id, None)
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+        orig_url = url
+        url = normalize_url(url)
+        if url != orig_url:
+            self.log(f"[{task_id[:8]}] URL 规范化: {orig_url} → {url}")
+        self.log(f"[{task_id[:8]}] 开始: {url}")
+        self._log_proxy_decision(task_id, url, cfg)
+        retry_count = 0
+        try:
+            self.max_retries = max(0, int(cfg.get("max_retries") or self.max_retries or 3))
+        except Exception:
+            pass
+        skip_subtitles = False
+
+        low0 = (url or "").lower()
+
+        # —— 先判 HLS（含 master.txt 伪装），再判 CDN 直链，避免把播放列表存成 .bin ——
+        is_disguised_hls = bool(
+            re.search(
+                r"(master|index|playlist|chunklist)[^/]*\.(txt|m3u)(\?|$)",
+                low0,
+            )
+            or ("/hls" in low0 and (".txt" in low0 or ".m3u" in low0))
+            or ("/hls" in low0 and ".urlset" in low0)
+            or "/hls3/" in low0
+            or "/hls/" in low0
+        )
+        is_dash = ".mpd" in low0 or low0.endswith(".mpd") or "/dash/" in low0
+        is_pure_hls = (
+            ".m3u8" in low0
+            or low0.endswith("m3u8")
+            or is_disguised_hls
+            or "application/vnd.apple.mpegurl" in low0
+            or is_dash  # DASH 也走 N_m3u8DL-RE / ffmpeg 专用路径
+        )
+        use_hls = bool(cfg.get("use_hls_engine")) or (
+            is_pure_hls
+            and not any(x in low0 for x in ("youtube.com", "youtu.be", "bilibili.com/video", "b23.tv"))
+        )
+        if is_dash:
+            self.log(f"[{task_id[:8]}] 检测到 DASH/MPD，使用流媒体专用引擎")
+
+        # 嗅探到的 CDN 直链（bilivideo m4s/mp4 等）：禁止走 yt-dlp generic
+        is_direct_cdn = bool(cfg.get("direct_cdn")) or (
+            ".m4s" in low0
+            or "bilivideo.com" in low0
+            or "mcdn.bilivideo" in low0
+            or "upos-" in low0
+            or "googlevideo.com" in low0
+            or "douyinvod" in low0
+        )
+        # 排除：页面 URL、以及 HLS 播放列表（绝不能当二进制直存）
+        if (
+            "bilibili.com/video" in low0
+            or "bilibili.com/bangumi" in low0
+            or is_pure_hls
+            or is_disguised_hls
+        ):
+            is_direct_cdn = False
+
+        if is_direct_cdn and not is_live:
+            title_hint = safe_filename_component(
+                cfg.get("_title") or Path(url.split("?")[0]).stem or "cdn", 60
+            )
+            dest = Path(out_dir) / f"{title_hint}.bin"
+            if ".m4s" in low0:
+                dest = dest.with_suffix(".m4s")
+            elif ".mp4" in low0:
+                dest = dest.with_suffix(".mp4")
+            elif ".flv" in low0:
+                dest = dest.with_suffix(".flv")
+            try:
+                self.log(f"[{task_id[:8]}] CDN 直链下载（绕过 yt-dlp）…")
+                if progress_cb:
+                    try:
+                        progress_cb(task_id, 5, "", "")
+                    except Exception:
+                        pass
+                used_aria = False
+                try_aria = bool(cfg.get("aria2_enabled"))
+                # 未全局开启时，若本机 aria2 在线且为常见大文件后缀，仍尝试
+                if not try_aria and int(cfg.get("aria2_for_large_mb") or 0) > 0:
+                    if any(x in low0 for x in (".mp4", ".mkv", ".zip", ".flv", ".webm")):
+                        try_aria = True
+                if try_aria:
+                    try:
+                        from aria2_client import Aria2Client
+                        ac = Aria2Client(
+                            rpc_url=cfg.get("aria2_rpc") or "http://127.0.0.1:6800/jsonrpc",
+                            secret=cfg.get("aria2_secret") or "",
+                        )
+                        if ac.ping():
+                            hdrs = [
+                                "User-Agent: Mozilla/5.0",
+                                "Referer: https://www.bilibili.com",
+                            ]
+                            gid = ac.add_uri(
+                                [url],
+                                out_dir=str(Path(out_dir)),
+                                filename=dest.name,
+                                headers=hdrs,
+                                split=int(cfg.get("aria2_split") or 8),
+                            )
+                            self.log(f"[{task_id[:8]}] aria2 任务 {gid}")
+                            for _ in range(7200):
+                                if self._stop_flags.get(task_id):
+                                    ac.remove(gid)
+                                    break
+                                st = ac.tell_status(gid)
+                                status = (st.get("status") or "")
+                                completed = int(st.get("completedLength") or 0)
+                                total = int(st.get("totalLength") or 0) or 1
+                                if progress_cb:
+                                    try:
+                                        progress_cb(task_id, min(99, completed * 100 / total), "", "")
+                                    except Exception:
+                                        pass
+                                if status == "complete":
+                                    used_aria = True
+                                    break
+                                if status in ("error", "removed"):
+                                    raise RuntimeError(st.get("errorMessage") or "aria2 error")
+                                time.sleep(1)
+                    except Exception as ae:
+                        self.log(f"[{task_id[:8]}] aria2 不可用/失败: {ae}，回退 HTTP", "warning")
+                if not used_aria:
+                    _download_url_to_file(
+                        url,
+                        dest,
+                        proxy=task_proxy_override(cfg),
+                        referer="https://www.bilibili.com",
+                    )
+                if dest.exists() and dest.stat().st_size > 0:
+                    if progress_cb:
+                        try:
+                            progress_cb(task_id, 100, "", "")
+                        except Exception:
+                            pass
+                    self.log(f"[{task_id[:8]}] CDN 完成: {dest.name} ({dest.stat().st_size // 1024} KB)")
+                    return True, str(dest)
+                self.log(f"[{task_id[:8]}] CDN 下载文件为空", "warning")
+            except Exception as e:
+                self.log(f"[{task_id[:8]}] CDN 直链失败: {e}，尝试其它方式", "warning")
+
+        # 嗅探到的纯 HLS：专用引擎（N_m3u8DL-RE / ffmpeg）解析分片
+        if use_hls and is_pure_hls and not is_live:
+            title_hint = safe_filename_component(
+                cfg.get("_title") or Path(url.split("?")[0]).stem or "hls", 60
+            )
+            hls_headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+                ),
+                "Accept": "*/*",
+            }
+            # 伪装 txt 播放列表常见于成人站 CDN，带 Referer 降低 403
+            if is_disguised_hls or ".txt" in low0:
+                try:
+                    from urllib.parse import urlparse
+                    host = urlparse(url).hostname or ""
+                    if host:
+                        hls_headers["Referer"] = f"https://{host}/"
+                        hls_headers["Origin"] = f"https://{host}"
+                except Exception:
+                    pass
+            ok, path = download_hls_with_engine(
+                m3u8_url=url,
+                out_dir=out_dir,
+                title=title_hint,
+                proxy=task_proxy_override(cfg),
+                headers=hls_headers,
+                log=lambda m, level="info": self.log(f"[{task_id[:8]}] {m}", level),
+                stop_flag=lambda: bool(self._stop_flags.get(task_id)),
+                progress_cb=progress_cb,
+                task_id=task_id,
+                key_info=str(cfg.get("hls_key") or ""),
+            )
+            if ok and path:
+                if progress_cb:
+                    try:
+                        progress_cb(task_id, 100, "", "")
+                    except Exception:
+                        pass
+                return True, path
+            # 伪装 txt / 纯 HLS 再走 yt-dlp 几乎必然卡死或 403，直接失败
+            if is_disguised_hls or is_pure_hls:
+                self.log(
+                    f"[{task_id[:8]}] HLS 引擎失败且不再回退 yt-dlp（请确认 N_m3u8DL-RE/ffmpeg、链接未过期）",
+                    "error",
+                )
+                return False, ""
+            self.log(f"[{task_id[:8]}] 专用 HLS 引擎未成功，回退 yt-dlp", "warning")
+
+        pc_chain: List[str] = []
+        if "youtube.com" in url.lower() or "youtu.be" in url.lower():
+            pc_chain, pc_note = self._yt_player_chain(cfg, url)
+            if pc_note:
+                self.log(f"[{task_id[:8]}] YouTube 客户端链 {pc_chain}（{pc_note}）")
+            else:
+                self.log(f"[{task_id[:8]}] YouTube 客户端链: {' → '.join(pc_chain)}")
+
+        while retry_count <= self.max_retries:
+            try:
+                import yt_dlp
+
+                # 下载前清掉解析缓存，避免沿用「不完整 formats」导致锁死 360p
+                try:
+                    self._info_cache.pop(url, None)
+                    self._info_cache.pop(normalize_url(url), None)
+                except Exception:
+                    pass
+                low = url.lower()
+                is_yt = "youtube.com" in low or "youtu.be" in low
+                is_bili_live = "live.bilibili.com" in low
+                clients = None
+                max_listed = 0
+                media = []
+                info = None
+                # 直播：解析失败也继续用 best 尝试录制（房间可能稍后开播）
+                if not is_live:
+                    info = self.get_info(url, cfg)
+                    if self._stop_flags.get(task_id):
+                        return False, ""
+                    if not info:
+                        raise RuntimeError(
+                            "无法提取媒体信息（可尝试：更新 yt-dlp、配置有效 Cookie、检查代理/地区限制）"
+                        )
+                    clients = info.get("_md_clients")
+                    fmts = info.get("formats") or []
+                    media = [
+                        f
+                        for f in fmts
+                        if (f.get("vcodec") and f.get("vcodec") != "none")
+                        or (f.get("acodec") and f.get("acodec") != "none")
+                    ]
+                    for f in media:
+                        if f.get("vcodec") and f.get("vcodec") != "none":
+                            max_listed = max(max_listed, f.get("height") or 0)
+                else:
+                    self.log(f"[{task_id[:8]}] 直播模式：跳过预解析，直接录制")
+                    try:
+                        # 轻量探测标题（失败忽略）
+                        info = self.get_info(url, cfg)
+                    except Exception:
+                        info = None
+
+                if force_format:
+                    format_sel = str(force_format).strip()
+                    self.log(f"[{task_id[:8]}] 指定格式: {format_sel}")
+                elif is_live:
+                    # 直播流用 best，避免 bv* 在直播上失败
+                    format_sel = "best/bestvideo+bestaudio/best"
+                    self.log(f"[{task_id[:8]}] 直播格式: {format_sel}")
+                elif is_yt and not audio_only:
+                    format_sel = self._resolve_format(
+                        [], video_q, audio_q, audio_only, cfg.get("prefer_codec", "auto")
+                    )
+                    if pc_chain:
+                        pci = max(0, min(int(cfg.get("_pc_idx") or 0), len(pc_chain) - 1))
+                        clients = [pc_chain[pci]]
+                    else:
+                        clients = None
+                    self.log(f"[{task_id[:8]}] YouTube 使用格式表达式: {format_sel}（列表最高约 {max_listed}p）")
+                else:
+                    format_sel = self._resolve_format(
+                        media, video_q, audio_q, audio_only, cfg.get("prefer_codec", "auto")
+                    )
+                # 过长/含全角非法字符的标题在 Windows 会触发 Errno 22 Invalid argument
+                # 若已有 info，预先净化 title/id，拼成固定安全路径（比仅靠 windowsfilenames 更稳）
+                # 但合集/播放列表拿到的 info 是容器：title 整表相同、id 为空（会退化成任务号），
+                # 拼成固定名等于让每条分集写进同一个路径互相覆盖，只能交给模板逐条展开
+                is_pl_info = bool(info) and (
+                    info.get("_type") in ("playlist", "multi_video") or bool(info.get("entries"))
+                )
+                if info and not is_pl_info and (info.get("title") or info.get("id")):
+                    safe_title = safe_filename_component(info.get("title") or "video", 60)
+                    safe_id = safe_filename_component(str(info.get("id") or task_id[:8]), 40)
+                    out_tmpl = str(Path(out_dir) / f"{safe_title} [{safe_id}].%(ext)s")
+                else:
+                    template = cfg.get("filename_template") or "%(title).60B [%(id)s].%(ext)s"
+                    template = template.replace("/", "_").replace("\\", "_").replace("\0", "")
+                    out_tmpl = str(Path(out_dir) / template)
+                opts = self._ydl_opts(cfg, for_info=False, player_clients=clients, url=url)
+                opts["outtmpl"] = out_tmpl
+                if opts.get("writethumbnail"):
+                    # 与 CLI 一致：嵌封面要写缩略图文件，但播放列表级的那张不要
+                    opts["outtmpl"] = {"default": out_tmpl, "pl_thumbnail": ""}
+                # Windows 禁字符（含 ：？｜＊等）再兜一层
+                opts["windowsfilenames"] = True
+                opts["restrictfilenames"] = False  # 保留中文，只净化禁字符
+                opts["format"] = format_sel
+                opts["format_sort"] = ["res", "tbr"]
+                opts["ignoreerrors"] = False
+                opts["skip_download"] = False
+                opts["prefer_ffmpeg"] = True
+                # 分片并发（加速大文件）
+                try:
+                    nfrag = int(cfg.get("concurrent_fragments") or 0)
+                    if nfrag > 1:
+                        opts["concurrent_fragment_downloads"] = min(nfrag, 16)
+                except Exception:
+                    pass
+                # 直播录制
+                if is_live:
+                    opts.pop("download_archive", None)
+                    opts["noplaylist"] = True
+                    opts["retries"] = 15
+                    opts["fragment_retries"] = 15
+                    # 不用 .part，中断时也更容易得到可改名的成品
+                    opts["nopart"] = True
+                    opts["continuedl"] = True
+                    # 直播 HLS/fmp4：用 mpegts，避免 fmp4 扩展名被安全策略跳过
+                    opts["hls_use_mpegts"] = True
+                    opts["allow_unplayable_formats"] = True
+                    # 输出用 ts/mkv，避免 ext=fmp4 被拒
+                    if (fmt or "").lower() in ("", "mp4", "mkv", "best"):
+                        opts["merge_output_format"] = "mkv"
+                    # YouTube 等：同步写入 live_chat 字幕（聊天记录）
+                    try:
+                        opts["writesubtitles"] = True
+                        opts["subtitleslangs"] = list(
+                            dict.fromkeys(
+                                list(opts.get("subtitleslangs") or []) + ["live_chat"]
+                            )
+                        )
+                        opts["subtitlesformat"] = "json3/json/vtt/best"
+                    except Exception:
+                        pass
+                    # 直播不写字幕轨（避免多余请求；弹幕走独立抓取）
+                    opts.pop("writesubtitles", None)
+                    opts.pop("writeautomaticsub", None)
+                    opts.pop("subtitleslangs", None)
+                    opts["postprocessors"] = [
+                        p for p in (opts.get("postprocessors") or [])
+                        if p.get("key") != "FFmpegEmbedSubtitle"
+                    ]
+                    # 按平台流偏好选择 format
+                    stream_pref = live_stream_pref_for_url(url, cfg)
+                    # 失败回退时换另一种偏好
+                    if cfg.get("_live_pref_fallback"):
+                        alt = {"flv": "hls", "hls": "flv", "dash": "hls"}.get(stream_pref, "auto")
+                        stream_pref = alt
+                        self.log(f"[{task_id[:8]}] 流偏好回退 → {stream_pref}")
+                    format_sel = live_format_selector(stream_pref)
+                    opts["format"] = format_sel
+                    self.log(f"[{task_id[:8]}] 直播流偏好={stream_pref} format={format_sel}")
+                    # B站直播
+                    if is_bili_live:
+                        opts.pop("live_from_start", None)
+                        if cfg.get("_live_ffmpeg_ssl") or stream_pref == "flv":
+                            # FLV 或 SSL 回退：ffmpeg 拉流
+                            opts["external_downloader"] = {
+                                "default": "ffmpeg",
+                                "m3u8": "ffmpeg",
+                                "http_dash_segments": "ffmpeg",
+                            }
+                            ff_args = [
+                                "-reconnect", "1",
+                                "-reconnect_streamed", "1",
+                                "-reconnect_delay_max", "5",
+                            ]
+                            if cfg.get("nocheckcertificate", True) is not False:
+                                ff_args += ["-tls_verify", "0"]
+                            opts["external_downloader_args"] = {"ffmpeg": ff_args}
+                            self.log(f"[{task_id[:8]}] B站直播录制（ffmpeg，偏好={stream_pref}）")
+                        else:
+                            opts.pop("external_downloader", None)
+                            opts.pop("external_downloader_args", None)
+                            opts["hls_prefer_native"] = True
+                            self.log(f"[{task_id[:8]}] B站直播录制（原生，偏好={stream_pref}）")
+                    else:
+                        if cfg.get("live_from_start", True) and (
+                            "youtube.com" in low or "youtu.be" in low
+                        ):
+                            opts["live_from_start"] = True
+                        try:
+                            opts["wait_for_video"] = (5, 60)
+                        except Exception:
+                            pass
+                        self.log(
+                            f"[{task_id[:8]}] 直播录制 偏好={stream_pref} "
+                            f"从开头={bool(cfg.get('live_from_start', True))}"
+                        )
+                # 片段下载：*开始-结束，如 *01:00-02:30
+                sec = (download_section or cfg.get("download_section") or "").strip()
+                if sec:
+                    if not sec.startswith("*"):
+                        sec = "*" + sec
+                    try:
+                        from yt_dlp.utils import download_range_func
+                        opts["download_ranges"] = download_range_func(None, [sec])
+                        self.log(f"[{task_id[:8]}] 片段裁剪: {sec}")
+                    except Exception as e:
+                        self.log(f"[{task_id[:8]}] 片段参数无效，忽略: {e}", "warning")
+                # 风控：请求间隔
+                delay = float(cfg.get("risk_delay_sec") or 0)
+                if delay > 0:
+                    time.sleep(min(delay, 30))
+                opts["progress_hooks"] = [lambda d, tid=task_id: self._hook(tid, d, progress_cb)]
+                if audio_only:
+                    # 容器留着 mkv/mp4 时以前会跳过抽音轨：勾了「仅音频」还是原样下回一个视频，
+                    # 而且状态是「完成」—— 只有 ffprobe 能看出来。所以这里无论容器都抽。
+                    codec = fmt if fmt in ("mp3", "m4a", "flac", "wav", "opus") else "m4a"
+                    opts.setdefault("postprocessors", []).insert(
+                        0, {"key": "FFmpegExtractAudio", "preferredcodec": codec}
+                    )
+                    if codec != fmt:
+                        self.log(
+                            f"[{task_id[:8]}] 仅音频：容器 {fmt or '未选'} 装不了纯音轨，成品转成 {codec}"
+                        )
+                elif fmt in ("mp4", "mkv", "webm"):
+                    opts["merge_output_format"] = fmt
+                    # merge_output_format 只在「视频流 + 音频流需要合并」时才决定容器；
+                    # 命中的若是单条音视频同流格式（如 web_safari 的融合 mp4），成品就还是 mp4。
+                    # 所以再挂一个无损 remux（不重编码）放在最前，保证容器 = 用户选的那个。
+                    opts.setdefault("postprocessors", []).insert(
+                        0, {"key": "FFmpegVideoRemuxer", "preferedformat": fmt}
+                    )
+                want_langs: List[str] = []
+                if is_live:
+                    # 直播不嵌字幕
+                    skip_subtitles = True
+                # 「嵌进容器」和「旁边留一份字幕文件」是两回事，但都得先把字幕下载下来：
+                # 以前只有 embed_sub 会去要字幕，关掉嵌入就没法只要外挂 .vtt
+                keep_files = bool(cfg.get("write_sub_files", True))
+                if (embed_sub or keep_files) and not skip_subtitles and not is_live:
+                    # yt-dlp 用 `re.compile(码, re.I).fullmatch(站点语言列表)` 匹配：
+                    # 大小写不敏感，但必须整码相等 —— "zh" 匹配不到 "zh-Hant"，
+                    # 所以简繁各种变体得逐个列，不能只写一个 zh
+                    raw = (sub_langs or cfg.get("subtitle_langs") or "zh").strip()
+                    if raw.lower() in ("all", "*", ""):
+                        # 注意：交给 yt-dlp 的 "all"、或写 zh.* 这类族正则，都会把 YouTube
+                        # 的机器翻译组合码一起捞进来（实测一条 5 分钟视频 130+ 个 .vtt /
+                        # 31 条字幕轨），所以只列站点里真实存在的原始字幕码
+                        langs = ["zh-Hans", "zh-Hant", "zh-CN", "zh-TW", "zh",
+                                 "ja", "ko", "en", "en-US", "en-GB"]
+                    else:
+                        langs = [x.strip() for x in raw.replace(";", ",").split(",") if x.strip()]
+                        if not langs:
+                            langs = ["zh-Hans", "zh", "en"]
+                    opts["writesubtitles"] = True
+                    opts["writeautomaticsub"] = True
+                    opts["subtitleslangs"] = langs
+                    want_langs = list(langs)
+                    if embed_sub:
+                        # embedsubtitles 只是 CLI 参数名，YoutubeDL 不读 —— 要挂 postprocessor
+                        pps = opts.setdefault("postprocessors", [])
+                        at = next(
+                            (i for i, p in enumerate(pps) if p.get("key") == "FFmpegMetadata"),
+                            len(pps),
+                        )
+                        pps.insert(at, {
+                            "key": "FFmpegEmbedSubtitle",
+                            # True = 嵌完再留一份外挂文件；False = 只留在容器里
+                            "already_have_subtitle": keep_files,
+                        })
+                    how = "＋".join(
+                        x for x in (("嵌进容器" if embed_sub else ""),
+                                    ("外挂文件" if keep_files else "")) if x
+                    )
+                    self.log(f"[{task_id[:8]}] 格式={format_sel} 字幕={langs}（{how}）")
+                else:
+                    # 无字幕降级：仅去掉字幕相关选项，画质/音质不变
+                    opts.pop("writesubtitles", None)
+                    opts.pop("writeautomaticsub", None)
+                    opts.pop("subtitleslangs", None)
+                    opts["postprocessors"] = [
+                        p for p in (opts.get("postprocessors") or [])
+                        if p.get("key") != "FFmpegEmbedSubtitle"
+                    ]
+                    if skip_subtitles:
+                        self.log(f"[{task_id[:8]}] 无字幕降级 | 画质/音质保持 format={format_sel}")
+                    else:
+                        self.log(f"[{task_id[:8]}] 格式={format_sel} 无字幕")
+                t_try = time.time()
+                self.log(
+                    f"[{task_id[:8]}] 目标容器={opts.get('merge_output_format') or fmt} "
+                    f"后期处理={','.join(p.get('key', '?') for p in (opts.get('postprocessors') or [])) or '无'}"
+                )
+                arch_file = opts.get("download_archive") or ""
+                m_arch = re.search(
+                    r"(?:[?&]v=|youtu\.be/|/shorts/|/embed/|/live/)([A-Za-z0-9_-]{6,})",
+                    url or "",
+                )
+                arch_vid = m_arch.group(1) if m_arch else ""
+                # yt-dlp 往记录里写的是「<站点键去冒号小写> <id>」（如 telegramembed 18465），
+                # 只按 YouTube 的 v= 认键，别的站命中记录就会被误报成「站点没返回媒体信息」。
+                arch_ids = {x for x in (str((info or {}).get("id") or ""), arch_vid) if x}
+                arch_type = re.sub(r"[\s:]+", "", str((info or {}).get("extractor_key")
+                                                     or (info or {}).get("extractor") or "").lower())
+
+                def _ids_in_archive(ids, strict_type=True):
+                    """这些 id 里已经在下载记录中的那些。命中记录时 yt-dlp 既不下载也不报错"""
+                    want = {str(x or "") for x in ids if x}
+                    if not (arch_file and want):
+                        return set()
+                    hit = set()
+                    try:
+                        with open(arch_file, "r", encoding="utf-8", errors="ignore") as fh:
+                            for ln in fh:
+                                parts = ln.split()
+                                if len(parts) < 2 or parts[-1] not in want:
+                                    continue
+                                # 键对不上时（直播没有预解析，info 可能为空）只认 id，别放过
+                                if not arch_type or not strict_type or (
+                                    re.sub(r"[\s:]+", "", parts[0].lower()) == arch_type
+                                ):
+                                    hit.add(parts[-1])
+                        return hit
+                    except Exception:
+                        return set()
+
+                def _already_recorded():
+                    return bool(_ids_in_archive(arch_ids))
+
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    if self._stop_flags.get(task_id):
+                        return False, ""
+                    info2 = ydl.extract_info(url, download=True)
+                    if info2:
+                        filepath = ""
+                        is_pl_result = info2.get("_type") in ("playlist", "multi_video") or bool(
+                            info2.get("entries")
+                        )
+                        pl_files = []
+                        if is_pl_result:
+                            # 容器自己那份 info 没有分集字段，prepare_filename 只会渲染出 .NA；
+                            # 分集的落点在 entries 里（yt-dlp 处理完会写回 filepath）
+                            for e in info2.get("entries") or []:
+                                if not isinstance(e, dict):
+                                    continue
+                                pth = str(e.get("filepath") or "")
+                                if not pth:
+                                    try:
+                                        pth = ydl.prepare_filename(e)
+                                    except Exception:
+                                        pth = ""
+                                if pth and Path(pth).exists():
+                                    pl_files.append(pth)
+                            filepath = pl_files[-1] if pl_files else ""
+                            n_ent = len([e for e in (info2.get("entries") or [])
+                                         if isinstance(e, dict)])
+                            if len(pl_files) != n_ent or n_ent > 1:
+                                self.log(
+                                    f"[{task_id[:8]}] 列表 {n_ent} 条，本次在下载目录写出 "
+                                    f"{len(pl_files)} 个文件"
+                                    + ("（差额是命中下载记录或抽取失败的条目）" if len(pl_files) != n_ent else "")
+                                    + (f"；任务记录最后 1 个：{Path(filepath).name}" if filepath else ""),
+                                    "warning",
+                                )
+                            if not pl_files and _ids_in_archive(
+                                [e.get("id") for e in (info2.get("entries") or [])
+                                 if isinstance(e, dict)]
+                            ):
+                                # 整表一条都没写出：是命中记录，不是坏文件
+                                self.note_error(
+                                    task_id,
+                                    "这条列表的每一项此前都已下载过（命中下载记录），本次没有重新下载；"
+                                    "要重新下载请在下载选项里关掉「跳过已下载」",
+                                )
+                                return False, ""
+                        if not filepath:
+                            filepath = ydl.prepare_filename(info2)
+                        if not Path(filepath).exists():
+                            base = Path(filepath).with_suffix("")
+                            for ext in (".mp4", ".mkv", ".webm", ".mp3", ".m4a", ".flac", ".wav"):
+                                cand = Path(str(base) + ext)
+                                if cand.exists():
+                                    filepath = str(cand)
+                                    break
+                        # 命中下载记录的单条视频同样走到这里，只是永远不会有文件：
+                        # 不点名原因就会被完整性校验说成「文件不可用」
+                        if not Path(filepath).exists() and _already_recorded():
+                            self.log(
+                                f"[{task_id[:8]}] 跳过：下载记录里已有本视频（此前已成功下载），"
+                                f"要重新下载请关掉「跳过已下载」",
+                                "warning",
+                            )
+                            self.note_error(
+                                task_id,
+                                "此前已下载过（命中下载记录），本次跳过；要重新下载请在下载选项里关掉「跳过已下载」",
+                            )
+                            return False, ""
+                        # 命中下载记录时 yt-dlp 什么都不做就返回，不说一句会被当成「设置没生效」
+                        try:
+                            if filepath and Path(filepath).exists() \
+                                    and Path(filepath).stat().st_mtime < t_try - 2:
+                                self.log(
+                                    f"[{task_id[:8]}] 本次未重新下载：{Path(filepath).name} 已在下载记录里，"
+                                    f"要重下请关掉「跳过已下载」",
+                                    "warning",
+                                )
+                        except Exception:
+                            pass
+                        # 记录实际分辨率便于确认
+                        try:
+                            h = info2.get("height") or 0
+                            if not h:
+                                for f in info2.get("requested_formats") or []:
+                                    h = max(h, f.get("height") or 0)
+                            if h:
+                                self.log(f"[{task_id[:8]}] 实际下载分辨率约 {h}p")
+                        except Exception:
+                            pass
+                        # 字幕按语言码精确匹配，站点没有的那几种会被直接跳过 —— 不说清楚
+                        # 就成了「明明勾了中文字幕怎么没有」
+                        try:
+                            if want_langs:
+                                got = list((info2.get("requested_subtitles") or {}).keys())
+                                miss = [x for x in want_langs if x not in got and x != "all"]
+                                if got:
+                                    self.log(
+                                        f"[{task_id[:8]}] 字幕已写入 {len(got)} 条：{'、'.join(got)}"
+                                        + (f"；视频没有这些语言，已跳过：{'、'.join(miss)}" if miss else "")
+                                    )
+                                else:
+                                    self.log(
+                                        f"[{task_id[:8]}] 该视频没有所请求的字幕语言"
+                                        f"（{'、'.join(want_langs)}），成品不含字幕轨",
+                                        "warning",
+                                    )
+                        except Exception:
+                            pass
+                        ok = not self._stop_flags.get(task_id)
+                        return ok, (filepath if ok else "")
+                    # extract_info 无返回时不得死循环
+                    # 命中下载记录时 yt-dlp 既不下载也不报错，只返回 None —— 不说清楚
+                    # 就会被当成「字幕/格式设置没生效」。
+                    if _already_recorded():
+                        self.log(
+                            f"[{task_id[:8]}] 跳过：下载记录里已有本视频（此前已成功下载），"
+                            f"要重新下载请关掉「跳过已下载」",
+                            "warning",
+                        )
+                        self.note_error(
+                            task_id,
+                            "此前已下载过（命中下载记录），本次跳过；要重新下载请在下载选项里关掉「跳过已下载」",
+                        )
+                        return False, ""
+                    retry_count += 1
+                    self.log(f"[{task_id[:8]}] 下载无返回信息，重试 ({retry_count}/{self.max_retries})", "warning")
+                    self.note_error(task_id, "站点没有返回可下载的媒体信息（已重试）")
+                    if progress_cb:
+                        try:
+                            progress_cb(task_id, -1, f"retry {retry_count}/{self.max_retries}", "")
+                        except Exception:
+                            pass
+                    if retry_count > self.max_retries:
+                        return False, ""
+                    time.sleep(2)
+                    continue
+            except Exception as e:
+                msg = str(e)
+                clean = re.sub(r"\x1b\[[0-9;]*m", "", msg)
+                low = clean.lower()
+                # 用户结束 / ffmpeg 255：直播视为正常收尾，尝试找回已写入文件
+                if is_live and (
+                    self._stop_flags.get(task_id)
+                    or "ffmpeg exited" in low
+                    or "code 255" in low
+                    or "cancelled" in low
+                ):
+                    found = _find_recent_media_files(out_dir, hint=url, within_sec=86400)
+                    if found:
+                        self.log(f"[{task_id[:8]}] 直播已结束，收尾文件: {Path(found[0]).name}")
+                        return True, found[0]
+                    if self._stop_flags.get(task_id):
+                        return False, ""
+                if self._stop_flags.get(task_id):
+                    return False, ""
+                self.log(f"[{task_id[:8]}] 错误: {clean[:200]}", "warning")
+                self.note_error(task_id, clean)
+
+                # 仅字幕相关错误才降级；不要把泛化 timeout 当成字幕错误（否则会空转）
+                is_sub_err = any(
+                    k in low
+                    for k in (
+                        "unable to download video subtitles",
+                        "unable to download webpage subtitles",
+                        "http error 429",
+                    )
+                ) and ("sub" in low)
+                if (is_sub_err or ("subtitle" in low and "429" in low)) and not skip_subtitles:
+                    skip_subtitles = True
+                    self.log(
+                        f"[{task_id[:8]}] 字幕失败，跳过字幕并以原画质/音质重新下载 "
+                        f"(video={video_q}, audio={audio_q})"
+                    )
+                    time.sleep(2)
+                    continue
+
+                # 后期处理（合并/嵌字幕/嵌封面/写元数据）失败：mkv 退回 mp4 再试一次
+                if fmt == "mkv" and not cfg.get("_fmt_fallback") and any(
+                    k in low for k in ("postprocessing", "ffmpeg exited", "embed", "merge", "remux")
+                ):
+                    cfg["_fmt_fallback"] = True
+                    fmt = "mp4"
+                    self.log(f"[{task_id[:8]}] 封装/后期处理失败，退回 mp4 重试（画质音质与字幕不变）")
+                    time.sleep(1)
+                    continue
+
+                # 直播：首选流失败时按设置回退另一种协议
+                if is_live and cfg.get("live_stream_fallback", True) and not cfg.get("_live_pref_fallback"):
+                    if any(
+                        k in low
+                        for k in (
+                            "no video formats",
+                            "no formats",
+                            "not available",
+                            "unable to download video data",
+                            "404",
+                            "403",
+                            "certificate",
+                            "ssl",
+                        )
+                    ):
+                        cfg["_live_pref_fallback"] = True
+                        self.log(f"[{task_id[:8]}] 当前流失败，尝试备选协议…")
+                        time.sleep(1)
+                        continue
+
+                # SSL 证书域名不匹配：关闭校验 +（直播）改用 ffmpeg -tls_verify 0 再试
+                if "certificate" in low or "ssl" in low or "hostname mismatch" in low:
+                    if not cfg.get("_ssl_retry"):
+                        cfg["_ssl_retry"] = True
+                        cfg["nocheckcertificate"] = True
+                        try:
+                            import ssl as _ssl
+                            _ssl._create_default_https_context = _ssl._create_unverified_context
+                        except Exception:
+                            pass
+                        if is_live:
+                            cfg["_live_ffmpeg_ssl"] = True
+                        self.log(f"[{task_id[:8]}] SSL 证书错误，关闭校验后重试")
+                        time.sleep(1)
+                        continue
+                    return False, ""
+
+                # YouTube 播放器被拒（BOT 校验 / 缺 PO Token / 格式不可用）：换下一个 player_client
+                if is_yt and pc_chain and not is_live and any(k in low for k in PLAYER_ERR_KEYS):
+                    nxt = int(cfg.get("_pc_idx") or 0) + 1
+                    if nxt < len(pc_chain):
+                        cfg["_pc_idx"] = nxt
+                        self.log(
+                            f"[{task_id[:8]}] 播放器客户端 {pc_chain[nxt - 1]} 被拒，"
+                            f"改用 {pc_chain[nxt]} 重试（{nxt + 1}/{len(pc_chain)}）",
+                            "warning",
+                        )
+                        time.sleep(1)
+                        continue
+
+                # 非字幕的 429：指数退避
+                if "429" in clean or "too many requests" in low:
+                    retry_count += 1
+                    if retry_count <= self.max_retries and cfg.get("retry_on_429", True):
+                        delay = compute_backoff_delay(
+                            retry_count,
+                            base=float(cfg.get("backoff_base") or self.base_delay),
+                            cap=float(cfg.get("backoff_max") or self.backoff_max),
+                            jitter=float(cfg.get("backoff_jitter") if cfg.get("backoff_jitter") is not None else self.backoff_jitter),
+                        )
+                        # 尊重服务端 Retry-After（若错误信息里带秒数）
+                        m_ra = re.search(r"retry[- ]after[:\s]+(\d+)", clean, re.I)
+                        if m_ra:
+                            delay = max(delay, float(m_ra.group(1)))
+                        if cfg.get("adaptive_throttle", True):
+                            th = HOST_THROTTLE.hit(
+                                url,
+                                cooldown=float(cfg.get("risk_cooldown_429") or 60),
+                                wait=delay,
+                            )
+                            if th:
+                                self.log(
+                                    f"[{task_id[:8]}] 站点 {th['host']} 被限流，已降速："
+                                    f"该域同时只跑 1 个，冷却 {th['cooldown']:.0f}s"
+                                    f"（第 {th['strikes']} 次命中）",
+                                    "warning",
+                                )
+                        self.log(
+                            f"[{task_id[:8]}] 命中 HTTP 429，指数退避+抖动 {delay:.1f}s "
+                            f"后重试 ({retry_count}/{self.max_retries})"
+                        )
+                        if progress_cb:
+                            try:
+                                progress_cb(
+                                    task_id, -1,
+                                    f"429 退避{delay:.0f}s {retry_count}/{self.max_retries}",
+                                    "",
+                                )
+                            except Exception:
+                                pass
+                        time.sleep(delay)
+                        continue
+                    return False, ""
+
+                # 无格式：改用更宽的格式串再试（不要沿用失效的 format_id）
+                if "no video formats" in low or "no formats" in low or "requested format is not available" in low:
+                    retry_count += 1
+                    if retry_count <= self.max_retries:
+                        self.log(
+                            f"[{task_id[:8]}] 无可用格式，改用 bv*/best 重试 ({retry_count}/{self.max_retries})"
+                        )
+                        # 下次循环前清缓存，避免沿用坏列表
+                        try:
+                            self._info_cache.clear()
+                        except Exception:
+                            pass
+                        time.sleep(2)
+                        continue
+                    return False, ""
+
+                return False, ""
+        return False, ""
+
+    def _hook(self, task_id, d, progress_cb):
+        if self._stop_flags.get(task_id):
+            raise Exception("cancelled")
+        if not progress_cb:
+            return
+        if d.get("status") == "downloading":
+            total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+            done = d.get("downloaded_bytes") or 0
+            pct = (done / total * 100) if total else 0
+            speed = d.get("_speed_str") or ""
+            eta = d.get("_eta_str") or ""
+            try:
+                progress_cb(task_id, pct, speed, eta)
+            except Exception:
+                pass
+        elif d.get("status") == "finished":
+            try:
+                progress_cb(task_id, 100.0, "", "")
+            except Exception:
+                pass
+
+    def stop(self, task_id=None):
+        if task_id:
+            self._stop_flags[task_id] = True
+        else:
+            for tid in list(self._stop_flags):
+                self._stop_flags[tid] = True
+
+
+# -------------------- Telegram 通知 --------------------
+class TelegramNotifier:
+    def __init__(self, cfg: ConfigManager, log: Callable = None):
+        self.cfg = cfg
+        self.log = log or (lambda m, level="info": None)
+
+    def enabled(self) -> bool:
+        d = self.cfg.data
+        return bool(d.get("telegram_enabled") and d.get("telegram_bot_token") and d.get("telegram_chat_id"))
+
+    def send(self, text: str) -> bool:
+        if not self.enabled():
+            return False
+        token = (self.cfg.data.get("telegram_bot_token") or "").strip()
+        chat_id = (self.cfg.data.get("telegram_chat_id") or "").strip()
+        try:
+            r = requests.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={"chat_id": chat_id, "text": text[:3500], "disable_web_page_preview": True},
+                timeout=15,
+            )
+            if r.status_code != 200:
+                self.log(f"Telegram 发送失败: {r.text[:120]}", "warning")
+                return False
+            return True
+        except Exception as e:
+            self.log(f"Telegram 异常: {e}", "warning")
+            return False
+
+    def notify_done(self, title: str, url: str = "", path: str = ""):
+        text = f"✅ 下载完成\n{title or url}\n{path or url}"
+        self.send_serverchan("下载完成", text)
+        if not self.cfg.data.get("telegram_notify_done", True):
+            return
+        self.send(text)
+
+    def notify_fail(self, title: str, url: str = "", err: str = ""):
+        if not self.cfg.data.get("telegram_notify_fail", True):
+            return
+        self.send(f"❌ 下载失败\n{title or url}\n{err[:200]}")
+
+    def notify_sub(self, sub_title: str, new_count: int, samples: List[str] = None):
+        if not self.cfg.data.get("telegram_notify_sub", True):
+            return
+        lines = (samples or [])[:5]
+        extra = "\n".join(f"· {x}" for x in lines)
+        self.send(f"📢 订阅更新: {sub_title}\n新增 {new_count} 条\n{extra}")
+
+    def test(self) -> str:
+        ok = self.send("🔔 MediaDownloader 测试消息\nTelegram 通知已连通。\n发送 /help 查看远程命令。")
+        return "ok" if ok else "failed"
+
+    def send_serverchan(self, title: str, desp: str = "") -> bool:
+        key = (self.cfg.data.get("serverchan_sendkey") or "").strip()
+        if not key:
+            return False
+        try:
+            # Server酱 Turbo
+            r = requests.post(
+                f"https://sctapi.ftqq.com/{key}.send",
+                data={"title": title[:100], "desp": desp[:2000]},
+                timeout=15,
+            )
+            return r.status_code == 200
+        except Exception as e:
+            self.log(f"Server酱失败: {e}", "warning")
+            return False
+
+    def _extract_urls(self, text: str) -> List[str]:
+        if not text:
+            return []
+        return re.findall(r"https?://[^\s<>\"']+", text)
+
+    def handle_command(self, text: str, queue: "TaskQueue" = None, sub_mgr: "SubscriptionManager" = None) -> str:
+        """处理 Telegram 远程命令，返回回复文本"""
+        raw = (text or "").strip()
+        if not raw:
+            return ""
+        low = raw.lower()
+        # 去掉 bot 用户名：/download@MyBot
+        cmd = low.split()[0].split("@")[0] if low.startswith("/") else ""
+        rest = raw[len(raw.split()[0]):].strip() if raw.startswith("/") else raw
+        urls = self._extract_urls(rest) or self._extract_urls(raw)
+
+        help_text = (
+            "🤖 MediaDownloader 远程命令\n"
+            "直接发送链接 → 自动加入下载\n"
+            "/d 或 /download [链接] — 下载\n"
+            "/s 或 /subscribe [链接] — 订阅频道/播放列表\n"
+            "/st 或 /status — 查看队列状态\n"
+            "/a 或 /analyze [链接] — 简单解析标题\n"
+            "/h 或 /help — 帮助"
+        )
+
+        if cmd in ("/help", "/h", "/start") or low in ("帮助", "help"):
+            return help_text
+
+        if cmd in ("/status", "/st") or low in ("状态", "status"):
+            try:
+                running = getattr(queue, "running", 0) if queue else 0
+                pending = len(getattr(queue, "pending", []) or []) if queue else 0
+                tasks = list((getattr(queue, "tasks", {}) or {}).values()) if queue else []
+                finished = sum(1 for t in tasks if getattr(t, "status", "") == "finished")
+                failed = sum(1 for t in tasks if getattr(t, "status", "") == "failed")
+                subs_n = len(sub_mgr.list()) if sub_mgr else 0
+                return (
+                    f"📊 状态\n"
+                    f"运行中: {running}\n"
+                    f"排队: {pending}\n"
+                    f"已完成: {finished}\n"
+                    f"失败: {failed}\n"
+                    f"订阅数: {subs_n}"
+                )
+            except Exception as e:
+                return f"状态获取失败: {e}"
+
+        if cmd in ("/subscribe", "/s", "/sub") or low.startswith("订阅"):
+            if not urls:
+                return "请提供要订阅的链接，例如：\n/subscribe https://www.youtube.com/@channel"
+            if not sub_mgr:
+                return "订阅模块未就绪"
+            lines = []
+            for u in urls[:5]:
+                try:
+                    item = sub_mgr.add(u, "")
+                    try:
+                        sub_mgr.scan_one(item, auto_download=False)
+                    except Exception:
+                        pass
+                    lines.append(f"✅ 已订阅: {item.get('title') or u}")
+                except Exception as e:
+                    lines.append(f"❌ 订阅失败: {u}\n{e}")
+            return "\n".join(lines) or "无有效链接"
+
+        if cmd in ("/analyze", "/a", "/parse") or low.startswith("解析"):
+            if not urls:
+                return "请提供要解析的链接"
+            try:
+                info = engine.get_info(urls[0], self.cfg.data)
+                if not info:
+                    return "解析失败：无结果"
+                title = info.get("title") or ""
+                dur = info.get("duration_string") or info.get("duration") or ""
+                up = info.get("uploader") or ""
+                return f"🔍 解析结果\n标题: {title}\nUP: {up}\n时长: {dur}\n{urls[0]}"
+            except Exception as e:
+                return f"解析失败: {e}"
+
+        # 下载：命令或纯链接
+        if cmd in ("/download", "/d", "/dl") or urls:
+            if not urls:
+                return "请提供下载链接，例如：\n/download https://..."
+            if not queue:
+                return "下载队列未就绪"
+            try:
+                ids = queue.add_urls(urls[:10], {
+                    "video_quality": self.cfg.data.get("video_quality", "best"),
+                    "audio_quality": self.cfg.data.get("audio_quality", "best"),
+                    "format": self.cfg.data.get("format", "mkv"),
+                    "skip_downloaded": True,
+                    "allow_playlist": False,
+                })
+                return f"⬇️ 已加入下载队列\n共 {len(ids)} 个任务\n" + "\n".join(urls[:5])
+            except Exception as e:
+                return f"加入下载失败: {e}"
+
+        return help_text
+
+    def poll_once(self, queue: "TaskQueue" = None, sub_mgr: "SubscriptionManager" = None) -> int:
+        """拉取并处理一条更新，返回处理条数"""
+        if not self.enabled() or not self.cfg.data.get("telegram_commands_enabled", True):
+            return 0
+        token = (self.cfg.data.get("telegram_bot_token") or "").strip()
+        chat_id = str(self.cfg.data.get("telegram_chat_id") or "").strip()
+        offset = int(self.cfg.data.get("telegram_offset") or 0)
+        try:
+            r = requests.get(
+                f"https://api.telegram.org/bot{token}/getUpdates",
+                params={"offset": offset, "timeout": 0, "limit": 10},
+                timeout=12,
+            )
+            data = r.json() if r.status_code == 200 else {}
+            results = data.get("result") or []
+            handled = 0
+            for upd in results:
+                uid = int(upd.get("update_id") or 0) + 1
+                if uid > offset:
+                    offset = uid
+                msg = upd.get("message") or upd.get("edited_message") or {}
+                from_chat = str((msg.get("chat") or {}).get("id") or "")
+                # 仅响应配置的 chat_id，避免被他人滥用
+                if chat_id and from_chat and from_chat != chat_id:
+                    continue
+                text = (msg.get("text") or "").strip()
+                if not text:
+                    continue
+                reply = self.handle_command(text, queue=queue, sub_mgr=sub_mgr)
+                if reply:
+                    self.send(reply)
+                    handled += 1
+            if offset != int(self.cfg.data.get("telegram_offset") or 0):
+                self.cfg.data["telegram_offset"] = offset
+                try:
+                    self.cfg.save()
+                except Exception:
+                    pass
+            return handled
+        except Exception as e:
+            self.log(f"Telegram 轮询异常: {e}", "warning")
+            return 0
+
+
+# -------------------- 订阅追踪 --------------------
+# 后两类只有 Telegram 源能命中：别的平台不会列出图片帖 / 文件帖
+SUB_TYPES = {"video": "长视频", "short": "短视频", "live": "直播", "audio": "音频/播客",
+             "photo": "图片", "file": "文件/文档"}
+SUB_FORMATS = ("mkv", "mp4", "webm", "mp3", "m4a", "flac")
+SUB_QUALITIES = ("best", "4K", "1440p", "1080p", "720p", "480p", "360p")
+SUB_CAP_DEFAULT = 20  # 没设过规则的旧订阅沿用原来的单次 20 条封顶
+SUB_SEEN_CAP = 300   # 追新游标最多记多少条 id
+MUSIC_SUB_WINDOW = 300  # 同 parse_playlist 的取数上限：歌单里的歌不能因为窗口太窄而被永久漏掉
+
+
+def _sub_window(kind: str) -> Tuple[int, int]:
+    """这条订阅每轮看多少条 / 游标存多少条。
+
+    游标必须装得下窗口 —— 窗口内的条目若被游标截断丢掉，下一轮就会当成新增重复下载。
+    """
+    if kind == "music":
+        return MUSIC_SUB_WINDOW, MUSIC_SUB_WINDOW
+    return 200, SUB_SEEN_CAP
+
+
+def _sub_kw_list(raw) -> List[str]:
+    """关键词一条订阅最多 20 个，逗号 / 顿号 / 分号 / 换行都当分隔符。
+
+    存盘的规则本来就是列表，读取时会再清洗一遍 —— 所以列表和字符串都得吃，且清洗两次结果一样。
+    """
+    items = list(raw) if isinstance(raw, (list, tuple)) else re.split(r"[,，、;；\n]+", str(raw or ""))
+    out: List[str] = []
+    for p in items:
+        p = str(p).strip()
+        if p and p not in out:
+            out.append(p)
+    return out[:20]
+
+
+def _sub_entry_kind(e: dict) -> str:
+    k = str(e.get("kind") or "")
+    if k in SUB_TYPES:
+        return k
+    u = str(e.get("url") or e.get("webpage_url") or "").lower()
+    host = u.split("/")[2] if u.count("/") >= 3 else ""
+    ie = str(e.get("ie_key") or "")
+    if e.get("is_live") or str(e.get("live_status") or "") in ("now", "is_live") \
+            or "/live" in u or host.startswith("live."):
+        return "live"
+    if "/shorts/" in u or "/reel/" in u or "/stories/" in u or ie == "YouTubeShorts":
+        return "short"
+    if str(e.get("vcodec") or "") == "none" or "podcast" in u or ie in ("SoundCloud", "Mixcloud"):
+        return "audio"
+    return "video"
+
+
+def _sub_date(e: dict) -> str:
+    """条目日期，收成 YYYY-MM-DD；没有就空 —— 日期窗不猜，缺日期的条目一律放行。"""
+    d = str(e.get("date") or e.get("upload_date") or e.get("datetime") or "").strip()
+    if len(d) >= 10 and d[4] == "-":
+        return d[:10]
+    m = re.match(r"^(\d{4})(\d{2})(\d{2})", d)
+    return f"{m.group(1)}-{m.group(2)}-{m.group(3)}" if m else ""
+
+
+def _norm_date_str(v) -> str:
+    s = re.sub(r"[/.]", "-", str(v or "").strip())[:10]
+    try:
+        return datetime.strptime(s, "%Y-%m-%d").strftime("%Y-%m-%d")
+    except ValueError:
+        return ""
+
+
+def _sub_duration(e: dict) -> float:
+    try:
+        return float(e.get("duration") or 0)
+    except Exception:
+        return 0.0
+
+
+def _fmt_dur(sec: int) -> str:
+    sec = int(sec or 0)
+    if sec < 90:
+        return f"{sec}秒"
+    if sec < 5400:
+        return f"{round(sec / 60)}分钟"
+    return f"{round(sec / 3600, 1)}小时"
+
+
+def _norm_sub_rules(raw) -> dict:
+    """把前端传来的规则收成干净字典：空值一律不落盘，越界值夹回可用区间。"""
+    src = raw if isinstance(raw, dict) else {}
+    r: dict = {}
+    types = [t for t in dict.fromkeys(src.get("types") or []) if t in SUB_TYPES]
+    if types and len(types) < len(SUB_TYPES):
+        r["types"] = types
+    for k in ("only_kw", "skip_kw"):
+        kw = _sub_kw_list(src.get(k))
+        if kw:
+            r[k] = kw
+    for k in ("min_dur", "max_dur"):
+        try:
+            v = max(0, min(86400, int(float(src.get(k) or 0))))
+        except Exception:
+            v = 0
+        if v:
+            r[k] = v
+    since, until = _norm_date_str(src.get("since")), _norm_date_str(src.get("until"))
+    if since and until and since > until:
+        since, until = until, since
+    if since:
+        r["since"] = since
+    if until:
+        r["until"] = until
+    if src.get("audio_only"):
+        r["audio_only"] = True
+    q = str(src.get("video_quality") or "").strip()
+    if q in SUB_QUALITIES:
+        r["video_quality"] = q
+    fmt = str(src.get("format") or "").strip().lower()
+    if fmt in SUB_FORMATS:
+        r["format"] = fmt
+    ai = str(src.get("run_ai") or "").strip()
+    if ai in ("on", "off"):
+        r["run_ai"] = ai
+    tpl = str(src.get("filename_template") or "").strip()[:200]
+    if tpl:
+        r["filename_template"] = tpl
+    d = str(src.get("download_dir") or "").strip()[:300]
+    if d:
+        r["download_dir"] = d
+    raw_cap = src.get("max_per_scan")
+    if raw_cap is None or str(raw_cap).strip() == "":
+        r["max_per_scan"] = SUB_CAP_DEFAULT
+    else:
+        try:
+            r["max_per_scan"] = max(0, min(50, int(float(raw_cap))))
+        except Exception:
+            r["max_per_scan"] = SUB_CAP_DEFAULT
+    return r
+
+
+def _sub_rule_match(e: dict, r: dict):
+    """逐条判定：返回 (要不要, 被挡原因)。"""
+    types = r.get("types")
+    if types:
+        k = _sub_entry_kind(e)
+        if k not in types:
+            return False, f"类型是{SUB_TYPES.get(k, k)}"
+    dur = _sub_duration(e)
+    if dur:
+        if r.get("min_dur") and dur < int(r["min_dur"]):
+            return False, f"时长 {_fmt_dur(dur)} 偏短"
+        if r.get("max_dur") and dur > int(r["max_dur"]):
+            return False, f"时长 {_fmt_dur(dur)} 偏长"
+    d = _sub_date(e)
+    if d:
+        if r.get("since") and d < r["since"]:
+            return False, f"{d} 早于日期窗"
+        if r.get("until") and d > r["until"]:
+            return False, f"{d} 晚于日期窗"
+    low = str(e.get("title") or "").lower()
+    for kw in r.get("skip_kw") or []:
+        if kw.lower() in low:
+            return False, f"命中排除词「{kw}」"
+    only = r.get("only_kw") or []
+    if only and not any(kw.lower() in low for kw in only):
+        return False, "标题不含关键词"
+    return True, ""
+
+
+def _sub_rules_text(r: dict) -> str:
+    """规则的人话摘要 —— 日志和订阅列表都要能一眼看出这条订阅按什么口径下。"""
+    parts = []
+    if r.get("types"):
+        parts.append("只要 " + "/".join(SUB_TYPES[t] for t in r["types"]))
+    if r.get("min_dur"):
+        parts.append(f"时长≥{_fmt_dur(r['min_dur'])}")
+    if r.get("max_dur"):
+        parts.append(f"时长≤{_fmt_dur(r['max_dur'])}")
+    if r.get("since") or r.get("until"):
+        parts.append(f"只下 {r.get('since') or '最早'}~{r.get('until') or '最新'}")
+    if r.get("only_kw"):
+        parts.append("标题含「" + "」「".join(r["only_kw"]) + "」")
+    if r.get("skip_kw"):
+        parts.append("排除「" + "」「".join(r["skip_kw"]) + "」")
+    if r.get("audio_only"):
+        parts.append("只下音频")
+    if r.get("video_quality"):
+        parts.append(f"画质 {r['video_quality']}")
+    if r.get("format"):
+        parts.append(f"封装 {r['format']}")
+    if r.get("run_ai") == "on":
+        parts.append("下完转写")
+    elif r.get("run_ai") == "off":
+        parts.append("不转写")
+    if r.get("filename_template"):
+        parts.append("自定义命名")
+    if r.get("download_dir"):
+        parts.append("存到 " + str(r["download_dir"]).replace("\\", "/").rstrip("/").split("/")[-1])
+    cap = int(r.get("max_per_scan") or 0)
+    parts.append(f"每次最多 {cap} 条" if cap else "单次不限条数")
+    return "、".join(parts)
+
+
+# Telegram 频道当订阅源：公开频道匿名翻 t.me/s/，私有 / 需登录的走已登录的用户会话
+TG_KIND_TO_SUB = {"video": "video", "audio": "audio", "voice": "audio",
+                  "document": "file", "photo": "photo"}
+SUB_KIND_TO_TG = {"video": ("video",), "short": ("video",), "audio": ("audio", "voice"),
+                  "photo": ("photo",), "file": ("document",)}
+
+
+def _tg_sub_ref(url: str, mode: str = "") -> Tuple[str, str]:
+    """订阅链是不是 Telegram 频道 → ("anon", 频道名) / ("mt", 实体) / ("", "")。
+
+    mode 留空走自动：公开名匿名翻页就够，t.me/c/… 和裸 -100 id 只有会话能读。
+    """
+    u = (url or "").strip()
+    if not u:
+        return "", ""
+    from telegram_channel import normalize_channel
+    ch = normalize_channel(u)
+    if ch and (mode or "") != "mt":
+        return "anon", ch
+    from telegram_mt import normalize_entity
+    ent = normalize_entity(u)
+    if ent:
+        return "mt", ent
+    return ("anon", ch) if ch else ("", "")
+
+
+def _tg_sub_entries(rows: List[dict], is_mt: bool) -> List[dict]:
+    """telegram 条目 → 订阅规则认识的形状。
+
+    匿名页只有视频能给 yt-dlp，文档 / 图片帖只列了个名字，所以匿名模式把这些丢掉 ——
+    订阅最怕的是把下不动的东西当成新增推一次。
+    """
+    out: List[dict] = []
+    for r in rows or []:
+        rid = str(r.get("id") or "")
+        link = str((r.get("mt_url") if is_mt else r.get("url")) or r.get("url") or "")
+        if not rid or not link:
+            continue
+        if not is_mt and not r.get("downloadable"):
+            continue
+        out.append({
+            "id": ("tgmt:" if is_mt else "tgs:") + rid,
+            "url": link,
+            "title": r.get("title") or r.get("filename") or link,
+            "duration": r.get("duration_sec") or 0,
+            "kind": TG_KIND_TO_SUB.get(str(r.get("type") or ""), "video"),
+            "date": r.get("date") or "",
+        })
+    return out
+
+
+TG_SUB_BUDGET = 240   # 后台扫描的墙钟预算：卡住的一个频道不该拖垮整轮订阅扫描
+_TG_FAIL_WORDS = ("限流", "HTTP", "不存在", "无效", "中断", "登录", "私有", "超时", "失效", "失败")
+
+
+def _tg_scan_err(rows: List[dict], diag: dict) -> str:
+    """0 条要分清「频道真没可读的东西」和「这次没读到」—— 后者不能当成没有新增记进 last_ids。"""
+    if rows:
+        return ""
+    stopped = str(diag.get("stopped") or "")
+    if diag.get("errors") or any(w in stopped for w in _TG_FAIL_WORDS):
+        return stopped or "读不到任何条目（原因未上报）"
+    return ""
+
+
+RSS_HINTS = (".rss", ".atom", ".xml", "/feed", "/rss", "feed://")
+RSS_AUDIO_EXT = (".mp3", ".m4a", ".aac", ".opus", ".ogg", ".wav", ".flac")
+
+
+def _looks_like_feed(url: str) -> bool:
+    u = str(url or "").strip().lower()
+    return u.startswith("feed://") or any(h in u for h in RSS_HINTS)
+
+
+def _sub_kind_of(sub: dict) -> str:
+    """这条订阅走哪条读取分支：rss（XML 订阅源）/ tg（Telegram 频道）/ music（音乐平台歌单）/ ""（yt-dlp 直接读）。
+
+    旧数据没有 kind 字段，所以认不出来时按链接形状现推，别让搬家前后的订阅走岔。
+    """
+    k = str(sub.get("kind") or "").strip().lower()
+    if k in ("rss", "tg", "music"):
+        return k
+    url = str(sub.get("url") or "")
+    if _tg_sub_ref(url, str(sub.get("mode") or ""))[0]:
+        return "tg"
+    if _looks_like_feed(url):
+        return "rss"
+    return "music" if _is_music_playlist(url) else ""
+
+
+def _rss_pub_date(v) -> str:
+    d = _norm_date_str(v)
+    if d:
+        return d
+    s = str(v or "").strip()
+    if not s:
+        return ""
+    try:
+        from email.utils import parsedate_to_datetime
+        return parsedate_to_datetime(s).strftime("%Y-%m-%d")
+    except Exception:
+        return ""
+
+
+def _rss_sub_entries(feed_url: str) -> Tuple[List[dict], str, str]:
+    """RSS / Atom 订阅源 → (条目, 源标题, 报错)。读失败必须回错误，不能当成「没有新增」。"""
+    mode, px = proxy_decision(feed_url)
+    try:
+        parsed = parse_rss_feed(feed_url, px if mode == "proxy" else "")
+    except Exception as e:
+        return [], "", f"RSS 读取失败：{type(e).__name__}: {e}"
+    out: List[dict] = []
+    for e in parsed.get("entries") or []:
+        link = str(e.get("enclosure") or e.get("link") or "")
+        if not link.startswith("http"):
+            continue
+        low = link.lower()
+        out.append({
+            "id": str(e.get("id") or link),
+            "url": link,
+            "title": str(e.get("title") or link)[:200],
+            "date": _rss_pub_date(e.get("published")),
+            "kind": "audio" if low.endswith(RSS_AUDIO_EXT) or "podcast" in low else "video",
+        })
+    if not out:
+        return [], str(parsed.get("title") or ""), "这个订阅源里没有可下载的条目（条目里没有媒体链接）"
+    return out, str(parsed.get("title") or ""), ""
+
+
+def _is_music_playlist(url: str) -> bool:
+    """链接是不是某家音乐平台的歌单页（musicdl 没装时也不能炸，判不了就当不是）。"""
+    try:
+        from music_search import playlist_owner
+        return bool(playlist_owner(url))
+    except Exception:
+        return False
+
+
+def _music_entry_id(title: str, artists: str, dur: int, link: str = "") -> str:
+    """曲目的追新游标。
+
+    不能用行上的缓存 id：每次解析都会另铸一个 uuid，那样每轮扫描都会把整张歌单当成新增。
+    所以按「曲名 + 歌手 + 时长」拼一条可读的稳定键 —— 同一首歌换个平台收录也不会重复下。
+
+    快列模式（yt-dlp 的 flat 子条目）给的行常常只有曲名：歌手与时长都空着时这条键就退化
+    成曲名本身，一张歌单里两首同名不同曲（原声版与混音版、重名专辑曲）会并成一条，
+    后一首被当成已读、永远下不到。那种情况下补一段链接哈希把两首分开；
+    歌手或时长任一还在时不动键的形状，免得把已有订阅的游标整体挪一遍、隔日重下一张歌单。
+    没传 link 就不加这段哈希：收藏清单那一头拿它当清单主键（存盘的），形状一改，
+    清单里已有的「只有曲名」那些行就不再被认成同一首，会存进第二遍。
+    """
+    parts = [re.sub(r"\s+", " ", str(x or "")).strip() for x in (title, artists)]
+    key = f"mus:{parts[0]}|{parts[1]}|{int(dur or 0)}"
+    if link and not (parts[1] or int(dur or 0)):
+        token = hashlib.md5(str(link).encode("utf-8")).hexdigest()[:12]
+        # 曲名先截到 80：整条键末尾要砍到 120，超长曲名会把后面这段判别式切掉，
+        # 切掉之后又变回「同名并一条」，而且看不出来。
+        key = f"mus:{parts[0][:80]}|{parts[1]}|{int(dur or 0)}#{token}"
+    return key[:120]
+
+
+def _music_sub_entries(sub: dict) -> Tuple[List[dict], str, str]:
+    """音乐歌单订阅扫一次 → (条目, 歌单名, 报错)。报错非空表示这次没读到，不能当成「没有新增」。"""
+    url = str(sub.get("url") or "")
+    out_dir = str(cfg.data.get("download_dir") or DEFAULT_DOWNLOAD_DIR)
+    cookies = music_cookie_string().strip()
+    proxy = music_proxy(url)
+    prefer = str(cfg.data.get("music_playlist_mode") or "fast").strip().lower()
+    srcs = list(cfg.data.get("musicdl_sources") or [])
+    try:
+        from music_search import parse_playlist
+    except Exception as e:
+        return [], "", f"音乐模块不可用：{type(e).__name__}: {e}"
+    try:
+        items = parse_playlist(url, sources=srcs, work_dir=out_dir, cookies=cookies,
+                               proxy=proxy, log=log_mgr.log, prefer=prefer)
+    except Exception as e:
+        return [], "", f"歌单读取失败：{type(e).__name__}: {e}"
+    from music_search import _LAST_PLAYLIST_DIAG as diag
+    diag = dict(diag or {})
+    if not items:
+        return [], "", str(diag.get("hint") or "这张歌单没读到任何曲目（链接可能已失效、需要 Cookie 或代理）")
+    from music_search import _dur_seconds, set_cached_song
+    entries: List[dict] = []
+    for row in items:
+        title = str(row.get("title") or "").strip()
+        artists = str(row.get("artists") or "").strip()
+        dur = _dur_seconds(row.get("duration_s") or row.get("duration"))
+        link = str(row.get("url") or "")
+        sid = str(row.get("id") or "")
+        if not sid and title:
+            # 快列模式（yt-dlp 列曲目）只给曲名与歌页链接：这种行没有音频地址，而把
+            # 「music.163.com/#/song?id=…」丢进通用队列让 yt-dlp 去抽，对音乐平台从来就不稳。
+            # 所以立一个「只有曲名」的占位交给按曲名匹配那一轮去取地址 —— 与收藏清单空槽同一套。
+            sid = str(uuid.uuid4())
+            set_cached_song(sid, {"title": title, "artists": artists,
+                                  "duration_s": int(dur or 0), "needs_match": True})
+        entries.append({
+            "id": _music_entry_id(title, artists, dur, link),
+            "sid": sid,                              # 缓存 id：下载这一首轮里交给 musicdl
+            "url": link,
+            "title": title or "（无曲名）",
+            "duration": dur,
+            "kind": "audio",
+            "date": "",
+        })
+    return entries, str(diag.get("name") or ""), ""
+
+
+def _music_sub_label(url: str) -> str:
+    """平台不报歌单名时的兜底标题：「网易云歌单 8123456789」比一串 URL 好认。"""
+    owner = ""
+    try:
+        from music_search import playlist_owner
+        owner = playlist_owner(url)
+    except Exception:
+        owner = ""
+    if not owner:
+        return ""
+    short = NET_MUSIC_SOURCES.get(owner) or owner.replace("MusicClient", "")
+    nums = re.findall(r"(\d{4,})", str(url or ""))
+    return f"{short}歌单 {nums[0]}" if nums else f"{short}歌单"
+
+
+class SubscriptionManager:
+    def __init__(self, engine: "DownloaderEngine", cfg: ConfigManager, queue: "TaskQueue", tg: TelegramNotifier, log: Callable):
+        self.engine = engine
+        self.cfg = cfg
+        self.queue = queue
+        self.tg = tg
+        self.log = log
+        self.subs: List[dict] = []
+        self._lock = threading.Lock()
+        self._busy: set = set()   # 正在扫描的订阅 id：手动回填和定时扫描不能同时跑一条订阅
+        self._stop = False
+        self._thread: Optional[threading.Thread] = None
+        self.load()
+
+    def load(self):
+        if SUBS_FILE.exists():
+            try:
+                with open(SUBS_FILE, "r", encoding="utf-8") as f:
+                    self.subs = json.load(f)
+            except Exception:
+                self.subs = []
+        else:
+            self.subs = []
+
+    def save(self):
+        try:
+            with self._lock:
+                data = list(self.subs)
+            with open(SUBS_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    def list(self) -> List[dict]:
+        with self._lock:
+            return list(self.subs)
+
+    def add(self, url: str, title: str = "", mode: str = "", kind: str = "",
+            auto_download: Optional[bool] = None) -> dict:
+        url = normalize_url((url or "").strip())
+        mode = "mt" if str(mode or "").strip().lower() == "mt" else ""
+        kind = str(kind or "").strip().lower()
+        kind = kind if kind in ("rss", "tg", "music") else ""
+        # 界面上的来源标签只是预览，落到哪条读取分支由这里说了算：客户端说是音乐歌单、
+        # 域名表不认（例如抖音单视频链接），就退回按链接重推。
+        if kind == "music" and not _is_music_playlist(url):
+            kind = ""
+        if not kind:
+            kind = "tg" if _tg_sub_ref(url, mode)[0] else (
+                "rss" if _looks_like_feed(url) else ("music" if _is_music_playlist(url) else ""))
+        if kind == "rss" and not url.startswith("http"):
+            raise ValueError("RSS 订阅源要填完整的 http(s) 链接，例如 https://example.com/feed.xml")
+        if not url.startswith("http") and kind != "tg":
+            raise ValueError("无效 URL：要 http 链接、RSS 订阅源，或 Telegram 频道（@名字 / t.me/名字 / t.me/c/内部id）")
+        hit = None
+        with self._lock:
+            for s in self.subs:
+                if s.get("url") == url and (s.get("mode") or "") == mode and (not kind or _sub_kind_of(s) == kind):
+                    hit = s
+                    if auto_download is not None and bool(s.get("auto_download", True)) != bool(auto_download):
+                        s["auto_download"] = bool(auto_download)
+                    break
+            if hit is None:
+                hit = {
+                    "id": uuid.uuid4().hex[:10],
+                    "url": url,
+                    "kind": kind,
+                    "mode": mode,
+                    "title": title or url,
+                    "enabled": True,
+                    "auto_download": True if auto_download is None else bool(auto_download),
+                    "last_ids": [],
+                    "last_check": "",
+                    "last_error": "",
+                    "added_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "new_count": 0,
+                    "rules": {},
+                }
+                self.subs.insert(0, hit)
+        self.save()
+        return hit
+
+    def remove(self, sid: str):
+        with self._lock:
+            self.subs = [s for s in self.subs if s.get("id") != sid]
+        self.save()
+
+    def set_enabled(self, sid: str, enabled: bool):
+        with self._lock:
+            for s in self.subs:
+                if s.get("id") == sid:
+                    s["enabled"] = bool(enabled)
+                    break
+        self.save()
+
+    def set_rules(self, sid: str, raw: dict, mode: Optional[str] = None,
+                  auto_download: Optional[bool] = None) -> dict:
+        tpl = str((raw or {}).get("filename_template") or "").strip()
+        if tpl and "%(ext)s" not in tpl:
+            raise ValueError("命名模板结尾要留 %(ext)s，否则下下来的文件没有扩展名")
+        if mode is not None and str(mode).strip().lower() not in ("", "mt"):
+            raise ValueError("读取方式只能是「自动」或「用账号会话」")
+        rules = _norm_sub_rules(raw)
+        with self._lock:
+            sub = next((s for s in self.subs if s.get("id") == sid), None)
+            if not sub:
+                raise ValueError("订阅不存在")
+            sub["rules"] = rules
+            if mode is not None:
+                sub["mode"] = "mt" if str(mode).strip().lower() == "mt" else ""
+            if auto_download is not None:
+                sub["auto_download"] = bool(auto_download)
+        self.save()
+        self.log(f"订阅「{sub.get('title')}」规则已更新：{_sub_rules_text(rules)}")
+        return rules
+
+    def _entry_id(self, e: dict) -> str:
+        return str(e.get("id") or e.get("url") or e.get("webpage_url") or "")
+
+    def _entry_url(self, e: dict, sub_url: str) -> str:
+        u = str(e.get("url") or e.get("webpage_url") or "")
+        if not u and e.get("id") and "youtube" in (sub_url or "").lower():
+            u = f"https://www.youtube.com/watch?v={e['id']}"
+        return u
+
+    def _rule_opts(self, r: dict) -> dict:
+        """规则 → 入队选项；没设的项仍走全局设置。"""
+        o = {
+            "queue_name": "subscribe",
+            "skip_downloaded": True,
+            "allow_playlist": False,
+            "audio_quality": self.cfg.data.get("audio_quality", "best"),
+        }
+        o["video_quality"] = r.get("video_quality") or self.cfg.data.get("video_quality", "best")
+        o["format"] = r.get("format") or self.cfg.data.get("format", "mkv")
+        o["audio_only"] = bool(r.get("audio_only")) or bool(self.cfg.data.get("audio_only", False))
+        if r.get("filename_template"):
+            o["filename_template"] = r["filename_template"]
+        if r.get("download_dir"):
+            o["download_dir"] = r["download_dir"]
+        if r.get("run_ai") == "on":
+            o["local_ai_transcribe"] = True
+        elif r.get("run_ai") == "off":
+            o["local_ai_transcribe"] = False
+            o["local_ai_translate"] = False
+        return o
+
+    def _filter_entries(self, entries: List[dict], r: dict, hard_cap: int = 0):
+        """按这条订阅的规则筛条目，返回 (入选, 被挡明细, 超出单次上限的部分)。"""
+        kept, rejected = [], []
+        for e in entries:
+            ok, why = _sub_rule_match(e, r)
+            if ok:
+                kept.append(e)
+            else:
+                rejected.append((str(e.get("title") or self._entry_id(e))[:40], why))
+        cap = int(r.get("max_per_scan") or 0)
+        if hard_cap:
+            cap = min(cap, hard_cap) if cap else hard_cap
+        over = kept[cap:] if cap else []
+        return (kept[:cap] if cap else kept), rejected, over
+
+    def _enqueue(self, sub: dict, entries: List[dict], r: dict):
+        if _sub_kind_of(sub) == "music":
+            return self._enqueue_music(sub, entries)
+        urls, samples = [], []
+        for e in entries:
+            u = self._entry_url(e, sub.get("url") or "")
+            if u:
+                urls.append(u)
+                samples.append(e.get("title") or u)
+        if urls:
+            self.queue.add_urls(urls, self._rule_opts(r))
+        return len(urls), samples
+
+    def _enqueue_music(self, sub: dict, entries: List[dict]) -> Tuple[int, List[str]]:
+        """新歌交给音乐页那套流程下：目录里已有的不再下第二份、只列了曲名的先按曲名匹配取址。"""
+        ids = [str(e.get("sid") or "") for e in entries if e.get("sid")]
+        urls = [str(e.get("url") or "") for e in entries
+                if not e.get("sid") and str(e.get("url") or "").startswith("http")]
+        samples = [str(e.get("title") or "")[:40] for e in entries][:5]
+        if not ids and not urls:
+            self.log(f"订阅「{sub.get('title')}」这批新歌一条都没法下"
+                     "（歌单里既没有可取的曲目、也没有直链）", "warning")
+            return 0, samples
+        n = 0
+        if ids:
+            res = api_music_download({"ids": ids, "skip_downloaded": True})
+            n += max(0, len(ids) - int(res.get("already") or 0))
+            if res.get("message"):
+                self.log(f"订阅「{sub.get('title')}」→ {res['message']}")
+        if urls:
+            res = api_music_download({"urls": urls, "skip_downloaded": True})
+            n += int(res.get("count") or 0)
+            if res.get("message"):
+                self.log(f"订阅「{sub.get('title')}」→ {res['message']}")
+        return n, samples
+
+    def _tg_scan(self, sub: dict, ref: Tuple[str, str], wide: bool = False) -> Tuple[List[dict], str, str]:
+        """Telegram 订阅源扫一次 → (条目, 频道标题, 报错)。报错非空表示这次没读到，不能当成「没有新增」。
+
+        wide=True 是按日期窗回填历史：条数和时间预算都要放宽，否则窗口会被默认的 30 条 / 240 秒截断。
+        """
+        from telegram_channel import ALL_TYPES, PROXY_DIRECT, list_channel_history
+
+        kind, target = ref
+        r = _norm_sub_rules(sub.get("rules"))
+        want = {t for x in (r.get("types") or []) for t in SUB_KIND_TO_TG.get(x) or ()}
+        types = [t for t in ALL_TYPES if t in want] if want else list(ALL_TYPES)
+        cap = int(r.get("max_per_scan") or 0) or SUB_CAP_DEFAULT
+        budget = TG_SUB_BUDGET if not wide else max(TG_SUB_BUDGET, 900)
+        limit = max(30, min(300, cap * 3)) if not wide else max(500, min(2000, cap * 25))
+        if kind == "mt":
+            st = tg_session.status()
+            if not st.get("logged_in"):
+                return [], "", ("这个账号还没登录 Telegram，私有 / 需登录频道的订阅读不到："
+                                "去 Telegram 页登录会话"
+                                + ("" if st.get("configured") else "（还差 api_id / api_hash）"))
+            items, diag = tg_session.list_media(
+                target, limit=limit, types=types,
+                since=r.get("since") or "", until=r.get("until") or "")
+            rows = _tg_sub_entries(items, True)
+            return rows, str(diag.get("title") or target), _tg_scan_err(rows, diag)
+        mode, px = proxy_decision("https://t.me/" + target)
+        proxy = px if mode == "proxy" else (PROXY_DIRECT if mode == "direct" else "")
+        items, diag = list_channel_history(
+            target, limit=limit, types=types,
+            since=r.get("since") or "", until=r.get("until") or "",
+            budget=budget, proxy=proxy, log=self.log)
+        rows = _tg_sub_entries(items, False)
+        return rows, target, _tg_scan_err(rows, diag)
+
+    def scan_one(self, sub: dict, auto_download: bool = True, backfill: dict = None) -> int:
+        """扫描订阅，返回新增数量（每条订阅按自己的规则筛、按自己的口径下）。
+
+        同一条订阅同一时刻只允许一轮扫描 —— 手动回填撞上定时扫描会重复入队同一批条目。
+        """
+        sid = str(sub.get("id") or "")
+        with self._lock:
+            if sid in self._busy:
+                self.log(f"订阅「{sub.get('title') or sub.get('url')}」上一轮还没扫完，这次先跳过", "warning")
+                return 0
+            self._busy.add(sid)
+        try:
+            return self._scan_one_inner(sub, auto_download=auto_download, backfill=backfill)
+        finally:
+            with self._lock:
+                self._busy.discard(sid)
+
+    def _scan_one_inner(self, sub: dict, auto_download: bool = True, backfill: dict = None) -> int:
+        url = sub.get("url") or ""
+        kind = _sub_kind_of(sub)
+        ref = ("", "") if kind == "rss" else _tg_sub_ref(url, str(sub.get("mode") or ""))
+        if kind == "rss":
+            entries, rss_title, err = _rss_sub_entries(url)
+            if err:
+                sub["last_error"] = err
+                self.save()
+                self.log(f"订阅「{sub.get('title') or url}」读不到：{err}", "warning")
+                return 0
+            sub["last_error"] = ""
+            sub["title"] = rss_title or sub.get("title") or url
+        elif kind == "music":
+            entries, pl_name, err = _music_sub_entries(sub)
+            if err:
+                sub["last_error"] = err
+                self.save()
+                self.log(f"订阅「{sub.get('title') or url}」读不到：{err}", "warning")
+                return 0
+            sub["last_error"] = ""
+            sub["title"] = pl_name or _music_sub_label(url) or sub.get("title") or url
+        elif ref[0]:
+            entries, tg_title, err = self._tg_scan(sub, ref, wide=bool(backfill))
+            if err:
+                sub["last_error"] = err
+                self.save()
+                self.log(f"订阅「{sub.get('title') or url}」读不到：{err}", "warning")
+                return 0
+            sub["last_error"] = ""
+            sub["title"] = tg_title or sub.get("title") or url
+        else:
+            info = self.engine.get_info(url, self.cfg.data)
+            if not info:
+                self.log(f"订阅扫描失败: {url[:60]}", "warning")
+                return 0
+            entries = []
+            if info.get("_type") == "playlist" or info.get("entries"):
+                entries = [e for e in (info.get("entries") or []) if e]
+            else:
+                # 单视频也作为订阅源（检测更新意义不大，但仍记录）
+                entries = [info]
+            sub["title"] = info.get("title") or sub.get("title") or url
+
+        r = _norm_sub_rules(sub.get("rules"))
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if backfill:
+            win = {k: v for k, v in _norm_sub_rules(backfill).items() if k in ("since", "until")}
+            r.update(win)
+            return self._backfill(sub, entries, r, now)
+
+        rtext = _sub_rules_text(r)
+        known = set(sub.get("last_ids") or [])
+        new_entries = []
+        all_ids = []
+        win_n, seen_cap = _sub_window(kind)
+        for e in entries[:win_n]:
+            eid = self._entry_id(e)
+            if not eid:
+                continue
+            all_ids.append(eid)
+            if eid not in known:
+                new_entries.append(e)
+
+        do_dl = bool(auto_download) and bool(sub.get("auto_download", True)) \
+            and bool(self.cfg.data.get("sub_auto_download", True))
+
+        if kind == "music" and do_dl and new_entries and _MUSIC_JOB.get("running"):
+            # 音乐批量只有一条通道（进度是全局单槽），两批并行会互相盖掉对方的进度。
+            # 这里必须原样返回：这一轮的新歌不能记成已读，记了就没人补下了。
+            self.log(f"订阅「{sub.get('title')}」有 {len(new_entries)} 首新歌，"
+                     "但上一批音乐下载还没结束 —— 这次不记录新增，等下轮扫描再补", "warning")
+            return 0
+
+        # 首次订阅：默认只记 ID；sub_first_download_n>0 时下载最近 N 条（同样受规则约束）
+        is_first = not known
+        if is_first:
+            first_n = int(self.cfg.data.get("sub_first_download_n") or 0)
+            sub["last_ids"] = all_ids[:win_n]
+            sub["last_check"] = now
+            sub["new_count"] = 0
+            self.save()
+            if first_n > 0 and do_dl:
+                picked, rejected, _over = self._filter_entries(entries, r, hard_cap=first_n)
+                n, _ = self._enqueue(sub, picked, r)
+                extra = f"，规则挡掉 {len(rejected)} 条" if rejected else ""
+                self.log(f"订阅初始化: {sub.get('title')} 记录 {len(all_ids)} 条，"
+                         f"按规则[{rtext}]首次下载 {n} 条{extra}")
+                return n
+            self.log(f"订阅初始化: {sub.get('title')} 记录 {len(all_ids)} 条，跳过首次下载")
+            return 0
+
+        if not new_entries:
+            sub["last_check"] = now
+            self.save()
+            return 0
+
+        picked, rejected, over = self._filter_entries(new_entries, r)
+        # 超出单次上限的那些不算见过 —— 下次扫描还会补上，规则只管节奏不管取舍
+        defer_ids = {self._entry_id(e) for e in over}
+        mark = [i for i in all_ids if i not in defer_ids]
+        sub["last_ids"] = list(dict.fromkeys(mark + list(known)))[:300]
+        sub["last_check"] = now
+        sub["new_count"] = int(sub.get("new_count") or 0) + len(new_entries)
+        self.save()
+
+        extra = ""
+        if rejected:
+            extra += f"，规则挡掉 {len(rejected)} 条（{rejected[0][0]}：{rejected[0][1]}"
+            extra += f" 等）" if len(rejected) > 1 else "）"
+        if over:
+            extra += f"，另有 {len(over)} 条超出单次上限，留到下次扫描"
+
+        samples = []
+        if do_dl:
+            n, samples = self._enqueue(sub, picked, r)
+            if n:
+                self.log(f"订阅「{sub.get('title')}」新增 {len(new_entries)} 条，"
+                         f"按规则[{rtext}]入队 {n} 条{extra}")
+            else:
+                self.log(f"订阅「{sub.get('title')}」新增 {len(new_entries)} 条，"
+                         f"按规则[{rtext}]一条都不该下{extra}")
+        else:
+            samples = [e.get("title") or self._entry_id(e) for e in new_entries[:5]]
+            self.log(f"订阅「{sub.get('title')}」新增 {len(new_entries)} 条（未开自动下载）{extra}")
+
+        self.tg.notify_sub(sub.get("title") or url, len(new_entries), samples[:5])
+        return len(new_entries)
+
+    def _backfill(self, sub: dict, entries: List[dict], r: dict, now: str) -> int:
+        """按日期窗回填一次历史：不看追新游标，只把这次真正入队的条目标成已见。"""
+        picked, rejected, over = self._filter_entries(entries, r)
+        rtext = _sub_rules_text({**r})
+        no_date = _sub_kind_of(sub) == "music" and not (r.get("since") or r.get("until"))
+        win = "整张歌单" if no_date else f"{r.get('since') or '最早'}~{r.get('until') or '最新'}"
+        byd = "" if no_date else "按日期"
+        scope = "歌单" if no_date else "窗口"
+        sub["last_check"] = now
+        if not picked:
+            self.save()
+            why = f"（例如「{rejected[0][0]}」：{rejected[0][1]}）" if rejected else ""
+            self.log(f"订阅「{sub.get('title')}」{byd}回填 {win}：{scope}内没有可下条目{why}", "warning")
+            return 0
+        n, samples = self._enqueue(sub, picked, r)
+        ids = [self._entry_id(e) for e in picked if self._entry_id(e)]
+        # 只标记这次下掉的：窗口外的条目还得留给以后的追新，不能被回填顺手吞掉
+        sub["last_ids"] = list(dict.fromkeys(ids + list(sub.get("last_ids") or []))) \
+            [:_sub_window(_sub_kind_of(sub))[1]]
+        sub["new_count"] = int(sub.get("new_count") or 0) + len(picked)
+        self.save()
+        extra = f"，另有 {len(rejected)} 条被规则{'挡掉' if no_date else '或窗口挡掉'}" if rejected else ""
+        if over:
+            extra += f"，还有 {len(over)} 条在{scope}内但超出单次上限 —— 再点一次回填可以接着往下取"
+        self.log(f"订阅「{sub.get('title')}」{byd}回填 {win}：入选 {len(picked)} 条，入队 {n} 条"
+                 f"（规则[{rtext}]）{extra}")
+        self.tg.notify_sub(sub.get("title") or sub.get("url") or "", len(picked), samples[:5])
+        return len(picked)
+
+    def scan_all(self) -> dict:
+        total_new = 0
+        checked = 0
+        with self._lock:
+            items = [s for s in self.subs if s.get("enabled")]
+        for s in items:
+            try:
+                n = self.scan_one(s, auto_download=bool(self.cfg.data.get("sub_auto_download", True)))
+                total_new += n
+                checked += 1
+            except Exception as e:
+                self.log(f"订阅扫描异常: {e}", "warning")
+        return {"checked": checked, "new": total_new}
+
+    def start_scheduler(self):
+        if self._thread and self._thread.is_alive():
+            return
+
+        def loop():
+            while not self._stop:
+                try:
+                    interval = max(15, int(self.cfg.data.get("sub_interval_min") or 60))
+                    # 分段 sleep，便于停止
+                    for _ in range(interval * 6):
+                        if self._stop:
+                            return
+                        time.sleep(10)
+                    if self.subs:
+                        self.log("开始定时扫描订阅…")
+                        res = self.scan_all()
+                        self.log(f"订阅扫描完成: 检查 {res['checked']} 源，新增 {res['new']}")
+                except Exception as e:
+                    self.log(f"订阅调度异常: {e}", "warning")
+
+        self._stop = False
+        self._thread = threading.Thread(target=loop, daemon=True)
+        self._thread.start()
+
+    def stop_scheduler(self):
+        self._stop = True
+
+
+# -------------------- 队列调度 --------------------
+class TaskQueue:
+    def __init__(self, engine: DownloaderEngine, cfg: ConfigManager, log: LogManager, history: HistoryManager):
+        self.engine = engine
+        self.cfg = cfg
+        self.log = log
+        self.history = history
+        self.tasks: Dict[str, DownloadTask] = {}
+        self.pending: List[str] = []
+        self.running = 0
+        self.lock = threading.Lock()
+        self.max_concurrent = int(cfg.data.get("concurrent", 3))
+        self.paused = False  # 全局暂停：不再启动新任务
+        self._wake_timer = None
+        self._wake_at = 0.0
+
+    def _task_host(self, url: str) -> str:
+        return url_host(url)
+
+    def _wake_later(self, seconds: float):
+        """站点冷却结束后要把排队的任务再泵一次（调度只在事件驱动时跑）。"""
+        until = time.time() + max(1.0, min(900.0, float(seconds)))
+        if self._wake_timer is not None and self._wake_at <= until and self._wake_timer.is_alive():
+            return
+        if self._wake_timer is not None:
+            self._wake_timer.cancel()
+        self._wake_at = until
+        t = threading.Timer(max(1.0, until - time.time()), self._wake_fire)
+        t.daemon = True
+        self._wake_timer = t
+        t.start()
+
+    def _wake_fire(self):
+        self._wake_at = 0.0
+        self._wake_timer = None
+        self._pump()
+
+    def _host_running_count(self, host: str) -> int:
+        if not host:
+            return 0
+        n = 0
+        for t in self.tasks.values():
+            if t.status == TaskStatus.DOWNLOADING.value and self._task_host(t.url) == host:
+                n += 1
+        return n
+
+    def add_urls(self, urls: List[str], options: dict) -> List[str]:
+        ids = []
+        options = dict(options or {})
+        download_later = bool(options.pop("download_later", False))
+        queue_name = (options.get("queue_name") or "default").strip() or "default"
+        # 插件解析：页面链 → 真实媒体链
+        if self.cfg.data.get("plugins_enabled", True) and not options.get("skip_plugins"):
+            expanded = []
+            for u in urls:
+                try:
+                    resolved = try_resolve_with_plugins(
+                        u,
+                        {
+                            "proxy": proxy_arg(u),
+                            "log": self.log.log if hasattr(self.log, "log") else print,
+                        },
+                    )
+                except Exception:
+                    resolved = None
+                if resolved and resolved.get("urls"):
+                    ropts = dict(resolved.get("options") or {})
+                    for nu in resolved["urls"]:
+                        expanded.append((nu, ropts, resolved.get("title") or ""))
+                    self.log.log(
+                        f"插件解析: {u[:60]}… → {len(resolved['urls'])} 条 "
+                        f"({resolved.get('_plugin', '')})"
+                    )
+                else:
+                    expanded.append((u, {}, ""))
+            # 重建 urls 与 per-url options 合并
+            urls = [x[0] for x in expanded]
+            # 若只有一条且有 title，写入 options
+            if len(expanded) == 1 and expanded[0][2]:
+                options.setdefault("_title", expanded[0][2])
+            if expanded and expanded[0][1]:
+                options = {**expanded[0][1], **options}
+
+        existing = {
+            url_dedup_key(t.url)
+            for t in self.tasks.values()
+            if t.status in (
+                TaskStatus.QUEUED.value, TaskStatus.DOWNLOADING.value, TaskStatus.PAUSED.value, TaskStatus.LATER.value
+            )
+        }
+        seen = set()
+        merged = 0
+        for raw in urls:
+            u = normalize_url((raw or "").strip())
+            if not u:
+                continue
+            key = url_dedup_key(u)
+            if key in seen or key in existing:
+                merged += 1
+                continue
+            seen.add(key)
+            tid = str(uuid.uuid4())
+            task = DownloadTask(
+                id=tid,
+                url=u,
+                is_live=bool(options.get("is_live")),
+                created_at=datetime.now().isoformat(timespec="seconds"),
+                pinned=bool(options.get("pinned")),
+                priority=int(options.get("priority") or 0),
+                queue_name=queue_name,
+            )
+            if task.pinned:
+                task.priority = max(task.priority, 1000)
+            if task.is_live:
+                task.title = "直播录制中…"
+            if options.get("_title") and task.title in ("等待中...", ""):
+                task.title = str(options.get("_title"))[:120]
+            if download_later:
+                task.status = TaskStatus.LATER.value
+            self.tasks[tid] = task
+            task._opts = options  # type: ignore
+            if not download_later:
+                self._insert_pending(tid)
+            ids.append(tid)
+            existing.add(key)
+        if merged:
+            self.log.log(f"已合并 {merged} 条重复链接（同一内容的不同分享参数）")
+        if not download_later:
+            self._pump()
+        return ids
+
+    def _insert_pending(self, tid: str):
+        """按 pinned + priority 插入 pending（高优先级靠前）"""
+        task = self.tasks.get(tid)
+        if not task:
+            return
+        if tid in self.pending:
+            self.pending.remove(tid)
+        # 计算插入位置：先 pinned，再 priority 降序，再 FIFO
+        pos = len(self.pending)
+        for i, other_id in enumerate(self.pending):
+            other = self.tasks.get(other_id)
+            if not other:
+                continue
+            if task.pinned and not other.pinned:
+                pos = i
+                break
+            if task.pinned == other.pinned and task.priority > other.priority:
+                pos = i
+                break
+            if task.pinned == other.pinned and task.priority == other.priority:
+                # 同优先级保持 FIFO，不插队
+                continue
+        self.pending.insert(pos, tid)
+
+    def _pump(self):
+        with self.lock:
+            if self.paused:
+                return
+            self.max_concurrent = int(self.cfg.data.get("concurrent", 3) or 3)
+            max_per_host = int(self.cfg.data.get("max_per_host", 2) or 2)
+            try:
+                risk_cap = int(self.cfg.data.get("risk_max_per_host", 0) or 0)
+            except Exception:
+                risk_cap = 0
+            if risk_cap > 0:
+                max_per_host = risk_cap if max_per_host <= 0 else min(max_per_host, risk_cap)
+            adaptive = bool(self.cfg.data.get("adaptive_throttle", True))
+            wake_in = 0.0
+            skipped = []
+            while self.running < self.max_concurrent and self.pending:
+                tid = self.pending.pop(0)
+                task = self.tasks.get(tid)
+                if not task:
+                    continue
+                if task.status in (
+                    TaskStatus.STOPPED.value,
+                    TaskStatus.PAUSED.value,
+                    TaskStatus.FINISHED.value,
+                    TaskStatus.LATER.value,
+                ):
+                    continue
+                host = self._task_host(task.url)
+                cap = HOST_THROTTLE.cap_for(host, max_per_host) if adaptive else max_per_host
+                if host and cap > 0 and self._host_running_count(host) >= cap:
+                    skipped.append(tid)
+                    if adaptive and cap < max_per_host:
+                        for snap in HOST_THROTTLE.snapshot():
+                            if snap["host"] == host:
+                                wake_in = snap["left"] if not wake_in else min(wake_in, snap["left"])
+                                break
+                    continue
+                self.running += 1
+                task.status = TaskStatus.DOWNLOADING.value
+                # 断点状态：目录中是否有 .part / .ytdl
+                try:
+                    od = Path(
+                        (getattr(task, "_opts", {}) or {}).get("download_dir")
+                        or self.cfg.data.get("download_dir")
+                        or DEFAULT_DOWNLOAD_DIR
+                    )
+                    has_part = any(od.glob("*.part")) or any(od.glob("*.ytdl"))
+                    task.resume_hint = "可能续传(.part)" if has_part else "新下载/续传由引擎判定"
+                    task.max_retries = int(
+                        (getattr(task, "_opts", {}) or {}).get("max_retries")
+                        or self.cfg.data.get("max_retries")
+                        or 3
+                    )
+                except Exception:
+                    task.resume_hint = "新下载"
+                threading.Thread(target=self._run, args=(task,), daemon=True).start()
+            # 因同域限制暂缓的任务放回队列头部之后
+            if skipped:
+                self.pending = skipped + self.pending
+            if wake_in > 0:
+                self._wake_later(wake_in)
+
+    def pin_tasks(self, ids: List[str], pinned: bool = True):
+        for tid in ids:
+            t = self.tasks.get(tid)
+            if not t:
+                continue
+            t.pinned = pinned
+            if pinned:
+                t.priority = max(t.priority, 1000)
+            else:
+                t.priority = min(t.priority, 999)
+            if t.status == TaskStatus.QUEUED.value and tid in self.pending:
+                self._insert_pending(tid)
+
+    def move_to_top(self, ids: List[str]):
+        """置顶并立即提到 pending 最前"""
+        for tid in reversed(ids):
+            t = self.tasks.get(tid)
+            if not t:
+                continue
+            t.pinned = True
+            t.priority = max(t.priority, 1000)
+            if t.status in (TaskStatus.QUEUED.value, TaskStatus.PAUSED.value, TaskStatus.LATER.value):
+                if t.status == TaskStatus.LATER.value:
+                    t.status = TaskStatus.QUEUED.value
+                if tid in self.pending:
+                    self.pending.remove(tid)
+                self.pending.insert(0, tid)
+        self._pump()
+
+    def set_later(self, ids: List[str], later: bool = True):
+        """稍后下载 / 取消稍后"""
+        for tid in ids:
+            t = self.tasks.get(tid)
+            if not t:
+                continue
+            if later:
+                if t.status in (TaskStatus.QUEUED.value, TaskStatus.PAUSED.value):
+                    t.status = TaskStatus.LATER.value
+                    if tid in self.pending:
+                        self.pending.remove(tid)
+            else:
+                if t.status == TaskStatus.LATER.value:
+                    t.status = TaskStatus.QUEUED.value
+                    self._insert_pending(tid)
+        if not later:
+            self._pump()
+
+    def reorder_pending(self, ordered_ids: List[str]):
+        """按给定顺序重排 pending（仅影响仍在排队的任务）"""
+        idset = set(ordered_ids)
+        rest = [tid for tid in self.pending if tid not in idset]
+        new_pending = [tid for tid in ordered_ids if tid in self.tasks and self.tasks[tid].status == TaskStatus.QUEUED.value]
+        self.pending = new_pending + rest
+
+    def list_tasks(self, sort_by: str = "queue") -> List[dict]:
+        """sort_by: queue | created | status | title"""
+        items = list(self.tasks.values())
+        if sort_by == "queue":
+            # pending 顺序优先，然后 pinned，再 priority，再创建时间
+            order = {tid: i for i, tid in enumerate(self.pending)}
+            def key(t: DownloadTask):
+                return (
+                    0 if t.status == TaskStatus.DOWNLOADING.value else 1,
+                    order.get(t.id, 99999),
+                    0 if t.pinned else 1,
+                    -t.priority,
+                    t.created_at or "",
+                )
+            items.sort(key=key)
+        elif sort_by == "created":
+            items.sort(key=lambda t: t.created_at or "", reverse=True)
+        elif sort_by == "status":
+            order = {"downloading": 0, "queued": 1, "paused": 2, "later": 3, "failed": 4, "stopped": 5, "finished": 6}
+            items.sort(key=lambda t: (order.get(t.status, 9), 0 if t.pinned else 1, -t.priority))
+        elif sort_by == "title":
+            items.sort(key=lambda t: (t.title or t.url or "").lower())
+        return [t.to_dict() for t in items]
+
+    def _run(self, task: DownloadTask):
+        opts = getattr(task, "_opts", {}) or {}
+        cfg = dict(self.cfg.data)
+        out_dir = opts.get("download_dir") or cfg.get("download_dir") or str(DEFAULT_DOWNLOAD_DIR)
+        if not task.started_at:
+            task.started_at = datetime.now().isoformat(timespec="seconds")
+        # 直播：抓取聊天弹幕
+        if task.is_live or "live.bilibili.com" in (task.url or "").lower():
+            try:
+                chat = start_live_chat_capture(task.id, task.url, out_dir, log=self.engine.log)
+                if chat:
+                    task.chat_file = chat
+            except Exception as e:
+                self.engine.log(f"[{task.id[:8]}] 启动聊天抓取失败: {e}", "warning")
+
+        def on_progress(tid, pct, speed, eta):
+            t = self.tasks.get(tid)
+            if t:
+                if pct is not None and float(pct) >= 0:
+                    t.progress = pct
+                t.speed = speed or t.speed
+                t.eta = eta or t.eta
+                # 重试可视化：speed 形如 "retry 1/3" / "429 退避2s 1/3"
+                sp = str(speed or "")
+                if "retry" in sp.lower() or "退避" in sp or "429" in sp:
+                    t.resume_hint = sp
+                    m = re.search(r"(\d+)\s*/\s*(\d+)", sp)
+                    if m:
+                        t.retry_count = int(m.group(1))
+                        t.max_retries = int(m.group(2))
+
+        # 本次任务选项覆盖全局配置（嵌入/字幕等）
+        for k in (
+            "embed_thumb", "embed_meta", "embed_chapters",
+            "embed_sub", "subtitle_langs", "audio_only",
+            "local_ai_transcribe", "local_ai_translate", "local_ai_lang",
+            "whisper_model", "whisper_device", "whisper_compute",
+            "skip_downloaded", "verify_download", "allow_playlist", "sponsorblock",
+            "write_description", "write_info_json", "write_sub_files",
+            "speed_limit", "filename_template", "prefer_codec",
+            "force_format", "download_section", "is_live", "use_hls_engine",
+            "direct_cdn", "bilibili_m4s",
+            "http_headers", "referer", "cookie", "user_agent", "proxy",
+            "hls_key",
+            "playlist_start", "playlist_end", "playlist_items",
+            "max_retries",
+        ):
+            if opts.get(k) is not None:
+                cfg[k] = opts[k]
+        # 合并 http_headers → 供 yt-dlp / CDN 使用
+        hdrs = dict(cfg.get("http_headers") or opts.get("http_headers") or {})
+        if opts.get("referer") or cfg.get("referer"):
+            hdrs["Referer"] = opts.get("referer") or cfg.get("referer")
+        if opts.get("user_agent") or cfg.get("user_agent"):
+            hdrs["User-Agent"] = opts.get("user_agent") or cfg.get("user_agent")
+        if opts.get("cookie") or cfg.get("cookie"):
+            hdrs["Cookie"] = opts.get("cookie") or cfg.get("cookie")
+        if hdrs:
+            cfg["http_headers"] = hdrs
+        from telegram_mt import parse_tgmt
+
+        mt_ref = parse_tgmt(task.url)
+        if mt_ref:
+            self.engine._stop_flags[task.id] = False
+            task.status = TaskStatus.DOWNLOADING.value
+            ok, path, mt_msg = tg_session.download_ref(
+                task.url,
+                out_dir,
+                audio_only=bool(cfg.get("audio_only")),
+                filename_template=cfg.get("filename_template") or "",
+                progress=lambda pct, done, label: on_progress(task.id, pct, label, ""),
+                stopped=lambda: bool(self.engine._stop_flags.get(task.id)),
+                force=not cfg.get("skip_downloaded", True),
+            )
+            if not ok:
+                task.error_msg = mt_msg or "Telegram 会话下载失败"
+            elif mt_msg:
+                task.resume_hint = mt_msg
+        else:
+            ok, path = self.engine.download(
+                task_id=task.id,
+                url=task.url,
+                out_dir=out_dir,
+                cfg=cfg,
+                video_q=opts.get("video_quality", cfg.get("video_quality", "best")),
+                audio_q=opts.get("audio_quality", cfg.get("audio_quality", "best")),
+                fmt=opts.get("format") or cfg.get("format") or "mkv",
+                audio_only=opts.get("audio_only", cfg.get("audio_only", False)),
+                embed_sub=opts.get("embed_sub", cfg.get("embed_sub", True)),
+                sub_langs=opts.get("subtitle_langs", cfg.get("subtitle_langs", "all")),
+                progress_cb=on_progress,
+                force_format=opts.get("force_format") or cfg.get("force_format"),
+                download_section=opts.get("download_section") or cfg.get("download_section"),
+                is_live=bool(opts.get("is_live") or cfg.get("is_live")),
+            )
+        # 本地 AI：字幕优先流水线 / Whisper / 机翻 / 润色摘要
+        if ok and path and (
+            cfg.get("local_ai_transcribe")
+            or cfg.get("local_ai_translate")
+            or cfg.get("local_ai_mt_after_transcribe")
+            or cfg.get("ai_polish")
+            or cfg.get("ai_summarize")
+        ):
+            try:
+                use_pipe = bool(
+                    cfg.get("subtitle_first", True)
+                    or cfg.get("ai_polish")
+                    or cfg.get("ai_summarize")
+                    or cfg.get("local_ai_transcribe")
+                    or cfg.get("local_ai_mt_after_transcribe")
+                )
+                produced = []
+                if use_pipe:
+                    from ai_pipeline import run_pipeline
+                    def _wfn(mp, lang="auto"):
+                        return run_local_ai_on_file(
+                            mp,
+                            transcribe=True,
+                            translate=False,
+                            lang=lang,
+                            model=(cfg.get("whisper_model") or "base"),
+                            device=(cfg.get("whisper_device") or "auto"),
+                            compute=(cfg.get("whisper_compute") or "auto"),
+                            log=self.engine.log,
+                        )
+                    def _tfn(srt, tgt):
+                        return translate_srt_file(
+                            srt,
+                            provider=(cfg.get("subtitle_translate_provider") or "deepl"),
+                            target_lang=tgt,
+                            source_lang=(cfg.get("local_ai_lang") or ""),
+                            log=self.engine.log,
+                        )
+                    key = (cfg.get("openai_api_key") or "").strip()
+                    pr = run_pipeline(
+                        path,
+                        subtitle_first=bool(cfg.get("subtitle_first", True)),
+                        use_whisper=bool(
+                            cfg.get("local_ai_transcribe")
+                            or cfg.get("local_ai_mt_after_transcribe")
+                        ),
+                        polish=bool(cfg.get("ai_polish")) and bool(key),
+                        summarize=bool(cfg.get("ai_summarize")) and bool(key),
+                        translate_after=bool(cfg.get("local_ai_mt_after_transcribe")),
+                        lang=(cfg.get("local_ai_lang") or "auto"),
+                        summary_lang=(cfg.get("summary_lang") or "zh"),
+                        target_lang=(cfg.get("subtitle_target_lang") or "zh"),
+                        whisper_fn=_wfn,
+                        translate_fn=_tfn if cfg.get("local_ai_mt_after_transcribe") else None,
+                        openai_key=key,
+                        openai_base=(cfg.get("openai_base_url") or "https://api.openai.com/v1"),
+                        openai_model=(cfg.get("openai_model") or "gpt-4o-mini"),
+                        log=self.engine.log,
+                    )
+                    if pr.get("srt"):
+                        produced = [pr["srt"]]
+                    badge = {"subtitle": "⚡平台字幕", "existing": "📄已有字幕", "whisper": "🎙Whisper"}.get(
+                        pr.get("path_type") or "", pr.get("path_type") or ""
+                    )
+                    self.engine.log(f"[{task.id[:8]}] 流水线 [{badge}] {pr.get('message')}")
+                else:
+                    produced = run_local_ai_on_file(
+                        path,
+                        transcribe=bool(cfg.get("local_ai_transcribe") or cfg.get("local_ai_mt_after_transcribe")),
+                        translate=bool(cfg.get("local_ai_translate")),
+                        lang=(cfg.get("local_ai_lang") or "auto"),
+                        model=(cfg.get("whisper_model") or "base"),
+                        device=(cfg.get("whisper_device") or "auto"),
+                        compute=(cfg.get("whisper_compute") or "auto"),
+                        log=self.engine.log,
+                    )
+                if cfg.get("local_ai_translate"):
+                    extra = run_local_ai_on_file(
+                        path,
+                        transcribe=False,
+                        translate=True,
+                        lang=(cfg.get("local_ai_lang") or "auto"),
+                        model=(cfg.get("whisper_model") or "base"),
+                        device=(cfg.get("whisper_device") or "auto"),
+                        compute=(cfg.get("whisper_compute") or "auto"),
+                        log=self.engine.log,
+                    )
+                    produced = list(produced or []) + list(extra or [])
+            except Exception as e:
+                self.engine.log(f"[{task.id[:8]}] 本地 AI 处理失败: {e}", "warning")
+        # Bilibili 弹幕：视频成功后额外保存 xml + ass
+        if ok and opts.get("download_danmaku", True) and is_bilibili_url(task.url):
+            try:
+                base = Path(path).stem if path else "danmaku"
+                download_bilibili_danmaku(
+                    url=task.url,
+                    out_dir=str(Path(path).parent) if path else out_dir,
+                    base_name=base,
+                    proxy=task_proxy_override(cfg),
+                    log=self.engine.log,
+                )
+            except Exception as e:
+                self.engine.log(f"[{task.id[:8]}] 弹幕下载异常: {e}", "warning")
+        # 停止直播聊天抓取 & 收尾 part
+        try:
+            stop_live_chat_capture(task.id)
+        except Exception:
+            pass
+        if task.is_live or "live.bilibili.com" in (task.url or "").lower():
+            try:
+                room = extract_bilibili_live_room_id(task.url) or ""
+                finalized = finalize_part_files(out_dir, hint=room or task.url, log=self.engine.log)
+                if finalized and not path:
+                    path = finalized[-1]
+            except Exception as e:
+                self.engine.log(f"[{task.id[:8]}] 直播收尾失败: {e}", "warning")
+
+        # 转存/上报之前先确认「文件真的能用」：被反爬拦下时工具会正常退出并留下网页或空壳
+        if ok and path and cfg.get("verify_download", True):
+            try:
+                bad = verify_media_file(path)
+            except Exception as e:  # 校验自身出问题不能拖累任务
+                bad = ""
+                self.engine.log(f"[{task.id[:8]}] 完整性校验异常（跳过）: {e}", "warning")
+            if bad:
+                ok = False
+                task.error_msg = f"下载完成但文件不可用：{bad}（文件已保留，未转存网盘）"
+                self.engine.log(f"[{task.id[:8]}] {task.error_msg}", "error")
+
+        # NAS / 网盘转存（成功或用户结束直播且有文件）
+        if path and Path(path).is_file():
+            try:
+                if ok or task.status == TaskStatus.STOPPED.value or task.is_live:
+                    tr = transfer_to_storage(path, self.cfg.data, log=self.engine.log)
+                    if tr.get("nas"):
+                        path = tr["nas"]
+                        task.filepath = path
+            except Exception as e:
+                self.engine.log(f"[{task.id[:8]}] 存储转存异常: {e}", "warning")
+
+        # 若用户中途暂停/停止，不要覆盖为完成/失败
+        if task.status not in (TaskStatus.STOPPED.value, TaskStatus.PAUSED.value):
+            task.status = TaskStatus.FINISHED.value if ok else TaskStatus.FAILED.value
+            task.filepath = path or task.filepath or ""
+            task.progress = 100.0 if ok else task.progress
+            if ok:
+                task.error_msg = ""
+                HOST_THROTTLE.recover(task.url)
+            else:
+                raw = task.error_msg or self.engine.pop_error(task.id) or "下载失败（详见运行日志）"
+                if "原因：" not in raw and "文件不可用" not in raw:
+                    try:
+                        extra = risk_note_for_failure(raw, task.url or "", task.id)
+                    except Exception:
+                        extra = ""
+                    if extra:
+                        raw = f"{raw}｜{extra}"
+                task.error_msg = raw
+            if path:
+                task.title = Path(path).name
+            self.history.add(
+                {
+                    "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "url": task.url,
+                    "title": task.title,
+                    "status": task.status,
+                    "filepath": path or "",
+                    "error": "" if ok else task.error_msg,
+                }
+            )
+            # Telegram 通知
+            try:
+                if ok:
+                    tg_notifier.notify_done(task.title or task.url, task.url, path or "")
+                else:
+                    tg_notifier.notify_fail(task.title or task.url, task.url, task.error_msg)
+            except Exception:
+                pass
+        elif task.status == TaskStatus.STOPPED.value and path:
+            task.filepath = path
+            if path:
+                task.title = Path(path).name
+        with self.lock:
+            self.running = max(0, self.running - 1)
+        self._pump()
+
+    def stop_all(self):
+        self.pending.clear()
+        self.engine.stop()
+        for t in self.tasks.values():
+            if t.status == TaskStatus.DOWNLOADING.value:
+                t.status = TaskStatus.STOPPED.value
+                self.engine.stop(t.id)
+        with self.lock:
+            self.running = 0
+
+    def end_live_tasks(self, ids: List[str] = None) -> int:
+        """结束直播录制：停止下载、收尾文件、停止聊天、暂停对应监控防自动再录"""
+        count = 0
+        idset = set(ids or [])
+        targets = []
+        if idset:
+            targets = [self.tasks[tid] for tid in idset if tid in self.tasks]
+        else:
+            targets = [
+                t for t in self.tasks.values()
+                if t.is_live or (t.title or "").find("直播") >= 0
+            ]
+        out_dir = str(Path(cfg.data.get("download_dir") or DEFAULT_DOWNLOAD_DIR).resolve())
+        paused_urls = []
+        for t in targets:
+            if t.status in (
+                TaskStatus.DOWNLOADING.value,
+                TaskStatus.QUEUED.value,
+                TaskStatus.PAUSED.value,
+                TaskStatus.STOPPED.value,
+            ):
+                try:
+                    self.engine.stop(t.id)
+                except Exception:
+                    pass
+                try:
+                    stop_live_chat_capture(t.id)
+                except Exception:
+                    pass
+                if t.id in self.pending:
+                    try:
+                        self.pending.remove(t.id)
+                    except ValueError:
+                        pass
+                t.status = TaskStatus.STOPPED.value
+                t.error_msg = "用户结束录制"
+                t.speed = ""
+                t.eta = ""
+                paused_urls.append(t.url or "")
+                # 稍等文件刷盘
+                time.sleep(0.8)
+                try:
+                    room = extract_bilibili_live_room_id(t.url) or ""
+                    finalized = finalize_part_files(
+                        out_dir, hint=room or t.url, log=self.log.log
+                    )
+                    if not finalized:
+                        finalized = _find_recent_media_files(out_dir, hint=room or t.url)
+                    if finalized:
+                        t.filepath = finalized[0]
+                        t.title = Path(finalized[0]).name
+                    chats = harvest_ytdlp_live_chat_files(out_dir, log=self.log.log)
+                    # 也收集我们自己写的 chat 文件
+                    for p in Path(out_dir).glob(f"*{t.id[:8]}*.chat.*"):
+                        chats.append(str(p))
+                    for p in Path(out_dir).glob(f"*{room}*.ass"):
+                        chats.append(str(p))
+                    if chats:
+                        t.chat_file = chats[-1]
+                        self.log.log(f"聊天/弹幕文件: {Path(chats[-1]).name}")
+                except Exception as e:
+                    try:
+                        self.log.log(f"收尾失败: {e}", "warning")
+                    except Exception:
+                        pass
+                count += 1
+                try:
+                    self.log.log(f"已结束直播录制: {(t.title or t.url)[:60]}")
+                except Exception:
+                    pass
+        # 暂停对应直播监控，避免立刻再次自动开录
+        if paused_urls:
+            try:
+                items = _load_live_monitors()
+                changed = False
+                for m in items:
+                    mu = (m.get("url") or "").rstrip("/")
+                    for u in paused_urls:
+                        uu = (u or "").rstrip("/")
+                        room = extract_bilibili_live_room_id(uu) or ""
+                        if mu == uu or (room and room in mu):
+                            m["paused"] = True
+                            m["status"] = "录制已暂停"
+                            m["last_live"] = True
+                            changed = True
+                            self.log.log(f"已暂停监控自动录制: {mu}")
+                if changed:
+                    _save_live_monitors(items)
+            except Exception as e:
+                try:
+                    self.log.log(f"暂停监控失败: {e}", "warning")
+                except Exception:
+                    pass
+        return count
+
+    def pause_all(self):
+        """暂停队列：进行中的任务标记为暂停并取消下载，排队任务保持可恢复"""
+        self.paused = True
+        # 取出 pending 中的任务标为 paused（仍保留在 tasks）
+        still = []
+        while self.pending:
+            tid = self.pending.pop(0)
+            t = self.tasks.get(tid)
+            if t and t.status == TaskStatus.QUEUED.value:
+                t.status = TaskStatus.PAUSED.value
+            else:
+                still.append(tid)
+        self.pending = still
+        for t in self.tasks.values():
+            if t.status == TaskStatus.DOWNLOADING.value:
+                t.status = TaskStatus.PAUSED.value
+                try:
+                    self.engine.stop(t.id)
+                except Exception:
+                    pass
+        self.log.log("队列已暂停")
+
+    def resume_all(self):
+        self.paused = False
+        for tid, t in self.tasks.items():
+            if t.status == TaskStatus.PAUSED.value:
+                t.status = TaskStatus.QUEUED.value
+                t.progress = 0
+                t.error_msg = ""
+                if tid not in self.pending:
+                    self.pending.append(tid)
+        self.log.log("队列已继续")
+        self._pump()
+
+    def pause_tasks(self, ids: List[str]):
+        idset = set(ids or [])
+        self.pending = [tid for tid in self.pending if tid not in idset]
+        for tid in idset:
+            t = self.tasks.get(tid)
+            if not t:
+                continue
+            if t.status == TaskStatus.DOWNLOADING.value:
+                t.status = TaskStatus.PAUSED.value
+                try:
+                    self.engine.stop(tid)
+                except Exception:
+                    pass
+            elif t.status == TaskStatus.QUEUED.value:
+                t.status = TaskStatus.PAUSED.value
+
+    def resume_tasks(self, ids: List[str]):
+        for tid in ids or []:
+            t = self.tasks.get(tid)
+            if not t:
+                continue
+            if t.status in (TaskStatus.PAUSED.value, TaskStatus.STOPPED.value, TaskStatus.FAILED.value):
+                t.status = TaskStatus.QUEUED.value
+                t.progress = 0
+                t.error_msg = ""
+                if tid not in self.pending:
+                    self.pending.append(tid)
+        self.paused = False
+        self._pump()
+
+    def delete_tasks(self, ids: List[str]):
+        idset = set(ids or [])
+        self.pending = [tid for tid in self.pending if tid not in idset]
+        for tid in idset:
+            t = self.tasks.get(tid)
+            if not t:
+                continue
+            if t.status == TaskStatus.DOWNLOADING.value:
+                try:
+                    self.engine.stop(tid)
+                except Exception:
+                    pass
+            del self.tasks[tid]
+
+    def retry_failed(self):
+        for tid, t in self.tasks.items():
+            if t.status == TaskStatus.FAILED.value:
+                t.status = TaskStatus.QUEUED.value
+                t.progress = 0
+                t.error_msg = ""
+                self.pending.append(tid)
+        self.paused = False
+        self._pump()
+
+    def retry_one(self, tid: str, extra_opts: Optional[dict] = None) -> bool:
+        t = self.tasks.get(tid)
+        if not t:
+            return False
+        if t.status not in (
+            TaskStatus.FAILED.value, TaskStatus.STOPPED.value, TaskStatus.PAUSED.value, TaskStatus.FINISHED.value
+        ):
+            return False
+        if extra_opts:
+            opts = dict(getattr(t, "_opts", {}) or {})
+            opts.update(extra_opts)
+            t._opts = opts  # type: ignore
+        t.status = TaskStatus.QUEUED.value
+        t.progress = 0
+        t.error_msg = ""
+        t.started_at = ""
+        if tid not in self.pending:
+            self._insert_pending(tid)
+        self.paused = False
+        self._pump()
+        return True
+
+    def clear_finished(self):
+        for tid in list(self.tasks.keys()):
+            if self.tasks[tid].status == TaskStatus.FINISHED.value:
+                del self.tasks[tid]
+
+
+# -------------------- FastAPI --------------------
+cfg = ConfigManager()
+log_mgr = LogManager()
+history_mgr = HistoryManager()
+ffmpeg_mgr = FFmpegManager(log=lambda m: log_mgr.log(m))
+ffmpeg_mgr.manual_path = (cfg.data.get("ffmpeg_path") or "").strip()
+engine = DownloaderEngine(log_cb=lambda m, level="info": log_mgr.log(m, level), ffmpeg_mgr=ffmpeg_mgr)
+queue = TaskQueue(engine, cfg, log_mgr, history_mgr)
+tg_notifier = TelegramNotifier(cfg, log=lambda m, level="info": log_mgr.log(m, level))
+# Telegram 用户会话（私有/需登录频道）：客户端要跨请求存活，所以是模块级单例
+from telegram_mt import TelegramSession  # noqa: E402
+
+tg_session = TelegramSession(
+    lambda: cfg.data,
+    log=lambda m, level="info": log_mgr.log(m, level),
+    session_dir=APP_DIR / "tg_session",
+    index_path=APP_DIR / "tg_media_index.json",
+)
+sub_mgr = SubscriptionManager(
+    engine, cfg, queue, tg_notifier, log=lambda m, level="info": log_mgr.log(m, level)
+)
+sub_mgr.start_scheduler()
+
+app = FastAPI(title="多媒体下载器", version="2.0.0")
+STATIC = APP_DIR / "static"
+STATIC.mkdir(exist_ok=True)
+app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
+
+
+class AddUrlsBody(BaseModel):
+    urls: List[str]
+    video_quality: str = "best"
+    audio_quality: str = "best"
+    format: str = "mkv"
+    audio_only: bool = False
+    embed_sub: bool = True
+    subtitle_langs: str = "all"
+    download_danmaku: bool = True
+    embed_thumb: bool = True
+    embed_meta: bool = True
+    embed_chapters: bool = True
+    local_ai_transcribe: bool = False
+    local_ai_translate: bool = False
+    local_ai_lang: str = "zh"
+    skip_downloaded: bool = True
+    verify_download: Optional[bool] = None  # 不传 = 跟随全局：下载完体检成品文件
+    allow_playlist: bool = False
+    sponsorblock: str = "off"
+    prefer_codec: str = "auto"
+    write_sub_files: Optional[bool] = None  # 不传 = 跟随全局设置：成品旁是否另存 .vtt/.srt
+    download_dir: Optional[str] = None
+    force_format: Optional[str] = None  # 指定 yt-dlp format_id 或表达式
+    download_section: Optional[str] = None  # 框选片段，如 *00:01:00-00:02:30 或 1:00-2:30
+    is_live: bool = False  # 直播录制
+    download_later: bool = False  # 稍后下载（入队但不立即开始）
+    pinned: bool = False
+    priority: int = 0
+    use_hls_engine: bool = False  # 嗅探到的 HLS 优先用专用引擎
+
+
+class ConfigBody(BaseModel):
+    download_dir: Optional[str] = None
+    video_quality: Optional[str] = None
+    audio_quality: Optional[str] = None
+    format: Optional[str] = None
+    embed_sub: Optional[bool] = None
+    audio_only: Optional[bool] = None
+    subtitle_langs: Optional[str] = None
+    proxy: Optional[str] = None
+    proxy_mode: Optional[str] = None
+    proxy_by_platform: Optional[dict] = None
+    concurrent: Optional[int] = None
+    cookie_source: Optional[str] = None
+    cookie_browser: Optional[str] = None
+    cookie_file: Optional[str] = None
+    ffmpeg_path: Optional[str] = None
+    filename_template: Optional[str] = None
+    speed_limit: Optional[str] = None
+    write_description: Optional[bool] = None
+    write_info_json: Optional[bool] = None
+    write_sub_files: Optional[bool] = None
+    dark_mode: Optional[bool] = None
+    ui_theme: Optional[str] = None
+    skip_downloaded: Optional[bool] = None
+    allow_playlist: Optional[bool] = None
+    sponsorblock: Optional[str] = None
+    telegram_enabled: Optional[bool] = None
+    telegram_bot_token: Optional[str] = None
+    telegram_chat_id: Optional[str] = None
+    telegram_notify_done: Optional[bool] = None
+    telegram_notify_fail: Optional[bool] = None
+    telegram_notify_sub: Optional[bool] = None
+    telegram_commands_enabled: Optional[bool] = None
+    sub_interval_min: Optional[int] = None
+    sub_auto_download: Optional[bool] = None
+    live_from_start: Optional[bool] = None
+    platform_cookies: Optional[dict] = None
+    risk_delay_sec: Optional[float] = None
+    risk_max_per_host: Optional[int] = None
+    risk_cooldown_429: Optional[int] = None
+    risk_user_agent: Optional[str] = None
+    risk_preset: Optional[str] = None
+    serverchan_sendkey: Optional[str] = None
+    wecom_enabled: Optional[bool] = None
+    wecom_corp_id: Optional[str] = None
+    wecom_corp_secret: Optional[str] = None
+    wecom_agent_id: Optional[str] = None
+    wecom_touser: Optional[str] = None
+    wecom_notify_done: Optional[bool] = None
+    wecom_notify_fail: Optional[bool] = None
+    wecom_notify_sub: Optional[bool] = None
+    storage_post_action: Optional[str] = None
+    storage_nas_enabled: Optional[bool] = None
+    storage_nas_path: Optional[str] = None
+    storage_webdav_enabled: Optional[bool] = None
+    storage_webdav_url: Optional[str] = None
+    storage_webdav_user: Optional[str] = None
+    storage_webdav_pass: Optional[str] = None
+    storage_webdav_path: Optional[str] = None
+    nocheckcertificate: Optional[bool] = None
+    live_stream_pref_bilibili: Optional[str] = None
+    live_stream_pref_youtube: Optional[str] = None
+    live_stream_pref_douyin: Optional[str] = None
+    live_stream_pref_twitch: Optional[str] = None
+    live_stream_pref_default: Optional[str] = None
+    live_stream_fallback: Optional[bool] = None
+    global_speed_limit: Optional[str] = None
+    max_per_host: Optional[int] = None
+    adaptive_throttle: Optional[bool] = None
+    plugins_enabled: Optional[bool] = None
+    aria2_enabled: Optional[bool] = None
+    aria2_rpc: Optional[str] = None
+    aria2_secret: Optional[str] = None
+    aria2_split: Optional[int] = None
+    aria2_for_large_mb: Optional[int] = None
+    http_impersonate: Optional[bool] = None
+    po_provider_enabled: Optional[bool] = None
+    po_provider_url: Optional[str] = None
+    yt_player_clients: Optional[str] = None
+    github_mirror: Optional[str] = None
+    pip_mirror: Optional[str] = None
+    sub_first_download_n: Optional[int] = None
+    named_queues: Optional[list] = None
+    concurrent_fragments: Optional[int] = None
+    local_ai_transcribe: Optional[bool] = None
+    local_ai_translate: Optional[bool] = None
+    local_ai_lang: Optional[str] = None
+    whisper_model: Optional[str] = None
+    whisper_device: Optional[str] = None
+    whisper_compute: Optional[str] = None
+    diarization_enabled: Optional[bool] = None
+    diarization_max_speakers: Optional[int] = None
+    hf_token: Optional[str] = None
+    subtitle_translate_provider: Optional[str] = None
+    subtitle_target_lang: Optional[str] = None
+    subtitle_glossary: Optional[str] = None
+    subtitle_wrap: Optional[bool] = None
+    subtitle_wrap_width: Optional[int] = None
+    subtitle_export_set: Optional[str] = None
+    deepl_api_key: Optional[str] = None
+    deepl_api_url: Optional[str] = None
+    openai_api_key: Optional[str] = None
+    openai_base_url: Optional[str] = None
+    openai_model: Optional[str] = None
+    anthropic_api_key: Optional[str] = None
+    anthropic_model: Optional[str] = None
+    gemini_api_key: Optional[str] = None
+    gemini_model: Optional[str] = None
+    google_translate_api_key: Optional[str] = None
+    azure_translator_key: Optional[str] = None
+    azure_translator_region: Optional[str] = None
+    azure_translator_endpoint: Optional[str] = None
+    local_ai_mt_after_transcribe: Optional[bool] = None
+    subtitle_first: Optional[bool] = None
+    ai_polish: Optional[bool] = None
+    ai_summarize: Optional[bool] = None
+    summary_lang: Optional[str] = None
+    translate_auto_fallback: Optional[bool] = None
+    demucs_model: Optional[str] = None
+    edge_tts_voice: Optional[str] = None
+    sub_scan_delay_sec: Optional[int] = None
+    acoustid_api_key: Optional[str] = None
+    acoustid_min_score: Optional[float] = None
+    musicdl_cookies: Optional[str] = None
+    musicdl_strategy: Optional[dict] = None
+    music_filename_template: Optional[str] = None
+    music_embed_metadata: Optional[bool] = None
+    music_hide_unavailable: Optional[bool] = None
+    music_include_local: Optional[bool] = None
+    music_playlist_mode: Optional[str] = None
+    music_block_reupload: Optional[bool] = None
+    music_include_reference: Optional[bool] = None
+    music_quality_spec: Optional[dict] = None
+
+
+class SubAddBody(BaseModel):
+    url: str
+    title: str = ""
+    mode: Optional[str] = None
+    kind: Optional[str] = None
+    auto_download: Optional[bool] = None
+
+
+class SubIdBody(BaseModel):
+    id: str
+    enabled: Optional[bool] = None
+
+
+class SubRulesBody(BaseModel):
+    id: str
+    rules: dict = {}
+    mode: Optional[str] = None
+    auto_download: Optional[bool] = None
+
+
+class SubBackfillBody(BaseModel):
+    id: str
+    since: str = ""
+    until: str = ""
+
+
+class AnalyzeBody(BaseModel):
+    url: str
+
+
+@app.get("/")
+def index():
+    html = STATIC / "index.html"
+    if html.exists():
+        return FileResponse(
+            html,
+            media_type="text/html",
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+            },
+        )
+    return HTMLResponse("<h1>缺少 static/index.html</h1>")
+
+
+def whisper_status() -> dict:
+    """检测 faster-whisper / CLI 是否可用。"""
+    info = {
+        "faster_whisper": False,
+        "cli": _find_local_whisper_bin() or "",
+        "dir": str(WHISPER_DIR),
+        "label": "未安装",
+    }
+    try:
+        import faster_whisper  # type: ignore
+        ver = getattr(faster_whisper, "__version__", "ok")
+        info["faster_whisper"] = True
+        info["faster_whisper_ver"] = str(ver)
+        info["label"] = f"faster-whisper {ver}"
+    except Exception:
+        pass
+    if info["cli"] and not info["faster_whisper"]:
+        info["label"] = f"CLI: {Path(info['cli']).name}"
+    elif info["cli"] and info["faster_whisper"]:
+        info["label"] = f"{info['label']} + CLI"
+    return info
+
+
+def update_whisper(log: Callable = print, model: str = "base") -> str:
+    """
+    安装/更新 faster-whisper 到当前 Python，并预下载模型到 Whisper/models。
+    model: tiny / base / small / medium / large-v3
+    """
+    WHISPER_DIR.mkdir(parents=True, exist_ok=True)
+    models_dir = WHISPER_DIR / "models"
+    models_dir.mkdir(parents=True, exist_ok=True)
+    # 可选 HF_TOKEN：提高 HuggingFace 下载限额
+    try:
+        tok = (
+            (cfg.data.get("hf_token") or "").strip()
+            or (os.environ.get("HF_TOKEN") or "").strip()
+            or (os.environ.get("HUGGING_FACE_HUB_TOKEN") or "").strip()
+        )
+        if tok:
+            os.environ["HF_TOKEN"] = tok
+            os.environ["HUGGING_FACE_HUB_TOKEN"] = tok
+            log("已使用 HF_TOKEN（提高模型下载限额）")
+        else:
+            log("未设置 HF_TOKEN，匿名下载模型（可能较慢或触发限流）", "warning")
+    except Exception:
+        pass
+    log("正在 pip 安装/更新 faster-whisper …")
+    try:
+        idx = str(cfg.data.get("pip_mirror") or "")  # type: ignore[name-defined]
+    except Exception:
+        idx = ""
+    ok, res = pkg_update.pip_install(["faster-whisper"], log=log, mirror=idx, timeout=900)
+    if not ok:
+        log(f"faster-whisper 安装失败: {res}", "error")
+        return f"failed: {res}"
+    log("faster-whisper 已安装")
+
+    # 预下载模型（可选，失败不阻断）
+    model = (model or "base").strip() or "base"
+    try:
+        log(f"预下载 Whisper 模型: {model} → {models_dir}")
+        from faster_whisper import WhisperModel  # type: ignore
+        # 下载到本地 cache
+        os.environ.setdefault("HF_HOME", str(models_dir))
+        os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(models_dir / "hub"))
+        WhisperModel(model, device="cpu", compute_type="int8", download_root=str(models_dir))
+        log(f"模型 {model} 已就绪")
+    except Exception as e:
+        log(f"模型预下载跳过/失败（运行时会再下）: {e}", "warning")
+
+    st = whisper_status()
+    return st.get("label") or "ok"
+
+
+_MEDIA_EXTS = (".mp4", ".mkv", ".webm", ".flv", ".m4a", ".mp3", ".wav", ".aac", ".mov", ".ts", ".avi")
+
+
+def _collect_batch_targets(paths: List[str], folder: str, mode: str) -> List[Path]:
+    found: List[Path] = []
+    seen = set()
+
+    def add(p: Path):
+        try:
+            rp = str(p.resolve())
+        except Exception:
+            rp = str(p)
+        if rp in seen or not p.is_file():
+            return
+        seen.add(rp)
+        found.append(p)
+
+    for raw in paths or []:
+        p = Path(str(raw).strip())
+        if p.is_file():
+            add(p)
+    folder = (folder or "").strip()
+    if folder:
+        root = Path(folder)
+        if root.is_dir():
+            for p in sorted(root.rglob("*")):
+                if not p.is_file():
+                    continue
+                low = p.suffix.lower()
+                if mode in ("transcribe", "both") and low in _MEDIA_EXTS:
+                    add(p)
+                elif mode in ("translate", "both") and low == ".srt":
+                    stem = p.stem.lower()
+                    if stem.endswith((".zh", ".en", ".ja", ".ko", ".translated")):
+                        continue
+                    # both 模式里 srt 仅在「只机翻」时单独处理；both 对媒体会转写后再译
+                    if mode == "translate":
+                        add(p)
+    return found
+
+
+@app.post("/api/ai/batch")
+def api_ai_batch(body: dict):
+    """批量：mode=transcribe|translate|both；paths 或 folder。"""
+    mode = (body.get("mode") or "transcribe").strip().lower()
+    if mode not in ("transcribe", "translate", "both"):
+        raise HTTPException(400, "mode 须为 transcribe / translate / both")
+    targets = _collect_batch_targets(list(body.get("paths") or []), str(body.get("folder") or ""), mode)
+    if not targets:
+        raise HTTPException(400, "未找到可处理文件")
+    lang = (body.get("lang") or cfg.data.get("local_ai_lang") or "auto").strip()
+    provider = (body.get("provider") or cfg.data.get("subtitle_translate_provider") or "deepl").strip()
+    target_lang = (body.get("target_lang") or cfg.data.get("subtitle_target_lang") or "zh").strip()
+    source_lang = (body.get("source_lang") or cfg.data.get("local_ai_lang") or "").strip()
+
+    def job():
+        total = len(targets)
+        log_mgr.log(f"批量字幕开始: mode={mode} 共 {total} 个")
+        ok_n, fail_n = 0, 0
+        for i, p in enumerate(targets, 1):
+            try:
+                log_mgr.log(f"批量 [{i}/{total}] {p.name}")
+                low = p.suffix.lower()
+                if mode in ("transcribe", "both") and low in _MEDIA_EXTS:
+                    run_local_ai_on_file(
+                        str(p),
+                        transcribe=True,
+                        translate=False,
+                        lang=lang,
+                        model=(cfg.data.get("whisper_model") or "base"),
+                        device=(cfg.data.get("whisper_device") or "auto"),
+                        compute=(cfg.data.get("whisper_compute") or "auto"),
+                        log=log_mgr.log,
+                    )
+                    if mode == "both" and provider and provider != "none":
+                        srt = p.with_suffix(".srt")
+                        if srt.is_file():
+                            translate_srt_file(
+                                str(srt),
+                                provider=provider,
+                                target_lang=target_lang,
+                                source_lang=source_lang if source_lang not in ("auto", "") else "",
+                                log=log_mgr.log,
+                            )
+                elif mode == "translate" and low == ".srt" and provider and provider != "none":
+                    translate_srt_file(
+                        str(p),
+                        provider=provider,
+                        target_lang=target_lang,
+                        source_lang=source_lang if source_lang not in ("auto", "") else "",
+                        log=log_mgr.log,
+                    )
+                ok_n += 1
+            except Exception as e:
+                fail_n += 1
+                log_mgr.log(f"批量失败 {p.name}: {e}", "error")
+        log_mgr.log(f"批量字幕结束: 成功 {ok_n}，失败 {fail_n}，共 {total}")
+
+    threading.Thread(target=job, daemon=True).start()
+    return {
+        "ok": True,
+        "message": f"已开始批量处理 {len(targets)} 个文件（{mode}）",
+        "count": len(targets),
+        "files": [p.name for p in targets[:40]],
+    }
+
+
+def compute_backoff_delay(
+    attempt: int,
+    *,
+    base: float = 30.0,
+    cap: float = 600.0,
+    jitter: float = 0.25,
+) -> float:
+    """
+    指数退避 + 全抖动（Full Jitter）：
+    delay = min(cap, base * 2^(attempt-1))
+    实际等待 = random.uniform(0, delay) * 不全空，保留至少 delay*(1-jitter)～delay
+    用于 429/限流，避免雷群效应。
+    """
+    import random
+
+    attempt = max(1, int(attempt or 1))
+    base = max(0.5, float(base or 30))
+    cap = max(base, float(cap or 600))
+    exp = min(cap, base * (2 ** (attempt - 1)))
+    jitter = max(0.0, min(1.0, float(jitter if jitter is not None else 0.25)))
+    low = exp * (1.0 - jitter)
+    high = exp
+    if high <= low:
+        return round(exp, 2)
+    return round(random.uniform(low, high), 2)
+
+
+def url_host(url: str) -> str:
+    try:
+        from urllib.parse import urlparse
+        return (urlparse(str(url or "")).hostname or "").lower()
+    except Exception:
+        return ""
+
+
+class HostThrottle:
+    """按站点记住 429：冷却期内把该域并发压到 1，连续命中则拉长冷却。"""
+
+    def __init__(self):
+        self._d: Dict[str, Dict] = {}
+        self._lock = threading.Lock()
+
+    def hit(self, url: str, *, cooldown: float = 60.0, wait: float = 0.0,
+            max_cooldown: float = 900.0) -> Dict:
+        host = url_host(url)
+        if not host:
+            return {}
+        now = time.time()
+        cd = max(5.0, float(cooldown or 60))
+        if wait:
+            cd = max(cd, float(wait))
+        with self._lock:
+            e = self._d.setdefault(host, {"strikes": 0, "until": 0.0, "cooldown": cd})
+            e["strikes"] = int(e.get("strikes") or 0) + 1
+            e["cooldown"] = min(max(cd * (1 + 0.5 * (e["strikes"] - 1)), cd), max_cooldown)
+            e["until"] = max(float(e.get("until") or 0.0), now + e["cooldown"])
+            return {
+                "host": host,
+                "strikes": e["strikes"],
+                "cooldown": round(e["cooldown"], 1),
+                "left": round(max(0.0, e["until"] - now), 1),
+            }
+
+    def cap_for(self, host: str, base_cap: int) -> int:
+        """当前该域允许的并发数；冷却未过则降到 1。"""
+        if not host:
+            return base_cap
+        now = time.time()
+        with self._lock:
+            e = self._d.get(host)
+            if not e:
+                return base_cap
+            if float(e.get("until") or 0.0) <= now:
+                e["strikes"] = int(e.get("strikes") or 1) - 1
+                if e["strikes"] <= 0:
+                    self._d.pop(host, None)
+                return base_cap
+            return 1
+
+    def recover(self, url: str):
+        host = url_host(url)
+        if not host:
+            return
+        with self._lock:
+            e = self._d.get(host)
+            if e and float(e.get("until") or 0.0) <= time.time():
+                self._d.pop(host, None)
+
+    def snapshot(self) -> List[Dict]:
+        now = time.time()
+        out = []
+        with self._lock:
+            for host in list(self._d):
+                e = self._d[host]
+                left = float(e.get("until") or 0.0) - now
+                if left <= 0:
+                    self._d.pop(host, None)
+                    continue
+                out.append({
+                    "host": host,
+                    "strikes": int(e.get("strikes") or 0),
+                    "left": int(round(left)),
+                    "cooldown": round(float(e.get("cooldown") or 60), 1),
+                })
+        out.sort(key=lambda x: -x["left"])
+        return out
+
+    def peek(self, url: str) -> Dict:
+        """只读地问一句「这个域此刻还在冷却里吗」。
+
+        与 cap_for / snapshot 的区别是一律不改状态：那两个会把过期条目减 strikes 或直接摘掉，
+        拿它们做「发请求前的闸门」会让一次询问本身影响后续的降速计算。
+        """
+        host = url_host(url)
+        if not host:
+            return {}
+        with self._lock:
+            e = self._d.get(host)
+            if not e:
+                return {}
+            left = float(e.get("until") or 0.0) - time.time()
+            if left <= 0:
+                return {}
+            return {
+                "host": host,
+                "strikes": int(e.get("strikes") or 0),
+                "cooldown": round(float(e.get("cooldown") or 60), 1),
+                "left": round(left, 1),
+            }
+
+    def reset(self, host: str = "") -> int:
+        host = (host or "").strip().lower()
+        with self._lock:
+            if host:
+                return 1 if self._d.pop(host, None) else 0
+            n = len(self._d)
+            self._d.clear()
+            return n
+
+
+HOST_THROTTLE = HostThrottle()
+
+
+def resolve_media_path(path: str) -> Path:
+    """相对下载目录或绝对路径 → 已校验的绝对 Path。"""
+    p = (path or "").strip()
+    if not p:
+        raise HTTPException(400, "无效文件路径")
+    root = Path(cfg.data.get("download_dir") or DEFAULT_DOWNLOAD_DIR).resolve()
+    cand = Path(p)
+    if not cand.is_absolute():
+        cand = (root / p).resolve()
+    else:
+        cand = cand.resolve()
+    # 允许下载目录内；也允许绝对路径存在的文件（高级用法）
+    try:
+        if str(cand).startswith(str(root)) and cand.is_file():
+            return cand
+    except Exception:
+        pass
+    if cand.is_file():
+        return cand
+    raise HTTPException(400, f"无效文件路径: {p}")
+
+
+
+@app.get("/api/ai/voice_status")
+def api_voice_status():
+    try:
+        from voice_tools import demucs_available, edge_tts_available, deep_translator_available, EDGE_VOICE_PRESETS
+        return {
+            "demucs": demucs_available(),
+            "edge_tts": edge_tts_available(),
+            "deep_translator": deep_translator_available(),
+            "voices": EDGE_VOICE_PRESETS,
+            "auto_fallback": bool(cfg.data.get("translate_auto_fallback", True)),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/subtitle/glossary_check")
+def api_glossary_check(body: dict):
+    """术语表格式体检：返回生效条数与无法识别的行，供设置页即时提示。"""
+    raw = (body or {}).get("text")
+    if raw is None:
+        raw = cfg.data.get("subtitle_glossary") or ""
+    pairs = parse_glossary(raw)
+    bad: List[str] = []
+    for line in (raw or "").splitlines():
+        s = line.strip()
+        if not s or s.startswith("#") or s.startswith("//"):
+            continue
+        parts = GLOSSARY_SEP_RE.split(s, maxsplit=1)
+        if len(parts) != 2 or not parts[0].strip() or not parts[1].strip():
+            bad.append(s[:60])
+    return {"ok": True, "count": len(pairs), "terms": pairs[:200], "bad": bad[:20]}
+
+
+@app.post("/api/ai/analyze")
+def api_ai_analyze(body: dict):
+    """Librosa 音频分析摘要 → 日志 + .analysis.json"""
+    import importlib.util
+
+    media = resolve_media_path(body.get("path") or "")
+    write_json = body.get("write_json")
+    if write_json is None:
+        write_json = True
+    try:
+        max_duration = float(body.get("max_duration") or 180)
+    except Exception:
+        max_duration = 180.0
+
+    # 依赖缺失要在这里当场回错：起了线程就只能把失败埋进日志，界面上看着像成功了
+    if importlib.util.find_spec("librosa") is None:
+        msg = ("缺少 librosa，音频分析未启动：请在「设置 → 组件与依赖」的 Python 依赖里"
+               "安装 librosa（会连带装 numba / llvmlite），或在本机执行 pip install librosa 后重试")
+        log_mgr.log(msg, "warning")
+        return {"ok": False, "message": msg}
+
+    # 读不懂 / 没有声轨同理：只探一次 ffmpeg 头部，不必等后台线程跑完才发现
+    try:
+        from audio_analyze import preflight
+        err = preflight(str(media))
+    except Exception as e:
+        err = f"探测音轨失败: {e}"
+    if err:
+        log_mgr.log(f"音频分析未启动（{media.name}）：{err}", "warning")
+        return {"ok": False, "message": err}
+
+    def job():
+        try:
+            from audio_analyze import analyze_audio
+            r = analyze_audio(
+                str(media),
+                write_json=bool(write_json),
+                max_duration=max_duration,
+                log=log_mgr.log,
+            )
+            if not r.get("ok"):
+                log_mgr.log(r.get("message") or "分析失败", "warning")
+        except Exception as e:
+            log_mgr.log(f"音频分析失败: {e}", "error")
+
+    threading.Thread(target=job, daemon=True).start()
+    return {"ok": True, "message": f"正在分析: {media.name}（结果写运行日志{'与 JSON' if write_json else ''}）"}
+
+
+@app.post("/api/ai/demucs")
+def api_ai_demucs(body: dict):
+    """人声/伴奏分离。path 相对下载目录或绝对路径。"""
+    media = resolve_media_path(body.get("path") or "")
+    model = (body.get("model") or cfg.data.get("demucs_model") or "htdemucs").strip()
+
+    def job():
+        try:
+            from voice_tools import separate_vocals
+            separate_vocals(str(media), out_dir=str(media.parent / "demucs"), model=model, log=log_mgr.log)
+        except Exception as e:
+            log_mgr.log(f"Demucs 失败: {e}", "error")
+
+    threading.Thread(target=job, daemon=True).start()
+    return {"ok": True, "message": f"Demucs 分离中: {media.name}"}
+
+
+@app.post("/api/ai/tts")
+def api_ai_tts(body: dict):
+    """Edge-TTS：SRT 或纯文本 → mp3。"""
+    path = (body.get("path") or "").strip()
+    text = (body.get("text") or "").strip()
+    voice = (body.get("voice") or cfg.data.get("edge_tts_voice") or "").strip()
+    lang = (body.get("lang") or cfg.data.get("subtitle_target_lang") or "zh").strip()
+
+    def job():
+        try:
+            from voice_tools import edge_tts_from_srt, edge_tts_from_text
+            if path:
+                media = resolve_media_path(path)
+                if media.suffix.lower() == ".srt":
+                    edge_tts_from_srt(str(media), voice=voice, lang=lang, log=log_mgr.log)
+                else:
+                    # 同名 srt
+                    srt = media.with_suffix(".srt")
+                    if srt.is_file():
+                        edge_tts_from_srt(str(srt), voice=voice, lang=lang, log=log_mgr.log)
+                    else:
+                        raise FileNotFoundError("请提供 .srt 或同名字幕")
+            elif text:
+                out = Path(cfg.data.get("download_dir") or DEFAULT_DOWNLOAD_DIR) / "tts_out.mp3"
+                edge_tts_from_text(text, str(out), voice=voice, lang=lang, log=log_mgr.log)
+            else:
+                raise ValueError("需要 path 或 text")
+        except Exception as e:
+            log_mgr.log(f"Edge-TTS 失败: {e}", "error")
+
+    threading.Thread(target=job, daemon=True).start()
+    return {"ok": True, "message": "Edge-TTS 合成中"}
+
+
+@app.post("/api/ai/install_voice")
+def api_ai_install_voice(body: dict = None):
+    body = body or {}
+    which = (body.get("pkg") or "all").strip().lower()
+
+    def job():
+        from voice_tools import install_demucs, install_edge_tts, install_deep_translator
+        idx = str(cfg.data.get("pip_mirror") or "")
+        if which in ("all", "demucs"):
+            install_demucs(log_mgr.log, mirror=idx)
+        if which in ("all", "edge-tts", "edge_tts", "tts"):
+            install_edge_tts(log_mgr.log, mirror=idx)
+        if which in ("all", "deep-translator", "deep_translator", "dt"):
+            install_deep_translator(log_mgr.log, mirror=idx)
+
+    threading.Thread(target=job, daemon=True).start()
+    return {"ok": True, "message": f"后台安装: {which}"}
+
+
+@app.post("/api/ai/realtime")
+async def api_ai_realtime(file: UploadFile = File(...), lang: str = "auto", translate: bool = False, target_lang: str = "zh"):
+    """
+    实时/准实时：上传短音频块 → 转写（可选机翻）。
+    浏览器可用 MediaRecorder 周期性 POST。
+    """
+    if file is None:
+        raise HTTPException(400, "需要音频文件")
+    import tempfile
+    suffix = Path(file.filename or "chunk.webm").suffix or ".webm"
+    raw = await file.read()
+    if len(raw) < 100:
+        raise HTTPException(400, "音频过短")
+    tmp = Path(tempfile.gettempdir()) / f"md_rt_{uuid.uuid4().hex}{suffix}"
+    tmp.write_bytes(raw)
+    try:
+        # 转写
+        text = ""
+        srt_path = ""
+        try:
+            from faster_whisper import WhisperModel
+            model_name = cfg.data.get("whisper_model") or "base"
+            device = cfg.data.get("whisper_device") or "cpu"
+            if device == "auto":
+                device = "cpu"
+            compute = cfg.data.get("whisper_compute") or "int8"
+            if compute == "auto":
+                compute = "int8"
+            wm = WhisperModel(model_name, device=device, compute_type=compute)
+            segments, info = wm.transcribe(str(tmp), language=None if lang in ("", "auto") else lang)
+            parts = []
+            for seg in segments:
+                parts.append(seg.text.strip())
+            text = " ".join(parts).strip()
+            detected = getattr(info, "language", lang)
+        except Exception as e:
+            log_mgr.log(f"实时转写失败: {e}", "error")
+            raise HTTPException(500, f"转写失败: {e}")
+
+        translated = ""
+        if translate and text:
+            try:
+                cues = [{"idx": 1, "start": 0, "end": 1, "text": text}]
+                # 复用单条机翻
+                from voice_tools import translate_batch_deep_translator
+                try:
+                    translated = translate_batch_deep_translator([text], target_lang, "auto", log_mgr.log)[0]
+                except Exception:
+                    # 走完整 fallback
+                    out = translate_srt_file  # type: ignore
+                    # 写临时 srt
+                    ts = tmp.with_suffix(".srt")
+                    ts.write_text(f"1\n00:00:00,000 --> 00:00:05,000\n{text}\n", encoding="utf-8")
+                    result = translate_srt_file(str(ts), provider=cfg.data.get("subtitle_translate_provider") or "deep_translator",
+                                                target_lang=target_lang, log=log_mgr.log)
+                    translated = Path(result).read_text(encoding="utf-8", errors="ignore")
+            except Exception as e:
+                log_mgr.log(f"实时翻译失败: {e}", "warning")
+
+        return {
+            "ok": True,
+            "text": text,
+            "translated": translated,
+            "lang": detected if "detected" in dir() else lang,
+        }
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+@app.post("/api/ai/transcribe")
+def api_ai_transcribe(body: dict):
+    """对已下载媒体仅转写 → .srt（path 可为相对下载目录）"""
+    media = resolve_media_path(body.get("path") or "")
+    path = str(media)
+    lang = (body.get("lang") or cfg.data.get("local_ai_lang") or "auto").strip()
+    low = path.lower()
+    if not any(low.endswith(ext) for ext in (".mp4", ".mkv", ".webm", ".flv", ".m4a", ".mp3", ".wav", ".aac", ".mov", ".ts")):
+        raise HTTPException(400, "请选择音视频文件")
+
+    def job():
+        try:
+            run_local_ai_on_file(
+                path,
+                transcribe=True,
+                translate=False,
+                lang=lang,
+                model=(cfg.data.get("whisper_model") or "base"),
+                device=(cfg.data.get("whisper_device") or "auto"),
+                compute=(cfg.data.get("whisper_compute") or "auto"),
+                log=log_mgr.log,
+            )
+        except Exception as e:
+            log_mgr.log(f"仅转写失败: {e}", "error")
+
+    threading.Thread(target=job, daemon=True).start()
+    return {"ok": True, "message": f"已开始转写（语言={lang}）→ {media.name}"}
+
+
+
+PIPELINE_CN = {
+    "subtitle": "转写字幕",
+    "polish": "LLM 润色",
+    "summary": "内容摘要",
+    "translate": "字幕机翻",
+}
+
+
+def _ui_path(p: Path) -> str:
+    root = Path(cfg.data.get("download_dir") or DEFAULT_DOWNLOAD_DIR).resolve()
+    try:
+        return str(p.relative_to(root)).replace("\\", "/")
+    except Exception:
+        return str(p).replace("\\", "/")
+
+
+@app.get("/api/ai/pipeline_status")
+def api_ai_pipeline_status(path: str = ""):
+    """查询某个媒体文件的 AI 流水线阶段产物落盘情况。"""
+    from ai_pipeline import PIPELINE_STAGES, load_manifest, pipeline_manifest_path
+
+    if not (path or "").strip():
+        raise HTTPException(400, "缺少 path")
+    media = resolve_media_path(path)
+    mf = pipeline_manifest_path(media)
+    data = load_manifest(media)
+    stages = []
+    for name in PIPELINE_STAGES:
+        e = (data.get("stages") or {}).get(name) or {}
+        out = e.get("out") or ""
+        p = Path(out) if out else None
+        exists = bool(p and p.is_file())
+        stages.append({
+            "name": name,
+            "label": PIPELINE_CN.get(name, name),
+            "status": e.get("status") or "pending",
+            "note": e.get("note") or "",
+            "at": e.get("at") or "",
+            "out": _ui_path(p) if exists else "",
+            "out_name": p.name if exists else (Path(out).name if out else ""),
+            "size": p.stat().st_size if exists else 0,
+        })
+    return {
+        "ok": True,
+        "media": _ui_path(media),
+        "has_manifest": mf.is_file(),
+        "updated": data.get("updated") or "",
+        "stages": stages,
+    }
+
+
+SPEAKER_PREFIX_RE = re.compile(r"^\s*[（(\[]?(说话人|Speaker)\s*(\d+)[）)\]]?\s*[:：]?\s*")
+
+
+@app.get("/api/ai/transcript")
+def api_ai_transcript(path: str = ""):
+    """把某个媒体已落盘的字幕解析成逐行可点数据：[{start,end,speaker,text}]。
+
+    说话人分离的结果只以 `[说话人N] ` 前缀写在 SRT 正文里（这样内嵌字幕、导出、
+    硬字幕烧录都不用改），这里再把它剥出来单独成字段，前端才能分色显示。
+    """
+    from ai_pipeline import find_pipeline_srt
+
+    if not (path or "").strip():
+        raise HTTPException(400, "缺少 path")
+    media = resolve_media_path(path)
+    srt = find_pipeline_srt(media)
+    if srt is None:
+        return {"ok": False, "cues": [], "message": "这份文件还没有字幕，先跑一次转写或字幕流水线"}
+    try:
+        raw = srt.read_text(encoding="utf-8", errors="ignore")
+    except OSError as e:
+        raise HTTPException(500, f"读取字幕失败: {e}")
+    cues = []
+    for c in parse_srt(raw):
+        timing = c.get("timing") or ""
+        a, _, b = timing.partition("-->")
+        text = c.get("text") or ""
+        m = SPEAKER_PREFIX_RE.match(text)
+        speaker = ""
+        if m:
+            speaker = m.group(2)
+            text = text[m.end():]
+        cues.append({
+            "idx": c.get("idx"),
+            "start": round(_srt_ts_to_ms(a) / 1000.0, 3),
+            "end": round(_srt_ts_to_ms(b) / 1000.0, 3),
+            "speaker": speaker,
+            "text": text.strip(),
+        })
+    return {
+        "ok": True,
+        "media": _ui_path(media),
+        "srt": _ui_path(srt),
+        "cues": cues,
+        "message": "" if cues else "字幕文件是空的",
+    }
+
+
+@app.post("/api/ai/pipeline")
+def api_ai_pipeline(body: dict):
+    """
+    字幕优先流水线：已有字幕 → yt-dlp 平台字幕 → Whisper → 可选润色/摘要/机翻。
+    body: path, polish, summarize, translate, lang, summary_lang, target_lang, subtitle_first, only
+    only 取 subtitle|polish|summary|translate 时只重跑该阶段，输入用上次落盘产物。
+    """
+    media = resolve_media_path(body.get("path") or "")
+    path = str(media)
+    from ai_pipeline import PIPELINE_STAGES
+    only = str(body.get("only") or "").strip().lower()
+    lang = (body.get("lang") or cfg.data.get("local_ai_lang") or "auto").strip()
+    summary_lang = (body.get("summary_lang") or cfg.data.get("summary_lang") or "zh").strip()
+    target_lang = (body.get("target_lang") or cfg.data.get("subtitle_target_lang") or "zh").strip()
+    subtitle_first = body.get("subtitle_first")
+    if subtitle_first is None:
+        subtitle_first = bool(cfg.data.get("subtitle_first", True))
+    polish = body.get("polish")
+    if polish is None:
+        polish = bool(cfg.data.get("ai_polish", False))
+    summarize = body.get("summarize")
+    if summarize is None:
+        summarize = bool(cfg.data.get("ai_summarize", False))
+    translate = body.get("translate")
+    if translate is None:
+        translate = bool(cfg.data.get("local_ai_mt_after_transcribe", False))
+    if only and only not in PIPELINE_STAGES:
+        raise HTTPException(400, f"only 只支持 {'/'.join(PIPELINE_STAGES)}")
+
+    def job():
+        try:
+            from ai_pipeline import run_pipeline
+
+            def whisper_fn(mp, lang="auto"):
+                files = run_local_ai_on_file(
+                    mp,
+                    transcribe=True,
+                    translate=False,
+                    lang=lang,
+                    model=(cfg.data.get("whisper_model") or "base"),
+                    device=(cfg.data.get("whisper_device") or "auto"),
+                    compute=(cfg.data.get("whisper_compute") or "auto"),
+                    log=log_mgr.log,
+                )
+                return files
+
+            def translate_fn(srt, tgt):
+                return translate_srt_file(
+                    srt,
+                    provider=(cfg.data.get("subtitle_translate_provider") or "deepl"),
+                    target_lang=tgt,
+                    log=log_mgr.log,
+                )
+
+            # OpenAI 兼容密钥：优先 openai，其次 openrouter 风格共用字段
+            key = (cfg.data.get("openai_api_key") or cfg.data.get("openrouter_api_key") or "").strip()
+            base = (cfg.data.get("openai_base_url") or "https://api.openai.com/v1").strip()
+            model = (cfg.data.get("openai_model") or cfg.data.get("subtitle_openai_model") or "gpt-4o-mini").strip()
+
+            r = run_pipeline(
+                path,
+                subtitle_first=bool(subtitle_first),
+                use_whisper=True,
+                polish=bool(polish) and bool(key),
+                summarize=bool(summarize) and bool(key),
+                translate_after=bool(translate),
+                lang=lang,
+                summary_lang=summary_lang,
+                target_lang=target_lang,
+                whisper_fn=whisper_fn,
+                translate_fn=translate_fn,
+                openai_key=key,
+                openai_base=base,
+                openai_model=model,
+                only=only,
+                log=log_mgr.log,
+            )
+            badge = {"subtitle": "⚡平台字幕", "existing": "📄已有字幕", "whisper": "🎙Whisper", "cached": "♻上一步产物"}.get(
+                r.get("path_type") or "", r.get("path_type")
+            )
+            log_mgr.log(f"流水线完成{'' if not only else f'[{PIPELINE_CN.get(only, only)}]'} [{badge}] {r.get('message')}")
+            if r.get("summary"):
+                log_mgr.log(f"摘要文件: {r['summary']}")
+            if r.get("polished"):
+                log_mgr.log(f"润色文件: {r['polished']}")
+        except Exception as e:
+            log_mgr.log(f"流水线失败: {e}", "error")
+
+    threading.Thread(target=job, daemon=True).start()
+    return {
+        "ok": True,
+        "message": (
+            f"已启动单步重跑[{PIPELINE_CN.get(only, only)}]: {media.name}"
+            if only
+            else f"流水线已启动: {media.name}（字幕优先={subtitle_first} 润色={polish} 摘要={summarize}）"
+        ),
+    }
+
+
+@app.post("/api/ai/srt_calibrate")
+def api_ai_srt_calibrate(body: dict):
+    """
+    字幕时间轴校准。
+    path: srt 路径
+    offset_ms / offset_sec: 平移（可同时给，会相加）
+    scale: 缩放因子，默认 1.0
+    inplace: true 则覆盖原文件
+    """
+    path = str(resolve_media_path(body.get("path") or ""))
+    if not path.lower().endswith(".srt"):
+        raise HTTPException(400, "仅支持 .srt")
+    try:
+        offset_ms = int(body.get("offset_ms") or 0)
+    except Exception:
+        offset_ms = 0
+    try:
+        offset_sec = float(body.get("offset_sec") or 0)
+    except Exception:
+        offset_sec = 0.0
+    try:
+        scale = float(body.get("scale") if body.get("scale") is not None else 1.0)
+    except Exception:
+        scale = 1.0
+    inplace = bool(body.get("inplace"))
+    try:
+        out = calibrate_srt_file(
+            path,
+            offset_ms=offset_ms,
+            offset_sec=offset_sec,
+            scale=scale,
+            inplace=inplace,
+            log=log_mgr.log,
+        )
+        return {"ok": True, "path": out, "message": f"已校准 → {Path(out).name}"}
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/ai/translate_srt")
+def api_ai_translate_srt(body: dict):
+    """机翻已有 SRT（DeepL / OpenAI）。也可对视频：先找同名 .srt。"""
+    try:
+        p = resolve_media_path(body.get("path") or "")
+    except HTTPException:
+        raise
+    if p.suffix.lower() != ".srt":
+        cand = p.with_suffix(".srt")
+        if cand.is_file():
+            p = cand
+        else:
+            raise HTTPException(400, "请先转写生成 .srt，或直接选择 .srt 文件")
+    provider = (body.get("provider") or cfg.data.get("subtitle_translate_provider") or "deepl").strip()
+    target = (body.get("target_lang") or cfg.data.get("subtitle_target_lang") or "zh").strip()
+    source = (body.get("source_lang") or cfg.data.get("local_ai_lang") or "").strip()
+
+    def job():
+        try:
+            out = translate_srt_file(
+                str(p),
+                provider=provider,
+                target_lang=target,
+                source_lang=source if source not in ("auto", "") else "",
+                log=log_mgr.log,
+            )
+            log_mgr.log(f"机翻任务完成: {out}")
+        except Exception as e:
+            log_mgr.log(f"机翻失败: {e}", "error")
+
+    threading.Thread(target=job, daemon=True).start()
+    return {"ok": True, "message": f"已开始机翻 → {target}（{provider}）"}
+
+
+@app.post("/api/ai/subtitle_export")
+def api_ai_subtitle_export(body: dict):
+    """双语字幕导出：换行 + 双语 SRT / VTT / ASS 三件套。"""
+    try:
+        p = resolve_media_path(body.get("path") or "")
+    except HTTPException:
+        raise
+    if p.suffix.lower() != ".srt":
+        raise HTTPException(400, "请选择 .srt 字幕文件")
+    other = None
+    if (body.get("with") or "").strip():
+        try:
+            other = resolve_media_path(body["with"].strip())
+        except HTTPException:
+            other = None
+    if other is None:
+        other = find_subtitle_counterpart(p)
+    if other is None or not other.is_file():
+        raise HTTPException(400, f"找不到 {p.name} 的同名另一路字幕（原文或译文），无法合成双语")
+
+    target = str(cfg.data.get("subtitle_target_lang") or "zh").strip().lower()[:2]
+    main_cue_path, sec_cue_path = p, other
+    if _lang_suffix_of(other).startswith(target) and not _lang_suffix_of(p).startswith(target):
+        main_cue_path, sec_cue_path = other, p
+
+    def _cues(sp: Path):
+        cs = parse_srt(sp.read_text(encoding="utf-8", errors="ignore"))
+        if not cs:
+            raise HTTPException(400, f"{sp.name} 没有有效字幕条目")
+        return cs
+
+    main_cues, sec_cues = _cues(main_cue_path), _cues(sec_cue_path)
+    max_units = float(body.get("width") or cfg.data.get("subtitle_wrap_width") or 16)
+    max_units = max(8.0, min(40.0, max_units))
+    do_wrap = body.get("wrap")
+    do_wrap = bool(cfg.data.get("subtitle_wrap", True)) if do_wrap is None else bool(do_wrap)
+    if do_wrap:
+        main_cues = wrap_cues(main_cues, max_units, 2)
+        sec_cues = wrap_cues(sec_cues, max_units, 2)
+
+    bi = merge_bilingual_cues(main_cues, sec_cues)
+    written = []
+    outs = [
+        (main_cue_path.with_name(main_cue_path.stem + ".bi.srt"), write_srt(bi)),
+        (main_cue_path.with_name(main_cue_path.stem + ".bi.vtt"), write_vtt(bi)),
+        (
+            main_cue_path.with_name(main_cue_path.stem + ".bi.ass"),
+            srt_to_ass(wrap_cues(sec_cues, max_units * 1.6, 1), main_cues, title=main_cue_path.stem),
+        ),
+    ]
+    for path, content in outs:
+        path.write_text(content, encoding="utf-8")
+        written.append(str(path))
+        log_mgr.log(f"双语导出: {path.name}")
+    return {
+        "ok": True,
+        "files": written,
+        "cues": len(bi),
+        "message": f"已导出 {len(written)} 个文件（{len(bi)} 条，译文取 {main_cue_path.name}）",
+    }
+
+
+HARDSUB_ALIGN = {"bottom": 2, "top": 8, "middle": 5}
+HARDSUB_JOBS: Dict[str, dict] = {}
+HARDSUB_LOCK = threading.Lock()
+
+
+def _vtt_to_srt_text(raw: str) -> str:
+    """WEBVTT → SRT 文本，好让字幕解析器复用同一套逻辑。"""
+    raw = raw.lstrip("\ufeff").strip()
+    block = re.split(r"\r?\n\r?\n", raw)
+    out, n = [], 0
+    for b in block:
+        lines = [l.rstrip("\r") for l in b.splitlines()]
+        lines = [l for l in lines if l.strip() and not l.strip().startswith(("WEBVTT", "NOTE", "Kind:", "Language:"))]
+        timing = next((i for i, l in enumerate(lines) if "-->" in l), None)
+        if timing is None:
+            continue
+        n += 1
+        out.append(f"{n}\n{lines[timing].replace('.', ',')}\n" + "\n".join(lines[timing + 1:]))
+    return "\n\n".join(out)
+
+
+def _burn_ass_text(sub: Path, fontsize: int, align: int, font: str, outline: float) -> str:
+    """字幕文件 → 渲染用 ASS 文本。已排好版的 .ass 原样端上，srt/vtt 走主样式重排。"""
+    raw = sub.read_text(encoding="utf-8", errors="ignore")
+    if sub.suffix.lower() == ".ass":
+        return raw
+    cues = parse_srt(_vtt_to_srt_text(raw) if sub.suffix.lower() == ".vtt" else raw)
+    cues = [c for c in cues if (c.get("text") or "").strip()]
+    if not cues:
+        raise HTTPException(400, f"{sub.name} 里没有有效字幕")
+    width = max(8.0, min(40.0, float(cfg.data.get("subtitle_wrap_width") or 16)))
+    cues = wrap_cues(cues, width, 2) if cfg.data.get("subtitle_wrap", True) else cues
+    return srt_to_ass([], cues, title=sub.stem, main_style={
+        "font": font, "fontsize": fontsize, "align": align, "outline": outline,
+    })
+
+
+def _auto_burn_sub(media: Path) -> Optional[Path]:
+    """自动选轴只认流水线记录或严格同名 —— 烧进画面的字擦不掉，宁可不烧也不能拿错一份。"""
+    from ai_pipeline import load_manifest
+    out = ((load_manifest(media).get("stages") or {}).get("subtitle") or {}).get("out") or ""
+    p = Path(out) if out else None
+    if p and p.is_file():
+        return p
+    for ext in (".srt", ".ass", ".vtt"):
+        cand = media.with_suffix(ext)
+        if cand.is_file():
+            return cand
+    return None
+
+
+@app.get("/api/ai/hardsub_jobs")
+def api_ai_hardsub_jobs():
+    with HARDSUB_LOCK:
+        return {"ok": True, "jobs": [{k: v for k, v in j.items() if k != "proc"} for j in HARDSUB_JOBS.values()]}
+
+
+@app.post("/api/ai/hardsub_stop")
+def api_ai_hardsub_stop(body: dict):
+    media = resolve_media_path((body or {}).get("path") or "")
+    with HARDSUB_LOCK:
+        rec = HARDSUB_JOBS.get(str(media)) or {}
+        proc = rec.get("proc")
+        if proc is not None:
+            rec["stopping"] = True
+            rec["message"] = "正在停止"
+    if proc is None:
+        return {"ok": False, "message": "这个文件没有在烧的任务了"}
+    try:
+        proc.terminate()
+    except Exception:
+        pass
+    return {"ok": True, "message": "已请求停止，半成品会被删掉"}
+
+
+@app.post("/api/ai/hardsub")
+def api_ai_hardsub(body: dict):
+    """硬字幕烧录：把字幕画进画面，输出 <原名>.hardsub.mp4（源文件不动）。"""
+    body = body or {}
+    media = resolve_media_path(body.get("path") or "")
+    ff = ffmpeg_mgr.find()
+    if not ff:
+        raise HTTPException(400, "没找到 FFmpeg，先去「组件与依赖」装好再烧字幕")
+    if not _ffprobe_info(media).get("width"):
+        raise HTTPException(400, f"{media.name} 没有视频轨，没有画面可烧字幕")
+
+    sub = None
+    if (body.get("srt") or "").strip():
+        sub = resolve_media_path(body["srt"].strip())
+        if sub.suffix.lower() not in (".srt", ".ass", ".vtt"):
+            raise HTTPException(400, "字幕只认 .srt / .ass / .vtt")
+    if sub is None:
+        sub = _auto_burn_sub(media)
+        if sub is None:
+            raise HTTPException(400, f"{media.name} 旁边没有同名字幕（.srt/.ass/.vtt），先跑一次转写，或在下载时带上字幕")
+
+    try:
+        fontsize = max(16, min(96, int(body.get("fontsize") or 44)))
+    except Exception:
+        fontsize = 44
+    align = HARDSUB_ALIGN.get(str(body.get("position") or "bottom"), 2)
+    font = str(body.get("font") or "Microsoft YaHei").strip()[:40] or "Microsoft YaHei"
+    try:
+        crf = max(14, min(38, int(body.get("crf") or 20)))
+    except Exception:
+        crf = 20
+
+    out = media.with_name(media.stem + ".hardsub.mp4")
+    if out.exists() and not body.get("overwrite"):
+        raise HTTPException(409, f"已经烧过一份 {out.name}，要重来请勾「覆盖旧文件」")
+    key = str(media)
+    with HARDSUB_LOCK:
+        if (HARDSUB_JOBS.get(key) or {}).get("status") == "running":
+            raise HTTPException(409, f"{media.name} 正在烧字幕，等它跑完或先停止")
+        if len(HARDSUB_JOBS) > 30:
+            for k in [k for k, v in HARDSUB_JOBS.items() if v.get("status") != "running"][:10]:
+                HARDSUB_JOBS.pop(k, None)
+        HARDSUB_JOBS[key] = {
+            "media": _ui_path(media), "out": _ui_path(out), "srt": _ui_path(sub),
+            "status": "running", "elapsed": "", "total": 0.0, "message": "准备中",
+        }
+
+    def job():
+        tmp = media.parent / f"_burnsub_{uuid.uuid4().hex[:8]}.ass"
+        proc = None
+        try:
+            info = _ffprobe_info(media)
+            total = float(info.get("duration") or 0)
+            tmp.write_text(_burn_ass_text(sub, fontsize, align, font, 2.4), encoding="utf-8")
+            # mp4 装不下 opus/vorbis 这类音轨，直接 copy 会让 ffmpeg 报错 —— 按源编码决定要不要重编音频
+            acopy = (info.get("acodec") or "").lower() in ("aac", "mp3", "mp2", "ac3")
+            cmd = [
+                ff, "-hide_banner", "-nostdin", "-loglevel", "error", "-y",
+                "-progress", "pipe:1", "-nostats", "-i", str(media),
+                "-vf", f"ass=filename={tmp.name}",
+                "-c:v", "libx264", "-preset", "medium", "-crf", str(crf), "-pix_fmt", "yuv420p",
+            ]
+            cmd += ["-c:a", "copy"] if acopy else ["-c:a", "aac", "-b:a", "192k"]
+            cmd += ["-movflags", "+faststart", str(out)]
+            log_mgr.log(
+                f"开始烧字幕: {media.name} ← {sub.name}"
+                f"（{fontsize} 号 · 字幕{'居中' if align == 5 else '靠上' if align == 8 else '靠下'} · crf {crf}）"
+            )
+            proc = subprocess.Popen(
+                cmd, cwd=str(media.parent), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding="utf-8", errors="replace",
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            with HARDSUB_LOCK:
+                if key in HARDSUB_JOBS:
+                    HARDSUB_JOBS[key]["proc"] = proc
+                    HARDSUB_JOBS[key]["total"] = total
+            last_log, tail = time.time(), []
+            while True:
+                ln = proc.stdout.readline()
+                if not ln:
+                    break
+                ln = ln.strip()
+                # ffmpeg 9 的 -progress 用的是 out_time=，写成 out_time_str= 会一条都读不到
+                if ln.startswith(("out_time=", "out_time_str=")):
+                    elapsed = ln.split("=", 1)[1].split(".")[0]
+                    with HARDSUB_LOCK:
+                        if key in HARDSUB_JOBS:
+                            HARDSUB_JOBS[key]["elapsed"] = elapsed
+                    if total and time.time() - last_log > 20:
+                        last_log = time.time()
+                        h, mi, s = (int(x or 0) for x in elapsed.split(":"))
+                        done = h * 3600 + mi * 60 + s
+                        log_mgr.log(f"烧字幕中 {media.name}: {done}/{int(total)}s（{done * 100 // max(1, int(total))}%）")
+                elif ln and len(ln) < 300 and not re.match(r"^\w+=", ln):
+                    tail.append(ln)
+                    del tail[:-30]
+            code = proc.wait()
+            with HARDSUB_LOCK:
+                rec = HARDSUB_JOBS.get(key) or {}
+                stopped = bool(rec.get("stopping"))
+                rec.pop("proc", None)
+            if stopped:
+                out.unlink(missing_ok=True)
+                with HARDSUB_LOCK:
+                    rec.update(status="stopped", message="已停止，半成品已删除")
+                log_mgr.log(f"已停止烧字幕: {media.name}，半成品已删", "warning")
+                return
+            if code != 0 or not out.is_file():
+                out.unlink(missing_ok=True)
+                raise RuntimeError(" / ".join(tail[-3:])[-260:] or f"ffmpeg 退出码 {code}")
+            size_mb = out.stat().st_size / 1048576.0
+            with HARDSUB_LOCK:
+                if key in HARDSUB_JOBS:
+                    HARDSUB_JOBS[key].update(status="done", message=f"已生成 {out.name}（{size_mb:.0f} MB）")
+            log_mgr.log(f"烧字幕完成: {out.name}（{size_mb:.0f} MB）")
+        except Exception as e:
+            with HARDSUB_LOCK:
+                if key in HARDSUB_JOBS:
+                    HARDSUB_JOBS[key].update(status="failed", message=str(e)[:260])
+            log_mgr.log(f"烧字幕失败: {e}", "error")
+        finally:
+            tmp.unlink(missing_ok=True)
+
+    threading.Thread(target=job, daemon=True).start()
+    return {"ok": True, "message": f"开始烧字幕：{sub.name} → {out.name}", "out": _ui_path(out), "srt": _ui_path(sub)}
+
+
+@app.post("/api/update/whisper")
+def api_update_whisper(body: dict = None):
+    body = body or {}
+    model = (body.get("model") if isinstance(body, dict) else None) or "base"
+
+    def job():
+        res = update_whisper(
+            log=lambda m, level="info": log_mgr.log(m, level),
+            model=str(model),
+        )
+        log_mgr.log(f"Whisper 更新结果: {res}")
+
+    threading.Thread(target=job, daemon=True).start()
+    return {"ok": True, "message": f"Whisper (faster-whisper + 模型 {model}) 更新已在后台开始"}
+
+
+@app.get("/api/status")
+def api_status():
+    ff_path = ffmpeg_mgr.find(ffmpeg_mgr.manual_path)
+    cookie_file = (cfg.data.get("cookie_file") or str(DEFAULT_COOKIE_FILE)).strip()
+    nm = find_n_m3u8dl()
+    w = whisper_status()
+    return {
+        "ffmpeg": ffmpeg_mgr.version(),
+        "ffmpeg_path": ff_path or "",
+        "ytdlp": engine.check_ytdlp(),
+        "n_m3u8dl": n_m3u8dl_version(),
+        "n_m3u8dl_path": nm or "",
+        "whisper": w.get("label") or "未安装",
+        "whisper_dir": w.get("dir") or "",
+        "whisper_cli": w.get("cli") or "",
+        "running": queue.running,
+        "paused": queue.paused,
+        "pending": len(queue.pending),
+        "tasks": len(queue.tasks),
+        "cookie_source": cfg.data.get("cookie_source", "none"),
+        "cookie_file": cookie_file,
+        "cookie_exists": Path(cookie_file).exists() if cookie_file else False,
+        "tools_dir": str(TOOLS_DIR),
+        "cookies_dir": str(COOKIES_DIR),
+        "platform": sys.platform,
+        "disk_free_gb": _disk_free_gb(cfg.data.get("download_dir") or str(DEFAULT_DOWNLOAD_DIR)),
+        "extension_dir": str(APP_DIR / "extension"),
+        "throttle": HOST_THROTTLE.snapshot(),
+        "adaptive_throttle": bool(cfg.data.get("adaptive_throttle", True)),
+        "po_token": po_token_health(),
+    }
+
+
+@app.post("/api/po_token/check")
+def api_po_token_check():
+    """强制探一次 bgutil PO Token 服务，并回给生效中的 YouTube 客户端链。"""
+    st = po_token_health(force=True)
+    chain, note = engine._yt_player_chain(cfg.data, "https://www.youtube.com/watch?v=x")
+    return {
+        "ok": True,
+        **st,
+        "enabled": bool(cfg.data.get("po_provider_enabled")),
+        "chain": chain,
+        "note": note,
+        "fingerprints": list(TLS_FINGERPRINTS),
+        "impersonate": _impersonate_on(),
+    }
+
+
+@app.post("/api/queue/throttle_reset")
+def api_throttle_reset(body: dict):
+    """手动解除站点降速；host 留空则清空全部。"""
+    host = str((body or {}).get("host") or "").strip().lower()
+    n = HOST_THROTTLE.reset(host)
+    if n:
+        log_mgr.log(f"已清除 {n} 个站点的降速冷却" + (f"（{host}）" if host else ""))
+    queue._pump()
+    return {"ok": True, "cleared": n, "throttle": HOST_THROTTLE.snapshot()}
+
+
+def _disk_free_gb(path: str) -> float:
+    try:
+        p = Path(path)
+        p.mkdir(parents=True, exist_ok=True)
+        usage = shutil.disk_usage(str(p))
+        return round(usage.free / (1024 ** 3), 2)
+    except Exception:
+        return -1.0
+
+
+@app.post("/api/update/ytdlp")
+def api_update_ytdlp():
+    def job():
+        res = engine.update_ytdlp()
+        log_mgr.log(f"yt-dlp 更新结果: {res}")
+
+    threading.Thread(target=job, daemon=True).start()
+    return {"ok": True, "message": "yt-dlp 更新已在后台开始"}
+
+
+@app.post("/api/update/ffmpeg")
+def api_update_ffmpeg():
+    def job():
+        ok = ffmpeg_mgr.update()
+        log_mgr.log(f"FFmpeg 更新结果: {'成功' if ok else '失败'}")
+
+    threading.Thread(target=job, daemon=True).start()
+    return {"ok": True, "message": "FFmpeg 更新已在后台开始"}
+
+
+@app.post("/api/update/n_m3u8dl")
+def api_update_n_m3u8dl():
+    def job():
+        res = update_n_m3u8dl(log=lambda m, level="info": log_mgr.log(m, level))
+        log_mgr.log(f"N_m3u8DL-RE 更新结果: {res}")
+
+    threading.Thread(target=job, daemon=True).start()
+    return {"ok": True, "message": "N_m3u8DL-RE 更新已在后台开始，请稍后刷新状态"}
+
+
+def path_dirs() -> List[str]:
+    """工具落地的目录：命令行里要能直接敲 ffmpeg / yt-dlp / fpcalc，就得都在 PATH 上。"""
+    out = [str(TOOLS_DIR)]
+    chroma = APP_DIR / "chromaprint"
+    if (chroma / "fpcalc.exe").exists() or chroma.exists():
+        out.append(str(chroma))
+    return out
+
+
+def _path_split(cur: str) -> List[str]:
+    return [p for p in str(cur or "").split(";") if p.strip()]
+
+
+def _same_dir(a: str, b: str) -> bool:
+    return os.path.normcase(str(a).rstrip("\\/ ")) == os.path.normcase(str(b).rstrip("\\/ "))
+
+
+def _path_add(cur: str, dirs: Sequence[str]) -> str:
+    parts = _path_split(cur)
+    for d in dirs:
+        if not any(_same_dir(p, d) for p in parts):
+            parts.append(str(d))
+    return ";".join(parts)
+
+
+def _path_remove(cur: str, dirs: Sequence[str]) -> str:
+    return ";".join(p for p in _path_split(cur) if not any(_same_dir(p, d) for d in dirs))
+
+
+def user_path_read() -> tuple:
+    """返回 (用户 PATH 原文, 注册表类型)。原文不展开，写回时才不会丢 %XXX% 变量。"""
+    import winreg
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_READ) as k:
+            val, typ = winreg.QueryValueEx(k, "Path")
+        return str(val or ""), int(typ or winreg.REG_EXPAND_SZ)
+    except FileNotFoundError:
+        return "", 1  # REG_EXPAND_SZ
+
+
+def user_path_write(val: str, typ: int) -> None:
+    import winreg
+
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_SET_VALUE) as k:
+        winreg.SetValueEx(k, "Path", 0, typ, val)
+    _broadcast_env_change()
+
+
+def _broadcast_env_change() -> None:
+    """通知 explorer 重载环境，新开的 cmd / 资源管理器不用重启系统就能看到新 PATH。"""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        result = wintypes.DWORD(0)
+        user32.SendMessageTimeoutW(
+            wintypes.HWND(0xFFFF),  # HWND_BROADCAST
+            wintypes.UINT(0x1A),    # WM_SETTINGCHANGE
+            wintypes.WPARAM(0),
+            ctypes.c_wchar_p("Environment"),
+            wintypes.UINT(0x0002),  # SMTO_ABORTIFHUNG
+            wintypes.UINT(5000),
+            ctypes.byref(result),
+        )
+    except Exception:
+        pass
+
+
+def env_path_status() -> dict:
+    dirs = path_dirs()
+    tools = {
+        "ffmpeg": TOOLS_DIR / "ffmpeg.exe",
+        "ffprobe": TOOLS_DIR / "ffprobe.exe",
+        "yt-dlp": TOOLS_DIR / "yt-dlp.exe",
+        "N_m3u8DL-RE": TOOLS_DIR / "N_m3u8DL-RE.exe",
+        "fpcalc": APP_DIR / "chromaprint" / "fpcalc.exe",
+    }
+    st = {
+        "platform": sys.platform,
+        "dirs": dirs,
+        "present": [n for n, p in tools.items() if p.exists()],
+        "writable": sys.platform == "win32",
+        "in_path": [],
+        "export": "export PATH=\"" + ":".join(dirs) + ":$PATH\"",
+    }
+    try:
+        if sys.platform == "win32":
+            cur, _typ = user_path_read()
+        else:
+            cur = os.environ.get("PATH", "")
+        st["current"] = cur
+        st["in_path"] = [d for d in dirs if any(_same_dir(p, d) for p in _path_split(cur))]
+        st["missing"] = [d for d in dirs if d not in st["in_path"]]
+    except Exception as e:
+        st["error"] = str(e)[:200]
+    st["ok"] = len(st.get("in_path") or []) == len(dirs)
+    return st
+
+
+@app.get("/api/env/path")
+def api_env_path_get():
+    return env_path_status()
+
+
+@app.post("/api/env/path")
+def api_env_path(body: dict = None):
+    body = body or {}
+    action = str(body.get("action") or "check").lower()
+    dirs = path_dirs()
+    if action == "check":
+        return env_path_status()
+    if sys.platform != "win32":
+        return {"ok": False, "message": "非 Windows 请手动把下面这行加进 ~/.bashrc 或 ~/.zshrc",
+                "export": "export PATH=\"" + ":".join(dirs) + ":$PATH\"", "dirs": dirs}
+    try:
+        cur, typ = user_path_read()
+        new = _path_add(cur, dirs) if action == "add" else _path_remove(cur, dirs)
+        if new == cur:
+            return {**env_path_status(), "ok": True, "message": "已经是当前状态，无需修改"}
+        user_path_write(new, typ)
+        after, _ = user_path_read()
+        if after != new:
+            user_path_write(cur, typ)  # 写歪了就还原，别把用户 PATH 留在半更新状态
+            return {"ok": False, "message": "写入后校验不一致，已还原原 PATH"}
+        return {**env_path_status(), "ok": True,
+                "message": ("已加入 PATH（新开的命令行窗口即刻可用）" if action == "add"
+                            else "已从 PATH 移除")}
+    except Exception as e:
+        return {**env_path_status(), "ok": False, "message": f"修改失败：{str(e)[:200]}"}
+
+
+BUNDLED_FILE = APP_DIR / "components_bundled.json"
+_bundled_cache: dict = {"mtime": None, "data": {}}
+LATEST_TTL = 600
+_latest_cache: dict = {"ts": 0.0, "mirror": None, "data": {}}
+
+
+def bundled_manifest() -> dict:
+    """便携包里的「随包版本」清单（打包时由 pack_release.py 写入）。源码运行没有这个文件 → 空。"""
+    try:
+        mt = BUNDLED_FILE.stat().st_mtime
+    except Exception:
+        return {}
+    if _bundled_cache["mtime"] != mt:
+        try:
+            data = json.loads(BUNDLED_FILE.read_text(encoding="utf8"))
+        except Exception:
+            data = {}
+        _bundled_cache.update(mtime=mt, data=data if isinstance(data, dict) else {})
+    return _bundled_cache["data"]
+
+
+def _bundled_version(manifest: dict, item: dict) -> str:
+    tools = manifest.get("tools") or {}
+    pip = manifest.get("pip") or {}
+    for src, key in (("tools", item.get("tool")), ("pip", item.get("pkg"))):
+        v = (tools if src == "tools" else pip).get(key or "")
+        if v:
+            return str(v)
+    return ""
+
+
+def latest_versions_cached(mirror: str) -> dict:
+    """上游最新版要问 pip（一次约两秒），所以只在页面点「查询最新版本」时才查，结果缓存 10 分钟。"""
+    now = time.time()
+    if _latest_cache["data"] and _latest_cache["mirror"] == mirror and now - _latest_cache["ts"] < LATEST_TTL:
+        return _latest_cache["data"]
+    names = [p["name"] for p in pkg_update.PIP_PACKAGES]
+    data = pkg_update.latest_versions(names, mirror)
+    _latest_cache.update(ts=now, mirror=mirror, data=data)
+    return data
+
+
+@app.get("/api/components")
+def api_components(latest: str = ""):
+    """设置页「组件与依赖」：随包版本 / 当前版本 /（点了「查询最新版本」才有）上游最新版。"""
+    ff = str(ffmpeg_mgr.version() or "")
+    ff_ok = bool(ffmpeg_mgr.find(ffmpeg_mgr.manual_path))
+    ytd = str(engine.check_ytdlp() or "")
+    nm = str(n_m3u8dl_version() or "")
+    w = whisper_status()
+    items = [
+        {"key": "ffmpeg", "label": "FFmpeg / FFprobe（合并、转码、嵌封面字幕）",
+         "tool": "ffmpeg.exe", "pkg": "",
+         "active": ff or "未安装", "ok": ff_ok,
+         "update": "/api/update/ffmpeg"},
+        {"key": "ytdlp", "label": "yt-dlp（各站点解析规则，最常需要更新）",
+         "tool": "yt-dlp.exe", "pkg": "yt-dlp",
+         "active": ytd, "ok": "not found" not in ytd.lower(), "update": "/api/update/ytdlp"},
+        {"key": "n_m3u8dl", "label": "N_m3u8DL-RE（HLS 分片 / 直播录制）",
+         "tool": "N_m3u8DL-RE.exe", "pkg": "",
+         "active": nm or "未安装", "ok": bool(nm), "update": "/api/update/n_m3u8dl"},
+        {"key": "faster-whisper", "label": "faster-whisper（本地转写，含模型体积较大）",
+         "tool": "", "pkg": "faster-whisper",
+         "active": str(w.get("label") or "未安装"),
+         "ok": bool(w.get("faster_whisper") or w.get("cli")),
+         "update": "/api/update/whisper"},
+    ]
+    for p in pkg_update.PIP_PACKAGES:
+        if p["name"] == "faster-whisper":
+            continue  # 上面那条走 /api/update/whisper，还要顺带拉模型
+        v = pkg_update.installed_version(p["name"])
+        items.append({"key": p["name"], "label": p["label"], "tool": "", "pkg": p["name"],
+                      "active": v or "未安装", "ok": bool(v), "update": "/api/update/pkg"})
+    manifest = bundled_manifest()
+    lv: dict = {}
+    if latest:
+        try:
+            lv = latest_versions_cached(str(cfg.data.get("pip_mirror") or ""))
+        except Exception as e:
+            log_mgr.log(f"上游版本查询失败：{str(e)[:160]}", "warning")
+    for it in items:
+        it["bundled"] = _bundled_version(manifest, it)
+        it["latest"] = ""
+        it["latest_note"] = ""
+        row = lv.get(it["pkg"]) or {}
+        if row:
+            it["latest"] = str(row.get("version") or "")
+            it["latest_note"] = "" if it["latest"] else str(row.get("error") or "")
+    return {
+        "items": items,
+        "env_path": env_path_status(),
+        "pip": pkg_update.pip_available(),
+        "pip_version": pkg_update.pip_version(),
+        "python": sys.executable,
+        "portable": (APP_DIR / "runtime" / "python.exe").exists(),
+        "bundled": {"app": str(manifest.get("app") or ""), "built": str(manifest.get("built") or "")},
+        "latest_checked": bool(latest),
+        "pip_mirror": str(cfg.data.get("pip_mirror") or ""),
+        "github_mirror": str(cfg.data.get("github_mirror") or ""),
+        "pip_mirrors": [m for m in pkg_update.PIP_MIRRORS if m],
+        "update_all": dict(_COMP_ALL),
+    }
+
+
+# 「一键更新」：一次只跑一批，批内串行 —— pip 并发装会互相踩，GitHub 大文件同时下也没意义
+_COMP_ALL: Dict[str, Any] = {"running": False, "total": 0, "done": 0,
+                             "current": "", "results": [], "started": ""}
+_COMP_ALL_LOCK = threading.Lock()
+
+
+def _comp_update_one(key: str, mirror: str, log: Callable) -> tuple:
+    """更新一个组件，返回 (是否成功, 给人看的说明)。"""
+    if key == "ffmpeg":
+        ok = bool(ffmpeg_mgr.update())
+        return ok, f"当前 {ffmpeg_mgr.version() or '未安装'}"
+    if key == "ytdlp":
+        res = str(engine.update_ytdlp() or "")
+        return res.startswith("updated"), f"{res}｜当前 {engine.check_ytdlp()}"
+    if key == "n_m3u8dl":
+        res = str(update_n_m3u8dl(log=log) or "")
+        return res.startswith("成功"), res
+    if key == "faster-whisper":
+        res = str(update_whisper(log=log, model="base") or "")
+        return not res.startswith("failed"), res
+    ok, res = pkg_update.pip_install([key], log=log, mirror=mirror)
+    return bool(ok), str(res)
+
+
+def _comp_update_all(keys: List[str], mirror: str) -> None:
+    labels = {p["name"]: p["label"] for p in pkg_update.PIP_PACKAGES}
+    labels.update({"ffmpeg": "FFmpeg", "ytdlp": "yt-dlp", "n_m3u8dl": "N_m3u8DL-RE",
+                   "faster-whisper": "faster-whisper"})
+    try:
+        for i, key in enumerate(keys, 1):
+            with _COMP_ALL_LOCK:
+                _COMP_ALL["done"] = i - 1
+                _COMP_ALL["current"] = labels.get(key, key)
+            log_mgr.log(f"一键更新（{i}/{len(keys)}）：开始 {labels.get(key, key)}")
+            try:
+                ok, msg = _comp_update_one(key, mirror, log_mgr.log)
+            except Exception as e:
+                ok, msg = False, f"{type(e).__name__}: {str(e)[:200]}"
+            log_mgr.log(f"一键更新（{i}/{len(keys)}）：{labels.get(key, key)} "
+                        f"{'成功' if ok else '失败'} —— {msg}", "info" if ok else "error")
+            with _COMP_ALL_LOCK:
+                _COMP_ALL["results"].append({"key": key, "label": labels.get(key, key),
+                                             "ok": bool(ok), "msg": msg[:300]})
+    except Exception as e:   # 单项里的异常上面已经吞掉了，走到这里说明是这轮自己坏了
+        log_mgr.log(f"一键更新中断：{type(e).__name__}: {str(e)[:200]}", "error")
+    finally:
+        # 无论怎么收尾都要把 running 清掉，否则界面永远发不起下一批
+        with _COMP_ALL_LOCK:
+            done = len(_COMP_ALL["results"])
+            bad = [r["label"] for r in _COMP_ALL["results"] if not r["ok"]]
+            _COMP_ALL["running"] = False
+            _COMP_ALL["current"] = ""
+            _COMP_ALL["done"] = done
+        log_mgr.log(f"一键更新结束：完成 {done}/{len(keys)} 项"
+                    + (f"，失败 {len(bad)} 项（{'、'.join(bad)}），原因见上面各行" if bad
+                       else "，全部成功"))
+
+
+@app.post("/api/components/update-all")
+def api_components_update_all(body: dict = None):
+    """一键更新：界面按「未安装的 + 查到有最新版的」挑好条目，这里串行跑完并留进度。"""
+    body = body or {}
+    keys = [str(k).strip() for k in (body.get("keys") or []) if str(k).strip()]
+    known = {p["name"] for p in pkg_update.PIP_PACKAGES} | {
+        "ffmpeg", "ytdlp", "n_m3u8dl", "faster-whisper"}
+    bad = [k for k in keys if k not in known]
+    if bad:
+        raise HTTPException(400, f"这些条目不能从这里更新：{'、'.join(bad[:6])}")
+    if not keys:
+        raise HTTPException(400, "没有要更新的条目")
+    with _COMP_ALL_LOCK:
+        if _COMP_ALL["running"]:
+            return {"ok": False,
+                    "message": f"已经有一批更新在跑（{_COMP_ALL['done']}/{_COMP_ALL['total']}，"
+                               f"当前 {_COMP_ALL['current']}），请等它结束",
+                    "update_all": dict(_COMP_ALL)}
+        _COMP_ALL.update({"running": True, "total": len(keys), "done": 0,
+                          "current": keys[0], "results": [],
+                          "started": datetime.now().strftime("%H:%M:%S")})
+    mirror = str(body.get("mirror") or cfg.data.get("pip_mirror") or "")
+    log_mgr.log(f"一键更新开始：{len(keys)} 项（{'、'.join(keys[:8])}"
+                + ("…" if len(keys) > 8 else "") + "），一项一项串行跑")
+    threading.Thread(target=_comp_update_all, args=(keys, mirror), daemon=True).start()
+    return {"ok": True, "message": f"一键更新已在后台开始（{len(keys)} 项，串行跑，进度见运行日志）",
+            "update_all": dict(_COMP_ALL)}
+
+
+@app.post("/api/update/pkg")
+def api_update_pkg(body: dict = None):
+    body = body or {}
+    name = str(body.get("name") or "").strip()
+    if name not in {p["name"] for p in pkg_update.PIP_PACKAGES}:
+        raise HTTPException(400, f"不支持从这里更新的依赖：{name or '(空)'}")
+    idx = str(body.get("mirror") or cfg.data.get("pip_mirror") or "")
+
+    def job():
+        ok, res = pkg_update.pip_install([name], log=log_mgr.log, mirror=idx)
+        log_mgr.log(f"{name} 更新结果：{'成功' if ok else '失败'}（{res}）")
+
+    threading.Thread(target=job, daemon=True).start()
+    return {"ok": True, "message": f"{name} 更新已在后台开始"}
+
+
+@app.get("/api/extension/zip")
+def api_extension_zip():
+    """打包浏览器扩展供下载安装"""
+    ext_dir = APP_DIR / "extension"
+    if not (ext_dir / "manifest.json").is_file():
+        raise HTTPException(404, "extension/manifest.json 不存在")
+    import io
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for p in ext_dir.rglob("*"):
+            if p.is_file():
+                zf.write(p, arcname=str(p.relative_to(ext_dir)))
+    buf.seek(0)
+    from fastapi.responses import StreamingResponse
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=MediaDownloader-Sniffer-extension.zip"},
+    )
+
+
+@app.get("/api/extension/info")
+def api_extension_info():
+    ext_dir = APP_DIR / "extension"
+    manifest = ext_dir / "manifest.json"
+    info = {"exists": manifest.is_file(), "path": str(ext_dir), "files": []}
+    if manifest.is_file():
+        try:
+            info["manifest"] = json.loads(manifest.read_text(encoding="utf-8"))
+        except Exception:
+            info["manifest"] = {}
+        info["files"] = sorted(p.name for p in ext_dir.iterdir() if p.is_file())
+    return info
+
+
+@app.get("/api/config")
+def api_get_config():
+    return cfg.data
+
+
+@app.post("/api/config")
+def api_set_config(body: ConfigBody):
+    data = body.model_dump(exclude_none=True)
+    if "concurrent" in data:
+        data["concurrent"] = max(1, min(10, int(data["concurrent"])))
+        queue.max_concurrent = data["concurrent"]
+    if "proxy_mode" in data:
+        data["proxy_mode"] = (
+            data["proxy_mode"] if data["proxy_mode"] in PROXY_MODES else "auto"
+        )
+    if "ui_theme" in data:
+        data["ui_theme"] = data["ui_theme"] if data["ui_theme"] in UI_THEMES else "blue"
+    if "proxy_by_platform" in data:
+        data["proxy_by_platform"] = {
+            str(k): v for k, v in (data["proxy_by_platform"] or {}).items() if isinstance(v, bool)
+        }
+    if "music_quality_spec" in data:
+        # 存进去之前先清洗一遍：界面传来一个非法档位就得当场退回「不限」，
+        # 否则会一直留着，之后每一批都按那个坏值判
+        from music_search import norm_quality_spec
+        data["music_quality_spec"] = norm_quality_spec(data["music_quality_spec"])
+    if "ffmpeg_path" in data:
+        ffmpeg_mgr.manual_path = (data["ffmpeg_path"] or "").strip()
+    cfg.data.update(data)
+    cfg.save()
+    # 只记变更项数量：配置值里有 Bot Token / Secret / Cookie 等敏感内容，一律不落日志
+    log_mgr.log(f"[界面] 保存设置（{len(data)} 项变更）")
+    return {"ok": True, "data": cfg.data}
+
+
+# 设置页「按平台代理」表要列出的音乐源（其余源走默认档，不逐个列）
+NET_MUSIC_SOURCES = {
+    "NeteaseMusicClient": "网易云",
+    "QQMusicClient": "QQ 音乐",
+    "KugouMusicClient": "酷狗",
+    "MiguMusicClient": "咪咕",
+    "AppleMusicClient": "Apple Music",
+    "SpotifyMusicClient": "Spotify",
+}
+
+
+def net_policy_rows(cfg_data: dict = None) -> List[dict]:
+    d = cfg.data if cfg_data is None else cfg_data
+    items = [(k, PLATFORM_LABELS.get(k, k)) for k, _ in PLATFORM_RULES]
+    items.append(("tiktok", "TikTok"))
+    items.append(("default", "其它未识别站点"))
+    items += [(s, label) for s, label in NET_MUSIC_SOURCES.items()]
+    rows = []
+    for key, label in items:
+        m, px = _decide_by_key(key, d)
+        rows.append({
+            "key": key,
+            "label": label,
+            "verdict": m,                 # proxy / direct / inherit
+            "proxy": px,
+            "override": proxy_needs_override(key, d),
+            "needs_by_default": key in PROXY_NEEDED_PLATFORMS or key in PROXY_NEEDED_SOURCES,
+        })
+    return rows
+
+
+def net_info_payload() -> dict:
+    sp, src = system_proxy_detail()
+    return {
+        "ok": True,
+        "proxy_mode": str(cfg.data.get("proxy_mode") or "auto"),
+        "configured_proxy": (cfg.data.get("proxy") or "").strip(),
+        "system_proxy": sp,
+        "system_proxy_source": src,
+        "platforms": net_policy_rows(),
+    }
+
+
+@app.get("/api/net/info")
+def api_net_info():
+    """代理现状：填了什么、系统有什么、每个平台这次怎么走。"""
+    return net_info_payload()
+
+
+@app.post("/api/net/use_system_proxy")
+def api_net_use_system_proxy():
+    """一键配置系统代理：把 OS 里已生效的代理填进设置并启用。"""
+    sp, src = system_proxy_detail()
+    if not sp:
+        raise HTTPException(400, "没读到系统代理（系统设置里本来就没开，或只配了 SOCKS）")
+    cfg.data["proxy"] = sp
+    try:
+        cfg.save()
+    except Exception:
+        pass
+    log_mgr.log(f"已填入系统代理: {sp}（来源：{src}）")
+    return {"ok": True, "proxy": sp, "source": src, "data": net_info_payload()}
+
+
+@app.post("/api/net/reset")
+def api_net_reset():
+    """清空/重置网络：只动代理地址、按平台代理策略和嗅探到的资源列表。
+
+    Cookie、下载历史、任务记录都不在这里 —— 它们和网络无关，误清一次的代价比多清一次高得多。
+    嗅探浏览器的 Chrome profile（可能存着登录态）同样保留，清的只是这次抓到的资源清单。
+    """
+    cleared: List[str] = []
+    if (cfg.data.get("proxy") or "").strip():
+        cleared.append("代理地址")
+    if cfg.data.get("proxy_by_platform"):
+        cleared.append("按平台代理策略")
+    cfg.data["proxy"] = ""
+    cfg.data["proxy_by_platform"] = {}
+    cfg.data["proxy_mode"] = "auto"
+    try:
+        cfg.save()
+    except Exception:
+        pass
+    try:
+        browser_sniffer.clear()
+        cleared.append("嗅探到的资源列表")
+    except Exception as e:
+        log_mgr.log(f"清空嗅探浏览器 profile 失败: {e}", "warning")
+    log_mgr.log("网络设置已重置：" + ("、".join(cleared) if cleared else "本来就是空的"))
+    return {"ok": True, "cleared": cleared, "data": net_info_payload()}
+
+
+def download_preflight(urls: List[str], opts: dict) -> Tuple[List[str], List[str]]:
+    """入队前的依赖与目录检查：注定办不成的单子当场回错，别等任务跑几分钟才报「下载失败」。
+
+    只拦「缺了就一定办不成」的；只是会慢、会降质的写日志提示，不拦。
+    """
+    errs: List[str] = []
+    warns: List[str] = []
+    mt = [u for u in urls if u.lower().startswith("tgmt://")]
+    plain = [u for u in urls if u not in mt]
+    if plain and "not found" in str(engine.check_ytdlp() or "").lower():
+        errs.append("本机没有可用的 yt-dlp（解析各站点靠它）：到「设置 → 组件与依赖」点 yt-dlp 那行的「安装」，装好再入队")
+    if plain and not ffmpeg_mgr.find(ffmpeg_mgr.manual_path):
+        need = [name for name, flag in (
+            ("嵌入字幕", opts.get("embed_sub")),
+            ("写出外挂字幕文件", opts.get("write_sub_files") if opts.get("write_sub_files") is not None
+             else cfg.data.get("write_sub_files")),
+            ("嵌入封面", opts.get("embed_thumb")),
+            ("写入音频/视频标签", opts.get("embed_meta")),
+            ("嵌入章节", opts.get("embed_chapters")),
+            ("按 SponsorBlock 剪片头", str(opts.get("sponsorblock") or "off") != "off"),
+            ("封装成 mkv", str(opts.get("format") or "") == "mkv"),
+            ("按时间点选段", bool(opts.get("download_section"))),
+        ) if flag]
+        if need:
+            errs.append("没有可用的 FFmpeg，而这一单要" + "、".join(need)
+                        + "，这些步骤都要它：到「设置 → 组件与依赖」点 FFmpeg 那行的「安装」；"
+                          "或先把上述选项取消勾选（「封装成 mkv」需把下载页「画质 / 封装」换成 mp4）再入队")
+        else:
+            warns.append("没有可用的 FFmpeg：视频与音频分开发布的站点（如 YouTube）只能下到单条流，"
+                         "画质会明显偏低，也无法合并转封装。可在「设置 → 组件与依赖」安装 FFmpeg")
+    if opts.get("local_ai_transcribe"):
+        w = whisper_status()
+        if not (w.get("faster_whisper") or w.get("cli")):
+            errs.append("勾选了「下载后本地转写」，但本机没有 faster-whisper：到「设置 → 组件与依赖」"
+                        "点 faster-whisper 那行的「安装」（体积较大），或取消这个勾选再入队")
+    if opts.get("use_hls_engine") and not find_n_m3u8dl():
+        errs.append("勾选了「HLS 用专用引擎」，但没找到 N_m3u8DL-RE：到「设置 → 组件与依赖」"
+                    "点 N_m3u8DL-RE 那行的「安装」，或取消这个勾选再入队")
+    if mt:
+        import importlib.util
+        if importlib.util.find_spec("telethon") is None:
+            errs.append("tgmt:// 链接要走 Telegram 账号会话下载，但本机没有 telethon："
+                        "到「设置 → 组件与依赖」点 telethon 那行的「安装」再入队")
+    d = str(opts.get("download_dir") or cfg.data.get("download_dir") or "").strip()
+    if d:
+        try:
+            p = Path(d).expanduser()
+            p.mkdir(parents=True, exist_ok=True)
+            probe = p / ".md_write_probe"
+            probe.write_text("1", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+        except Exception as e:
+            errs.append(f"下载目录写不进去：{d}（{type(e).__name__}: {str(e)[:120]}）"
+                        "——换个目录或确认该磁盘还在")
+    return errs, warns
+
+
+@app.post("/api/download")
+def api_download(body: AddUrlsBody):
+    raw = [u.strip() for u in body.urls if u and u.strip()]
+    urls = [u for u in raw if u.startswith("http") or u.lower().startswith("tgmt://")]
+    skipped = len(raw) - len(urls)
+    if not urls:
+        raise HTTPException(400, "请提供有效 URL")
+    opts = body.model_dump()
+    errs, warns = download_preflight(urls, opts)
+    for msg in warns:
+        log_mgr.log(msg, "warning")
+    if errs:
+        log_mgr.log("入队前检查未通过（任务没有创建）：" + "；".join(errs), "error")
+        raise HTTPException(400, "入队前检查未通过：" + "；".join(errs))
+    ids = queue.add_urls(urls, opts)
+    merged = max(0, len(urls) - len(ids))
+    log_mgr.log(f"加入 {len(ids)} 个任务" + (f"（合并 {merged} 条重复）" if merged else "")
+                + (f"（忽略 {skipped} 条无效链接）" if skipped else ""))
+    return {"ok": True, "ids": ids, "added": len(ids), "merged": merged, "skipped": skipped}
+
+
+@app.get("/api/tasks")
+def api_tasks(sort: str = "queue"):
+    return {
+        "tasks": queue.list_tasks(sort_by=sort or "queue"),
+        "running": queue.running,
+        "paused": queue.paused,
+        "pending": len(queue.pending),
+    }
+
+
+@app.post("/api/tasks/pin")
+def api_tasks_pin(body: IdsBody):
+    queue.pin_tasks(body.ids or [], pinned=True)
+    return {"ok": True, "tasks": queue.list_tasks()}
+
+
+@app.post("/api/tasks/unpin")
+def api_tasks_unpin(body: IdsBody):
+    queue.pin_tasks(body.ids or [], pinned=False)
+    return {"ok": True, "tasks": queue.list_tasks()}
+
+
+@app.post("/api/tasks/top")
+def api_tasks_top(body: IdsBody):
+    """任务置顶并提到队列最前"""
+    queue.move_to_top(body.ids or [])
+    return {"ok": True, "tasks": queue.list_tasks()}
+
+
+@app.post("/api/tasks/later")
+def api_tasks_later(body: IdsBody):
+    """稍后下载"""
+    queue.set_later(body.ids or [], later=True)
+    return {"ok": True, "tasks": queue.list_tasks()}
+
+
+@app.post("/api/tasks/start-later")
+def api_tasks_start_later(body: IdsBody):
+    """将「稍后」任务重新加入队列"""
+    queue.set_later(body.ids or [], later=False)
+    return {"ok": True, "tasks": queue.list_tasks()}
+
+
+class ReorderBody(BaseModel):
+    ids: List[str] = []
+
+
+@app.post("/api/tasks/reorder")
+def api_tasks_reorder(body: ReorderBody):
+    queue.reorder_pending(body.ids or [])
+    return {"ok": True, "tasks": queue.list_tasks()}
+
+
+@app.post("/api/stop")
+def api_stop():
+    queue.stop_all()
+    log_mgr.log("已停止全部下载", "warning")
+    return {"ok": True}
+
+
+@app.post("/api/live/end")
+def api_live_end(body: IdsBody = None):
+    """结束指定或全部直播录制任务（保留已录文件并收尾 .part）"""
+    ids = (body.ids if body else None) or []
+    n = queue.end_live_tasks(ids if ids else None)
+    if n:
+        log_mgr.log(f"已结束 {n} 个直播录制任务")
+    # 额外再扫一遍下载目录，防止漏网 .part
+    try:
+        out_dir = str(cfg.data.get("download_dir") or DEFAULT_DOWNLOAD_DIR)
+        finalize_part_files(out_dir, hint="", log=log_mgr.log)
+    except Exception:
+        pass
+    return {"ok": True, "count": n}
+
+
+@app.post("/api/files/finalize-parts")
+def api_finalize_parts():
+    """手动把下载目录里的 .part 收成可播放文件"""
+    out_dir = str(cfg.data.get("download_dir") or DEFAULT_DOWNLOAD_DIR)
+    done = finalize_part_files(out_dir, hint="", log=log_mgr.log)
+    return {"ok": True, "files": done, "count": len(done)}
+
+
+@app.get("/api/plugins")
+def api_plugins_list():
+    return {"plugins": list_url_plugins(), "dir": str(PLUGINS_DIR)}
+
+
+@app.post("/api/plugins/reload")
+def api_plugins_reload():
+    mods = load_url_plugins(force=True)
+    log_mgr.log(f"插件热加载: {len(mods)} 个")
+    return {"ok": True, "count": len(mods), "plugins": list_url_plugins()}
+
+
+@app.post("/api/tasks/edit")
+def api_tasks_edit(body: dict):
+    """
+    中途改任务 URL / Header / 代理等。
+    body: id, url?, headers? (dict), referer?, cookie?, user_agent?, proxy?,
+          use_hls_engine?, direct_cdn?, restart? (默认 true：失败或进行中则重排队)
+    """
+    tid = (body.get("id") or body.get("task_id") or "").strip()
+    if not tid or tid not in queue.tasks:
+        raise HTTPException(404, "任务不存在")
+    t = queue.tasks[tid]
+    opts = dict(getattr(t, "_opts", {}) or {})
+    if body.get("url"):
+        t.url = str(body["url"]).strip()
+    if isinstance(body.get("headers"), dict):
+        h = dict(opts.get("http_headers") or {})
+        h.update({str(k): str(v) for k, v in body["headers"].items() if v is not None})
+        opts["http_headers"] = h
+    for k in ("referer", "cookie", "user_agent", "proxy"):
+        if body.get(k) is not None:
+            opts[k] = str(body[k]).strip()
+    for k in ("use_hls_engine", "direct_cdn", "aria2_enabled"):
+        if k in body:
+            opts[k] = bool(body[k])
+    t._opts = opts  # type: ignore
+    restart = body.get("restart", True)
+    applied = "saved"
+    if restart and t.status in (
+        TaskStatus.FAILED.value,
+        TaskStatus.STOPPED.value,
+        TaskStatus.PAUSED.value,
+        TaskStatus.DOWNLOADING.value,
+        TaskStatus.FINISHED.value,
+    ):
+        # 进行中：停止后重入队（yt-dlp 进程无法无缝改 Header，需重启任务）
+        if t.status == TaskStatus.DOWNLOADING.value:
+            try:
+                queue.engine.stop(tid)
+            except Exception:
+                pass
+            t.status = TaskStatus.STOPPED.value
+        queue.retry_one(tid, extra_opts=opts)
+        applied = "restarted"
+    log_mgr.log(f"[{tid[:8]}] 任务参数已更新 ({applied})")
+    return {"ok": True, "applied": applied, "opts_keys": list(opts.keys())}
+
+
+@app.post("/api/retry-one")
+def api_retry_one(body: dict):
+    """重试任务；可选 refresh_cookie / use_hls_engine / direct_cdn / proxy。"""
+    if isinstance(body, dict):
+        ids = body.get("ids") or []
+        tid = ids[0] if ids else body.get("id")
+        extra = {
+            k: body[k]
+            for k in (
+                "use_hls_engine",
+                "direct_cdn",
+                "proxy",
+                "cookie_source",
+                "aria2_enabled",
+            )
+            if k in body
+        }
+    else:
+        tid = (getattr(body, "ids", None) or [None])[0]
+        extra = {}
+    if not tid:
+        raise HTTPException(400, "缺少任务 id")
+    ok = queue.retry_one(str(tid), extra_opts=extra or None)
+    if not ok:
+        raise HTTPException(400, "无法重试该任务（状态不允许）")
+    return {"ok": True, "extra": extra}
+
+
+@app.post("/api/cleanup-parts")
+def api_cleanup_parts():
+    """清理下载目录中的未完成 .part / .ytdl 临时文件"""
+    root = Path(cfg.data.get("download_dir") or DEFAULT_DOWNLOAD_DIR).resolve()
+    if not root.exists():
+        return {"ok": True, "removed": 0}
+    removed = 0
+    for p in root.rglob("*"):
+        if not p.is_file():
+            continue
+        name = p.name.lower()
+        if name.endswith(".part") or name.endswith(".ytdl") or name.endswith(".temp"):
+            try:
+                p.unlink()
+                removed += 1
+            except Exception:
+                pass
+    return {"ok": True, "removed": removed}
+
+
+@app.get("/api/history/export")
+def api_history_export():
+    """导出历史为 CSV 文本"""
+    rows = history_mgr.get("")
+    lines = ["time,title,status,url,filepath"]
+    for h in rows:
+        def esc(s):
+            s = str(s or "").replace('"', '""')
+            return f'"{s}"'
+        lines.append(
+            ",".join(esc(h.get(k, "")) for k in ("time", "title", "status", "url", "filepath"))
+        )
+    from fastapi.responses import PlainTextResponse
+    return PlainTextResponse("\n".join(lines), media_type="text/csv; charset=utf-8")
+
+
+@app.post("/api/retry")
+def api_retry():
+    queue.retry_failed()
+    return {"ok": True}
+
+
+class IdsBody(BaseModel):
+    ids: List[str] = []
+
+
+class BrowseBody(BaseModel):
+    mode: str = "folder"  # folder | file
+    title: str = "选择"
+
+
+@app.post("/api/pause")
+def api_pause(body: IdsBody = None):
+    body = body or IdsBody()
+    if body.ids:
+        queue.pause_tasks(body.ids)
+    else:
+        queue.pause_all()
+    return {"ok": True, "paused": queue.paused}
+
+
+@app.post("/api/resume")
+def api_resume(body: IdsBody = None):
+    body = body or IdsBody()
+    if body.ids:
+        queue.resume_tasks(body.ids)
+    else:
+        queue.resume_all()
+    return {"ok": True, "paused": queue.paused}
+
+
+@app.post("/api/tasks/delete")
+def api_tasks_delete(body: IdsBody):
+    ids = body.ids or []
+    names = []
+    for tid in ids:  # 任务马上就被删了，先取个能认出它是谁的名字
+        t = queue.tasks.get(tid)
+        if not t:
+            continue
+        names.append(" ".join((t.title or "").split())[:40] or url_host(t.url) or "未命名任务")
+    queue.delete_tasks(ids)
+    shown = "、".join(names[:5]) + ("…" if len(names) > 5 else "")
+    log_mgr.log(f"[界面] 删除任务 {len(ids)} 个" + (f"：{shown}" if shown else ""))
+    return {"ok": True}
+
+
+@app.post("/api/browse")
+def api_browse(body: BrowseBody = None):
+    """本机运行时用系统对话框选择文件/文件夹（仅本地有效）"""
+    body = body or BrowseBody()
+    mode = (body.mode or "folder").lower()
+    title = body.title or "选择"
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        if mode == "file":
+            path = filedialog.askopenfilename(title=title)
+        else:
+            path = filedialog.askdirectory(title=title)
+        root.destroy()
+        return {"ok": True, "path": path or ""}
+    except Exception as e:
+        raise HTTPException(500, f"无法打开系统对话框: {e}")
+
+
+@app.post("/api/clear-finished")
+def api_clear_finished():
+    n = sum(1 for t in queue.tasks.values() if t.status == TaskStatus.FINISHED.value)
+    queue.clear_finished()
+    log_mgr.log(f"[界面] 清除已完成任务（{n} 个）", "warning")
+    return {"ok": True}
+
+
+@app.post("/api/analyze")
+def api_analyze(body: AnalyzeBody):
+    import time as _time
+
+    t0 = _time.time()
+    url = (body.url or "").strip()
+    if not url.startswith("http"):
+        raise HTTPException(400, "请提供有效 URL")
+    info = engine.get_info(url, cfg.data)
+    if not info:
+        raise HTTPException(400, "解析失败：无法获取视频信息（可检查网络、Cookie 或更新 yt-dlp）")
+    log_mgr.log(f"解析完成 {url[:60]} 耗时 {(_time.time()-t0):.1f}s")
+    # 播放列表/合集
+    if info.get("_type") == "playlist" or "entries" in info:
+        entries = []
+        for e in (info.get("entries") or [])[:200]:
+            if not e:
+                continue
+            entries.append(
+                {
+                    "title": e.get("title") or "未命名",
+                    "url": e.get("webpage_url") or e.get("url") or "",
+                    "duration": e.get("duration_string") or str(e.get("duration") or ""),
+                    "id": e.get("id") or "",
+                }
+            )
+        return {
+            "title": info.get("title") or "Playlist",
+            "uploader": info.get("uploader") or info.get("channel") or "",
+            "duration": "",
+            "type": "playlist",
+            "webpage_url": info.get("webpage_url") or body.url,
+            "entries": entries,
+            "formats": [],
+            "thumbnail": info.get("thumbnail") or "",
+        }
+    # 单视频：整理可用格式 + 按清晰度推荐
+    formats = []
+    try:
+        dur_s = float(info.get("duration") or 0)
+    except Exception:
+        dur_s = 0.0
+    for f in info.get("formats") or []:
+        if not f:
+            continue
+        vcodec = f.get("vcodec")
+        acodec = f.get("acodec")
+        # None 是"提取器没报编码"（telegram:embed 就这样），不是"没有这条流"：
+        # 当成 none 会把唯一的视频格式丢掉，解析面板就只剩空白
+        if vcodec == "none" and acodec == "none":
+            continue
+        vcodec = vcodec or "unknown_video"
+        acodec = acodec or "unknown_audio"
+        height = f.get("height") or 0
+        if not height:
+            res0 = str(f.get("resolution") or "")
+            m = re.search(r"(\d{3,4})", res0)
+            if m:
+                height = int(m.group(1))
+        fid = f.get("format_id")
+        tbr = f.get("tbr") or f.get("abr") or ""
+        try:
+            tbr = round(float(tbr), 1) if tbr != "" and tbr is not None else ""
+        except Exception:
+            tbr = str(tbr) if tbr is not None else ""
+        formats.append(
+            {
+                "format_id": str(fid) if fid is not None else "",
+                "ext": f.get("ext") or "",
+                "resolution": f.get("resolution") or (f"{height}p" if height else ("未知" if vcodec != "none" else "audio")),
+                "height": height or 0,
+                "width": f.get("width") or 0,
+                "fps": f.get("fps") or "",
+                "vcodec": vcodec,
+                "acodec": acodec,
+                "tbr": tbr,
+                "filesize": f.get("filesize") or f.get("filesize_approx") or 0,
+                "filesize_est": 0 if (f.get("filesize") or f.get("filesize_approx"))
+                else (int(float(tbr) * 125 * dur_s) if tbr != "" and dur_s else 0),
+                "note": f.get("format_note") or f.get("format") or "",
+                "protocol": (f.get("protocol") or "")[:24],
+                "is_video": vcodec != "none",
+                "is_audio": acodec != "none" and vcodec == "none",
+                "has_audio": acodec != "none",
+            }
+        )
+    formats.sort(key=lambda x: (x.get("height") or 0, float(x.get("tbr") or 0) if x.get("tbr") != "" else 0), reverse=True)
+
+    # 按高度生成推荐清晰度（视频轨 + bestaudio）
+    by_height = {}
+    for f in formats:
+        h = int(f.get("height") or 0)
+        if not f.get("is_video") or h <= 0:
+            continue
+        by_height.setdefault(h, []).append(f)
+    quality_presets = []
+    for h, cands in by_height.items():
+        # 同一清晰度优先用有真实 filesize 的 DASH/渐进流：单流可断点续传、比 HLS 分片快；
+        # 只有 HLS 才提供该清晰度时（部分受限视频）再退回 m3u8
+        cands.sort(
+            key=lambda x: (
+                1 if x.get("filesize") else 0,
+                float(x.get("tbr") or 0) if x.get("tbr") != "" else 0,
+            ),
+            reverse=True,
+        )
+        f = cands[0]
+        fid = f.get("format_id") or ""
+        if not fid:
+            continue
+        if f.get("has_audio"):
+            fmt_expr = fid
+        else:
+            fmt_expr = f"{fid}+bestaudio/bestaudio/{fid}"
+        quality_presets.append({
+            "label": f"{h}p",
+            "height": h,
+            "format_id": fid,
+            "format_expr": fmt_expr,
+            "ext": f.get("ext") or "",
+            "vcodec": f.get("vcodec") or "",
+            "tbr": f.get("tbr") or "",
+            "filesize": f.get("filesize") or 0,
+            "filesize_est": f.get("filesize_est") or 0,
+        })
+    quality_presets.sort(key=lambda x: x["height"], reverse=True)
+    # 最佳 / 仅音频
+    quality_presets.insert(0, {
+        "label": "最佳画质",
+        "height": 0,
+        "format_id": "best",
+        "format_expr": "bv*+ba/b",
+        "ext": "",
+        "vcodec": "",
+        "tbr": "",
+        "filesize": 0,
+    })
+    quality_presets.append({
+        "label": "仅音频",
+        "height": -1,
+        "format_id": "bestaudio",
+        "format_expr": "ba/bestaudio",
+        "ext": "m4a",
+        "vcodec": "none",
+        "tbr": "",
+        "filesize": 0,
+    })
+
+    return {
+        "title": info.get("title"),
+        "uploader": info.get("uploader") or info.get("channel"),
+        "duration": info.get("duration_string") or str(info.get("duration", "")),
+        "type": info.get("_type", "video"),
+        "webpage_url": info.get("webpage_url") or body.url,
+        "thumbnail": info.get("thumbnail") or "",
+        "formats": formats[:120],
+        "quality_presets": quality_presets,
+        "platform": detect_platform(info.get("webpage_url") or body.url),
+        "entries": [],
+        "description": (info.get("description") or "")[:500],
+    }
+
+
+@app.get("/api/files")
+def api_files(subdir: str = ""):
+    """浏览下载目录文件（参考 MediaSync 文件管理）"""
+    root = Path(cfg.data.get("download_dir") or DEFAULT_DOWNLOAD_DIR).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    target = (root / subdir).resolve() if subdir else root
+    if not str(target).startswith(str(root)):
+        raise HTTPException(400, "非法路径")
+    if not target.exists():
+        return {"root": str(root), "path": subdir, "items": []}
+    items = []
+    try:
+        _hide_names = {
+            "search_results.pkl", "download_results.pkl",
+            "_musicdl_cache", "_preview", "__pycache__",
+        }
+        for p in sorted(target.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
+            if p.name.startswith("."):
+                continue
+            if p.name in _hide_names or p.suffix.lower() == ".pkl":
+                continue
+            if p.name.endswith(".pipeline.json"):
+                continue
+            st = p.stat()
+            rel = str(p.relative_to(root)).replace("\\", "/")
+            items.append(
+                {
+                    "name": p.name,
+                    "path": rel,
+                    "is_dir": p.is_dir(),
+                    "size": st.st_size if p.is_file() else 0,
+                    "mtime": datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M"),
+                    "ext": p.suffix.lower() if p.is_file() else "",
+                }
+            )
+    except Exception as e:
+        raise HTTPException(500, str(e))
+    return {"root": str(root), "path": subdir.replace("\\", "/"), "items": items}
+
+
+@app.get("/api/files/open")
+def api_files_open(path: str):
+    """打开/预览下载目录中的文件"""
+    root = Path(cfg.data.get("download_dir") or DEFAULT_DOWNLOAD_DIR).resolve()
+    target = (root / path).resolve()
+    if not str(target).startswith(str(root)) or not target.is_file():
+        raise HTTPException(404, "文件不存在")
+    log_mgr.log(f"[文件] 打开：{target.name}")
+    return FileResponse(target, filename=target.name)
+
+
+class FilePathBody(BaseModel):
+    path: str = ""
+
+
+@app.post("/api/files/delete")
+def api_files_delete(body: FilePathBody):
+    root = Path(cfg.data.get("download_dir") or DEFAULT_DOWNLOAD_DIR).resolve()
+    target = (root / body.path).resolve()
+    if not str(target).startswith(str(root)):
+        raise HTTPException(400, "非法路径")
+    if not target.exists():
+        raise HTTPException(404, "不存在")
+    try:
+        if target.is_dir():
+            shutil.rmtree(target)
+        else:
+            target.unlink()
+        log_mgr.log(f"[文件] 已删除：{target.name}")
+        return {"ok": True}
+    except Exception as e:
+        log_mgr.log(f"[文件] 删除失败：{target.name} —— {e}", "warning")
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/files/clear-archive")
+def api_clear_archive():
+    arch = Path(cfg.data.get("download_dir") or DEFAULT_DOWNLOAD_DIR) / "download_archive.txt"
+    try:
+        if arch.exists():
+            arch.unlink()
+        log_mgr.log("[文件] 已清空下载记录（download_archive.txt）", "warning")
+        return {"ok": True, "path": str(arch)}
+    except Exception as e:
+        log_mgr.log(f"[文件] 清空下载记录失败：{e}", "warning")
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/open-folder")
+def api_open_folder(body: FilePathBody = None):
+    """在系统文件管理器中打开下载目录或指定子路径/文件所在文件夹"""
+    body = body or FilePathBody()
+    root = Path(cfg.data.get("download_dir") or DEFAULT_DOWNLOAD_DIR).resolve()
+    p = (body.path or "").strip()
+    if not p:
+        target = root
+    else:
+        cand = Path(p)
+        if cand.is_absolute():
+            target = cand.resolve()
+        else:
+            target = (root / p).resolve()
+    # 尽量打开目标文件夹；若路径不在根目录下也尝试打开其父目录（兼容历史记录绝对路径）
+    folder = target if target.is_dir() else target.parent
+    if not folder.exists():
+        root.mkdir(parents=True, exist_ok=True)
+        folder = root
+    try:
+        if sys.platform == "win32":
+            os.startfile(str(folder))  # type: ignore
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(folder)])
+        else:
+            subprocess.Popen(["xdg-open", str(folder)])
+        return {"ok": True, "path": str(folder)}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/test-cookie")
+def api_test_cookie():
+    """检测 Cookie 配置是否可用"""
+    data = cfg.data
+    src = (data.get("cookie_source") or "none").strip().lower()
+    if src == "none":
+        return {"ok": False, "message": "当前未启用 Cookie"}
+    if src == "file":
+        f = (data.get("cookie_file") or "").strip()
+        if not f:
+            return {"ok": False, "message": "未填写 Cookie 文件路径"}
+        p = Path(f)
+        if not p.exists():
+            return {"ok": False, "message": f"文件不存在: {f}"}
+        size = p.stat().st_size
+        if size < 50:
+            return {"ok": False, "message": f"文件过小({size}B)，可能无效"}
+        return {"ok": True, "message": f"Cookie 文件可用（{size} 字节）"}
+    if src == "browser":
+        browser = (data.get("cookie_browser") or "chrome").strip()
+        return {"ok": True, "message": f"将从浏览器读取: {browser}（实际有效性以下载结果为准）"}
+    return {"ok": False, "message": "未知 Cookie 来源"}
+
+
+class TelegramListBody(BaseModel):
+    channel: str
+    limit: int = 60
+    types: Optional[List[str]] = None
+    since: Optional[str] = None
+    until: Optional[str] = None
+    budget: Optional[int] = None
+    page_sleep: Optional[float] = None
+
+
+@app.post("/api/telegram/list")
+def api_telegram_list(body: TelegramListBody):
+    """公开频道批量：匿名翻 t.me/s/<频道> 历史，只列不下载。
+
+    下载仍旧走 /api/download 逐条入队（每条帖子一个任务）—— telesco.pe 的直链
+    带短时效 token，列表阶段抓下来的地址排队时就凉了，必须让 yt-dlp 现场重取。
+    """
+    from telegram_channel import ALL_TYPES, TYPE_LABELS, normalize_channel, list_channel_history
+
+    ch = normalize_channel(body.channel)
+    if not ch:
+        raise HTTPException(400, "频道名无效：要 @名字 / t.me/名字 / t.me/s/名字 这种公开频道，"
+                                "私有链接 t.me/c/… 匿名爬不了")
+    types = [t for t in (body.types or []) if t in ALL_TYPES] or ["video"]
+    limit = max(1, min(int(body.limit or 60), 2000))
+    budget = max(10, min(int(body.budget or 240), 1800))
+    sleep_s = max(0.0, min(float(body.page_sleep if body.page_sleep is not None else 0.8), 10.0))
+    mode, px = proxy_decision("https://t.me/" + ch)
+    # 空串在 requests 眼里是"不干预"，强制直连得用哨兵，否则照样被系统代理带走
+    proxy = px if mode == "proxy" else (PROXY_DIRECT if mode == "direct" else "")
+    items, diag = list_channel_history(
+        ch,
+        limit=limit,
+        types=types,
+        since=(body.since or "").strip(),
+        until=(body.until or "").strip(),
+        budget=budget,
+        page_sleep=sleep_s,
+        proxy=proxy,
+        log=log_mgr.log,
+    )
+    return {
+        "ok": True,
+        "channel": ch,
+        "items": items,
+        "diag": diag,
+        "proxy": {"mode": mode, "value": px if mode == "proxy" else ""},
+        "type_labels": TYPE_LABELS,
+    }
+
+
+# -------------------- Telegram 用户会话（MTProto）：私有 / 需登录频道 --------------------
+class TgmtConfigBody(BaseModel):
+    api_id: Optional[str] = None
+    api_hash: Optional[str] = None
+    proxy: Optional[str] = None
+    session_name: Optional[str] = None
+
+
+class TgmtPhoneBody(BaseModel):
+    phone: str
+
+
+class TgmtSignInBody(BaseModel):
+    code: str
+    password: Optional[str] = ""
+
+
+class TgmtListBody(BaseModel):
+    channel: str
+    limit: int = 100
+    types: Optional[List[str]] = None
+    since: Optional[str] = None
+    until: Optional[str] = None
+    budget: Optional[int] = None
+    search: Optional[str] = None
+    skip_seen: Optional[bool] = None
+
+
+class TgmtAckBody(BaseModel):
+    peer: str
+
+
+def _tgmt_status() -> dict:
+    from telegram_mt import NEED_CRED, NEED_LOGIN, NEED_TELETHON, PROTECTED_NOTE
+
+    st = tg_session.status()
+    st["ack"] = list(cfg.data.get("tgmt_ack") or [])
+    st["skip_seen"] = bool(cfg.data.get("tgmt_skip_seen", True))
+    st["has_hash"] = bool(str(cfg.data.get("tgmt_api_hash") or "").strip())
+    st["api_id"] = str(cfg.data.get("tgmt_api_id") or "")
+    st["session_name"] = str(cfg.data.get("tgmt_session_name") or "media_downloader")
+    st["next_step"] = (
+        NEED_TELETHON if not st["installed"]
+        else NEED_CRED if not st["configured"]
+        else NEED_LOGIN if not st["logged_in"]
+        else ""
+    )
+    st["protected_note"] = PROTECTED_NOTE
+    return st
+
+
+@app.get("/api/telegram/mt/status")
+def api_tgmt_status():
+    return _tgmt_status()
+
+
+@app.post("/api/telegram/mt/config")
+def api_tgmt_config(body: TgmtConfigBody):
+    """填 api_id / api_hash / 代理：改完必须重建客户端，所以先断开旧会话。"""
+    changed = []
+    if body.api_id is not None:
+        cfg.data["tgmt_api_id"] = re.sub(r"\D", "", str(body.api_id))[:20]
+        changed.append("api_id")
+    if body.api_hash is not None:
+        cfg.data["tgmt_api_hash"] = str(body.api_hash).strip()[:64]
+        changed.append("api_hash")
+    if body.proxy is not None:
+        raw = str(body.proxy).strip()
+        if raw and not re.fullmatch(r"(?:socks5h?://)?[\w.-]+:\d{2,5}", raw):
+            raise HTTPException(400, "代理要么留空，要么写成 socks5 的 host:port（例如 127.0.0.1:7897）")
+        cfg.data["tgmt_proxy"] = raw
+        changed.append("proxy")
+    if body.session_name is not None:
+        cfg.data["tgmt_session_name"] = str(body.session_name).strip()[:40] or "media_downloader"
+        changed.append("session_name")
+    if not changed:
+        return {"ok": True, "message": "没改动任何东西"}
+    cfg.save()
+    tg_session.reconnect()  # 换了凭据/代理，旧连接不能留（session 文件保留，不用重新登录）
+    return {"ok": True, "message": f"已保存：{', '.join(changed)}", "status": _tgmt_status()}
+
+
+@app.post("/api/telegram/mt/send-code")
+def api_tgmt_send_code(body: TgmtPhoneBody):
+    try:
+        return tg_session.send_code(body.phone)
+    except Exception as e:
+        log_mgr.log(f"Telegram 发验证码失败: {e}", "warning")
+        return {"ok": False, "message": str(e)}
+
+
+@app.post("/api/telegram/mt/sign-in")
+def api_tgmt_sign_in(body: TgmtSignInBody):
+    if not str(body.code or "").strip():
+        raise HTTPException(400, "要填收到的验证码")
+    try:
+        return tg_session.sign_in(body.code, body.password or "")
+    except Exception as e:
+        log_mgr.log(f"Telegram 登录失败: {e}", "warning")
+        return {"ok": False, "message": str(e)}
+
+
+@app.post("/api/telegram/mt/logout")
+def api_tgmt_logout():
+    return tg_session.logout()
+
+
+@app.post("/api/telegram/mt/ack")
+def api_tgmt_ack(body: TgmtAckBody):
+    """记下「这个频道的限制保存内容我已经看过并确认」，同一频道只问一次。"""
+    peer = str(body.peer or "").strip()
+    if not peer:
+        raise HTTPException(400, "缺少频道 id")
+    acked = list(cfg.data.get("tgmt_ack") or [])
+    if peer not in acked:
+        acked.append(peer)
+        cfg.data["tgmt_ack"] = acked[-200:]
+        cfg.save()
+    return {"ok": True, "ack": cfg.data["tgmt_ack"]}
+
+
+@app.post("/api/telegram/mt/list")
+def api_tgmt_list(body: TgmtListBody):
+    """用登录后的账号会话翻历史：私有频道、匿名页上没有直链的文件/音频帖都走这里。"""
+    from telegram_mt import NEED_CRED, NEED_LOGIN, NEED_TELETHON, TYPE_LABELS, normalize_entity
+
+    st = _tgmt_status()
+    if not st["installed"]:
+        return {"ok": False, "items": [], "diag": {"stopped": NEED_TELETHON}, "message": NEED_TELETHON}
+    if not st["configured"]:
+        return {"ok": False, "items": [], "diag": {"stopped": NEED_CRED}, "message": NEED_CRED}
+    if not st["logged_in"]:
+        return {"ok": False, "items": [], "diag": {"stopped": NEED_LOGIN}, "message": NEED_LOGIN}
+    ent = normalize_entity(body.channel)
+    if not ent:
+        raise HTTPException(400, "频道无效：支持 @名字 / t.me/名字 / t.me/c/内部id / -100… 数字 id")
+    items, diag = tg_session.list_media(
+        ent,
+        limit=max(1, min(int(body.limit or 100), 2000)),
+        types=body.types or None,
+        since=(body.since or "").strip(),
+        until=(body.until or "").strip(),
+        budget=max(15, min(int(body.budget or 600), 1800)),
+        search=(body.search or "").strip(),
+        skip_seen=st["skip_seen"] if body.skip_seen is None else bool(body.skip_seen),
+    )
+    return {"ok": True, "entity": ent, "items": items, "diag": diag, "type_labels": TYPE_LABELS}
+
+
+@app.get("/api/history")
+def api_history(q: str = ""):
+    return {"history": history_mgr.get(q), "stats": history_mgr.stats()}
+
+
+@app.post("/api/history/clear")
+def api_history_clear():
+    n = len(history_mgr.history)
+    history_mgr.clear()
+    log_mgr.log(f"[界面] 清空下载历史（{n} 条）", "warning")
+    return {"ok": True}
+
+
+@app.get("/api/logs")
+def api_logs(level: str = "all", search: str = ""):
+    # 日志就写在程序自己所在的文件夹里，界面上要能报出这个位置并一键打开
+    try:
+        archives = sorted(p.name for p in APP_DIR.glob("app-*.log"))
+    except Exception:
+        archives = []
+    return {"logs": log_mgr.get(level, search),
+            "dir": str(APP_DIR), "file": LOG_FILE.name, "archives": archives}
+
+
+@app.post("/api/logs/clear")
+def api_logs_clear():
+    n = len(log_mgr.entries)  # 先数清楚要清掉多少条，再真的清
+    log_mgr.clear()
+    log_mgr.log(f"[界面] 清空运行日志（{n} 条）", "warning")
+    return {"ok": True}
+
+
+class UiEventBody(BaseModel):
+    text: str = ""
+    level: str = "info"
+
+
+@app.post("/api/ui_event")
+def api_ui_event(body: UiEventBody):
+    """前端界面动作埋点：把「用户在哪儿点了什么」记成一条人话日志，方便事后排查。"""
+    text = " ".join(str(body.text or "").split())[:200].strip()
+    if not text:
+        return {"ok": False}
+    level = body.level if body.level in ("info", "warning") else "info"
+    log_mgr.log(f"[界面] {text}", level)
+    return {"ok": True, "level": level}
+
+
+# ---------- 订阅 ----------
+def _sub_view(s: dict) -> dict:
+    r = _norm_sub_rules(s.get("rules"))
+    return {**s, "kind": _sub_kind_of(s), "auto_download": bool(s.get("auto_download", True)),
+            "rules": r, "rules_text": _sub_rules_text(r)}
+
+
+@app.get("/api/subs")
+def api_subs_list():
+    try:
+        from music_search import music_playlist_hosts
+        hosts = music_playlist_hosts()
+    except Exception:
+        hosts = []
+    return {"subs": [_sub_view(s) for s in sub_mgr.list()],
+            "type_labels": SUB_TYPES, "qualities": list(SUB_QUALITIES),
+            "formats": list(SUB_FORMATS), "music_hosts": hosts}
+
+
+@app.post("/api/subs/add")
+def api_subs_add(body: SubAddBody):
+    try:
+        item = sub_mgr.add(body.url, body.title or "", body.mode or "", body.kind or "",
+                           body.auto_download)
+        # 立即初始化扫描（只记 ID，不下载）
+        try:
+            n = sub_mgr.scan_one(item, auto_download=False)
+            item = next((s for s in sub_mgr.list() if s.get("id") == item.get("id")), item)
+        except Exception as ex:
+            log_mgr.log(f"订阅初始化扫描: {ex}", "warning")
+        return {"ok": True, "item": _sub_view(item), "init_count": len(item.get("last_ids") or [])}
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/subs/backfill")
+def api_subs_backfill(body: SubBackfillBody):
+    """按日期窗给单个订阅回填一次历史 —— 追新只看窗口外的新条目，回填是明确点出来的动作。"""
+    with sub_mgr._lock:
+        sub = next((s for s in sub_mgr.subs if s.get("id") == body.id), None)
+    if not sub:
+        raise HTTPException(404, "订阅不存在")
+    since, until = _norm_date_str(body.since), _norm_date_str(body.until)
+    if not (since and until) and _sub_kind_of(sub) != "music":
+        raise HTTPException(400, "回填要给完整的起止日期，不然和直接扫描没区别")
+    try:
+        n = sub_mgr.scan_one(sub, auto_download=True, backfill={"since": since, "until": until})
+    except Exception as e:
+        raise HTTPException(400, str(e))
+    item = next((s for s in sub_mgr.list() if s.get("id") == body.id), sub)
+    res = _sub_view(item)
+    return {"ok": True, "new": n, "window": [since, until], "item": res,
+            "rules_text": res["rules_text"], "last_error": res.get("last_error") or ""}
+
+
+@app.post("/api/subs/rules")
+def api_subs_rules(body: SubRulesBody):
+    try:
+        rules = sub_mgr.set_rules(body.id, body.rules or {}, body.mode, body.auto_download)
+    except ValueError as e:
+        raise HTTPException(404 if "不存在" in str(e) else 400, str(e))
+    item = next((s for s in sub_mgr.list() if s.get("id") == body.id), None)
+    return {"ok": True, "rules": rules, "rules_text": _sub_rules_text(rules), "item": _sub_view(item)}
+
+
+@app.post("/api/subs/remove")
+def api_subs_remove(body: SubIdBody):
+    sub_mgr.remove(body.id)
+    return {"ok": True}
+
+
+@app.post("/api/subs/toggle")
+def api_subs_toggle(body: SubIdBody):
+    if body.enabled is None:
+        raise HTTPException(400, "需要 enabled")
+    sub_mgr.set_enabled(body.id, body.enabled)
+    return {"ok": True}
+
+
+@app.post("/api/subs/scan")
+def api_subs_scan():
+    res = sub_mgr.scan_all()
+    log_mgr.log(f"手动订阅扫描: 检查 {res['checked']}，新增 {res['new']}")
+    return {"ok": True, **res}
+
+
+@app.post("/api/subs/scan-one")
+def api_subs_scan_one(body: SubIdBody):
+    with sub_mgr._lock:
+        sub = next((s for s in sub_mgr.subs if s.get("id") == body.id), None)
+    if not sub:
+        raise HTTPException(404, "订阅不存在")
+    n = sub_mgr.scan_one(sub)
+    return {"ok": True, "new": n, "item": _sub_view(sub), "rules_text": _sub_view(sub)["rules_text"]}
+
+
+# ---------- Telegram ----------
+@app.post("/api/telegram/test")
+def api_telegram_test():
+    res = tg_notifier.test()
+    if res != "ok":
+        raise HTTPException(400, "发送失败，请检查 Token / Chat ID 与网络")
+    return {"ok": True, "message": "测试消息已发送"}
+
+
+# ---------- 多平台 Cookie / 搜索 / 风控 / 同步 ----------
+class PlatformCookieBody(BaseModel):
+    platform: str
+    source: str = "none"  # none | file | browser
+    file: str = ""
+    browser: str = "chrome"
+
+
+class SearchBody(BaseModel):
+    query: str
+    platform: str = "youtube"  # youtube | bilibili | all | douyin
+    content_type: str = "all"  # all | video | channel | playlist
+    limit: int = 30
+    sort: str = "relevance"    # relevance 相似度 | views 播放量 | newest 发布时间
+
+
+@app.get("/api/platforms/cookies")
+def api_platform_cookies():
+    pc = cfg.data.get("platform_cookies") or {}
+    items = []
+    for key, label in PLATFORM_LABELS.items():
+        if key == "default":
+            continue
+        info = dict(pc.get(key) or {})
+        path = platform_cookie_path(key)
+        f = info.get("file") or str(path)
+        items.append({
+            "platform": key,
+            "label": label,
+            "source": info.get("source") or "none",
+            "file": f,
+            "browser": info.get("browser") or "chrome",
+            "configured": (info.get("source") in ("file", "browser")) and (
+                info.get("source") == "browser" or Path(f).exists()
+            ),
+            "file_exists": Path(f).exists() if f else path.exists(),
+            "default_path": str(path),
+        })
+    return {"platforms": items, "cookies_dir": str(COOKIES_DIR)}
+
+
+@app.post("/api/platforms/cookies")
+def api_set_platform_cookie(body: PlatformCookieBody):
+    plat = (body.platform or "").strip()
+    if plat not in PLATFORM_LABELS:
+        raise HTTPException(400, "未知平台")
+    pc = dict(cfg.data.get("platform_cookies") or {})
+    entry = {
+        "source": (body.source or "none").strip().lower(),
+        "file": (body.file or str(platform_cookie_path(plat))).strip(),
+        "browser": (body.browser or "chrome").strip().lower(),
+    }
+    pc[plat] = entry
+    cfg.data["platform_cookies"] = pc
+    cfg.save()
+    return {"ok": True, "item": entry}
+
+
+@app.post("/api/platforms/cookies/upload")
+async def api_upload_platform_cookie(platform: str, content: str = ""):
+    """上传 Netscape cookies 文本"""
+    plat = (platform or "").strip()
+    if plat not in PLATFORM_LABELS:
+        raise HTTPException(400, "未知平台")
+    if not content or "http" not in content.lower() and "# netscape" not in content.lower():
+        # 仍允许保存，用户可能格式略有不同
+        pass
+    path = platform_cookie_path(plat)
+    path.write_text(content, encoding="utf-8")
+    pc = dict(cfg.data.get("platform_cookies") or {})
+    pc[plat] = {"source": "file", "file": str(path), "browser": "chrome"}
+    cfg.data["platform_cookies"] = pc
+    cfg.save()
+    return {"ok": True, "path": str(path)}
+
+
+class CookieTextBody(BaseModel):
+    platform: str
+    content: str
+
+
+@app.post("/api/platforms/cookies/save-text")
+def api_save_cookie_text(body: CookieTextBody):
+    plat = (body.platform or "").strip()
+    if plat not in PLATFORM_LABELS:
+        raise HTTPException(400, "未知平台")
+    path = platform_cookie_path(plat)
+    path.write_text(body.content or "", encoding="utf-8")
+    pc = dict(cfg.data.get("platform_cookies") or {})
+    pc[plat] = {"source": "file", "file": str(path), "browser": "chrome"}
+    cfg.data["platform_cookies"] = pc
+    cfg.save()
+    return {"ok": True, "path": str(path)}
+
+
+class MusicCookieBody(BaseModel):
+    platform: str
+    cookie: str = ""
+
+
+# --------------------------------------------------------------- 音乐平台登录 Cookie
+# musicdl 的网易云 / QQ / 酷狗三个源都是「带着登录 Cookie 才去够无损那一档」：
+# 各源里都写着 lossless_quality_is_sufficient = False if cookies else True。
+# 认哪些键照抄 musicdl 自己读 cookie 的那几行（sources/netease.py、utils/qqutils.py 的
+# Credential.fromcookiesdict、utils/kugouutils.py 的 sendrequest），不自己臆造键名。
+MUSIC_COOKIE_PLATFORMS: List[tuple] = [
+    # (平台键, 界面名, musicdl 源名, 必需 Cookie 键（同组任一命中即可）, 去哪儿拿这条 Cookie)
+    ("netease", "网易云音乐", "NeteaseMusicClient", [["MUSIC_U"]],
+     "用手机上的网易云音乐 App 扫下面二维码，或在 music.163.com 登录后复制 Cookie"),
+    ("qq", "QQ 音乐", "QQMusicClient", [["qqmusic_key", "musickey"], ["uin", "musicid"]],
+     "在 y.qq.com 用 QQ 或微信扫码登录后，从浏览器开发者工具复制 Cookie 粘贴到此处"),
+    ("kugou", "酷狗音乐", "KugouMusicClient", [["token"], ["userid"]],
+     "在 kugou.com 登录后，从浏览器开发者工具复制 Cookie 粘贴到此处"),
+]
+MUSIC_COOKIE_LABELS: Dict[str, str] = {p[0]: p[1] for p in MUSIC_COOKIE_PLATFORMS}
+
+
+def _parse_cookie_pairs(raw: str) -> Dict[str, str]:
+    """Cookie 文本 → 键值字典。浏览器复制出来的请求头写法为主，也认 Netscape 文件。"""
+    text = str(raw or "").strip()
+    # 从浏览器开发者工具整行复制时会带上 "Cookie: " 这段头名，先摘掉
+    if text[:7].lower() == "cookie:":
+        text = text[7:].strip()
+    out: Dict[str, str] = {}
+    if not text:
+        return out
+    if any(line.count("\t") >= 5 for line in text.splitlines()):
+        for line in text.splitlines():
+            cols = line.split("\t")
+            if len(cols) >= 7 and not cols[0].strip().startswith("#") and cols[5].strip():
+                out[cols[5].strip()] = cols[6].strip()
+        return out
+    try:
+        from http.cookies import SimpleCookie
+        for k, m in SimpleCookie(text).items():
+            if m.value:
+                out[k] = m.value
+    except Exception:
+        out = {}
+    if not out:
+        # SimpleCookie 会因为字符不合法整段丢弃，退一步按分号硬切，别让一条怪 Cookie 判死
+        for chunk in re.split(r"[;\n]", text):
+            k, _, v = chunk.partition("=")
+            if k.strip() and v.strip():
+                out[k.strip()] = v.strip()
+    return out
+
+
+def _cookie_pairs_to_text(pairs: Dict[str, str]) -> str:
+    return "; ".join(f"{k}={v}" for k, v in pairs.items())
+
+
+def music_cookie_raw(platform: str) -> str:
+    entry = (cfg.data.get("music_platform_cookies") or {}).get(platform)
+    return str(entry.get("cookie") if isinstance(entry, dict) else entry or "")
+
+
+def music_cookie_missing(platform: str, pairs: Dict[str, str]) -> List[str]:
+    """这条 Cookie 还缺哪个键才算真登录上；缺了 musicdl 只会去够免费那一档。"""
+    required = next((p[3] for p in MUSIC_COOKIE_PLATFORMS if p[0] == platform), [])
+    return [" 或 ".join(group) for group in required if not any(pairs.get(x) for x in group)]
+
+
+def music_cookie_string(extra: str = "") -> str:
+    """全局 Cookie + 三个平台各自的登录 Cookie（+ 本次临时填的）合成一条交给 musicdl。
+
+    musicdl 把这条字符串按源分发，各源只挑自己认的键，多余的键那个平台会直接忽略，
+    所以三个平台的 Cookie 可以同时带着跑。临时填的那串只覆盖同名键——
+    一次临时粘贴不该把设置页存好的平台登录整个挤掉。
+    """
+    merged = _parse_cookie_pairs(str(cfg.data.get("musicdl_cookies") or ""))
+    for plat, _label, _src, _req, _how in MUSIC_COOKIE_PLATFORMS:
+        merged.update(_parse_cookie_pairs(music_cookie_raw(plat)))
+    merged.update(_parse_cookie_pairs(extra))
+    return _cookie_pairs_to_text(merged)
+
+
+def music_cookie_status() -> List[dict]:
+    items = []
+    store = cfg.data.get("music_platform_cookies") or {}
+    for plat, label, src, _req, how in MUSIC_COOKIE_PLATFORMS:
+        pairs = _parse_cookie_pairs(music_cookie_raw(plat))
+        entry = store.get(plat) if isinstance(store.get(plat), dict) else {}
+        items.append({
+            "platform": plat, "label": label, "musicdl_source": src, "how": how,
+            "configured": bool(pairs),
+            "keys": sorted(pairs),
+            "missing": music_cookie_missing(plat, pairs),
+            "via": str(entry.get("via") or ""), "at": str(entry.get("at") or ""),
+        })
+    return items
+
+
+def set_music_cookie(platform: str, raw: str, via: str = "粘贴") -> dict:
+    """存一条音乐平台 Cookie。值只进 config.json，日志只写键名个数。"""
+    label = MUSIC_COOKIE_LABELS.get(platform, platform)
+    pairs = _parse_cookie_pairs(raw)
+    store = dict(cfg.data.get("music_platform_cookies") or {})
+    if pairs:
+        store[platform] = {"cookie": _cookie_pairs_to_text(pairs), "via": via,
+                           "at": time.strftime("%Y-%m-%d %H:%M")}
+    else:
+        store.pop(platform, None)
+    cfg.data["music_platform_cookies"] = store
+    cfg.save()
+    missing = music_cookie_missing(platform, pairs)
+    log_mgr.log(f"[界面] {'保存' if pairs else '清除'}{label} 登录 Cookie"
+                + (f"（{len(pairs)} 个键" + (f"，缺 {' 或 '.join(missing)}" if missing else "，键齐了") + "）"
+                   if pairs else ""))
+    return {"ok": True, "configured": bool(pairs), "keys": sorted(pairs), "missing": missing}
+
+
+@app.get("/api/music/cookies")
+def api_music_cookies_get():
+    """三个音乐平台的登录 Cookie 状态：只回键名与缺失项，绝不回 Cookie 内容"""
+    return {"items": music_cookie_status(),
+            "global_saved": bool(str(cfg.data.get("musicdl_cookies") or "").strip())}
+
+
+@app.post("/api/music/cookies")
+def api_music_cookies_set(body: MusicCookieBody):
+    plat = (body.platform or "").strip()
+    if plat not in MUSIC_COOKIE_LABELS:
+        raise HTTPException(400, "未知音乐平台")
+    raw = (body.cookie or "").strip()
+    if raw and not _parse_cookie_pairs(raw):
+        raise HTTPException(400, "没从这段内容里认出任何 Cookie 键值，请粘贴浏览器里那串 a=b; c=d 形式的内容")
+    got = set_music_cookie(plat, raw)
+    return {"ok": True, "items": music_cookie_status(), **got}
+
+
+@app.get("/api/music/status")
+def api_music_status():
+    try:
+        from music_search import (
+            musicdl_available, list_registered_sources, SOURCE_PRESETS, DEFAULT_SOURCES,
+            UI_SOURCE_OPTIONS, PARALLEL_STRATEGY_DEFAULT, CN_SOURCE_HINTS, GLOBAL_SOURCE_HINTS,
+            norm_quality_spec, QUALITY_FORMAT_OPTIONS, QUALITY_BIT_DEPTH_OPTIONS,
+            QUALITY_SAMPLE_RATE_OPTIONS, QUALITY_BITRATE_OPTIONS,
+        )
+        saved_st = cfg.data.get("musicdl_strategy") or {}
+        strategy = dict(PARALLEL_STRATEGY_DEFAULT)
+        if isinstance(saved_st, dict):
+            strategy.update({k: v for k, v in saved_st.items() if v is not None})
+        return {
+            "musicdl": musicdl_available(),
+            "musicdl_version": pkg_update.installed_version("musicdl") if musicdl_available() else "",
+            "fallback": "yt-dlp ytsearch/scsearch",
+            "default_sources": DEFAULT_SOURCES,
+            "ui_sources": list(UI_SOURCE_OPTIONS),
+            "presets": {k: v for k, v in SOURCE_PRESETS.items()},
+            "registered": list_registered_sources() if musicdl_available() else [],
+            "saved_sources": cfg.data.get("musicdl_sources") or [],
+            "saved_cookies": bool(music_cookie_string()),
+            "playlist_mode": cfg.data.get("music_playlist_mode") or "fast",
+            "block_reupload": bool(cfg.data.get("music_block_reupload", False)),
+            "include_reference": bool(cfg.data.get("music_include_reference", False)),
+            # 界面重开时要照原样回填这几项：后端下载读的就是它们，界面显示默认值会把人骗到
+            "filename_template": str(cfg.data.get("music_filename_template") or ""),
+            "embed_metadata": bool(cfg.data.get("music_embed_metadata", False)),
+            "hide_unavailable": bool(cfg.data.get("music_hide_unavailable", True)),
+            "include_local": bool(cfg.data.get("music_include_local", False)),
+            # 音质要求：存的就是下载时读的，重开页面必须原样回填；选项表也由此处给，
+            # 界面不另抄一份档位清单（抄了就会和后端判的口径漂移）
+            "quality_spec": norm_quality_spec(cfg.data.get("music_quality_spec")),
+            "quality_options": {
+                "format": [list(x) for x in QUALITY_FORMAT_OPTIONS],
+                "bit_depth": list(QUALITY_BIT_DEPTH_OPTIONS),
+                "sample_rate": list(QUALITY_SAMPLE_RATE_OPTIONS),
+                "bitrate": list(QUALITY_BITRATE_OPTIONS),
+            },
+            "strategy": strategy,
+            "strategy_default": PARALLEL_STRATEGY_DEFAULT,
+            "source_hints": {
+                "cn": list(CN_SOURCE_HINTS),
+                "global": list(GLOBAL_SOURCE_HINTS),
+            },
+        }
+    except Exception as e:
+        return {"musicdl": False, "error": str(e)}
+
+
+@app.get("/api/mirrors/probe")
+def api_mirrors_probe(kind: str = "pypi"):
+    """一键获取可用镜像：实测内置候选镜像的连通性与耗时，按可用+快慢排序返回。"""
+    k = kind if kind in ("pypi", "github") else "pypi"
+    try:
+        return {"kind": k, "mirrors": pkg_update.probe_mirrors(k)}
+    except Exception as e:
+        raise HTTPException(500, f"镜像测速失败：{str(e)[:160]}")
+
+
+@app.post("/api/music/search")
+def api_music_search(body: dict):
+    """关键词多平台搜索（musicdl MusicClient.search）。"""
+    kw = (body.get("keyword") or body.get("q") or "").strip()
+    if not kw:
+        raise HTTPException(400, "缺少 keyword")
+    limit = int(body.get("limit") or 10)
+    sources = body.get("sources")
+    preset = (body.get("preset") or "").strip()
+    if not sources and preset:
+        from music_search import SOURCE_PRESETS
+        sources = list(SOURCE_PRESETS.get(preset) or [])
+    out_dir = str(cfg.data.get("download_dir") or DEFAULT_DOWNLOAD_DIR)
+    cookies = music_cookie_string(str(body.get("cookies") or ""))
+    # 每源各问一次平台策略：网易云该直连、Spotify 该出国，一刀切必然一边出错
+    proxy_for = music_proxy_resolver(body.get("proxy") or "")
+    from music_search import search_music
+    # 持久化勾选源（归一化去重后再存，否则 ['Spotify','SpotifyMusicClient'] 会一直复发）
+    if sources:
+        from music_search import canonical_sources
+        sources = canonical_sources(sources)
+        cfg.data["musicdl_sources"] = list(sources)
+        if body.get("cookies") is not None:
+            cfg.data["musicdl_cookies"] = str(body.get("cookies") or "")
+        try:
+            cfg.save()
+        except Exception:
+            pass
+    strategy = body.get("strategy")
+    if not isinstance(strategy, dict):
+        strategy = cfg.data.get("musicdl_strategy") or {}
+    if body.get("save_strategy"):
+        cfg.data["musicdl_strategy"] = dict(strategy)
+        try:
+            cfg.save()
+        except Exception:
+            pass
+    search_type = (body.get("search_type") or "song").strip().lower()
+    from music_search import norm_quality_spec, quality_spec_active, quality_spec_label
+    qspec = norm_quality_spec(body.get("quality_spec")
+                               if body.get("quality_spec") is not None
+                               else cfg.data.get("music_quality_spec"))
+    if search_type == "album":
+        from music_search import search_album
+        items = search_album(
+            kw,
+            sources=sources,
+            limit=limit,
+            work_dir=out_dir,
+            cookies=cookies,
+            proxy_for=proxy_for,
+            strategy=strategy if isinstance(strategy, dict) else None,
+            log=log_mgr.log,
+        )
+        from music_search import annotate_quality_spec
+        annotate_quality_spec(items, qspec)
+    else:
+        items = search_music(
+            kw,
+            sources=sources,
+            limit=limit,
+            work_dir=out_dir,
+            cookies=cookies,
+            proxy_for=proxy_for,
+            include_ytdlp=bool(body.get("include_ytdlp", True)),
+            strategy=strategy if isinstance(strategy, dict) else None,
+            search_type=search_type,
+            hide_unavailable=bool(body.get("hide_unavailable", cfg.data.get("music_hide_unavailable", True))),
+            include_local=bool(body.get("include_local", cfg.data.get("music_include_local", False))),
+            local_root=out_dir,
+            include_reference=bool(body.get("include_reference",
+                                            cfg.data.get("music_include_reference", False))),
+            reference_proxy=proxy_arg("https://flacdownloader.com", str(body.get("proxy") or "")),
+            quality_spec=qspec,
+            log=log_mgr.log,
+        )
+    if quality_spec_active(qspec):
+        log_mgr.log(f"本次音质要求：{quality_spec_label(qspec)}（不达标不下={'开' if qspec['strict'] else '关'}）")
+    try:
+        from music_search import _LAST_SEARCH_STATS
+        stats = dict(_LAST_SEARCH_STATS)
+    except Exception:
+        stats = {}
+    try:
+        from music_search import _LAST_SEARCH_DIAG
+        diag = dict(_LAST_SEARCH_DIAG or {})
+    except Exception:
+        diag = {}
+    try:
+        # musicdl 搜索会在每个源目录留下「时间戳 关键词」子目录 + search_results.pkl
+        from music_search import musicdl_cache_dir, cleanup_musicdl_pkl, cleanup_empty_dirs
+        _silent = lambda *a, **k: None
+        _cd = musicdl_cache_dir(out_dir)
+        cleanup_musicdl_pkl(_cd, log=_silent)
+        cleanup_empty_dirs(_cd, log=_silent)
+    except Exception:
+        pass
+    return {"ok": True, "keyword": kw, "count": len(items), "items": items,
+            "source_stats": stats, "source_errors": diag.get("errors") or {},
+            "elapsed": diag.get("elapsed") or 0}
+
+
+@app.post("/api/music/playlist")
+def api_music_playlist(body: dict):
+    """解析歌单 URL（musicdl parseplaylist）。"""
+    url = (body.get("url") or body.get("playlist_url") or "").strip()
+    if not url.startswith("http"):
+        raise HTTPException(400, "无效歌单链接")
+    sources = body.get("sources")
+    out_dir = str(cfg.data.get("download_dir") or DEFAULT_DOWNLOAD_DIR)
+    cookies = music_cookie_string(str(body.get("cookies") or ""))
+    proxy = music_proxy(url, str(body.get("proxy") or ""))
+    from music_search import parse_playlist
+    prefer = (body.get("prefer") or cfg.data.get("music_playlist_mode") or "fast").strip().lower()
+    items = parse_playlist(url, sources=sources, work_dir=out_dir, cookies=cookies, proxy=proxy,
+                            log=log_mgr.log, prefer=prefer)
+    try:
+        from music_search import _LAST_PLAYLIST_DIAG
+        diag = dict(_LAST_PLAYLIST_DIAG)
+    except Exception:
+        diag = {}
+    return {"ok": True, "count": len(items), "items": items, "diag": diag}
+
+
+
+@app.post("/api/music/probe")
+def api_music_probe(body: dict):
+    """Range/HEAD 探测文件大小。"""
+    url = (body.get("url") or "").strip()
+    if not url:
+        raise HTTPException(400, "需要 url")
+    from music_search import range_probe
+    info = range_probe(url)
+    return {"ok": True, **info}
+
+
+@app.post("/api/music/switch_source")
+def api_music_switch_source(body: dict):
+    """换源：给结果清单里的某一首（或勾选的几首）在别的平台重新找同一条录音，换成那条的下载地址。
+
+    只有过 #132 那道同曲打分闸门、并且新地址探测得到结果的才算换成；换不成清单保持原样，
+    reason 里写明是被曲名、歌手还是时长挡的。
+    """
+    ids = body.get("ids") or ([body.get("id")] if body.get("id") else [])
+    ids = [str(i) for i in ids if i]
+    if not ids:
+        raise HTTPException(400, "缺少要换源的曲目 id")
+    not_down = [i for i in ids if i.startswith("ref:") or i.startswith("local:")]
+    if not_down:
+        raise HTTPException(400, f"有 {len(not_down)} 行不能换源：Qobuz/Tidal 无损参照只有元数据、"
+                                 "本地音乐扫描出来的行本来就是磁盘上的成品，两者都没有「换一条来路」这回事")
+    sources = (body.get("sources")
+               or (cfg.data.get("musicdl_strategy") or {}).get("match_sources")
+               or cfg.data.get("musicdl_sources") or [])
+    if not sources:
+        raise HTTPException(400, "没有可换的源：请在上方「匹配源」里勾选除当前平台外的其他平台")
+    out_dir = str(cfg.data.get("download_dir") or DEFAULT_DOWNLOAD_DIR)
+    cookies = music_cookie_string(str(body.get("cookies") or ""))
+    proxy_for = music_proxy_resolver(body.get("proxy") or "")
+    from music_search import switch_song_source, get_cached_song, song_field
+    strategy = cfg.data.get("musicdl_strategy") or {}
+    results: List[dict] = []
+    for cid in ids:
+        song = get_cached_song(cid)
+        cur = song_field(song, "musicdl_source", "source") if song is not None else ""
+        r = switch_song_source(cid, sources=sources, work_dir=out_dir, cookies=cookies,
+                               proxy_for=proxy_for, current_source=cur, st=strategy)
+        r["id"] = cid
+        results.append(r)
+        log_mgr.log(
+            f"换源「{r.get('title') or cid[:8]}」："
+            + (f"已换成 {r.get('to')}（同曲判定 {r.get('score')} 分，"
+               f"时长 {r.get('row', {}).get('duration') or '未知'}）" if r.get("ok")
+               else f"没换成 —— {r.get('reason') or '其他源里没有过闸门的结果'}"),
+            "info" if r.get("ok") else "warning")
+    switched = sum(1 for r in results if r.get("ok"))
+    return {"ok": bool(switched), "count": len(results), "switched": switched,
+            "results": results}
+
+
+@app.post("/api/music/check_quality")
+def api_music_check_quality(body: dict):
+    """核对成品音质：读每份成品自己的标签，对照本批音质要求，可选再与无损参照比一比。
+
+    只比元数据 —— Qobuz / Tidal 的音频那一步锁在对方有意设的人机校验后面，这里不碰。
+    """
+    paths = [str(x).strip() for x in (body.get("paths") or []) if str(x).strip()]
+    if not paths:
+        raise HTTPException(400, "缺少要核对的成品路径 paths")
+    out_dir = str(cfg.data.get("download_dir") or DEFAULT_DOWNLOAD_DIR)
+    root = os.path.normcase(out_dir).rstrip("\\/")
+    bad: List[str] = []
+    for p in paths:
+        try:
+            if os.path.commonpath([os.path.normcase(p), root]) != root:
+                bad.append(p)
+        except ValueError:      # 不同盘符没有公共路径，一律算越界
+            bad.append(p)
+    if bad:
+        raise HTTPException(400, f"只能核对下载目录里的成品，有 {len(bad)} 个路径不在 {out_dir} 下")
+    from music_search import norm_quality_spec, check_quality
+    spec = norm_quality_spec(body.get("quality_spec")
+                             if body.get("quality_spec") is not None
+                             else cfg.data.get("music_quality_spec"))
+    rows = check_quality(paths, spec=spec,
+                         use_reference=bool(body.get("use_reference",
+                                                     cfg.data.get("music_include_reference", False))),
+                         proxy=proxy_arg("https://flacdownloader.com", str(body.get("proxy") or "")),
+                         log=log_mgr.log)
+    n_low = sum(1 for r in rows if r.get("state") == "low")
+    n_ref_below = sum(1 for r in rows if r.get("ref_state") == "below")
+    for r in rows:
+        log_mgr.log(f"音质核对「{r['name']}」：{r['note']}"
+                    + (f"｜{r['ref_note']}" if r.get("ref_note") else ""),
+                    "warning" if r.get("state") == "low" or r.get("ref_state") == "below" else "info")
+    return {"ok": True, "count": len(rows), "below_spec": n_low, "below_reference": n_ref_below,
+            "spec": spec, "rows": rows}
+
+
+# -------------------- 自建音乐收藏清单 --------------------
+# 清单是用户自己一行行攒出来的「这一单」：跨平台无所谓，行按「曲名+歌手+时长」的稳定 id 认，
+# 同一首歌不会存两遍。每行另配一个缓存槽位（slot）——同一轮搜索里加进来的歌，槽位里就住着
+# 那条真结果，整单下载原样下即可；槽位空了（重启过、或被缓存挤掉）就在下载时立一个「只有曲名」
+# 的占位，交给下载流程已有的匹配轮按曲名重新取址，取不到的那几首标成失效。
+
+_MUSIC_FAVS_LOCK = threading.Lock()
+MUSIC_FAV_NOTES = {
+    "missing": "在「匹配源」里按曲名没找到同一首歌 —— 换个源、或先补上该平台登录再下这一单",
+    "unsearched": "整轮匹配超时，这一首这轮没轮到搜（不是没找到），再下一遍即可",
+}
+
+
+def _music_favs_load() -> List[dict]:
+    if not MUSIC_FAVS_FILE.exists():
+        return []
+    try:
+        data = json.loads(MUSIC_FAVS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    rows = data.get("items") if isinstance(data, dict) else data
+    return [r for r in (rows or []) if isinstance(r, dict) and str(r.get("id") or "")]
+
+
+def _music_favs_save(items: List[dict]) -> None:
+    MUSIC_FAVS_FILE.write_text(json.dumps({"items": items}, ensure_ascii=False, indent=1),
+                               encoding="utf-8")
+
+
+def _music_fav_row(row: dict) -> dict:
+    """把一行搜索/歌单结果收成清单条目；没曲名的行返回 {}（那种行存进来也找不回去）。"""
+    from music_search import _dur_seconds, song_field
+    title = str(song_field(row, "title", "song_name", "name") or "").strip()
+    if not title:
+        return {}
+    artists = str(song_field(row, "artists", "singers", "artist") or "").strip()
+    dur = _dur_seconds(song_field(row, "duration_s") or song_field(row, "duration"))
+    src_full = str(song_field(row, "musicdl_source") or "").strip()
+    if src_full and "Client" not in src_full:
+        src_full += "MusicClient"
+    return {
+        "id": _music_entry_id(title, artists, dur),
+        "title": title,
+        "artists": artists,
+        "album": str(song_field(row, "album") or "").strip(),
+        "duration": str(song_field(row, "duration") or "").strip(),
+        "duration_s": dur,
+        "source": str(song_field(row, "source") or "").strip(),
+        "musicdl_source": src_full,
+        "url": str(song_field(row, "url") or "").strip(),
+        "cover": str(song_field(row, "cover") or "").strip(),
+        "quality": str(song_field(row, "quality") or "").strip(),
+        "slot": "",
+        "added_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "state": "",
+        "note": "",
+    }
+
+
+def _music_fav_grab_slot(row: dict) -> str:
+    """给新行占一个槽位：这一轮的真结果还在缓存里就搬进去，之后整单下载不必重新找地址。"""
+    from music_search import get_cached_song, set_cached_song
+    slot = str(uuid.uuid4())
+    song = get_cached_song(str(row.get("id") or ""))
+    if song is not None:
+        set_cached_song(slot, song)
+    return slot
+
+
+def _music_fav_sync(fav: dict) -> bool:
+    """槽位里换成另一条结果（换源、或匹配轮跑过）就把清单上那行跟着刷新，返回改动没有。"""
+    from music_search import get_cached_song, pick_play_url, song_field
+    slot = str(fav.get("slot") or "")
+    song = get_cached_song(slot) if slot else None
+    if song is None or isinstance(song, dict):
+        return False
+    changed = False
+
+    def put(key: str, value: str) -> None:
+        nonlocal changed
+        value = str(value or "").strip()
+        if value and fav.get(key) != value:
+            fav[key] = value
+            changed = True
+
+    url = pick_play_url(song)
+    if url and fav.get("url") != url:
+        # 匹配轮会把占位换成命中平台那一条，地址也跟着变了——留着旧地址，试听就是上一轮的曲子
+        fav["url"] = url
+        changed = True
+    put("album", song_field(song, "album"))
+    put("quality", song_field(song, "ext", "quality"))
+    put("duration", song_field(song, "duration"))
+    src_full = str(song_field(song, "source") or "").strip()
+    if src_full:
+        put("musicdl_source", src_full if "Client" in src_full else src_full + "MusicClient")
+        short = str(fav["musicdl_source"]).replace("MusicClient", "").replace("Client", "")
+        put("source", short)
+    return changed
+
+
+def _music_fav_state(fav: dict) -> str:
+    """这一行现在能不能直接下：槽位里住着真结果才算 ready，空槽或只有曲名的占位都是 pending。"""
+    from music_search import get_cached_song
+    slot = str(fav.get("slot") or "")
+    song = get_cached_song(slot) if slot else None
+    return "ready" if song is not None and not isinstance(song, dict) else "pending"
+
+
+@app.get("/api/music/favorites")
+def api_music_favorites_list():
+    """自建清单当前内容（每行带「能不能直接下」的实时读数）。"""
+    with _MUSIC_FAVS_LOCK:
+        items = _music_favs_load()
+        touched = sum(1 for it in items if _music_fav_sync(it))
+        if touched:
+            _music_favs_save(items)
+        rows = [dict(it, resolved=_music_fav_state(it)) for it in items]
+    return {"ok": True, "count": len(rows), "items": rows,
+            "missing": sum(1 for r in rows if r.get("state") == "missing")}
+
+
+@app.post("/api/music/favorites")
+def api_music_favorites_add(body: dict):
+    """把勾选的几行收进清单：同一首歌（曲名+歌手+时长一致）不会存第二遍。"""
+    rows = body.get("rows") or body.get("row") or []
+    if isinstance(rows, dict):
+        rows = [rows]
+    added: List[dict] = []
+    dup = no_title = refused = 0
+    with _MUSIC_FAVS_LOCK:
+        items = _music_favs_load()
+        have = {str(it.get("id") or "") for it in items}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            cid = str(row.get("id") or "")
+            if cid.startswith(("ref:", "local:")):
+                # 参照行只有元数据、本地行本来就是磁盘上的成品：收进这一单就永远下不动
+                refused += 1
+                continue
+            fav = _music_fav_row(row)
+            if not fav:
+                no_title += 1
+                continue
+            if fav["id"] in have:
+                dup += 1
+                continue
+            fav["slot"] = _music_fav_grab_slot(row)
+            have.add(fav["id"])
+            items.append(fav)
+            added.append(fav)
+        if added:
+            _music_favs_save(items)
+        total = len(items)
+    if added:
+        log_mgr.log(f"收藏清单加入 {len(added)} 首："
+                    + "、".join(f"「{a['title']}」" for a in added[:6])
+                    + ("…" if len(added) > 6 else ""))
+    if dup or no_title or refused:
+        log_mgr.log(f"收藏清单跳过 {dup} 首（已在本清单里）"
+                    + (f"、{refused} 行是无损参照或本地成品（这一单要能下，收进来也下不动）"
+                       if refused else "")
+                    + (f"、{no_title} 行没有曲名收不进来" if no_title else ""), "warning")
+    return {"ok": True, "added": len(added), "duplicated": dup, "no_title": no_title,
+            "refused": refused, "total": total}
+
+
+@app.post("/api/music/favorites/remove")
+def api_music_favorites_remove(body: dict):
+    """按稳定 id 删行（勾选删除与清空走同一条）。"""
+    want = {str(i) for i in (body.get("ids") or []) if str(i)}
+    if not want:
+        raise HTTPException(400, "没有要删除的行")
+    with _MUSIC_FAVS_LOCK:
+        items = _music_favs_load()
+        keep = [it for it in items if str(it.get("id") or "") not in want]
+        gone = len(items) - len(keep)
+        if gone:
+            _music_favs_save(keep)
+    if not gone:
+        raise HTTPException(404, "清单里没有这些行（页面刷新一下再看）")
+    log_mgr.log(f"收藏清单删除 {gone} 首，还剩 {len(keep)} 首")
+    return {"ok": True, "removed": gone, "total": len(keep)}
+
+
+@app.post("/api/music/favorites/download")
+def api_music_favorites_download(body: dict):
+    """整单（或勾选的几行）下载：每行先换成一个可下的缓存 id，再走音乐页那套批量流程。"""
+    want = {str(i) for i in (body.get("ids") or []) if str(i)}
+    with _MUSIC_FAVS_LOCK:
+        items = _music_favs_load()
+    picked = [it for it in items if not want or str(it.get("id") or "") in want]
+    if want:
+        absent = len(want) - len({str(it.get("id") or "") for it in picked})
+        if absent:
+            raise HTTPException(400, f"有 {absent} 行不在清单里了（页面刷新一下再试）")
+    if not picked:
+        raise HTTPException(400, "收藏清单里没有可下载的行")
+    if _MUSIC_JOB.get("running"):
+        raise HTTPException(409, "上一批音乐下载还没结束 —— 音乐批量只有一条通道，等它跑完再下这一单")
+    from music_search import get_cached_song, set_cached_song
+    slots: List[str] = []
+    reminted = 0
+    for it in picked:
+        slot = str(it.get("slot") or "") or str(uuid.uuid4())
+        if get_cached_song(slot) is None:
+            set_cached_song(slot, {"title": str(it.get("title") or ""),
+                                   "artists": str(it.get("artists") or ""),
+                                   "duration_s": int(it.get("duration_s") or 0),
+                                   "needs_match": True})
+            reminted += 1
+        slots.append(slot)
+    res = api_music_download({
+        "ids": slots,
+        "match_sources": body.get("match_sources") or [],
+        "skip_downloaded": body.get("skip_downloaded"),
+        "block_reupload": body.get("block_reupload"),
+        "proxy": body.get("proxy") or "",
+        "cookies": str(body.get("cookies") or ""),
+    })
+    res.update({"fav_total": len(picked), "reminted": reminted, "slots": slots})
+    log_mgr.log(f"收藏清单开始下载 {len(picked)} 首"
+                + (f"，其中 {reminted} 首要先按曲名重新找地址" if reminted else ""))
+    return res
+
+
+@app.post("/api/music/favorites/mark")
+def api_music_favorites_mark(body: dict):
+    """整单下载跑完回填结论：没找到的标失效，找到了的清掉标记（只动这一批的行）。"""
+    missed = {str(t).strip() for t in (body.get("missed") or []) if str(t).strip()}
+    lazy = {str(t).strip() for t in (body.get("unsearched") or []) if str(t).strip()}
+    scope = {str(s) for s in (body.get("slots") or []) if str(s)}
+    with _MUSIC_FAVS_LOCK:
+        items = _music_favs_load()
+        changed = 0
+        for it in items:
+            if scope and str(it.get("slot") or "") not in scope:
+                continue
+            title = str(it.get("title") or "")
+            state = "missing" if title in missed else ("unsearched" if title in lazy else "")
+            if state == str(it.get("state") or ""):
+                continue
+            it["state"] = state
+            it["note"] = MUSIC_FAV_NOTES.get(state, "")
+            changed += 1
+        if changed:
+            _music_favs_save(items)
+        marked = sum(1 for it in items if it.get("state") == "missing")
+    if changed:
+        log_mgr.log(f"收藏清单核对完成：{changed} 行状态有变，现在标着失效 {marked} 行",
+                    "warning" if marked else "info")
+    return {"ok": True, "changed": changed, "missing": marked, "total": len(items)}
+
+
+@app.post("/api/music/lyrics")
+def api_music_lyrics(body: dict):
+    """解析 LRC 为行/逐字结构；支持 offset_ms 校准。"""
+    text = body.get("text") or ""
+    path = (body.get("path") or "").strip()
+    try:
+        offset_ms = float(body.get("offset_ms") or 0)
+    except Exception:
+        offset_ms = 0.0
+    save = bool(body.get("save"))
+    if path and not text:
+        try:
+            p = Path(resolve_media_path(path))
+            from music_search import LOCAL_AUDIO_EXTS, audio_embedded_lyrics
+            if p.suffix.lower() in LOCAL_AUDIO_EXTS:
+                text = audio_embedded_lyrics(str(p))
+                if not text:
+                    raise HTTPException(404, f"{p.name} 没有内嵌歌词")
+            else:
+                text = p.read_text(encoding="utf-8", errors="ignore")
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(400, str(e))
+    from music_search import parse_lrc_words, shift_lrc_text, LOCAL_AUDIO_EXTS
+    if offset_ms and path and save:
+        if Path(str(path)).suffix.lower() in LOCAL_AUDIO_EXTS:
+            raise HTTPException(400, "内嵌歌词不支持就地平移，请把歌词存成同名 .lrc 文件后再校准")
+        try:
+            shifted = shift_lrc_text(text, offset_ms)
+            Path(resolve_media_path(path)).write_text(shifted, encoding="utf-8")
+            text = shifted
+            log_mgr.log(f"LRC 已平移 {offset_ms}ms → {Path(path).name}")
+        except Exception as e:
+            raise HTTPException(400, str(e))
+    rows = parse_lrc_words(text, offset_ms=0 if (offset_ms and save) else offset_ms)
+    return {"ok": True, "lines": rows, "count": len(rows), "offset_ms": offset_ms}
+
+
+@app.post("/api/music/local_scan")
+def api_music_local_scan(body: dict = None):
+    body = body or {}
+    root = (body.get("path") or cfg.data.get("download_dir") or str(DEFAULT_DOWNLOAD_DIR)).strip()
+    from music_search import local_music_snapshot, local_index_path
+    # 这个按钮的意思就是「现在重扫一遍」，所以 force：TTL 快照会让它看起来按了没反应
+    items = local_music_snapshot(root, log=log_mgr.log, force=True)
+    return {"ok": True, "count": len(items), "items": items[:200],
+            "index_file": str(local_index_path(root))}
+
+
+@app.get("/api/music/local_cover")
+def api_music_local_cover(path: str = ""):
+    """本地音频的内嵌封面：取不到就 404，前端自行回落到同名图片。"""
+    from fastapi.responses import Response
+    from music_search import audio_embedded_cover
+    p = resolve_media_path(path)
+    data, mime = audio_embedded_cover(str(p))
+    if not data:
+        raise HTTPException(404, f"{p.name} 没有内嵌封面")
+    return Response(content=data, media_type=mime,
+                    headers={"Cache-Control": "private, max-age=86400"})
+
+
+@app.get("/api/music/preview")
+def api_music_preview(id: str = "", url: str = ""):
+    """试听：直链代理，失败则 musicdl 临时下载后本地播放。"""
+    from music_search import get_cached_song, download_songs, pick_play_url
+    from fastapi.responses import StreamingResponse, FileResponse
+    import urllib.request
+    import tempfile
+    import shutil
+
+    song = get_cached_song(id) if id else None
+    play = pick_play_url(song) if song is not None else ""
+    if not play and url and str(url).startswith("http"):
+        play = str(url)
+
+    if play and play.startswith("http"):
+        try:
+            req = urllib.request.Request(
+                play,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0",
+                    "Referer": play.split("/")[0] + "//" + play.split("/")[2] + "/",
+                },
+            )
+            upstream = urllib.request.urlopen(req, timeout=15)
+            headers = {k.lower(): v for k, v in upstream.headers.items()}
+            media_type = headers.get("content-type") or "audio/mpeg"
+            if getattr(upstream, "status", 200) in (200, 206) and "text/html" not in media_type:
+                def gen():
+                    try:
+                        while True:
+                            chunk = upstream.read(64 * 1024)
+                            if not chunk:
+                                break
+                            yield chunk
+                    finally:
+                        try:
+                            upstream.close()
+                        except Exception:
+                            pass
+                return StreamingResponse(gen(), media_type=media_type)
+            try:
+                upstream.close()
+            except Exception:
+                pass
+        except Exception as e:
+            log_mgr.log(f"试听直链不可用: {e}", "warning")
+
+    if id and song is not None:
+        try:
+            tmp_dir = Path(tempfile.mkdtemp(prefix="music_preview_"))
+            paths = download_songs(
+                [id],
+                work_dir=str(tmp_dir),
+                cookies=music_cookie_string(),
+                proxy_for=music_proxy_resolver(""),
+                log=log_mgr.log,
+            )
+            audio = None
+            for pp in paths or []:
+                pth = Path(pp)
+                if pth.is_file() and pth.suffix.lower() in (".mp3", ".flac", ".m4a", ".ogg", ".wav", ".aac", ".opus"):
+                    audio = pth
+                    break
+            if not audio:
+                for pth in tmp_dir.rglob("*"):
+                    if pth.is_file() and pth.suffix.lower() in (".mp3", ".flac", ".m4a", ".ogg", ".wav", ".aac", ".opus"):
+                        audio = pth
+                        break
+            if audio and audio.is_file():
+                prev_dir = APP_DIR / "_preview"
+                prev_dir.mkdir(parents=True, exist_ok=True)
+                # 这份缓存以前摊在用户的下载目录里、看得见才会被手动清；搬进工具文件夹后得自己收
+                old_prev = sorted((p for p in prev_dir.iterdir() if p.is_file()),
+                                  key=lambda p: p.stat().st_mtime, reverse=True)[20:]
+                for p in old_prev:
+                    try:
+                        p.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                dest = prev_dir / f"{id[:16]}{audio.suffix}"
+                shutil.copy2(audio, dest)
+                try:
+                    shutil.rmtree(tmp_dir, ignore_errors=True)
+                except Exception:
+                    pass
+                mt = {
+                    ".mp3": "audio/mpeg", ".flac": "audio/flac", ".m4a": "audio/mp4",
+                    ".ogg": "audio/ogg", ".wav": "audio/wav", ".aac": "audio/aac",
+                }.get(dest.suffix.lower(), "audio/mpeg")
+                log_mgr.log(f"试听临时文件: {dest.name}")
+                try:
+                    from music_search import cleanup_musicdl_pkl
+                    cleanup_musicdl_pkl(str(tmp_dir), log=log_mgr.log)
+                except Exception:
+                    pass
+                return FileResponse(dest, media_type=mt, filename=dest.name)
+        except Exception as e:
+            log_mgr.log(f"试听临时下载失败: {e}", "error")
+
+    raise HTTPException(404, "无可试听地址（可直接下载；部分源需 Cookie）")
+
+
+
+# 多选下载走的是裸线程，下载队列里完全看不到它 —— 界面只能靠这份最新批次进度判断
+# 跑没跑完、跑到第几首。本机是单人桌面应用，同一时刻只会有一个批量下载，故只留一份。
+_MUSIC_JOB: Dict[str, Any] = {}
+
+
+@app.post("/api/music/download")
+def api_music_download(body: dict):
+    """
+    下载策略:
+      1) 有 cache id 列表 → musicdl.download 精确下载
+      2) 有 http URL → 入队仅音频
+      3) 仅有 title → 重搜后 musicdl 下载
+    """
+    ids = body.get("ids") or body.get("cache_ids") or []
+    if isinstance(ids, str):
+        ids = [ids]
+    ids = [str(i) for i in ids if i]
+    ref_ids = [i for i in ids if i.startswith("ref:")]
+    if ref_ids:
+        raise HTTPException(400, f"有 {len(ref_ids)} 行是 Qobuz/Tidal 无损参照（只有元数据、没有音频地址），"
+                                 "不参与下载；要下这首歌请勾同一批结果里本平台那一行")
+    match_sources = body.get("match_sources") or []
+    if not match_sources:
+        # 勾选的搜索源不一定给得了音频地址（Spotify 只列清单），所以匹配源单独设，
+        # 优先级：本次请求显式指定 → 并行策略里保存的 → 本次勾选的搜索源
+        match_sources = ((cfg.data.get("musicdl_strategy") or {}).get("match_sources")
+                         or body.get("sources") or [])
+    urls = body.get("urls") or []
+    if not urls and body.get("url"):
+        urls = [body.get("url")]
+    urls = [str(u).strip() for u in urls if str(u).strip().startswith("http")]
+    title = (body.get("title") or "").strip()
+    artists = (body.get("artists") or "").strip()
+    source = (body.get("musicdl_source") or body.get("source") or "").strip()
+    out_dir = str(cfg.data.get("download_dir") or DEFAULT_DOWNLOAD_DIR)
+    cookies = music_cookie_string(str(body.get("cookies") or ""))
+    proxy_for = music_proxy_resolver(body.get("proxy") or "")
+    # 搬运版守门：只拦"取回来的元数据和歌单标注对不上"的那几首，默认关（见 music_search.audio_origin）
+    block_reupload = body.get("block_reupload")
+    if block_reupload is None:
+        block_reupload = bool(cfg.data.get("music_block_reupload", False))
+    block_reupload = bool(block_reupload)
+    # 音质要求：musicdl 每一源取哪一档写死在它自己里，这里只能用于「多候选挑达标的」
+    # 与「下完核对成品实际什么档」，勾了不达标不下才整首跳过
+    from music_search import norm_quality_spec, quality_spec_active, quality_spec_label
+    quality_spec = norm_quality_spec(body.get("quality_spec")
+                                     if body.get("quality_spec") is not None
+                                     else cfg.data.get("music_quality_spec"))
+    if quality_spec_active(quality_spec):
+        log_mgr.log(f"本批音质要求：{quality_spec_label(quality_spec)}"
+                    + ("｜已勾「不达标不下」" if quality_spec["strict"] else ""), "info")
+
+    dup_skipped: List[dict] = []
+    already_have: List[dict] = []
+    # 下面去重和「跳过已下载」会先剔掉一部分行，剩下的下标就不再是用户清单里的第几首。
+    # {track} 取不到平台序号时要用它兜底，所以在剔之前先把位置记下来（重复 id 以第一次为准）。
+    orig_pos: Dict[str, int] = {}
+    for _n, _cid in enumerate(ids):
+        orig_pos.setdefault(_cid, _n + 1)
+    if ids:
+        from music_search import get_cached_song as _song_of, drop_duplicate_tracks
+        songs = [_song_of(i) for i in ids]
+        keep, dup_skipped = drop_duplicate_tracks(songs)
+        if dup_skipped:
+            # 判不了重的行（缓存查不到、没有曲名）在 _track_clusters 里各自成组，一定留在 keep 里
+            ids = [i for n, i in enumerate(ids) if n in keep]
+            songs = [s for n, s in enumerate(songs) if n in keep]
+            log_mgr.log(
+                f"下载清单里有 {sum(int(d['count']) - 1 for d in dup_skipped)} 首重复"
+                "（同一首歌排了两遍），只下第一遍："
+                + "、".join(f"「{d['title']}」×{d['count']}" for d in dup_skipped[:6])
+                + ("…" if len(dup_skipped) > 6 else ""))
+        # 上一次下的歌还躺在下载目录里，这次整张歌单再点一遍就会下一份 `_1` 副本。
+        # 所以在建后台任务之前先按命名模板比一遍目录，已有同名成品的行直接不下。
+        tpl = (cfg.data.get("music_filename_template") or "{artist}/{name} - {artist}").strip()
+        skip_existing = body.get("skip_downloaded")
+        if skip_existing is None:
+            skip_existing = bool(cfg.data.get("skip_downloaded", True))
+        if skip_existing and ids:
+            from music_search import find_existing_local_songs, want_from_song, song_field, log_name_list
+            # 同名文件判重在两处会失灵：同一首歌在各平台的写法不同（歌手分隔符、扩展名），
+            # 以及改了命名模板之后老成品对不上号。所以扫一遍目录，按 #132 那道打分闸门认歌。
+            hits = find_existing_local_songs([want_from_song(s) for s in songs], out_dir,
+                                             log=log_mgr.log)
+            if hits:
+                drop = {i for i, _p, _sc, _t in hits}
+                already_have = [{"title": (song_field(songs[i], "song_name", "title", "name")
+                                           or "（未知曲名）"),
+                                 "path": p, "score": sc, "local_title": mt}
+                                for i, p, sc, mt in hits]
+                ids = [i for n, i in enumerate(ids) if n not in drop]
+                log_name_list(log_mgr.log,
+                              f"有 {len(hits)} 首在下载目录里已经有一版（按曲名+歌手+时长认的同一首），"
+                              "这次不再下第二份"
+                              "（要重下就取消勾选清单上方的「跳过已下载的歌」）",
+                              [f"「{d['title']}」→ {d['path']}" for d in already_have])
+        _MUSIC_JOB.update({"running": True, "finished": False, "total": len(ids),
+                           "done": 0, "ok": 0, "out_dir": out_dir, "last": "",
+                           "dup_skipped": sum(int(d["count"]) - 1 for d in dup_skipped),
+                           "already": len(already_have), "already_list": already_have,
+                           "started_at": time.time(), "elapsed_s": 0, "match": {}})
+        # 匹配那一轮直接往这个 dict 里写结论：download_status 是浅拷贝，轮询时读到的就是最新内容
+        match_report: Dict[str, Any] = _MUSIC_JOB["match"]
+
+        def job():
+            try:
+                from music_search import download_songs, format_music_path, get_cached_song, save_lyrics_and_cover
+                from music_search import musicdl_cache_dir, SIDE_CAR_EXTS, cleanup_empty_dirs
+                from music_search import promote_music_file
+                cache_dir = musicdl_cache_dir(out_dir)
+                embed = bool(cfg.data.get("music_embed_metadata", False))
+
+                def finish(i: int, path: str) -> None:
+                    _MUSIC_JOB["done"] = int(_MUSIC_JOB.get("done") or 0) + 1
+                    if not path:
+                        return
+                    pp = Path(path)
+                    if not pp.is_file():
+                        log_mgr.log(f"第 {i + 1} 首没有成品文件可收尾（{path}）——"
+                                    f"没有重命名、也没有入库", "warning")
+                        return
+                    _MUSIC_JOB["ok"] = int(_MUSIC_JOB.get("ok") or 0) + 1
+                    meta = {}
+                    archive: Dict[str, str] = {}
+                    if i < len(ids):
+                        song = get_cached_song(ids[i])
+                        if song is not None:
+                            def g(obj, *names):
+                                for n in names:
+                                    v = getattr(obj, n, None) if not isinstance(obj, dict) else obj.get(n)
+                                    if v not in (None, ""):
+                                        return v
+                                return ""
+                            meta = {
+                                "title": str(g(song, "song_name", "title", "name") or pp.stem),
+                                "artists": str(g(song, "singers", "artists", "artist") or ""),
+                                "album": str(g(song, "album") or ""),
+                                "source": str(g(song, "source") or "music"),
+                                "cover": str(g(song, "cover_url", "album_pic", "cover") or ""),
+                                "lyric": str(g(song, "lyric", "lyrics") or ""),
+                            }
+                            if isinstance(meta["artists"], (list, tuple)):
+                                meta["artists"] = ", ".join(str(a) for a in meta["artists"])
+                            try:
+                                # Emby / Jellyfin 认目录：{album}/{year}/{track} - {name} 这类归档口径
+                                from music_search import song_archive_meta
+                                archive = song_archive_meta(song)
+                            except Exception as ae:
+                                log_mgr.log(f"归档字段读取失败（按空处理）: {ae}", "warning")
+                                archive = {}
+                    try:
+                        pos = orig_pos.get(ids[i] if i < len(ids) else "", 0)
+                        dest = format_music_path(
+                            tpl,
+                            title=meta.get("title") or pp.stem,
+                            artists=meta.get("artists") or "",
+                            album=meta.get("album") or "",
+                            source=meta.get("source") or "music",
+                            sid=ids[i] if i < len(ids) else "",
+                            ext=pp.suffix.lstrip(".") or "mp3",
+                            base_dir=out_dir,
+                            track=archive.get("track") or pos,
+                            disc=archive.get("disc") or "",
+                            year=archive.get("year") or "",
+                            date=archive.get("date") or "",
+                        )
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        if dest.resolve() != pp.resolve():
+                            siblings = [
+                                s for s in pp.parent.glob(pp.stem + ".*")
+                                if s.is_file() and s.suffix.lower() in SIDE_CAR_EXTS and s != pp
+                            ]
+                            promote_music_file(pp, dest, log=log_mgr.log)
+                            pp = dest
+                            for s in siblings:
+                                try:
+                                    s.replace(dest.parent / (dest.stem + s.suffix.lower()))
+                                except Exception:
+                                    pass
+                            log_mgr.log(f"重命名: {pp.name}")
+                        lr = save_lyrics_and_cover(
+                            str(pp),
+                            lyrics_text=meta.get("lyric") or "",
+                            cover_url=meta.get("cover") or "",
+                            embed=embed,
+                            log=log_mgr.log,
+                        )
+                        try:
+                            from music_search import auto_tag_audio
+                            auto_tag_audio(
+                                str(pp),
+                                title=meta.get("title") or "",
+                                artists=meta.get("artists") or "",
+                                album=meta.get("album") or "",
+                                cover_path=(lr or {}).get("cover") or "",
+                                log=log_mgr.log,
+                            )
+                        except Exception as te:
+                            log_mgr.log(f"自动标签: {te}", "warning")
+                    except Exception as re:
+                        log_mgr.log(f"模板/歌词处理: {re}", "warning")
+                    _MUSIC_JOB["last"] = pp.name
+
+                download_songs(ids, work_dir=out_dir, cookies=cookies,
+                               proxy_for=proxy_for, log=log_mgr.log,
+                               match_sources=(match_sources or None), on_result=finish,
+                               match_report=match_report, block_reupload=block_reupload,
+                               quality_spec=quality_spec)
+                try:
+                    from music_search import cleanup_musicdl_pkl
+                    cleanup_musicdl_pkl(cache_dir, log=log_mgr.log)
+                    cleanup_musicdl_pkl(out_dir, log=log_mgr.log)
+                    n_empty = cleanup_empty_dirs(cache_dir, log=log_mgr.log)
+                    if n_empty:
+                        log_mgr.log(f"已清理空缓存目录 × {n_empty}")
+                except Exception:
+                    pass
+            except Exception as e:
+                log_mgr.log(f"musicdl 批量下载失败: {e}", "error")
+            finally:
+                _MUSIC_JOB["running"] = False
+                _MUSIC_JOB["finished"] = True
+                _MUSIC_JOB["elapsed_s"] = round(
+                    time.time() - float(_MUSIC_JOB.get("started_at") or time.time()), 1)
+                if int(_MUSIC_JOB.get("ok") or 0):
+                    # 刚落地的成品要让「包含本地库」立刻搜得到：后台重扫索引，不挡收尾
+                    from music_search import refresh_local_snapshot
+                    refresh_local_snapshot(out_dir, log=log_mgr.log)
+        if not ids:
+            # 要下的歌目录里全都有了：不起线程，当场把这批结掉，界面照常拿到回执
+            _MUSIC_JOB.update({"running": False, "finished": True, "elapsed_s": 0})
+            return {"ok": True, "mode": "musicdl",
+                    "message": f"这 {len(already_have)} 首在下载目录里都已经有了，没有重复下载"
+                               "（要重下就取消勾选清单上方的「跳过已下载的歌」）",
+                    "already": len(already_have), "started_at": _MUSIC_JOB.get("started_at")}
+        threading.Thread(target=job, daemon=True).start()
+        from music_search import get_cached_song as _gcs, DOWNLOAD_CHUNK, canonical_sources
+        n_match = sum(1 for i in ids
+                      if isinstance(_gcs(i), dict) and _gcs(i).get("needs_match"))
+        msg = f"musicdl 下载 {len(ids)} 首（后台，每 {DOWNLOAD_CHUNK} 首归档一次）"
+        n_dup = sum(int(d["count"]) - 1 for d in dup_skipped)
+        if n_dup:
+            msg += f"，已跳过 {n_dup} 首重复"
+        if already_have:
+            msg += f"，另有 {len(already_have)} 首目录里已有同名成品、这次不下"
+        if n_match:
+            labels = "/".join(str(s).replace("MusicClient", "")
+                              for s in canonical_sources(match_sources))
+            msg += (f"，其中 {n_match} 首要先去 {labels or '默认匹配源'} 按曲名匹配音频地址，"
+                    "会慢一些（进度见日志）")
+        return {"ok": True, "mode": "musicdl", "message": msg, "need_match": n_match,
+                "already": len(already_have), "started_at": _MUSIC_JOB.get("started_at")}
+
+    if not urls and (title or body.get("can_musicdl_download")):
+        def job2():
+            try:
+                from music_search import download_via_musicdl
+                download_via_musicdl(
+                    title or "track", artists=artists, source=source,
+                    save_dir=out_dir, cookies=cookies,
+                    proxy=music_proxy_for_source(source), log=log_mgr.log,
+                )
+            except Exception as e:
+                log_mgr.log(f"musicdl 任务失败: {e}", "error")
+        threading.Thread(target=job2, daemon=True).start()
+        return {"ok": True, "mode": "musicdl", "message": f"已用 musicdl 下载：{title or artists}"}
+
+    if not urls:
+        raise HTTPException(400, "没有可下载链接 / 缓存 id / 歌名")
+    opts = {
+        "audio_only": True, "embed_meta": True, "embed_thumb": True,
+        "format": "m4a", "queue_name": body.get("queue_name") or "music",
+    }
+    if title:
+        opts["_title"] = title[:120]
+    qids = queue.add_urls(urls, opts)
+    return {"ok": True, "mode": "queue", "ids": qids, "count": len(qids)}
+
+
+@app.get("/api/music/download_status")
+def api_music_download_status():
+    """多选批量的实时进度。这条路径不入下载队列，界面只能靠它判断跑完没有。"""
+    st = dict(_MUSIC_JOB)
+    st["skipped"] = max(0, int(st.get("total") or 0) - int(st.get("ok") or 0))
+    return st
+
+
+
+@app.post("/api/music/tag")
+def api_music_tag(body: dict):
+    """
+    MusicBrainz 风格标签：用 mutagen 写入；若系统有 picard 可选用。
+    body: path, title, artists, album, use_picard
+    """
+    path = str(resolve_media_path(body.get("path") or ""))
+    if not Path(path).is_file():
+        raise HTTPException(400, "文件不存在")
+    title = (body.get("title") or "").strip()
+    artists = (body.get("artists") or body.get("artist") or "").strip()
+    album = (body.get("album") or "").strip()
+    use_picard = bool(body.get("use_picard"))
+
+    if use_picard:
+        import shutil as _sh
+        picard = _sh.which("picard") or _sh.which("picard.exe")
+        if not picard:
+            raise HTTPException(400, "未找到 Picard 可执行文件，请安装 MusicBrainz Picard 并加入 PATH")
+        try:
+            subprocess.Popen([picard, path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return {"ok": True, "message": f"已用 Picard 打开: {Path(path).name}"}
+        except Exception as e:
+            raise HTTPException(500, str(e))
+
+    # mutagen 本地写标签
+    try:
+        from mutagen.easyid3 import EasyID3
+        from mutagen.id3 import ID3, ID3NoHeaderError
+        from mutagen.flac import FLAC
+        from mutagen.mp4 import MP4
+    except ImportError:
+        raise HTTPException(400, "请 pip install mutagen")
+
+    pth = Path(path)
+    suf = pth.suffix.lower()
+    try:
+        if suf == ".mp3":
+            try:
+                tags = EasyID3(path)
+            except Exception:
+                audio = ID3()
+                audio.save(path)
+                tags = EasyID3(path)
+            if title:
+                tags["title"] = title
+            if artists:
+                tags["artist"] = artists
+            if album:
+                tags["album"] = album
+            tags.save()
+        elif suf == ".flac":
+            audio = FLAC(path)
+            if title:
+                audio["title"] = title
+            if artists:
+                audio["artist"] = artists
+            if album:
+                audio["album"] = album
+            audio.save()
+        elif suf in (".m4a", ".mp4"):
+            audio = MP4(path)
+            if title:
+                audio["\xa9nam"] = [title]
+            if artists:
+                audio["\xa9ART"] = [artists]
+            if album:
+                audio["\xa9alb"] = [album]
+            audio.save()
+        else:
+            raise HTTPException(400, f"暂不支持格式 {suf}，请用 Picard")
+        log_mgr.log(f"已写标签: {pth.name} title={title}")
+        return {"ok": True, "message": f"已写入标签: {pth.name}"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/music/mb_lookup")
+def api_music_mb_lookup(body: dict):
+    """MusicBrainz 录音检索（REST + 时长加分）。"""
+    q_title = (body.get("title") or "").strip()
+    q_artist = (body.get("artists") or body.get("artist") or "").strip()
+    if not q_title and not q_artist:
+        raise HTTPException(400, "需要 title 或 artist")
+    try:
+        duration_ms = int(body.get("duration_ms") or 0)
+    except Exception:
+        duration_ms = 0
+    from music_search import musicbrainz_search_recordings
+    results = musicbrainz_search_recordings(
+        title=q_title, artist=q_artist, duration_ms=duration_ms, limit=8, log=log_mgr.log,
+    )
+    return {"ok": True, "items": results, "count": len(results)}
+
+
+@app.post("/api/music/mb_enrich")
+def api_music_mb_enrich(body: dict):
+    """MusicBrainz 匹配 + Cover Art Archive 封面 + mutagen 写标签。"""
+    path = str(resolve_media_path(body.get("path") or ""))
+    if not Path(path).is_file():
+        raise HTTPException(400, "文件不存在")
+    title = (body.get("title") or Path(path).stem).strip()
+    artists = (body.get("artists") or body.get("artist") or "").strip()
+    album = (body.get("album") or "").strip()
+    try:
+        duration_ms = int(body.get("duration_ms") or 0)
+    except Exception:
+        duration_ms = 0
+    if not duration_ms:
+        # ffprobe 粗取时长
+        try:
+            r = subprocess.run(
+                ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+                 "-of", "default=noprint_wrappers=1:nokey=1", path],
+                capture_output=True, text=True, timeout=30,
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                duration_ms = int(float(r.stdout.strip()) * 1000)
+        except Exception:
+            pass
+
+    def job():
+        try:
+            from music_search import musicbrainz_enrich_and_tag
+            r = musicbrainz_enrich_and_tag(
+                path, title=title, artists=artists, album=album,
+                duration_ms=duration_ms, download_cover=True, log=log_mgr.log,
+            )
+            log_mgr.log(r.get("message") or ("完成" if r.get("ok") else "未写入"))
+        except Exception as e:
+            log_mgr.log(f"MB 富化失败: {e}", "error")
+
+    threading.Thread(target=job, daemon=True).start()
+    return {"ok": True, "message": f"正在 MusicBrainz 匹配并写标签: {Path(path).name}"}
+
+
+
+
+@app.get("/api/music/fpcalc_status")
+def api_fpcalc_status():
+    from music_search import find_fpcalc
+    p = find_fpcalc()
+    return {"ok": True, "fpcalc": p or "", "available": bool(p)}
+
+
+@app.post("/api/music/fingerprint")
+def api_music_fingerprint(body: dict):
+    """
+    方案 A：Chromaprint/fpcalc → AcoustID → 写标签。
+    body: path, apply_tags (default true), min_score
+    """
+    path = str(resolve_media_path(body.get("path") or ""))
+    if not Path(path).is_file():
+        raise HTTPException(400, "文件不存在")
+    apply_tags = body.get("apply_tags")
+    if apply_tags is None:
+        apply_tags = True
+    try:
+        min_score = float(body.get("min_score") if body.get("min_score") is not None else cfg.data.get("acoustid_min_score") or 0.5)
+    except Exception:
+        min_score = 0.5
+    api_key = (body.get("api_key") or cfg.data.get("acoustid_api_key") or "").strip()
+
+    # 下面三种失败原先只落在后台线程的日志里，界面上弹的是「正在指纹识别」，看着像成功
+    from music_search import find_fpcalc
+    if not find_fpcalc():
+        msg = ("未找到 fpcalc（Chromaprint），指纹识别未启动：随包的 chromaprint\\fpcalc.exe 缺失，"
+               "请重新解压便携包，或自行安装 Chromaprint 后把它加入 PATH")
+        log_mgr.log(f"指纹识别未启动（{Path(path).name}）：{msg}", "warning")
+        return {"ok": False, "message": msg}
+    if not api_key:
+        msg = "缺少 AcoustID API Key，指纹识别未启动：请在「设置 → 声学指纹 / AcoustID」填写 AcoustID API Key（免费申请：https://acoustid.org/api-key）"
+        log_mgr.log(f"指纹识别未启动（{Path(path).name}）：未配置 AcoustID API Key", "warning")
+        return {"ok": False, "message": msg}
+    try:
+        from audio_analyze import preflight
+        err = preflight(str(path))
+    except Exception as e:
+        err = f"探测音轨失败: {e}"
+    if err:
+        log_mgr.log(f"指纹识别未启动（{Path(path).name}）：{err}", "warning")
+        return {"ok": False, "message": err}
+    from music_search import acoustid_key_check
+    err = acoustid_key_check(api_key, log=log_mgr.log)
+    if err:
+        log_mgr.log(f"指纹识别未启动（{Path(path).name}）：{err}", "warning")
+        return {"ok": False, "message": err}
+
+    def job():
+        try:
+            from music_search import fingerprint_and_tag, fpcalc_fingerprint, acoustid_lookup
+            if not apply_tags:
+                fp = fpcalc_fingerprint(path, log=log_mgr.log)
+                if not fp.get("fingerprint"):
+                    log_mgr.log("指纹计算失败", "error")
+                    return
+                matches = acoustid_lookup(
+                    fp["fingerprint"], fp.get("duration") or 0, api_key=api_key, log=log_mgr.log,
+                ) if api_key else []
+                log_mgr.log(f"指纹 duration={fp.get('duration')} 候选={len(matches)}")
+                for m in matches[:3]:
+                    log_mgr.log(f"  score={m.get('score'):.2f} {m.get('title')} — {m.get('artists')}")
+                return
+            r = fingerprint_and_tag(
+                path, api_key=api_key, min_score=min_score, download_cover=True, log=log_mgr.log,
+            )
+            log_mgr.log(r.get("message") or ("完成" if r.get("ok") else "未写入"))
+        except Exception as e:
+            log_mgr.log(f"指纹识别失败: {e}", "error")
+
+    threading.Thread(target=job, daemon=True).start()
+    return {"ok": True, "message": f"正在指纹识别: {Path(path).name}"}
+
+
+@app.post("/api/music/guess_tags")
+def api_music_guess_tags(body: dict):
+    """方案 D：路径启发式猜标签，可选写入。"""
+    path = str(resolve_media_path(body.get("path") or ""))
+    if not Path(path).is_file():
+        raise HTTPException(400, "文件不存在")
+    from music_search import brainztag_style_guess, auto_tag_audio
+    g = brainztag_style_guess(path)
+    if body.get("apply"):
+        auto_tag_audio(
+            path,
+            title=g.get("title") or "",
+            artists=g.get("artists") or "",
+            album=g.get("album") or "",
+            log=log_mgr.log,
+        )
+        return {"ok": True, "guess": g, "message": "已按路径猜测写入标签"}
+    return {"ok": True, "guess": g}
+
+
+@app.post("/api/music/install")
+def api_music_install(body: dict = None):
+    body = body or {}
+
+    def job():
+        from music_search import install_musicdl
+        idx = str(body.get("mirror") or cfg.data.get("pip_mirror") or "")
+        install_musicdl(log=log_mgr.log, mirror=idx, force=bool(body.get("force")))
+    threading.Thread(target=job, daemon=True).start()
+    return {"ok": True, "message": "正在后台安装 musicdl，进度见运行日志"}
+
+
+SEARCH_MAX_PER_SOURCE = 100   # 单个平台单类内容一次最多取回
+SEARCH_MAX_TOTAL = 300        # 聚合搜索一次最多返回条数
+# YouTube 搜索排序参数（实测 sp=CAM 为播放量倒序；sp=CAI 为平台侧「上传时间」，
+# 但 YouTube 对热门关键词常按综合返回，故发布时间排序不保证生效，界面已注明）
+_YT_SEARCH_SP = {"views": "CAM", "newest": "CAI"}
+# B 站搜索排序：综合 / 点击量（播放数）/ 最新（发布时间），实测三者均生效
+_BILI_SEARCH_ORDER = {"relevance": "totalrank", "views": "click", "newest": "pubdate"}
+
+
+def _ts_to_date(ts) -> str:
+    """Unix 时间戳 → YYYY-MM-DD；拿不到就返回空串，前端不显示该项。"""
+    try:
+        n = int(ts)
+    except Exception:
+        return ""
+    if n <= 0:
+        return ""
+    return datetime.fromtimestamp(n).strftime("%Y-%m-%d")
+
+
+def _to_int(v) -> int:
+    try:
+        return int(float(v))
+    except Exception:
+        return 0
+
+
+def _yt_search_target(q: str, sort: str, n: int) -> str:
+    """YouTube 搜索入口：默认 ytsearchN（综合排序），需要平台侧排序时改用 results?sp= 链接"""
+    sp = _YT_SEARCH_SP.get(sort)
+    if sp:
+        return f"https://www.youtube.com/results?search_query={quote(q)}&sp={sp}"
+    return f"ytsearch{n}:{q}"
+
+
+@app.post("/api/search")
+def api_search(body: SearchBody):
+    """聚合搜索：多平台 + 内容类型（视频/频道/合集）+ 平台侧排序"""
+    q = (body.query or "").strip()
+    if not q:
+        raise HTTPException(400, "请输入关键词")
+    limit = max(1, min(int(body.limit or 30), SEARCH_MAX_PER_SOURCE))
+    plat = (body.platform or "all").lower()
+    ctype = (body.content_type or "all").lower()
+    sort = (body.sort or "relevance").lower()
+    if sort not in ("relevance", "views", "newest"):
+        sort = "relevance"
+    results = []
+    seen = set()
+    notes: List[dict] = []   # 某个平台「为什么这条是空的」，前端固定显示，不混进结果里
+
+    def _add(item: dict):
+        key = (item.get("platform"), item.get("id") or item.get("url"))
+        if not key[1] or key in seen:
+            return
+        seen.add(key)
+        results.append(item)
+
+    # ---- YouTube via yt-dlp ----
+    if plat in ("youtube", "all"):
+        yqueries = []
+        if ctype in ("all", "video"):
+            yqueries.append(("video", limit, q))
+        if ctype in ("all", "playlist"):
+            yqueries.append(("playlist", min(20, limit), q + " playlist"))
+        if ctype in ("all", "channel"):
+            yqueries.append(("channel", min(12, limit), q + " channel"))
+        for kind, want, term in yqueries:
+            search_url = _yt_search_target(term, sort, want)
+            try:
+                opts = engine._ydl_opts(cfg.data, for_info=True, url=search_url)
+                opts["extract_flat"] = True
+                opts["skip_download"] = True
+                opts["quiet"] = True
+                opts["playlistend"] = want
+                import yt_dlp
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(search_url, download=False)
+                for e in (info.get("entries") or [])[:want]:
+                    if not e:
+                        continue
+                    eid = e.get("id") or ""
+                    link = e.get("webpage_url") or e.get("url") or ""
+                    etype = e.get("_type") or kind
+                    if eid and (not link.startswith("http") or ("youtube.com" not in link and "youtu.be" not in link)):
+                        if etype == "playlist" or kind == "playlist":
+                            link = f"https://www.youtube.com/playlist?list={eid}"
+                        elif etype == "channel" or kind == "channel":
+                            link = f"https://www.youtube.com/channel/{eid}" if eid.startswith("UC") else f"https://www.youtube.com/@{eid}"
+                        else:
+                            link = f"https://www.youtube.com/watch?v={eid}"
+                    dur = e.get("duration_string") or ""
+                    if not dur and e.get("duration"):
+                        try:
+                            sec = int(e.get("duration"))
+                            dur = f"{sec // 60}:{sec % 60:02d}"
+                        except Exception:
+                            dur = str(e.get("duration") or "")
+                    thumbs = e.get("thumbnails") or []
+                    thumb = e.get("thumbnail") or (thumbs[-1].get("url") if thumbs else "")
+                    views = e.get("view_count") or e.get("views") or ""
+                    _add({
+                        "platform": "youtube",
+                        "id": eid,
+                        "title": e.get("title") or "",
+                        "url": link,
+                        "uploader": e.get("uploader") or e.get("channel") or e.get("uploader_id") or "",
+                        "duration": dur,
+                        "thumbnail": thumb,
+                        "content_type": "playlist" if (kind == "playlist" or etype == "playlist") else ("channel" if (kind == "channel" or etype == "channel") else "video"),
+                        "views": views,
+                        "views_num": _to_int(views),
+                        "publish_date": _ts_to_date(e.get("release_timestamp") or e.get("timestamp")),
+                        "description": (e.get("description") or "")[:120],
+                    })
+            except Exception as ex:
+                log_mgr.log(f"搜索 youtube/{kind} 失败: {ex}", "warning")
+
+    # ---- Bilibili official API (video / bilibili_user / media_bangumi etc.) ----
+    if plat in ("bilibili", "all"):
+        proxy = resolve_proxy(source="bilibili")
+        kw = _bili_request_kwargs(proxy=proxy, for_search=True)
+        type_map = []
+        if ctype in ("all", "video"):
+            type_map.append(("video", "video"))
+        if ctype in ("all", "channel"):
+            type_map.append(("channel", "bili_user"))
+        if ctype in ("all", "playlist"):
+            type_map.append(("playlist", "media_ft"))  # 合集/影视
+            type_map.append(("playlist", "media_bangumi"))
+        for content_label, search_type in type_map:
+            try:
+                page_size = min(limit, 50)
+                order = _BILI_SEARCH_ORDER.get(sort, "totalrank")
+                batch_all: List[dict] = []
+                page = 1
+                while len(batch_all) < limit and page <= 6:
+                    api = (
+                        f"https://api.bilibili.com/x/web-interface/search/type"
+                        f"?search_type={search_type}&keyword={quote(q)}"
+                        f"&page={page}&page_size={page_size}&order={order}"
+                    )
+                    j = requests.get(api, **kw).json() or {}
+                    if j.get("code") not in (0, None):
+                        log_mgr.log(f"B站搜索 {search_type} API code={j.get('code')} msg={j.get('message')}", "warning")
+                        break
+                    batch = ((j.get("data") or {}).get("result")) or []
+                    batch_all.extend(batch)
+                    if len(batch) < page_size:
+                        break
+                    page += 1
+                for it in batch_all[:limit]:
+                    if search_type == "video":
+                        bvid = it.get("bvid") or ""
+                        if not bvid:
+                            continue
+                        title = re.sub(r"<[^>]+>", "", it.get("title") or "")
+                        cover = it.get("pic") or it.get("cover") or ""
+                        if cover.startswith("//"):
+                            cover = "https:" + cover
+                        elif cover.startswith("http://"):
+                            cover = "https://" + cover[7:]
+                        _add({
+                            "platform": "bilibili",
+                            "id": bvid,
+                            "title": title or bvid,
+                            "url": f"https://www.bilibili.com/video/{bvid}",
+                            "uploader": it.get("author") or "",
+                            "duration": it.get("duration") or "",
+                            "thumbnail": cover,
+                            "content_type": "video",
+                            "views": it.get("play") or "",
+                            "views_num": _to_int(it.get("play")),
+                            "publish_date": _ts_to_date(it.get("pubdate")),
+                            "description": re.sub(r"<[^>]+>", "", it.get("description") or "")[:120],
+                        })
+                    elif search_type == "bili_user":
+                        mid = it.get("mid") or it.get("uid")
+                        if not mid:
+                            continue
+                        uname = it.get("uname") or str(mid)
+                        face = it.get("upic") or it.get("face") or ""
+                        if face.startswith("//"):
+                            face = "https:" + face
+                        elif face.startswith("http://"):
+                            face = "https://" + face[7:]
+                        _add({
+                            "platform": "bilibili",
+                            "id": str(mid),
+                            "title": uname,
+                            "url": f"https://space.bilibili.com/{mid}",
+                            "uploader": uname,
+                            "duration": "",
+                            "thumbnail": face,
+                            "content_type": "channel",
+                            "views": it.get("fans") or "",
+                            "views_num": _to_int(it.get("fans")),
+                            "publish_date": "",
+                            "description": (it.get("usign") or "")[:120],
+                        })
+                    else:
+                        # media
+                        media_id = it.get("media_id") or it.get("season_id") or it.get("id")
+                        title = re.sub(r"<[^>]+>", "", it.get("title") or it.get("org_title") or "")
+                        cover = it.get("cover") or it.get("pic") or ""
+                        if cover.startswith("//"):
+                            cover = "https:" + cover
+                        elif cover.startswith("http://"):
+                            cover = "https://" + cover[7:]
+                        link = it.get("goto_url") or it.get("url") or ""
+                        if not link and media_id:
+                            link = f"https://www.bilibili.com/bangumi/media/md{media_id}"
+                        if not link:
+                            continue
+                        _add({
+                            "platform": "bilibili",
+                            "id": str(media_id or link),
+                            "title": title or str(media_id),
+                            "url": link,
+                            "uploader": it.get("staff") or "",
+                            "duration": "",
+                            "thumbnail": cover,
+                            "content_type": "playlist",
+                            "views": it.get("play") or "",
+                            "views_num": _to_int(it.get("play")),
+                            "publish_date": _ts_to_date(it.get("pubtime") or it.get("publish_time")),
+                            "description": re.sub(r"<[^>]+>", "", it.get("desc") or it.get("description") or "")[:120],
+                        })
+            except Exception as ex:
+                log_mgr.log(f"B站搜索 {search_type} 失败: {ex}", "warning")
+
+        # bilisearch 仅在官方结果不足时补充；412 且已有结果时不刷 WARNING
+        if ctype in ("all", "video"):
+            bili_cnt = sum(1 for r in results if r.get("platform") == "bilibili")
+            if bili_cnt < max(3, min(limit // 2, 10)):
+                try:
+                    search_url = f"bilisearch{min(limit, 30)}:{q}"
+                    opts = engine._ydl_opts(cfg.data, for_info=True, url=search_url)
+                    opts["extract_flat"] = True
+                    opts["skip_download"] = True
+                    opts["quiet"] = True
+                    opts["no_warnings"] = True
+                    import yt_dlp
+                    with yt_dlp.YoutubeDL(opts) as ydl:
+                        info = ydl.extract_info(search_url, download=False)
+                    for e in (info.get("entries") or [])[:limit]:
+                        if not e:
+                            continue
+                        eid = e.get("id") or ""
+                        title = (e.get("title") or "").strip()
+                        if not title or title == "未知":
+                            continue
+                        link = e.get("webpage_url") or e.get("url") or ""
+                        if eid and not link.startswith("http"):
+                            link = f"https://www.bilibili.com/video/{eid}"
+                        thumbs = e.get("thumbnails") or []
+                        thumb = e.get("thumbnail") or (thumbs[-1].get("url") if thumbs else "")
+                        _add({
+                            "platform": "bilibili",
+                            "id": eid,
+                            "title": title,
+                            "url": link,
+                            "uploader": e.get("uploader") or "",
+                            "duration": e.get("duration_string") or "",
+                            "thumbnail": thumb,
+                            "content_type": "video",
+                            "views": e.get("view_count") or "",
+                            "views_num": _to_int(e.get("view_count")),
+                            "publish_date": _ts_to_date(e.get("release_timestamp") or e.get("timestamp")),
+                            "description": "",
+                        })
+                except Exception as ex:
+                    msg = str(ex)
+                    if bili_cnt == 0:
+                        log_mgr.log(f"bilisearch 失败: {ex}", "warning")
+                    else:
+                        # 官方已有结果，412 等失败只记 info，避免日志弹窗干扰
+                        log_mgr.log(f"bilisearch 跳过（已有 {bili_cnt} 条官方结果）", "info")
+
+    # ---- Douyin: 仅真实抖音结果（禁止 YouTube 结果冒充 DOUYIN）----
+    if plat in ("douyin", "all") and ctype in ("all", "video"):
+        douyin_got = 0
+        try:
+            dy = api_douyin_search(q, min(12, limit))
+            for e in (dy.get("results") or []):
+                u = (e.get("url") or "").lower()
+                if "douyin.com" not in u and "iesdouyin.com" not in u:
+                    continue
+                e["platform"] = "douyin"
+                _add(e)
+                douyin_got += 1
+            if douyin_got == 0:
+                risk = dy.get("risk") or {}
+                why = risk.get("human") or dy.get("note") or "接口没有给出可用的抖音条目"
+                # 冷却期内复述的那次，原因里已经写了还剩多少秒、且这次根本没发请求，
+                # 再补一句「已自动降速」就成了自相矛盾
+                if dy.get("throttle") and not dy.get("skipped"):
+                    th = dy["throttle"]
+                    why += f"（已自动降速：{th.get('host')} 同时只跑 1 个，冷却 {th.get('cooldown', 0):.0f}s）"
+                note = {"platform": "douyin", "kind": risk.get("kind") or "unknown", "text": why}
+                if risk.get("action"):
+                    note["action"] = risk["action"]
+                notes.append(note)   # 具体原因已由 api_douyin_search 写过日志，这里只透传给界面
+        except Exception as ex:
+            r = risk_control.classify_failure_text(ex)
+            why = risk_control.describe(r) or f"{type(ex).__name__}: {ex}"
+            notes.append({"platform": "douyin", "kind": r["kind"], "text": why})
+            if r.get("action"):
+                notes[-1]["action"] = r["action"]
+            log_mgr.log(f"抖音搜索失败: {ex}｜{why}", "warning")
+
+    # 前端 content_type 二次过滤（all 不过滤）
+    if ctype in ("video", "channel", "playlist"):
+        results = [r for r in results if r.get("content_type") == ctype]
+
+    total = len(results)
+    # 播放量：各平台都返回数值，可跨平台合并排序。
+    # 发布时间：YouTube 扁平搜索不带发布时间字段，若在此合并排序会把 YouTube 结果整体挤到底部，
+    # 因此只沿用各平台原生排序返回的分块顺序，由平台侧 order/sp 决定先后。
+    if sort == "views":
+        results.sort(key=lambda r: (r.get("views_num") or 0), reverse=True)
+    results = results[:SEARCH_MAX_TOTAL]
+
+    return {
+        "results": results,
+        "count": len(results),
+        "total": total,
+        "truncated": total > len(results),
+        "sort": sort,
+        "notes": notes,
+    }
+
+
+
+@app.get("/api/sync/export")
+def api_sync_export():
+    """导出配置+订阅+历史为 JSON"""
+    payload = {
+        "version": 1,
+        "exported_at": datetime.now().isoformat(timespec="seconds"),
+        "config": {k: v for k, v in cfg.data.items() if "token" not in k.lower()},
+        "subscriptions": sub_mgr.list(),
+        "history": history_mgr.get()[:100],
+    }
+    return payload
+
+
+class SyncImportBody(BaseModel):
+    config: Optional[dict] = None
+    subscriptions: Optional[list] = None
+    history: Optional[list] = None
+    merge: bool = True
+
+
+@app.post("/api/sync/import")
+def api_sync_import(body: SyncImportBody):
+    if body.config:
+        for k, v in body.config.items():
+            if k in cfg.DEFAULTS or k in cfg.data:
+                cfg.data[k] = v
+        cfg.save()
+    if body.subscriptions is not None:
+        if body.merge:
+            existing = {s.get("url") for s in sub_mgr.list()}
+            for s in body.subscriptions:
+                if s.get("url") and s["url"] not in existing:
+                    try:
+                        sub_mgr.add(s["url"], s.get("title") or "")
+                    except Exception:
+                        pass
+        else:
+            with sub_mgr._lock:
+                sub_mgr.subs = list(body.subscriptions)
+            sub_mgr.save()
+    if body.history is not None and not body.merge:
+        with history_mgr._lock:
+            history_mgr.history = list(body.history)
+        history_mgr.save()
+    elif body.history and body.merge:
+        for h in reversed(body.history[:50]):
+            history_mgr.add(h)
+    return {"ok": True}
+
+
+
+# ---------- 直播监控 ----------
+class LiveMonitorBody(BaseModel):
+    url: str = ""
+    id: str = ""
+
+
+def _load_live_monitors() -> list:
+    if LIVE_MONITORS_FILE.exists():
+        try:
+            with open(LIVE_MONITORS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+
+def _save_live_monitors(items: list):
+    try:
+        with open(LIVE_MONITORS_FILE, "w", encoding="utf-8") as f:
+            json.dump(items, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+@app.get("/api/live/monitors")
+def api_live_monitors():
+    return {"monitors": _load_live_monitors()}
+
+
+@app.post("/api/live/monitors/add")
+def api_live_monitor_add(body: LiveMonitorBody):
+    url = normalize_url((body.url or "").strip())
+    if not url.startswith("http"):
+        raise HTTPException(400, "无效链接")
+    items = _load_live_monitors()
+    if any(x.get("url") == url for x in items):
+        return {"ok": True, "item": next(x for x in items if x.get("url") == url)}
+    item = {
+        "id": uuid.uuid4().hex[:10],
+        "url": url,
+        "status": "等待开播",
+        "added_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "last_live": False,
+    }
+    items.insert(0, item)
+    _save_live_monitors(items)
+    return {"ok": True, "item": item}
+
+
+@app.post("/api/live/monitors/remove")
+def api_live_monitor_remove(body: LiveMonitorBody):
+    items = [x for x in _load_live_monitors() if x.get("id") != body.id]
+    _save_live_monitors(items)
+    return {"ok": True}
+
+
+# url -> last auto-start timestamp，防止失败后每 30s 狂开录制
+_live_start_cooldown: Dict[str, float] = {}
+
+
+def _has_active_live_task_for_url(url: str) -> bool:
+    """是否已有针对该直播间的进行中录制任务（重启后据此决定是否补录）"""
+    u = (url or "").strip().rstrip("/")
+    room = extract_bilibili_live_room_id(u) or ""
+    active = {
+        TaskStatus.DOWNLOADING.value,
+        TaskStatus.QUEUED.value,
+        TaskStatus.PAUSED.value,
+    }
+    for t in queue.tasks.values():
+        if t.status not in active:
+            continue
+        tu = (t.url or "").strip().rstrip("/")
+        if tu == u:
+            return True
+        if room and room in tu:
+            return True
+        if t.is_live and u in tu:
+            return True
+    return False
+
+
+def _live_start_on_cooldown(url: str, sec: float = 180.0) -> bool:
+    """同一房间自动开录冷却（失败后避免每 30 秒重开）"""
+    key = (url or "").strip().rstrip("/")
+    room = extract_bilibili_live_room_id(key) or key
+    t0 = _live_start_cooldown.get(room) or _live_start_cooldown.get(key) or 0
+    return (time.time() - t0) < sec
+
+
+def _mark_live_started(url: str):
+    key = (url or "").strip().rstrip("/")
+    room = extract_bilibili_live_room_id(key) or key
+    now = time.time()
+    _live_start_cooldown[key] = now
+    _live_start_cooldown[room] = now
+
+
+@app.post("/api/live/monitors/pause")
+def api_live_monitor_pause(body: LiveMonitorBody):
+    """暂停指定监控的自动录制"""
+    items = _load_live_monitors()
+    for m in items:
+        if m.get("id") == body.id or (body.url and m.get("url") == body.url):
+            m["paused"] = True
+            m["status"] = "录制已暂停"
+    _save_live_monitors(items)
+    return {"ok": True, "monitors": items}
+
+
+@app.post("/api/live/monitors/resume")
+def api_live_monitor_resume(body: LiveMonitorBody):
+    """恢复监控自动录制（若正在直播会在下次扫描开录）"""
+    items = _load_live_monitors()
+    for m in items:
+        if m.get("id") == body.id or (body.url and m.get("url") == body.url):
+            m["paused"] = False
+            m["last_live"] = False  # 允许重新触发开录
+            m["status"] = "等待开播"
+    _save_live_monitors(items)
+    # 立即扫一次
+    return api_live_monitor_scan()
+
+
+@app.post("/api/live/monitors/scan")
+def api_live_monitor_scan():
+    """检测监控房间是否开播；开播且当前无录制任务则自动加入队列（兼容重启）"""
+    items = _load_live_monitors()
+    started = 0
+    for m in items:
+        url = m.get("url") or ""
+        try:
+            is_live_now = False
+            status_text = "等待开播"
+            # B站：走官方 API，更准确
+            if "live.bilibili.com" in url.lower():
+                info_b = check_bilibili_live(url)
+                is_live_now = bool(info_b.get("live"))
+                status_text = info_b.get("status_text") or status_text
+                if info_b.get("title"):
+                    m["title"] = info_b["title"]
+            else:
+                info = engine.get_info(url, cfg.data)
+                if info:
+                    is_live_now = bool(
+                        info.get("is_live")
+                        or info.get("live_status") in ("is_live", "live", 1, "1")
+                    )
+                    status_text = "直播中" if is_live_now else "等待开播"
+                    if info.get("title"):
+                        m["title"] = info.get("title")
+            already = _has_active_live_task_for_url(url)
+            paused = bool(m.get("paused"))
+            cooling = _live_start_on_cooldown(url, 180.0)
+            if is_live_now and not already and not paused and not cooling:
+                # 重启后 last_live 可能仍为 True，但任务已不在，需补开录制
+                queue.add_urls([url], {
+                    "is_live": True,
+                    "skip_downloaded": False,
+                    "allow_playlist": False,
+                    "format": cfg.data.get("format", "mkv"),
+                    "video_quality": cfg.data.get("video_quality", "best"),
+                })
+                _mark_live_started(url)
+                m["status"] = "录制中"
+                m["last_live"] = True
+                m["paused"] = False
+                started += 1
+                log_mgr.log(f"监控开播自动录制: {url}")
+            elif is_live_now and not already and not paused and cooling:
+                m["status"] = "冷却中(防重复开录)"
+                m["last_live"] = True
+                try:
+                    tg_notifier.send(f"🔴 直播开播，已开始录制\n{m.get('title') or url}\n{url}")
+                except Exception:
+                    pass
+            elif is_live_now and already:
+                m["status"] = "录制中"
+                m["last_live"] = True
+            elif is_live_now and paused:
+                m["status"] = "录制已暂停"
+                m["last_live"] = True
+            elif is_live_now:
+                m["status"] = status_text or "直播中"
+                m["last_live"] = True
+            else:
+                m["status"] = status_text or "等待开播"
+                m["last_live"] = False
+                # 下播后清除暂停，下次开播可自动录
+                m["paused"] = False
+        except Exception as e:
+            m["status"] = "检测失败"
+            log_mgr.log(f"直播监控检测失败 {url}: {e}", "warning")
+    _save_live_monitors(items)
+    return {"ok": True, "started": started, "monitors": items}
+
+
+# -------------------- 直播监控定时扫描 --------------------
+_live_monitor_stop = False
+_live_monitor_thread = None
+
+
+# -------------------- 防风控档位 --------------------
+RISK_PRESETS = {
+    "fast": {"label": "快速", "risk_delay_sec": 0.5, "risk_cooldown_429": 30, "risk_api_rate": 8, "sub_scan_delay_sec": 3, "risk_max_per_host": 4},
+    "standard": {"label": "标准", "risk_delay_sec": 1.0, "risk_cooldown_429": 60, "risk_api_rate": 4, "sub_scan_delay_sec": 10, "risk_max_per_host": 2},
+    "safe": {"label": "安全", "risk_delay_sec": 2.0, "risk_cooldown_429": 120, "risk_api_rate": 2, "sub_scan_delay_sec": 20, "risk_max_per_host": 1},
+    "extreme": {"label": "极端安全", "risk_delay_sec": 4.0, "risk_cooldown_429": 300, "risk_api_rate": 1, "sub_scan_delay_sec": 40, "risk_max_per_host": 1},
+}
+
+
+class RiskPresetBody(BaseModel):
+    preset: str = "standard"
+
+
+@app.get("/api/risk/presets")
+def api_risk_presets():
+    return {"presets": RISK_PRESETS, "current": cfg.data.get("risk_preset") or "standard"}
+
+
+@app.post("/api/risk/preset")
+def api_risk_apply_preset(body: RiskPresetBody):
+    key = (body.preset or "standard").strip().lower()
+    if key not in RISK_PRESETS:
+        raise HTTPException(400, "未知档位")
+    p = RISK_PRESETS[key]
+    cfg.data["risk_preset"] = key
+    for k, v in p.items():
+        if k == "label":
+            continue
+        cfg.data[k] = v
+    cfg.save()
+    return {"ok": True, "preset": key, "applied": p}
+
+
+# -------------------- 企业微信通知 --------------------
+_wecom_token_cache = {"token": "", "expires": 0}
+
+
+def wecom_get_token() -> str:
+    if not cfg.data.get("wecom_enabled"):
+        return ""
+    corp_id = (cfg.data.get("wecom_corp_id") or "").strip()
+    secret = (cfg.data.get("wecom_corp_secret") or "").strip()
+    if not corp_id or not secret:
+        return ""
+    now = time.time()
+    if _wecom_token_cache["token"] and _wecom_token_cache["expires"] > now + 60:
+        return _wecom_token_cache["token"]
+    try:
+        r = requests.get(
+            "https://qyapi.weixin.qq.com/cgi-bin/gettoken",
+            params={"corpid": corp_id, "corpsecret": secret},
+            timeout=12,
+        )
+        data = r.json() or {}
+        token = data.get("access_token") or ""
+        if token:
+            _wecom_token_cache["token"] = token
+            _wecom_token_cache["expires"] = now + int(data.get("expires_in") or 7200)
+        return token
+    except Exception as e:
+        log_mgr.log(f"企业微信 token 失败: {e}", "warning")
+        return ""
+
+
+def wecom_send(text: str, flag: str = "") -> bool:
+    if not cfg.data.get("wecom_enabled"):
+        return False
+    if flag and not cfg.data.get(flag, True):
+        return False
+    token = wecom_get_token()
+    agent_id = cfg.data.get("wecom_agent_id")
+    if not token or not agent_id:
+        return False
+    try:
+        r = requests.post(
+            f"https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token={token}",
+            json={
+                "touser": (cfg.data.get("wecom_touser") or "@all").strip(),
+                "msgtype": "text",
+                "agentid": int(agent_id),
+                "text": {"content": text[:2000]},
+                "safe": 0,
+            },
+            timeout=15,
+        )
+        data = r.json() or {}
+        if data.get("errcode") != 0:
+            log_mgr.log(f"企业微信发送失败: {data}", "warning")
+            return False
+        return True
+    except Exception as e:
+        log_mgr.log(f"企业微信异常: {e}", "warning")
+        return False
+
+
+@app.post("/api/storage/test")
+def api_storage_test():
+    """测试 NAS 路径与 WebDAV 连通性"""
+    result = {"nas": None, "webdav": None}
+    # NAS
+    if cfg.data.get("storage_nas_enabled"):
+        nas = (cfg.data.get("storage_nas_path") or "").strip()
+        try:
+            p = Path(nas)
+            p.mkdir(parents=True, exist_ok=True)
+            test = p / ".md_storage_test"
+            test.write_text("ok", encoding="utf-8")
+            test.unlink(missing_ok=True)
+            result["nas"] = {"ok": True, "path": nas}
+        except Exception as e:
+            result["nas"] = {"ok": False, "error": str(e)}
+    # WebDAV
+    if cfg.data.get("storage_webdav_enabled"):
+        url = (cfg.data.get("storage_webdav_url") or "").strip()
+        user = cfg.data.get("storage_webdav_user") or ""
+        password = cfg.data.get("storage_webdav_pass") or ""
+        try:
+            auth = (user, password) if user else None
+            # NAS 常用自签证书，按全局「跳过 SSL 校验」设置走，否则会把证书问题误报成地址错
+            vfy = not cfg.data.get("nocheckcertificate", True)
+            r = requests.request("PROPFIND", url, auth=auth, timeout=20, headers={"Depth": "0"}, verify=vfy)
+            # 一些服务器用 GET
+            if r.status_code >= 400:
+                r = requests.get(url, auth=auth, timeout=20, verify=vfy)
+            result["webdav"] = {
+                "ok": r.status_code < 500,
+                "status": r.status_code,
+                "url": url,
+            }
+        except Exception as e:
+            result["webdav"] = {"ok": False, "error": str(e)}
+    return result
+
+
+@app.post("/api/wecom/test")
+def api_wecom_test():
+    ok = wecom_send("🔔 MediaDownloader 测试消息\n企业微信通知已连通。")
+    if not ok:
+        raise HTTPException(400, "发送失败，请检查 CorpID / Secret / AgentId")
+    return {"ok": True}
+
+
+# 把企业微信挂到 TelegramNotifier 的完成/失败/订阅通知（并行发送，各用自己的开关）
+_orig_notify_done = TelegramNotifier.notify_done
+_orig_notify_fail = TelegramNotifier.notify_fail
+_orig_notify_sub = TelegramNotifier.notify_sub
+
+
+def _notify_done_with_wecom(self, title: str, url: str = "", path: str = ""):
+    _orig_notify_done(self, title, url, path)
+    try:
+        wecom_send(f"✅ 下载完成\n{title or url}\n{path or url}", "wecom_notify_done")
+    except Exception:
+        pass
+
+
+def _notify_fail_with_wecom(self, title: str, url: str = "", err: str = ""):
+    _orig_notify_fail(self, title, url, err)
+    try:
+        wecom_send(f"❌ 下载失败\n{title or url}\n{(err or '')[:200]}", "wecom_notify_fail")
+    except Exception:
+        pass
+
+
+def _notify_sub_with_wecom(self, sub_title: str, new_count: int, samples: List[str] = None):
+    _orig_notify_sub(self, sub_title, new_count, samples)
+    try:
+        extra = "\n".join(f"· {x}" for x in (samples or [])[:5])
+        wecom_send(
+            f"📢 订阅更新: {sub_title}\n新增 {new_count} 条\n{extra}",
+            "wecom_notify_sub",
+        )
+    except Exception:
+        pass
+
+
+TelegramNotifier.notify_done = _notify_done_with_wecom
+TelegramNotifier.notify_fail = _notify_fail_with_wecom
+TelegramNotifier.notify_sub = _notify_sub_with_wecom
+
+
+# -------------------- B站收藏 / 关注 / 稍后再看 --------------------
+def _bili_need_login_hint():
+    return "需要有效的 B站 Cookie（SESSDATA）。请在设置中配置浏览器 Cookie 或扫码登录。"
+
+
+@app.get("/api/favorites/bili/folders")
+def api_bili_fav_folders():
+    """B站收藏夹列表"""
+    kw = _bili_request_kwargs()
+    try:
+        r = requests.get(
+            "https://api.bilibili.com/x/v3/fav/folder/created/list-all?up_mid=0",
+            **kw,
+        )
+        # 若 up_mid=0 无效，先取当前用户 mid
+        j = r.json() or {}
+        if j.get("code") != 0:
+            # 尝试 nav 拿 mid
+            nav = requests.get("https://api.bilibili.com/x/web-interface/nav", **kw)
+            navj = nav.json() or {}
+            mid = ((navj.get("data") or {}).get("mid")) or 0
+            if not mid:
+                raise HTTPException(401, _bili_need_login_hint())
+            r = requests.get(
+                f"https://api.bilibili.com/x/v3/fav/folder/created/list-all?up_mid={mid}",
+                **kw,
+            )
+            j = r.json() or {}
+        if j.get("code") != 0:
+            raise HTTPException(400, j.get("message") or _bili_need_login_hint())
+        data = j.get("data") or {}
+        folders = []
+        for it in (data.get("list") or []):
+            folders.append({
+                "id": it.get("id"),
+                "title": it.get("title") or "",
+                "media_count": it.get("media_count") or 0,
+                "attr": it.get("attr"),
+            })
+        return {"folders": folders}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+FAV_FOLDER_ALL_CAP = 500   # 收藏夹一次最多取回条数
+FOLLOWINGS_ALL_CAP = 2000  # 关注列表一次最多取回条数
+
+
+def _paged_gather(worker: Callable[[int], Optional[List[dict]]], pages: List[int]) -> tuple:
+    """按页取数并顺序拼接。单页异常只标记失败（调用方降级为 partial），已取到的部分不丢。"""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def safe(pn: int):
+        try:
+            return worker(pn) or []
+        except Exception:
+            return None
+
+    items: List[dict] = []
+    failed = False
+    if pages:
+        with ThreadPoolExecutor(max_workers=min(6, len(pages))) as ex:
+            for got in ex.map(safe, pages):
+                if got is None:
+                    failed = True
+                    continue
+                items.extend(got)
+    return items, failed
+
+
+def _bili_fav_folder_page(media_id: int, pn: int, ps: int, kw: dict) -> dict:
+    r = requests.get(
+        f"https://api.bilibili.com/x/v3/fav/resource/list?media_id={media_id}&pn={pn}&ps={ps}&order=mtime",
+        **kw,
+    )
+    j = r.json() or {}
+    if j.get("code") != 0:
+        raise HTTPException(400, j.get("message") or "获取失败")
+    data = j.get("data") or {}
+    items = []
+    for it in (data.get("medias") or []):
+        bvid = it.get("bvid") or ""
+        cover = it.get("cover") or ""
+        if cover.startswith("//"):
+            cover = "https:" + cover
+        items.append({
+            "id": bvid or str(it.get("id") or ""),
+            "title": it.get("title") or "",
+            "url": f"https://www.bilibili.com/video/{bvid}" if bvid else "",
+            "uploader": (it.get("upper") or {}).get("name") or "",
+            "thumbnail": cover,
+            "duration": it.get("duration") or 0,
+            "platform": "bilibili",
+        })
+    info = data.get("info")
+    return {
+        "items": items,
+        "has_more": bool(data.get("has_more")),
+        "media_count": (info.get("media_count") if isinstance(info, dict) else None) or len(items),
+    }
+
+
+@app.get("/api/favorites/bili/folder-items")
+def api_bili_fav_folder_items(media_id: int, pn: int = 1, ps: int = 20, fetch_all: bool = False):
+    """某收藏夹内视频。B 站该接口单页最多 20 条，fetch_all=true 时并发取完整个收藏夹"""
+    kw = _bili_request_kwargs()
+    try:
+        first = _bili_fav_folder_page(media_id, pn, ps, kw)
+        if not fetch_all:
+            return first
+        items = list(first["items"])
+        total = int(first.get("media_count") or len(items))
+        size = 20
+        pages = list(range(pn + 1, -(-total // size) + 1))
+        allowed = max(0, (FAV_FOLDER_ALL_CAP - len(items)) // size)
+        truncated = len(pages) > allowed
+        more, failed = _paged_gather(lambda p: _bili_fav_folder_page(media_id, p, size, kw)["items"], pages[:allowed])
+        items.extend(more)
+        return {
+            "items": items[:FAV_FOLDER_ALL_CAP],
+            "has_more": False,
+            "media_count": total,
+            "partial": bool(truncated or failed),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/favorites/bili/toview")
+def api_bili_toview():
+    """稍后再看"""
+    kw = _bili_request_kwargs()
+    try:
+        r = requests.get("https://api.bilibili.com/x/v2/history/toview/web", **kw)
+        j = r.json() or {}
+        if j.get("code") != 0:
+            raise HTTPException(400, j.get("message") or _bili_need_login_hint())
+        data = j.get("data") or {}
+        items = []
+        for it in (data.get("list") or []):
+            bvid = it.get("bvid") or ""
+            cover = it.get("pic") or ""
+            if cover.startswith("//"):
+                cover = "https:" + cover
+            items.append({
+                "id": bvid,
+                "title": it.get("title") or "",
+                "url": f"https://www.bilibili.com/video/{bvid}" if bvid else "",
+                "uploader": (it.get("owner") or {}).get("name") or "",
+                "thumbnail": cover,
+                "duration": it.get("duration") or 0,
+                "platform": "bilibili",
+            })
+        return {"items": items, "count": len(items), "total": int(data.get("count") or len(items)),
+                "partial": len(items) < int(data.get("count") or 0)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+def _bili_followings_page(mid, pn: int, ps: int, kw: dict) -> Tuple[List[dict], int]:
+    r = requests.get(
+        f"https://api.bilibili.com/x/relation/followings?vmid={mid}&pn={pn}&ps={ps}",
+        **kw,
+    )
+    j = r.json() or {}
+    if j.get("code") != 0:
+        raise HTTPException(400, j.get("message") or "获取关注列表失败")
+    data = j.get("data") or {}
+    items = []
+    for it in (data.get("list") or []):
+        face = it.get("face") or ""
+        if face.startswith("//"):
+            face = "https:" + face
+        m = it.get("mid")
+        items.append({
+            "id": str(m),
+            "title": it.get("uname") or str(m),
+            "url": f"https://space.bilibili.com/{m}",
+            "uploader": it.get("uname") or "",
+            "thumbnail": face,
+            "description": it.get("sign") or "",
+            "platform": "bilibili",
+            "content_type": "channel",
+        })
+    return items, int(data.get("total") or len(items))
+
+
+@app.get("/api/favorites/bili/followings")
+def api_bili_followings(pn: int = 1, ps: int = 50, fetch_all: bool = False):
+    """关注的 UP 主。B 站按页返回，fetch_all=true 时按 total 取完（上限 FOLLOWINGS_ALL_CAP）"""
+    kw = _bili_request_kwargs()
+    try:
+        nav = requests.get("https://api.bilibili.com/x/web-interface/nav", **kw)
+        mid = ((nav.json() or {}).get("data") or {}).get("mid")
+        if not mid:
+            raise HTTPException(401, _bili_need_login_hint())
+        items, total = _bili_followings_page(mid, pn, ps, kw)
+        if not fetch_all:
+            return {"items": items, "total": total}
+        pages = list(range(pn + 1, -(-total // ps) + 1))
+        allowed = max(0, (FOLLOWINGS_ALL_CAP - len(items)) // ps)
+        truncated = len(pages) > allowed
+        more, failed = _paged_gather(
+            lambda p: _bili_followings_page(mid, p, ps, kw)[0], pages[:allowed])
+        items.extend(more)
+        return {"items": items, "total": total, "partial": bool(truncated or failed)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+class FavDownloadBody(BaseModel):
+    urls: List[str]
+
+
+@app.post("/api/favorites/download")
+def api_fav_download(body: FavDownloadBody):
+    urls = [u.strip() for u in (body.urls or []) if u and u.strip().startswith("http")]
+    if not urls:
+        raise HTTPException(400, "无有效链接")
+    ids = queue.add_urls(urls, {
+        "video_quality": cfg.data.get("video_quality", "best"),
+        "audio_quality": cfg.data.get("audio_quality", "best"),
+        "format": cfg.data.get("format", "mkv"),
+        "skip_downloaded": True,
+        "allow_playlist": False,
+    })
+    return {"ok": True, "count": len(ids), "ids": ids}
+
+
+def _yt_flat_playlist(url: str, limit: int = 200) -> Tuple[List[dict], int]:
+    """用 yt-dlp 扁平拉取播放列表（需 YouTube Cookie）；返回 (条目, 播放列表总条数)"""
+    opts = engine._ydl_opts(cfg.data, for_info=True, url=url)
+    opts["extract_flat"] = "in_playlist"
+    opts["skip_download"] = True
+    opts["quiet"] = True
+    opts["no_warnings"] = True
+    opts["playlistend"] = limit
+    import yt_dlp
+    items = []
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=False) or {}
+    total = int(info.get("playlist_count") or 0)
+    for e in (info.get("entries") or [])[:limit]:
+        if not e:
+            continue
+        eid = e.get("id") or ""
+        link = e.get("url") or e.get("webpage_url") or ""
+        if eid and not str(link).startswith("http"):
+            link = f"https://www.youtube.com/watch?v={eid}"
+        thumbs = e.get("thumbnails") or []
+        thumb = e.get("thumbnail") or (thumbs[-1].get("url") if thumbs else "")
+        items.append({
+            "id": eid,
+            "title": e.get("title") or eid,
+            "url": link,
+            "uploader": e.get("uploader") or e.get("channel") or "",
+            "thumbnail": thumb,
+            "duration": e.get("duration_string") or e.get("duration") or "",
+            "platform": "youtube",
+            "content_type": "video",
+        })
+    return items, max(total, len(items))
+
+
+@app.get("/api/favorites/youtube/liked")
+def api_yt_liked(limit: int = 200):
+    """YouTube 喜欢的视频（playlist=LL，需登录 Cookie）"""
+    try:
+        items, total = _yt_flat_playlist("https://www.youtube.com/playlist?list=LL", limit=limit)
+        return {"items": items, "count": len(items), "total": total, "partial": len(items) < total}
+    except Exception as e:
+        raise HTTPException(400, f"获取失败（请配置 YouTube Cookie）: {e}")
+
+
+@app.get("/api/favorites/youtube/watchlater")
+def api_yt_watchlater(limit: int = 200):
+    """YouTube 稍后再看（playlist=WL）"""
+    try:
+        items, total = _yt_flat_playlist("https://www.youtube.com/playlist?list=WL", limit=limit)
+        return {"items": items, "count": len(items), "total": total, "partial": len(items) < total}
+    except Exception as e:
+        raise HTTPException(400, f"获取失败（请配置 YouTube Cookie）: {e}")
+
+
+@app.get("/api/favorites/youtube/playlist")
+def api_yt_playlist(url: str, limit: int = 200):
+    """加载任意 YouTube 播放列表链接"""
+    u = (url or "").strip()
+    if "list=" not in u and "youtube.com" not in u and "youtu.be" not in u:
+        raise HTTPException(400, "请提供有效的 YouTube 播放列表链接")
+    try:
+        items, total = _yt_flat_playlist(u, limit=limit)
+        return {"items": items, "count": len(items), "total": total, "url": u,
+                "partial": len(items) < total}
+    except Exception as e:
+        raise HTTPException(400, f"加载播放列表失败: {e}")
+
+
+# -------------------- B站扫码登录 --------------------
+def _make_qr_data_url(text: str) -> str:
+    """生成二维码 PNG data URL；优先 qrcode 库，失败则返回空由前端渲染"""
+    try:
+        import base64
+        import io
+        import qrcode
+        qr = qrcode.QRCode(version=None, box_size=8, border=2)
+        qr.add_data(text)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+    except Exception:
+        return ""
+
+
+@app.get("/api/bili/qr/generate")
+def api_bili_qr_generate():
+    """生成 B站登录二维码（含页内可显示的图片）"""
+    try:
+        r = requests.get(
+            "https://passport.bilibili.com/x/passport-login/web/qrcode/generate",
+            headers=dict(_BILI_HEADERS),
+            timeout=12,
+        )
+        j = r.json() or {}
+        if j.get("code") != 0:
+            raise HTTPException(400, j.get("message") or "生成二维码失败")
+        data = j.get("data") or {}
+        url = data.get("url") or ""
+        return {
+            "url": url,
+            "qrcode_key": data.get("qrcode_key") or "",
+            "qr_image": _make_qr_data_url(url) if url else "",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+class BiliQrPollBody(BaseModel):
+    qrcode_key: str
+
+
+@app.post("/api/bili/qr/poll")
+def api_bili_qr_poll(body: BiliQrPollBody):
+    """轮询扫码状态；成功则写入 bilibili cookies 文件"""
+    key = (body.qrcode_key or "").strip()
+    if not key:
+        raise HTTPException(400, "缺少 qrcode_key")
+    try:
+        r = requests.get(
+            "https://passport.bilibili.com/x/passport-login/web/qrcode/poll",
+            params={"qrcode_key": key},
+            headers=dict(_BILI_HEADERS),
+            timeout=12,
+        )
+        j = r.json() or {}
+        data = j.get("data") or {}
+        code = data.get("code")
+        # 0 成功；86101 未扫；86090 已扫未确认；86038 过期
+        if code == 0:
+            # 从响应 Set-Cookie 组装 Netscape cookies
+            cookie_jar = r.cookies
+            # poll 成功时可能需要再请求一次拿完整 cookie
+            lines = ["# Netscape HTTP Cookie File", "# Bilibili QR login"]
+            for c in cookie_jar:
+                domain = c.domain or ".bilibili.com"
+                flag = "TRUE" if domain.startswith(".") else "FALSE"
+                path = c.path or "/"
+                secure = "TRUE" if c.secure else "FALSE"
+                expires = str(int(c.expires or 0))
+                lines.append(f"{domain}\t{flag}\t{path}\t{secure}\t{expires}\t{c.name}\t{c.value}")
+            # 常见关键 cookie 也可能在 data 里没有，依赖 requests cookie
+            path = platform_cookie_path("bilibili")
+            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            pc = dict(cfg.data.get("platform_cookies") or {})
+            pc["bilibili"] = {"source": "file", "file": str(path), "browser": "chrome"}
+            cfg.data["platform_cookies"] = pc
+            cfg.save()
+            return {"ok": True, "code": 0, "message": "登录成功，Cookie 已保存", "status": "success"}
+        msg_map = {86101: "等待扫码", 86090: "已扫码，请在手机确认", 86038: "二维码已过期"}
+        return {
+            "ok": False,
+            "code": code,
+            "message": msg_map.get(code, data.get("message") or j.get("message") or str(code)),
+            "status": "pending" if code in (86101, 86090) else "expired",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+# -------------------- 网易云音乐扫码登录 --------------------
+# 走 music.163.com 网页版点「扫码登录」时自己调的那对公开接口，不碰 weapi/eapi 加密参数，
+# 也不伪造任何签名；成功拿到的登录 Cookie 只写进本机 config.json。
+_NETEASE_QR_TTL = 300   # 网易云那侧二维码约 5 分钟失效，这边同步清掉会话
+_NETEASE_QR_SESSIONS: Dict[str, tuple] = {}   # unikey -> (session, 生成时刻)
+
+
+def _netease_qr_head() -> Dict[str, str]:
+    return {
+        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"),
+        "Referer": "https://music.163.com/",
+        "Origin": "https://music.163.com",
+    }
+
+
+def _netease_qr_trim() -> None:
+    now = time.time()
+    for k in [k for k, (_s, born) in _NETEASE_QR_SESSIONS.items() if now - born > _NETEASE_QR_TTL]:
+        _NETEASE_QR_SESSIONS.pop(k, None)
+
+
+def _netease_qr_forget(key: str) -> None:
+    _NETEASE_QR_SESSIONS.pop(key, None)
+    _netease_qr_trim()
+
+
+@app.get("/api/music/netease/qr/generate")
+def api_netease_qr_generate():
+    """向网易云取一张登录二维码（这一步不带任何凭据，只是拿一个待确认的 key）"""
+    sess = requests.Session()
+    sess.headers.update(_netease_qr_head())
+    try:
+        j = (sess.post("https://music.163.com/api/login/qrcode/unikey",
+                       data={"type": "1"}, timeout=12).json() or {})
+    except Exception as e:
+        raise HTTPException(500, f"向网易云取二维码没成功：{type(e).__name__}: {str(e)[:120]}")
+    key = str(j.get("unikey") or "")
+    if j.get("code") != 200 or not key:
+        raise HTTPException(400, f"网易云没给二维码：{j.get('message') or '返回码 %s' % j.get('code')}")
+    _netease_qr_trim()
+    _NETEASE_QR_SESSIONS[key] = (sess, time.time())
+    qr_url = f"https://music.163.com/login?codekey={key}"
+    return {"url": qr_url, "qrcode_key": key, "qr_image": _make_qr_data_url(qr_url),
+            "ttl_sec": _NETEASE_QR_TTL}
+
+
+class NeteaseQrPollBody(BaseModel):
+    qrcode_key: str
+
+
+@app.post("/api/music/netease/qr/poll")
+def api_netease_qr_poll(body: NeteaseQrPollBody):
+    """问一次扫码结果；确认成功就把登录 Cookie 存进网易云那一格"""
+    key = (body.qrcode_key or "").strip()
+    if not key:
+        raise HTTPException(400, "缺少 qrcode_key")
+    entry = _NETEASE_QR_SESSIONS.get(key)
+    if not entry:
+        return {"ok": False, "status": "expired", "code": 800, "message": "二维码已过期，请重新获取"}
+    sess, born = entry
+    if time.time() - born > _NETEASE_QR_TTL:
+        # 二维码那边早就凉了，别再拿它去问网易云，直接叫用户重新生成
+        _netease_qr_forget(key)
+        return {"ok": False, "status": "expired", "code": 800, "message": "二维码已过期，请重新获取"}
+    try:
+        j = (sess.post("https://music.163.com/api/login/qrcode/client/login",
+                       data={"key": key, "type": "1"}, timeout=12).json() or {})
+    except Exception as e:
+        # 网络抖一下不该把二维码判死，留着 key 让用户再点一次
+        return {"ok": False, "status": "pending", "code": None,
+                "message": f"没问到网易云的结果（{type(e).__name__}），可再点一次「检查扫码状态」"}
+    code = j.get("code")
+    if code == 803:
+        pairs = {c.name: c.value for c in sess.cookies if c.value}
+        _netease_qr_forget(key)
+        missing = music_cookie_missing("netease", pairs)
+        if missing:
+            return {"ok": False, "status": "failed", "code": code,
+                    "message": "手机上已确认，但网易云没回登录凭证（缺 " + "、".join(missing)
+                               + "），请重新扫码或改用粘贴 Cookie"}
+        got = set_music_cookie("netease", _cookie_pairs_to_text(pairs), via="扫码登录")
+        return {"ok": True, "status": "success", "code": code, "message": "登录成功，网易云 Cookie 已保存",
+                "items": music_cookie_status(), **got}
+    _NETEASE_QR_MSG = {801: "等待扫码", 802: "已扫码，请在手机上确认", 800: "二维码已失效，请重新获取"}
+    if code == 800:
+        _netease_qr_forget(key)
+    return {"ok": False, "code": code,
+            "message": _NETEASE_QR_MSG.get(code) or j.get("message") or f"网易云返回码 {code}",
+            "status": "pending" if code in (801, 802) else "expired"}
+
+
+# -------------------- 文件在线播放 / 打包 --------------------
+@app.get("/api/files/stream")
+def api_files_stream(path: str):
+    """在线播放/预览下载目录中的媒体文件"""
+    root = Path(cfg.data.get("download_dir") or DEFAULT_DOWNLOAD_DIR).resolve()
+    target = (root / path).resolve()
+    if not str(target).startswith(str(root)) or not target.is_file():
+        raise HTTPException(404, "文件不存在")
+    media_types = {
+        ".mp4": "video/mp4", ".webm": "video/webm", ".mkv": "video/x-matroska",
+        ".mov": "video/quicktime", ".flv": "video/x-flv", ".ts": "video/mp2t",
+        ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".flac": "audio/flac",
+        ".wav": "audio/wav", ".aac": "audio/aac", ".ogg": "audio/ogg",
+        ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+        ".gif": "image/gif", ".webp": "image/webp",
+    }
+    mt = media_types.get(target.suffix.lower(), "application/octet-stream")
+    return FileResponse(target, media_type=mt, filename=target.name)
+
+
+class ZipBody(BaseModel):
+    path: str = ""
+    name: str = ""
+
+
+@app.post("/api/files/zip")
+def api_files_zip(body: ZipBody):
+    """打包下载目录中的文件夹为 zip"""
+    root = Path(cfg.data.get("download_dir") or DEFAULT_DOWNLOAD_DIR).resolve()
+    rel = (body.path or "").strip()
+    target = (root / rel).resolve() if rel else root
+    if not str(target).startswith(str(root)) or not target.exists():
+        raise HTTPException(404, "路径不存在")
+    if target.is_file():
+        # 单文件：直接返回
+        return FileResponse(target, filename=target.name)
+    zip_name = (body.name or target.name or "archive").strip() or "archive"
+    zip_name = re.sub(r"[^\w\u4e00-\u9fff\-]+", "_", zip_name)[:40]
+    out = root / f"_pack_{zip_name}_{uuid.uuid4().hex[:6]}.zip"
+    try:
+        with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            if target.is_dir():
+                for p in target.rglob("*"):
+                    if p.is_file() and not p.name.startswith("."):
+                        zf.write(p, arcname=str(p.relative_to(target)))
+            else:
+                zf.write(target, arcname=target.name)
+        return FileResponse(out, filename=f"{zip_name}.zip", media_type="application/zip")
+    except Exception as e:
+        if out.exists():
+            try:
+                out.unlink()
+            except Exception:
+                pass
+        raise HTTPException(500, str(e))
+
+
+# -------------------- 真·抖音搜索（轻量 HTML/接口尝试） --------------------
+def _load_netscape_cookies(path: str) -> dict:
+    cookies = {}
+    try:
+        p = Path(path)
+        if not p.exists():
+            return cookies
+        for line in p.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) >= 7:
+                cookies[parts[5]] = parts[6]
+    except Exception:
+        pass
+    return cookies
+
+
+def _douyin_cookies() -> dict:
+    cookies = {}
+    try:
+        pc = (cfg.data.get("platform_cookies") or {}).get("douyin") or {}
+        cf = (pc.get("file") or str(platform_cookie_path("douyin"))).strip()
+        cookies.update(_load_netscape_cookies(cf))
+        # 也尝试全局 cookies
+        g = (cfg.data.get("cookie_file") or str(DEFAULT_COOKIE_FILE)).strip()
+        if g and g != cf:
+            cookies.update(_load_netscape_cookies(g))
+    except Exception:
+        pass
+    return cookies
+
+
+def _parse_douyin_aweme_list(data: dict, limit: int) -> list:
+    results = []
+    seen = set()
+
+    def _add_aweme(aweme: dict):
+        if not isinstance(aweme, dict):
+            return
+        aweme_id = str(aweme.get("aweme_id") or aweme.get("id") or "")
+        if not aweme_id or aweme_id in seen:
+            return
+        seen.add(aweme_id)
+        desc = aweme.get("desc") or aweme.get("preview_title") or aweme_id
+        author = ""
+        try:
+            author = (aweme.get("author") or {}).get("nickname") or ""
+        except Exception:
+            author = ""
+        cover = ""
+        try:
+            for key in ("cover", "origin_cover", "dynamic_cover"):
+                node = (aweme.get("video") or {}).get(key) or {}
+                urls = node.get("url_list") or []
+                if urls:
+                    cover = urls[0]
+                    break
+            if not cover:
+                imgs = aweme.get("images") or []
+                if imgs and isinstance(imgs[0], dict):
+                    cover = (imgs[0].get("url_list") or [""])[0]
+        except Exception:
+            cover = ""
+        results.append({
+            "platform": "douyin",
+            "id": aweme_id,
+            "title": desc,
+            "url": f"https://www.douyin.com/video/{aweme_id}",
+            "uploader": author,
+            "thumbnail": cover,
+            "content_type": "video",
+            "duration": "",
+            "views": str((aweme.get("statistics") or {}).get("play_count") or ""),
+            "views_num": _to_int((aweme.get("statistics") or {}).get("play_count")),
+            "publish_date": _ts_to_date(aweme.get("create_time")),
+        })
+
+    # 多种响应结构
+    for key in ("data", "aweme_list", "business_data"):
+        arr = data.get(key)
+        if isinstance(arr, list):
+            for it in arr:
+                if not isinstance(it, dict):
+                    continue
+                _add_aweme(it.get("aweme_info") or it.get("aweme") or it)
+                if len(results) >= limit:
+                    return results
+    # 嵌套 data.list
+    try:
+        inner = (data.get("data") or {})
+        if isinstance(inner, dict):
+            for k in ("data", "aweme_list", "business_data"):
+                arr = inner.get(k)
+                if isinstance(arr, list):
+                    for it in arr:
+                        if isinstance(it, dict):
+                            _add_aweme(it.get("aweme_info") or it.get("aweme") or it)
+                        if len(results) >= limit:
+                            return results
+    except Exception:
+        pass
+    return results
+
+
+RISK_SEVERITY = (
+    risk_control.RATE_LIMITED, risk_control.BOT_CHALLENGE, risk_control.LOGIN_REQUIRED,
+    risk_control.API_REJECT, risk_control.DENIED, risk_control.NOT_FOUND,
+    risk_control.NETWORK, risk_control.EMPTY, risk_control.UNKNOWN,
+)
+
+
+def pick_risk_reason(reasons: List[dict]) -> dict:
+    """多次尝试里挑一条最能说明问题的判定（不是最后一条，也不是第一条）。"""
+    if not reasons:
+        return {}
+    for k in RISK_SEVERITY:
+        for r in reasons:
+            if r.get("kind") == k:
+                if not r.get("describe"):
+                    r["describe"] = risk_control.describe(r)
+                return r
+    return reasons[-1]
+
+
+def risk_note_for_failure(raw: str, url: str = "", task_id: str = "") -> str:
+    """把下载失败的原始报错翻成「挡在哪一步、现在该做什么」。
+
+    原话一个字不改地留在前面，这里只补一句原因和动作 —— 认不出来就回空串，不编原因。
+    """
+    if not raw:
+        return ""
+    r = risk_control.classify_failure_text(raw)
+    if r.get("kind") in ("", risk_control.UNKNOWN):
+        return ""
+    note = f"原因：{r.get('brief') or r['human']}" + (f"；{r['action']}" if r.get("action") else "")
+    # 429 在下载循环里已经打过一次降速标记，这里别再叠加 strike；补的是它没看见的那几类
+    if r.get("throttle") and "429" not in raw and url and cfg.data.get("adaptive_throttle", True):
+        try:
+            th = HOST_THROTTLE.hit(url, cooldown=float(cfg.data.get("risk_cooldown_429") or 60)) or {}
+        except Exception:
+            th = {}
+        if th:
+            note += f"（该域名 {th['host']} 已自动降速：同时只跑 1 个，冷却 {th['cooldown']:.0f}s）"
+            if task_id:
+                log_mgr.log(f"[{task_id[:8]}] 按失败原因降速：{th['host']} 第 {th['strikes']} 次命中", "warning")
+    return note
+
+
+def _douyin_search_in_cooldown(q: str, cd: Dict, has_cookie: bool) -> Dict:
+    """降速冷却还没过：复述上一次的判定，一条请求都不再发。"""
+    last = _DY_LAST_BLOCK
+    left = int(round(float(cd.get("left") or 0)))
+    base = str(last.get("describe") or last.get("human") or "上次向抖音取结果被站点挡下了")
+    why = f"{base}（该站点正在降速冷却，还剩 {left}s，本次没有再向它发请求）"
+    action = str(last.get("action") or "")
+    log_mgr.log(
+        f"抖音搜索跳过 q={q}：{cd.get('host')} 冷却还剩 {left}s"
+        f"（第 {cd.get('strikes')} 次命中），上次判定 {last.get('kind') or '未知'}",
+        "warning",
+    )
+    return {
+        "results": [],
+        "count": 0,
+        "note": f"无结果：{why}" + (f"。{action}" if action else ""),
+        "has_cookie": has_cookie,
+        "risk": {
+            "kind": last.get("kind") or "",
+            "code": last.get("code") or "",
+            "server_msg": last.get("server_msg") or "",
+            "human": why,
+            "action": action,
+            "evidence": last.get("evidence") or [],
+            "via": last.get("via") or "",
+        },
+        "throttle": dict(cd),
+        "attempts": [],
+        "skipped": True,
+    }
+
+
+DY_SEARCH_HOST_URL = "https://www.douyin.com/"
+# 冷却期内直接复述上一次的判定，不再重复向站点发请求：
+# 只打点不认账的话，用户多点几次搜索就只是把该域的降速越叠越长。
+_DY_LAST_BLOCK: Dict[str, object] = {}
+
+
+@app.get("/api/douyin/search")
+def api_douyin_search(q: str, limit: int = 12):
+    """抖音关键词搜索：多接口 + HTML 解析兜底，需 Cookie。
+
+    每次请求都过一次 risk_control 分类：「要登录」「被当成脚本访问」「限流」
+    「接口自己拒了」和「真的没结果」是五件不同的事，不能都写成「无结果」。
+    """
+    q = (q or "").strip()
+    if not q:
+        raise HTTPException(400, "请输入关键词")
+    limit = max(1, min(int(limit or 12), 30))
+    results = []
+    prx = requests_proxies(source="douyin")
+    cookies = _douyin_cookies()
+    from urllib.parse import quote as _urlquote
+
+    # 冷却还没过就复述上一次判定，一条请求都不发：这里只 peek 不 hit，
+    # 否则「多点几次搜索」会把该域降速一次比一次叠得长，而那恰恰是用户唯一还能做的动作。
+    cd = HOST_THROTTLE.peek(DY_SEARCH_HOST_URL)
+    if cd and _DY_LAST_BLOCK:
+        return _douyin_search_in_cooldown(q, cd, bool(cookies))
+
+    try:
+        step_delay = max(0.0, float(cfg.data.get("risk_delay_sec") or 0))
+    except Exception:
+        step_delay = 0.0
+    reasons: List[dict] = []
+    throttle_info: Dict = {}
+
+    def _note_attempt(tag: str, resp):
+        """把一次 HTTP 往来交给分类器，返回 (判定结果, 解析出的 JSON)。"""
+        try:
+            j, parsed = resp.json(), True
+        except Exception:
+            j, parsed = {}, False
+        if not isinstance(j, dict):
+            j = {}
+        ra = 0.0
+        try:
+            ra = float((getattr(resp, "headers", {}) or {}).get("retry-after") or 0)
+        except Exception:
+            ra = 0.0
+        d = risk_control.classify_http(
+            status=int(getattr(resp, "status_code", 0) or 0),
+            content_type=str((getattr(resp, "headers", {}) or {}).get("content-type") or ""),
+            text=str(getattr(resp, "text", "") or ""),
+            json_data=j or None,
+            json_seen=parsed,
+            cookie_names=[c.name for c in (getattr(resp, "cookies", None) or [])],
+            retry_after=ra,
+        )
+        d["via"] = tag
+        d["describe"] = risk_control.describe(d)
+        reasons.append(d)
+        if d.get("throttle") and cfg.data.get("adaptive_throttle", True) and not throttle_info:
+            throttle_info.update(HOST_THROTTLE.hit(
+                "https://www.douyin.com/",
+                cooldown=float(cfg.data.get("risk_cooldown_429") or 60),
+            ) or {})
+        return d, j
+
+    headers_list = [
+        {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            "Referer": "https://www.douyin.com/search/" + _urlquote(q),
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "zh-CN,zh;q=0.9",
+        },
+        {
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
+            "Referer": "https://www.douyin.com/",
+            "Accept": "application/json, text/plain, */*",
+        },
+    ]
+    apis = [
+        (
+            "api1",
+            "https://www.douyin.com/aweme/v1/web/general/search/single/"
+            f"?device_platform=webapp&aid=6383&channel=channel_pc_web"
+            f"&search_channel=aweme_general&keyword={_urlquote(q)}&search_source=normal_search"
+            f"&query_correct_type=1&is_filter_search=0&from_group_id=&offset=0&count={limit}"
+        ),
+        (
+            "api2",
+            "https://www.douyin.com/aweme/v1/web/search/item/"
+            f"?device_platform=webapp&aid=6383&keyword={_urlquote(q)}&count={limit}&offset=0"
+        ),
+    ]
+    first_try = True
+    for headers in headers_list:
+        if results:
+            break
+        kw = {"timeout": 18, "headers": headers}
+        if cookies:
+            kw["cookies"] = cookies
+        if prx:
+            kw["proxies"] = prx
+        for tag, api in apis:
+            if not first_try and step_delay:
+                time.sleep(step_delay)   # 遵守「风控与加速」的节奏设置，别一次把接口刷完
+            first_try = False
+            try:
+                resp = requests.get(api, **kw)
+                _d, j = _note_attempt(tag, resp)
+                got = _parse_douyin_aweme_list(j, limit)
+                if got:
+                    results.extend(got)
+                    break
+            except Exception as e:
+                reasons.append({"via": tag, "kind": risk_control.NETWORK,
+                                "human": "请求没走通", "server_msg": str(e)[:200],
+                                "throttle": False, "code": "", "action": "", "evidence": []})
+                continue
+
+    # HTML 搜索页兜底：只在「带着 Cookie」时才试 —— 实测没有 Cookie 时这一趟拿到的
+    # 是字节的 JS 校验页（Set-Cookie: __ac_nonce，正文只有 byted_acrawler 脚本），必然零结果。
+    if not results and cookies:
+        try:
+            if step_delay:
+                time.sleep(step_delay)
+            kw = {"timeout": 18, "headers": headers_list[0]}
+            if cookies:
+                kw["cookies"] = cookies
+            if prx:
+                kw["proxies"] = prx
+            page = requests.get(f"https://www.douyin.com/search/{_urlquote(q)}", **kw)
+            _note_attempt("html", page)
+            text = page.text or ""
+            # 常见嵌入：aweme_id":"7xxxxxxxxxxxxx"
+            ids = re.findall(r'"aweme_id"\s*:\s*"(\d{6,})"', text)
+            if not ids:
+                ids = re.findall(r"/video/(\d{15,})", text)
+            seen = set()
+            for aid in ids:
+                if aid in seen:
+                    continue
+                seen.add(aid)
+                results.append({
+                    "platform": "douyin",
+                    "id": aid,
+                    "title": f"{q} · {aid}",
+                    "url": f"https://www.douyin.com/video/{aid}",
+                    "uploader": "",
+                    "thumbnail": "",
+                    "content_type": "video",
+                    "duration": "",
+                    "views": "",
+                })
+                if len(results) >= limit:
+                    break
+        except Exception as e:
+            reasons.append({"via": "html", "kind": risk_control.NETWORK,
+                            "human": "请求没走通", "server_msg": str(e)[:200],
+                            "throttle": False, "code": "", "action": "", "evidence": []})
+
+    risk = pick_risk_reason(reasons)
+    note = "ok"
+    risk_kind = risk.get("kind") or ""
+    if results and risk_kind not in ("", risk_control.EMPTY, risk_control.UNKNOWN):
+        # 前面被挡过、后面某个入口通了：结论按实际结果走，但被挡的那次要留痕
+        log_mgr.log(f"抖音搜索部分入口被挡（{risk_kind}），已由其它入口取回 {len(results)} 条", "info")
+    if not results:
+        why = risk.get("describe") or "接口没有返回条目，也没给出可判定的原因"
+        note = f"无结果：{why}" + (f"。{risk.get('action')}" if risk.get("action") else "")
+        if throttle_info:
+            note += (f"（已自动降速：{throttle_info.get('host')} 同时只跑 1 个，"
+                     f"冷却 {throttle_info.get('cooldown', 0):.0f}s）")
+            # 记住这次判定：冷却期内的下一次搜索直接复述它，不再去敲站点的门
+            _DY_LAST_BLOCK.update({
+                "kind": risk.get("kind") or "",
+                "code": risk.get("code") or "",
+                "server_msg": risk.get("server_msg") or "",
+                "human": risk.get("human") or "",
+                "describe": why,
+                "action": risk.get("action") or "",
+                "evidence": risk.get("evidence") or [],
+                "via": risk.get("via") or "",
+            })
+        log_mgr.log(
+            f"抖音搜索无结果 q={q}：{why}"
+            + (f"｜依据 {','.join(risk.get('evidence') or [])}" if risk.get("evidence") else "")
+            + (f"｜已降速 {throttle_info.get('host')}" if throttle_info else "")
+            + (f"（{throttle_info.get('cooldown', 0):.0f}s）" if throttle_info else ""),
+            "warning" if risk.get("throttle") or risk.get("kind") in (
+                risk_control.BOT_CHALLENGE, risk_control.RATE_LIMITED) else "info",
+        )
+    return {
+        "results": results[:limit],
+        "count": len(results[:limit]),
+        "note": note,
+        "has_cookie": bool(cookies),
+        "risk": {
+            "kind": risk.get("kind") or "",
+            "code": risk.get("code") or "",
+            "server_msg": risk.get("server_msg") or "",
+            "human": risk.get("describe") or "",
+            "action": risk.get("action") or "",
+            "evidence": risk.get("evidence") or [],
+            "via": risk.get("via") or "",
+        },
+        "throttle": throttle_info,
+        "attempts": [{"via": r.get("via"), "kind": r.get("kind"), "code": r.get("code")}
+                     for r in reasons],
+    }
+
+
+def start_live_monitor_scheduler():
+    """后台定时检测监控房间是否开播（默认每 30 秒）"""
+    global _live_monitor_stop, _live_monitor_thread
+    if _live_monitor_thread and _live_monitor_thread.is_alive():
+        return
+
+    def loop():
+        global _live_monitor_stop
+        while not _live_monitor_stop:
+            try:
+                items = _load_live_monitors()
+                if items:
+                    # 有监控时才扫，避免空转日志
+                    api_live_monitor_scan()
+            except Exception as e:
+                try:
+                    log_mgr.log(f"直播监控定时扫描异常: {e}", "warning")
+                except Exception:
+                    pass
+            # 分段 sleep，便于快速停止
+            for _ in range(6):  # ~30s
+                if _live_monitor_stop:
+                    return
+                time.sleep(5)
+
+    _live_monitor_stop = False
+    _live_monitor_thread = threading.Thread(target=loop, daemon=True)
+    _live_monitor_thread.start()
+    log_mgr.log("直播监控定时扫描已启动（约每 30 秒）")
+
+
+def start_telegram_command_poller():
+    """后台轮询 Telegram 消息，实现远程命令"""
+    def loop():
+        while True:
+            try:
+                if tg_notifier.enabled() and cfg.data.get("telegram_commands_enabled", True):
+                    tg_notifier.poll_once(queue=queue, sub_mgr=sub_mgr)
+            except Exception as e:
+                try:
+                    log_mgr.log(f"TG 命令轮询异常: {e}", "warning")
+                except Exception:
+                    pass
+            time.sleep(3)
+
+    t = threading.Thread(target=loop, daemon=True)
+    t.start()
+    log_mgr.log("Telegram 远程命令轮询已启动")
+
+
+
+# ==================== 网页嗅探 / 资源库 / RSS / 转码 ====================
+# This module is merged into server.py
+
+_MEDIA_URL_RE = re.compile(
+    r'(?i)(https?://[^\s"\'<>\\]+?\.(?:m3u8|mpd|mp4|flv|webm|m4a|mp3|aac|ogg|ts|mkv|mov)(?:\?[^\s"\'<>\\]*)?)'
+)
+_SRC_RE = re.compile(
+    r'(?is)<(?:video|audio|source|iframe)[^>]+(?:src|data-src)=["\']([^"\']+)["\']'
+)
+_HREF_RE = re.compile(
+    r'(?is)<a[^>]+href=["\']([^"\']+\.(?:mp4|m3u8|flv|webm|mp3|m4a|mkv)(?:\?[^"\']*)?)["\']'
+)
+
+
+def _abs_url(base: str, u: str) -> str:
+    from urllib.parse import urljoin
+    if not u:
+        return ""
+    u = u.strip()
+    if u.startswith("//"):
+        return "https:" + u
+    if u.startswith("http"):
+        return u
+    return urljoin(base, u)
+
+
+def sniff_page_media(page_url: str, proxy: str = "", timeout: int = 25) -> List[dict]:
+    """本地嗅探：拉取网页 HTML + 正则提取媒体链接，并用 yt-dlp 辅助探测。"""
+    page_url = normalize_url((page_url or "").strip())
+    if not page_url.startswith("http"):
+        raise ValueError("无效链接")
+    results = []
+    seen = set()
+
+    def add(url: str, kind: str = "", source: str = "html", title: str = ""):
+        url = _abs_url(page_url, url)
+        if not url or not url.startswith("http"):
+            return
+        url = url.split("#")[0]
+        key = url.split("?")[0].lower()
+        if url in seen:
+            return
+        seen.add(url)
+        seen.add(key)
+        low = url.lower()
+        if not kind:
+            if ".m3u8" in low:
+                kind = "hls"
+            elif ".mpd" in low:
+                kind = "dash"
+            elif any(x in low for x in (".mp3", ".m4a", ".aac", ".ogg")):
+                kind = "audio"
+            elif any(x in low for x in (".mp4", ".flv", ".webm", ".mkv", ".ts", ".mov")):
+                kind = "video"
+            else:
+                kind = "media"
+        results.append({
+            "url": url,
+            "kind": kind,
+            "source": source,
+            "title": title or "",
+        })
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    }
+    proxies = http_proxies(page_url, proxy)
+    html = ""
+    try:
+        r = requests.get(
+            page_url, headers=headers, proxies=proxies, timeout=timeout, verify=False
+        )
+        r.raise_for_status()
+        r.encoding = r.apparent_encoding or r.encoding or "utf-8"
+        html = r.text or ""
+    except Exception as e:
+        log_mgr.log(f"嗅探拉取页面失败: {e}", "warning")
+
+    if html:
+        for m in _MEDIA_URL_RE.finditer(html):
+            add(m.group(1), source="regex")
+        for m in _SRC_RE.finditer(html):
+            add(m.group(1), source="tag")
+        for m in _HREF_RE.finditer(html):
+            add(m.group(1), source="href")
+        for m in re.finditer(
+            r'["\'](?:url|playUrl|play_url|videoUrl|video_url|src|stream|m3u8)["\']\s*:\s*["\'](https?://[^"\']+)["\']',
+            html,
+            re.I,
+        ):
+            add(m.group(1), source="json")
+
+    try:
+        opts = engine._ydl_opts(cfg.data, for_info=True, url=page_url)
+        opts["extract_flat"] = "in_playlist"
+        opts["skip_download"] = True
+        opts["quiet"] = True
+        opts["no_warnings"] = True
+        import yt_dlp
+
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(page_url, download=False)
+        if info:
+            title = info.get("title") or ""
+            if info.get("url") and not info.get("entries"):
+                add(info.get("url"), kind="direct", source="ytdlp", title=title)
+            for f in info.get("formats") or []:
+                u = f.get("url") or ""
+                if not u:
+                    continue
+                vcodec = f.get("vcodec") or "none"
+                acodec = f.get("acodec") or "none"
+                kind = "video" if vcodec != "none" else ("audio" if acodec != "none" else "media")
+                proto = f.get("protocol") or ""
+                if "m3u8" in proto:
+                    kind = "hls"
+                note = f.get("format_note") or f.get("format_id") or ""
+                h = f.get("height") or ""
+                t = f"{title} [{note} {h}p]".strip() if title else note
+                add(u, kind=kind, source="ytdlp-format", title=t)
+            for e in info.get("entries") or []:
+                if not e:
+                    continue
+                eu = e.get("url") or e.get("webpage_url") or ""
+                et = e.get("title") or title
+                if eu:
+                    add(eu, kind="entry", source="ytdlp-entry", title=et)
+            results.insert(
+                0,
+                {
+                    "url": info.get("webpage_url") or page_url,
+                    "kind": "page",
+                    "source": "ytdlp",
+                    "title": title or page_url,
+                    "note": "可用 yt-dlp 整页下载",
+                },
+            )
+    except Exception as e:
+        log_mgr.log(f"嗅探 yt-dlp: {e}", "info")
+
+    order = {
+        "page": 0,
+        "hls": 1,
+        "dash": 2,
+        "video": 3,
+        "audio": 4,
+        "direct": 5,
+        "entry": 6,
+        "media": 7,
+    }
+    results.sort(key=lambda x: order.get(x.get("kind"), 9))
+    return results[:80]
+
+
+
+class SniffBody(BaseModel):
+    url: str
+
+
+@app.post("/api/sniff")
+def api_sniff(body: SniffBody):
+    try:
+        items = sniff_page_media(body.url)
+    except Exception as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True, "count": len(items), "items": items}
+
+
+def _is_junk_sniff_url(url: str) -> bool:
+    """过滤埋点 / 过长假 URL，避免把 data.bilibili.com/log 当视频下。"""
+    if not url or not isinstance(url, str):
+        return True
+    if not url.startswith("http"):
+        return True
+    low = url.lower()
+    if "data.bilibili.com/log" in low or "/log/web" in low:
+        return True
+    if len(url) > 2500:
+        return True
+    if "mpd_list" in low and "data.bilibili" in low:
+        return True
+    # 明显非媒体
+    if re.search(r"\.(js|css|png|jpe?g|gif|svg|woff2?)(\?|$)", low):
+        return True
+    return False
+
+
+def _cdn_host_score(url: str) -> int:
+    """优先官方 bilivideo / upos，降低第三方 edge 域名（易 403）。"""
+    low = (url or "").lower()
+    score = 0
+    if "pbp/data" in low or "bvc.bilivideo.com/pbp" in low:
+        return -100
+    if "mountaintoys" in low or ".edge." in low:
+        score -= 50
+    if re.search(r":\d{4,5}/", low):  # 非标端口镜像
+        score -= 20
+    if "upos-sz-" in low or "upos-hz-" in low:
+        score += 30
+    if "bilivideo.com" in low and "mcdn.bilivideo" not in low:
+        score += 25
+    if "mcdn.bilivideo" in low:
+        score += 5
+    if "akamaized" in low or "cn-hljheb" in low or "cn-" in low:
+        score += 15
+    return score
+
+
+def _pick_bili_m4s_pair(urls: List[str]) -> Optional[tuple]:
+    """从嗅探列表中挑 1 条视频 m4s + 1 条音频 m4s（官方 CDN 优先）。"""
+    vids, auds = [], []
+    for u in urls:
+        low = u.lower()
+        if ".m4s" not in low and "bilivideo" not in low and "upos-" not in low:
+            continue
+        if "pbp/data" in low:
+            continue
+        if re.search(r"[-_](30280|30002|30277|30112|30216|30232)[-_.?]", low) or "30280" in low:
+            auds.append(u)
+        else:
+            vids.append(u)
+    if not vids and not auds:
+        return None
+    vids.sort(key=_cdn_host_score, reverse=True)
+    auds.sort(key=_cdn_host_score, reverse=True)
+    v = vids[0] if vids else None
+    a = auds[0] if auds else None
+    if v and a:
+        return (v, a)
+    return None
+
+
+def _load_bili_cookie_header() -> str:
+    """从平台 cookie 文件拼 Cookie 头，降低 m4s 403。"""
+    try:
+        pc = (cfg.data.get("platform_cookies") or {}).get("bilibili") or {}
+        path = (pc.get("file") or "").strip() or str(platform_cookie_path("bilibili"))
+        if not path or not Path(path).exists():
+            # 全局 cookies.txt
+            g = (cfg.data.get("cookie_file") or "").strip()
+            if g and Path(g).exists():
+                path = g
+            else:
+                return ""
+        pairs = []
+        for line in Path(path).read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) >= 7:
+                domain, name, val = parts[0], parts[5], parts[6]
+                if "bilibili" in domain or domain.startswith("."):
+                    pairs.append(f"{name}={val}")
+        # 常用关键
+        keys = ("SESSDATA", "bili_jct", "DedeUserID", "buvid3", "buvid4", "sid")
+        preferred = [p for p in pairs if any(p.startswith(k + "=") for k in keys)]
+        rest = [p for p in pairs if p not in preferred]
+        return "; ".join((preferred + rest)[:30])
+    except Exception:
+        return ""
+
+
+def _sniff_looks_hls(u: str) -> bool:
+    """嗅探到的地址是不是 HLS（含 master.txt / index-*.txt 伪装）。"""
+    low = (u or "").lower()
+    return (
+        ".m3u8" in low
+        or "/hls/" in low
+        or "/hls3/" in low
+        or ".urlset" in low
+        or bool(re.search(r"(master|index|playlist)[^/]*\.(txt|m3u)(\?|$)", low))
+    )
+
+
+def _sniff_enqueue(urls, opts: dict) -> dict:
+    """嗅探 / 外部扩展推来的直链按类型分派入队：HLS 走专用引擎，B站 m4s 走音视合并，其余走通用队列。"""
+    urls = urls or []
+    if isinstance(urls, str):
+        urls = [urls]
+    urls = [u.strip() for u in urls if isinstance(u, str) and u.strip().startswith("http")]
+    urls = [u for u in urls if not _is_junk_sniff_url(u)]
+    if not urls:
+        raise HTTPException(
+            400,
+            "无有效媒体链接（已过滤埋点/过长 URL）。请确认扩展抓到的是 bilivideo.com 的 m4s/mp4，而不是 data.bilibili.com/log",
+        )
+    opts = dict(opts or {})
+    # 嗅探到的 HLS（含 master.txt / index-*.txt 伪装）默认走专用引擎
+    if any(_sniff_looks_hls(u) for u in urls):
+        opts.setdefault("use_hls_engine", True)
+        opts.setdefault("direct_cdn", False)
+        # 同一批里若有 master，丢掉 index/playlist，避免重复任务卡在 10%
+        masters = [u for u in urls if re.search(r"master\.(txt|m3u8|m3u)(\?|$)", u, re.I)]
+        if masters:
+            urls = masters
+            log_mgr.log(f"嗅探 HLS：仅保留 master（{len(urls)} 条），忽略 index 子列表")
+
+    # B站 DASH：若同时有视频+音频 m4s，走合并任务（与「嗅探合并下载」一致）
+    pair = _pick_bili_m4s_pair(urls)
+    if pair and (opts.get("bilibili_m4s") or any(".m4s" in u.lower() for u in urls)):
+        v_url, a_url = pair
+        out_dir = opts.get("download_dir") or cfg.data.get("download_dir") or str(DEFAULT_DOWNLOAD_DIR)
+        proxy = task_proxy_override(opts)
+        tid = str(uuid.uuid4())
+        title = safe_filename_component(
+            opts.get("title") or f"bilibili_{tid[:8]}", 60
+        )
+        # 备用镜像：同列表里其余 video/audio
+        alt_v, alt_a = [], []
+        for u in urls:
+            low = u.lower()
+            if u in (v_url, a_url) or "pbp" in low:
+                continue
+            if re.search(r"[-_](30280|30002|30277)[-_.?]", low) or "30280" in low:
+                alt_a.append(u)
+            elif ".m4s" in low or "bilivideo" in low:
+                alt_v.append(u)
+        task = DownloadTask(
+            id=tid,
+            url=v_url,
+            title=title,
+            status=TaskStatus.QUEUED.value,
+            created_at=datetime.now().isoformat(timespec="seconds"),
+        )
+        task._opts = opts  # type: ignore
+        queue.tasks[tid] = task
+        log_mgr.log(
+            f"[{tid[:8]}] B站 m4s 合并 video_score={_cdn_host_score(v_url)} "
+            f"audio_score={_cdn_host_score(a_url)} alt_a={len(alt_a)}"
+        )
+        threading.Thread(
+            target=_run_sniff_merge_task,
+            kwargs={
+                "task_id": tid,
+                "video_url": v_url,
+                "audio_url": a_url,
+                "title": title,
+                "out_dir": out_dir,
+                "proxy": proxy,
+                "alt_audio_urls": alt_a,
+                "alt_video_urls": alt_v,
+            },
+            daemon=True,
+        ).start()
+        return {"ok": True, "ids": [tid], "count": 1, "mode": "bilibili_m4s_merge"}
+
+    # 单条直链：仍加入队列（yt-dlp / http）
+    # 纯 m4s 单轨无法播放，提示用户多选音视频
+    only_m4s = all(".m4s" in u.lower() for u in urls)
+    if only_m4s and len(urls) == 1:
+        log_mgr.log("警告: 仅一条 m4s（可能是纯视频或纯音频轨），播放可能无声或无画面", "warning")
+
+    ids = queue.add_urls(urls, opts)
+    return {"ok": True, "ids": ids, "count": len(ids)}
+
+
+@app.post("/api/sniff/download")
+def api_sniff_download(body: dict):
+    return _sniff_enqueue(body.get("urls") or [], dict(body.get("options") or {}))
+
+
+def _download_url_to_file(url: str, dest: Path, proxy: str = "", referer: str = "") -> None:
+    """HTTP 直链下载（嗅探 CDN / 合并轨）。优先 curl_cffi 模拟浏览器 TLS，降低 403。"""
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        ),
+        "Accept": "*/*",
+        "Accept-Encoding": "identity",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Connection": "keep-alive",
+        "Origin": "https://www.bilibili.com",
+        "Referer": referer or "https://www.bilibili.com",
+    }
+    low = (url or "").lower()
+    if "bilibili" in low or "bilivideo" in low or "upos-" in low or ".m4s" in low:
+        headers["Referer"] = referer or "https://www.bilibili.com"
+        headers["Origin"] = "https://www.bilibili.com"
+        ck = _load_bili_cookie_header()
+        if ck:
+            headers["Cookie"] = ck
+    proxies = http_proxies(url, proxy)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    if _impersonate_on():
+        try:
+            r, fp = _impersonate_get(
+                url, headers=headers, timeout=180, proxies=proxies, stream=True
+            )
+            try:
+                with open(dest, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=1024 * 256):
+                        if chunk:
+                            f.write(chunk)
+            finally:
+                try:
+                    r.close()
+                except Exception:
+                    pass
+            if dest.stat().st_size > 0:
+                log_mgr.log(f"直链下载 TLS 指纹={fp}")
+                return
+        except Exception:
+            pass  # 回退 requests
+
+    with requests.get(
+        url,
+        headers=headers,
+        proxies=proxies,
+        stream=True,
+        timeout=180,
+        verify=False,
+        allow_redirects=True,
+    ) as r:
+        r.raise_for_status()
+        with open(dest, "wb") as f:
+            for chunk in r.iter_content(chunk_size=1024 * 256):
+                if chunk:
+                    f.write(chunk)
+
+
+def _merge_video_audio_with_ffmpeg(
+    video_path: Path,
+    audio_path: Path,
+    out_path: Path,
+    log: Callable = print,
+) -> bool:
+    """用 ffmpeg 无损合并视频+音频。"""
+    ff = ffmpeg_mgr.find()
+    if not ff:
+        log("未找到 ffmpeg，无法合并", "error")
+        return False
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        ff, "-y", "-err_detect", "ignore_err",
+        "-i", str(video_path),
+        "-i", str(audio_path),
+        "-c", "copy",
+        "-map", "0:v:0",
+        "-map", "1:a:0?",
+        str(out_path),
+    ]
+    try:
+        kw: dict = {"capture_output": True, "timeout": 3600}
+        if sys.platform == "win32":
+            kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        r = subprocess.run(cmd, **kw)
+        if r.returncode != 0:
+            err = (r.stderr or b"").decode("utf-8", errors="ignore")[-500:]
+            log(f"ffmpeg 合并失败: {err}", "error")
+            return False
+        return out_path.exists() and out_path.stat().st_size > 0
+    except Exception as e:
+        log(f"ffmpeg 合并异常: {e}", "error")
+        return False
+
+
+def _run_sniff_merge_task(
+    task_id: str,
+    video_url: str,
+    audio_url: str,
+    title: str,
+    out_dir: str,
+    proxy: str = "",
+    alt_audio_urls: Optional[List[str]] = None,
+    alt_video_urls: Optional[List[str]] = None,
+):
+    """后台：下载视频轨 + 音频轨并合并。音轨 403 时尝试备用 URL。"""
+    task = queue.tasks.get(task_id)
+    if not task:
+        return
+    tmp_dir = Path(out_dir) / "_merge_tmp" / task_id[:8]
+    try:
+        task.status = TaskStatus.DOWNLOADING.value
+        task.progress = 5
+        task.title = title or "嗅探合并下载"
+        safe = safe_filename_component(title or "merged", 60)
+        video_tmp = tmp_dir / "video.m4s"
+        audio_tmp = tmp_dir / "audio.m4s"
+        out_path = Path(out_dir) / f"{safe}.mkv"
+
+        def try_download(urls: List[str], dest: Path, label: str) -> bool:
+            last = None
+            for u in urls:
+                if not u:
+                    continue
+                try:
+                    log_mgr.log(f"[{task_id[:8]}] {label}: {_cdn_host_score(u)} {u[:80]}…")
+                    _download_url_to_file(u, dest, proxy=proxy, referer="https://www.bilibili.com")
+                    if dest.exists() and dest.stat().st_size > 1024:
+                        return True
+                except Exception as e:
+                    last = e
+                    log_mgr.log(f"[{task_id[:8]}] {label} 失败: {e}", "warning")
+            if last:
+                raise last
+            return False
+
+        v_list = [video_url] + [u for u in (alt_video_urls or []) if u != video_url]
+        v_list = sorted(set(v_list), key=_cdn_host_score, reverse=True)
+        a_list = [audio_url] + [u for u in (alt_audio_urls or []) if u != audio_url]
+        a_list = sorted(set(a_list), key=_cdn_host_score, reverse=True)
+
+        log_mgr.log(f"[{task_id[:8]}] 开始下载视频轨…")
+        task.progress = 10
+        try_download(v_list, video_tmp, "视频轨")
+        task.progress = 45
+        log_mgr.log(f"[{task_id[:8]}] 视频轨完成，开始下载音频轨…")
+        audio_ok = False
+        try:
+            audio_ok = try_download(a_list, audio_tmp, "音频轨")
+        except Exception as e:
+            log_mgr.log(f"[{task_id[:8]}] 全部音频轨失败（将仅保留视频）: {e}", "warning")
+
+        task.progress = 75
+        if audio_ok:
+            log_mgr.log(f"[{task_id[:8]}] 开始 ffmpeg 合并…")
+            ok = _merge_video_audio_with_ffmpeg(video_tmp, audio_tmp, out_path, log=log_mgr.log)
+        else:
+            # 仅视频：复制为 mkv/mp4 容器尝试
+            out_path = Path(out_dir) / f"{safe}_video_only.mp4"
+            try:
+                shutil.copy2(video_tmp, out_path)
+                ok = out_path.exists()
+                log_mgr.log(f"[{task_id[:8]}] 仅视频轨已保存（无声）: {out_path.name}", "warning")
+            except Exception:
+                ok = False
+
+        if ok:
+            task.status = TaskStatus.FINISHED.value
+            task.progress = 100
+            task.filepath = str(out_path)
+            task.title = out_path.name
+            log_mgr.log(f"[{task_id[:8]}] 完成: {out_path.name}")
+            try:
+                queue.history.add({
+                    "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "url": video_url,
+                    "title": task.title,
+                    "status": "finished",
+                    "filepath": str(out_path),
+                })
+            except Exception:
+                pass
+        else:
+            task.status = TaskStatus.FAILED.value
+            task.error_msg = "合并/保存失败，请查看日志"
+    except Exception as e:
+        task.status = TaskStatus.FAILED.value
+        task.error_msg = str(e)[:200]
+        log_mgr.log(f"[{task_id[:8]}] 嗅探合并失败: {e}", "error")
+    finally:
+        try:
+            if tmp_dir.exists():
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+        except Exception:
+            pass
+        with queue.lock:
+            queue.running = max(0, queue.running - 1)
+        queue._pump()
+
+
+@app.post("/api/sniff/download_merge")
+def api_sniff_download_merge(body: dict):
+    """
+    选择一条视频轨 + 一条音频轨，下载后自动用 ffmpeg 合并为 mkv。
+    body: { video_url, audio_url, title? }
+    """
+    video_url = (body.get("video_url") or "").strip()
+    audio_url = (body.get("audio_url") or "").strip()
+    title = (body.get("title") or "").strip()
+    if not video_url.startswith("http") or not audio_url.startswith("http"):
+        raise HTTPException(400, "需要有效的 video_url 和 audio_url")
+    if not ffmpeg_mgr.find():
+        raise HTTPException(400, "未找到 ffmpeg，请先在设置中更新/安装 FFmpeg")
+
+    cfg_data = cfg.data
+    out_dir = body.get("download_dir") or cfg_data.get("download_dir") or str(DEFAULT_DOWNLOAD_DIR)
+    proxy = task_proxy_override(body)
+
+    tid = str(uuid.uuid4())
+    task = DownloadTask(
+        id=tid,
+        url=video_url,
+        title=title or "嗅探合并中…",
+        status=TaskStatus.QUEUED.value,
+    )
+    task._opts = {"merge_sniff": True}  # type: ignore
+    queue.tasks[tid] = task
+    with queue.lock:
+        queue.running += 1
+    threading.Thread(
+        target=_run_sniff_merge_task,
+        args=(tid, video_url, audio_url, title, out_dir, proxy),
+        daemon=True,
+    ).start()
+    return {"ok": True, "id": tid, "count": 1}
+
+
+# ----- 浏览器 CDP 网络嗅探（对齐下蛋：连接 Chrome 监听页面加载的媒体） -----
+_MEDIA_HINTS = (
+    ".m3u8", ".mpd", ".mp4", ".flv", ".webm", ".m4a", ".mp3", ".aac", ".ts", ".m4s",
+    "mime=video", "mime=audio", "content-type=video", "content-type=audio",
+    "/video/", "/audio/", "googlevideo.com", "bilivideo", "bytefcdn", "xhscdn",
+)
+
+
+def _looks_like_media_url(url: str, mime: str = "") -> bool:
+    low = (url or "").lower()
+    mime = (mime or "").lower()
+    if any(x in mime for x in ("video/", "audio/", "mpegurl", "dash+xml", "application/vnd.apple")):
+        return True
+    if any(h in low for h in _MEDIA_HINTS):
+        return True
+    return False
+
+
+class BrowserSniffer:
+    """通过 Chrome DevTools Protocol 监听网络请求，捕获页面真实加载的媒体。"""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.running = False
+        self.port = 9222
+        self.mode = ""  # attach | launch
+        self.page_url = ""
+        self.resources: Dict[str, dict] = {}
+        self._ws = None
+        self._thread = None
+        self._stop = threading.Event()
+        self._proc = None
+        self._msg_id = 0
+        self.status = "idle"
+        self.error = ""
+
+    def _next_id(self) -> int:
+        self._msg_id += 1
+        return self._msg_id
+
+    def _find_chrome(self) -> Optional[str]:
+        candidates = []
+        if sys.platform == "win32":
+            pf = os.environ.get("PROGRAMFILES", r"C:\Program Files")
+            pf86 = os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)")
+            local = os.environ.get("LOCALAPPDATA", "")
+            candidates = [
+                str(Path(pf) / "Google/Chrome/Application/chrome.exe"),
+                str(Path(pf86) / "Google/Chrome/Application/chrome.exe"),
+                str(Path(local) / "Google/Chrome/Application/chrome.exe"),
+                str(Path(pf) / "Microsoft/Edge/Application/msedge.exe"),
+                str(Path(pf86) / "Microsoft/Edge/Application/msedge.exe"),
+                str(Path(local) / "Microsoft/Edge/Application/msedge.exe"),
+            ]
+        elif sys.platform == "darwin":
+            candidates = [
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+                "/Applications/Chromium.app/Contents/MacOS/Chromium",
+            ]
+        else:
+            for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "microsoft-edge"):
+                p = shutil.which(name)
+                if p:
+                    candidates.append(p)
+        for c in candidates:
+            if c and Path(c).exists():
+                return c
+        return None
+
+    def _cdp_http(self, path: str = "/json/version"):
+        r = requests.get(f"http://127.0.0.1:{self.port}{path}", timeout=3)
+        r.raise_for_status()
+        return r.json()
+
+    def _get_browser_ws_url(self) -> str:
+        ver = self._cdp_http("/json/version")
+        ws = ver.get("webSocketDebuggerUrl") or ""
+        if not ws:
+            raise RuntimeError("无法获取浏览器 CDP WebSocket 地址")
+        return ws
+
+    def _add_resource(self, url: str, mime: str = "", method: str = "", status: int = 0, source: str = ""):
+        if not url or not url.startswith("http"):
+            return
+        if url.startswith("data:") or url.startswith("blob:"):
+            return
+        if not _looks_like_media_url(url, mime):
+            return
+        with self.lock:
+            if url in self.resources:
+                rec = self.resources[url]
+                if mime and not rec.get("mime"):
+                    rec["mime"] = mime
+                if status:
+                    rec["status"] = status
+                return
+            low = url.lower()
+            kind = "media"
+            if ".m3u8" in low or "mpegurl" in (mime or "").lower():
+                kind = "hls"
+            elif ".mpd" in low or "dash" in (mime or "").lower():
+                kind = "dash"
+            elif (mime or "").startswith("audio") or any(x in low for x in (".mp3", ".m4a", ".aac")):
+                kind = "audio"
+            elif (mime or "").startswith("video") or any(x in low for x in (".mp4", ".flv", ".webm", ".ts", ".m4s")):
+                kind = "video"
+            self.resources[url] = {
+                "url": url,
+                "kind": kind,
+                "mime": mime or "",
+                "method": method or "",
+                "status": status or 0,
+                "source": "browser-cdp",
+                "title": title or "",
+                "ts": datetime.now().strftime("%H:%M:%S"),
+            }
+
+    def _listen_loop(self, ws_url: str):
+        try:
+            import websocket
+        except ImportError:
+            self.error = "缺少 websocket-client，请 pip install websocket-client"
+            self.status = "error"
+            self.running = False
+            return
+
+        def on_message(ws, message):
+            try:
+                msg = json.loads(message)
+            except Exception:
+                return
+            method = msg.get("method") or ""
+            params = msg.get("params") or {}
+            if method == "Network.requestWillBeSent":
+                req = params.get("request") or {}
+                url = req.get("url") or ""
+                self._add_resource(url, method=req.get("method") or "GET")
+            elif method == "Network.responseReceived":
+                resp = params.get("response") or {}
+                url = resp.get("url") or ""
+                mime = resp.get("mimeType") or ""
+                status = int(resp.get("status") or 0)
+                self._add_resource(url, mime=mime, status=status)
+            elif method == "Target.attachedToTarget":
+                sid = params.get("sessionId")
+                if sid and self._ws:
+                    try:
+                        mid = self._next_id()
+                        self._ws.send(json.dumps({
+                            "id": mid, "method": "Network.enable",
+                            "sessionId": sid,
+                        }))
+                        mid = self._next_id()
+                        self._ws.send(json.dumps({
+                            "id": mid, "method": "Target.setAutoAttach",
+                            "params": {
+                                "autoAttach": True,
+                                "waitForDebuggerOnStart": False,
+                                "flatten": True,
+                            },
+                            "sessionId": sid,
+                        }))
+                    except Exception:
+                        pass
+
+        def on_error(ws, err):
+            err_s = str(err) if err is not None else "unknown"
+            log_mgr.log(f"CDP 嗅探错误: {err_s}", "warning")
+            self.error = err_s
+            self.status = "error"
+            # 出错后自动停止，避免反复重连刷日志
+            self._stop.set()
+            self.running = False
+            try:
+                if self._ws:
+                    self._ws.close()
+            except Exception:
+                pass
+
+        def on_close(ws, *a):
+            if self._stop.is_set():
+                if self.status != "error":
+                    self.status = "stopped"
+            else:
+                self.status = "closed"
+            self.running = False
+
+        def on_open(ws):
+            self.status = "listening"
+            self.error = ""
+            # 浏览器级：发现 target + 自动 attach + Network.enable
+            cmds = [
+                {"id": self._next_id(), "method": "Target.setDiscoverTargets", "params": {"discover": True}},
+                {
+                    "id": self._next_id(),
+                    "method": "Target.setAutoAttach",
+                    "params": {
+                        "autoAttach": True,
+                        "waitForDebuggerOnStart": False,
+                        "flatten": True,
+                    },
+                },
+                {"id": self._next_id(), "method": "Network.enable", "params": {}},
+            ]
+            for c in cmds:
+                ws.send(json.dumps(c))
+            # 已有页面也 enable network
+            try:
+                tabs = self._cdp_http("/json")
+                if isinstance(tabs, list):
+                    for t in tabs:
+                        if t.get("type") == "page" and t.get("webSocketDebuggerUrl"):
+                            # 通过 Target.attachToTarget
+                            ws.send(json.dumps({
+                                "id": self._next_id(),
+                                "method": "Target.attachToTarget",
+                                "params": {"targetId": t.get("id"), "flatten": True},
+                            }))
+            except Exception:
+                pass
+            log_mgr.log(f"浏览器 CDP 嗅探已启动 port={self.port}")
+
+        self._ws = websocket.WebSocketApp(
+            ws_url,
+            on_open=on_open,
+            on_message=on_message,
+            on_error=on_error,
+            on_close=on_close,
+        )
+        while not self._stop.is_set():
+            try:
+                self._ws.run_forever(ping_interval=20, ping_timeout=10)
+            except Exception as e:
+                self.error = str(e)
+                self.status = "error"
+                log_mgr.log(f"CDP 嗅探异常退出: {e}", "warning")
+                self._stop.set()
+                break
+            if self._stop.is_set():
+                break
+            # 非主动停止时若连接断开，短暂等待后不再无限重连
+            if self.status == "error":
+                break
+            time.sleep(1)
+            break  # 断开后不再自动重连，避免错误刷屏
+        self.running = False
+        if self.status not in ("error", "stopped"):
+            self.status = "closed"
+
+    def start_attach(self, port: int = 9222) -> dict:
+        if self.running:
+            return self.snapshot()
+        self.port = int(port or 9222)
+        self.mode = "attach"
+        self.error = ""
+        self.resources.clear()
+        self._stop.clear()
+        try:
+            ws_url = self._get_browser_ws_url()
+        except Exception as e:
+            raise RuntimeError(
+                f"无法连接本机 Chrome CDP (端口 {self.port})。\n"
+                f"请先用调试模式启动浏览器，例如：\n"
+                f'chrome.exe --remote-debugging-port={self.port}\n'
+                f"或点击「启动托管浏览器」。\n详情: {e}"
+            )
+        self.running = True
+        self.status = "connecting"
+        self._thread = threading.Thread(target=self._listen_loop, args=(ws_url,), daemon=True)
+        self._thread.start()
+        return self.snapshot()
+
+    def start_launch(self, port: int = 9222, url: str = "", use_profile: bool = False) -> dict:
+        if self.running:
+            return self.snapshot()
+        chrome = self._find_chrome()
+        if not chrome:
+            raise RuntimeError("未找到 Chrome / Edge，请安装或改用「连接已有浏览器」")
+        self.port = int(port or 9222)
+        self.mode = "launch"
+        self.page_url = url or "about:blank"
+        self.error = ""
+        self.resources.clear()
+        self._stop.clear()
+        user_data = APP_DIR / "browser_sniff_profile"
+        user_data.mkdir(parents=True, exist_ok=True)
+        args = [
+            chrome,
+            f"--remote-debugging-port={self.port}",
+            "--remote-allow-origins=*",
+            "--no-first-run",
+            "--no-default-browser-check",
+            f"--user-data-dir={user_data}" if use_profile or True else "",
+            self.page_url,
+        ]
+        args = [a for a in args if a]
+        try:
+            # 若端口已被占用，直接 attach
+            try:
+                self._cdp_http("/json/version")
+                log_mgr.log(f"端口 {self.port} 已有调试浏览器，改为连接")
+                return self.start_attach(self.port)
+            except Exception:
+                pass
+            self._proc = subprocess.Popen(
+                args,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            )
+            # 等待 CDP 就绪
+            for _ in range(30):
+                time.sleep(0.4)
+                try:
+                    self._get_browser_ws_url()
+                    break
+                except Exception:
+                    continue
+            else:
+                raise RuntimeError("浏览器已启动但 CDP 未就绪")
+        except Exception as e:
+            self.running = False
+            raise RuntimeError(f"启动浏览器失败: {e}")
+        return self.start_attach(self.port)
+
+    def stop(self) -> dict:
+        self._stop.set()
+        try:
+            if self._ws:
+                self._ws.close()
+        except Exception:
+            pass
+        self.running = False
+        self.status = "stopped"
+        # 不强制杀浏览器进程（用户可能还在用）
+        return self.snapshot()
+
+    def clear(self):
+        with self.lock:
+            self.resources.clear()
+
+    def snapshot(self) -> dict:
+        with self.lock:
+            items = list(self.resources.values())
+        order = {"hls": 0, "dash": 1, "video": 2, "audio": 3, "media": 4}
+        items.sort(key=lambda x: (order.get(x.get("kind"), 9), x.get("ts") or ""))
+        tabs = []
+        try:
+            raw = self._cdp_http("/json")
+            if isinstance(raw, list):
+                for t in raw:
+                    if t.get("type") == "page":
+                        tabs.append({
+                            "title": t.get("title") or "",
+                            "url": t.get("url") or "",
+                            "id": t.get("id") or "",
+                        })
+        except Exception:
+            pass
+        return {
+            "running": self.running,
+            "status": self.status,
+            "mode": self.mode,
+            "port": self.port,
+            "error": self.error,
+            "count": len(items),
+            "items": items,
+            "tabs": tabs,
+        }
+
+
+browser_sniffer = BrowserSniffer()
+
+
+@app.get("/api/sniff/browser/status")
+def api_sniff_browser_status():
+    return browser_sniffer.snapshot()
+
+
+@app.post("/api/sniff/browser/start")
+def api_sniff_browser_start(body: dict = None):
+    """
+    开始浏览器嗅探。
+    mode=attach 连接已开启远程调试的 Chrome
+    mode=launch 由本程序拉起 Chrome（独立资料目录）
+    """
+    body = body or {}
+    mode = (body.get("mode") or "launch").lower()
+    port = int(body.get("port") or 9222)
+    url = (body.get("url") or "").strip()
+    try:
+        if mode == "attach":
+            return {"ok": True, **browser_sniffer.start_attach(port)}
+        return {"ok": True, **browser_sniffer.start_launch(port, url=url)}
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/sniff/browser/stop")
+def api_sniff_browser_stop():
+    return {"ok": True, **browser_sniffer.stop()}
+
+
+@app.post("/api/sniff/browser/clear")
+def api_sniff_browser_clear():
+    browser_sniffer.clear()
+    return {"ok": True, **browser_sniffer.snapshot()}
+
+
+# ---------------- 猫抓（cat-catch）对接 ----------------
+# cat-catch 是 GPL-3.0 的浏览器资源嗅探扩展，它自己没有服务端接口，
+# 只在「设置 → 发送数据」里把嗅到的资源 POST 到用户填的地址。这里就是那个地址。
+# 只按它公开文档写的请求体形状对接，未引用其任何代码；官方文档写明该功能
+# 「测试中，不同版本 JSON 结构会有差异」，因此对 data 的形状一律容错。
+CATCATCH_RULES_FILE = APP_DIR / "catcatch_rules.json"
+_CATCATCH_KEY_TTL = 3600.0
+_catcatch_keys: Dict[str, dict] = {}
+_catcatch_stat: Dict[str, Any] = {"received": 0, "dropped": 0, "keys": 0, "last": ""}
+_catcatch_lock = threading.Lock()
+
+
+def _catcatch_port() -> int:
+    try:
+        return int(os.environ.get("MEDIADOWNLOADER_PORT") or 8765)
+    except Exception:
+        return 8765
+
+
+def _load_catcatch_rules() -> List[dict]:
+    if CATCATCH_RULES_FILE.exists():
+        try:
+            data = json.loads(CATCATCH_RULES_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return [r for r in data if isinstance(r, dict)]
+        except Exception:
+            pass
+    return []
+
+
+def _save_catcatch_rules(rules: List[dict]) -> None:
+    CATCATCH_RULES_FILE.write_text(
+        json.dumps(rules, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+def _catcatch_match(url: str) -> tuple:
+    """按导入的猫抓正则规则决定这条地址收不收。返回 (收不收, 规则标注的扩展名, 命中规则名)。"""
+    rules = _load_catcatch_rules()
+    if not rules:
+        return True, "", ""
+    ext, hit = "", ""
+    for r in rules:
+        pat = str(r.get("regex") or "")
+        if not pat or not r.get("enabled", True):
+            continue
+        try:
+            matched = re.search(pat, url, re.I)
+        except re.error:
+            continue  # 界面上那条会标红，这里不重复报
+        if not matched:
+            continue
+        if r.get("blacklist"):
+            return False, "", str(r.get("name") or pat)
+        if not ext:
+            ext = str(r.get("ext") or "")
+        hit = str(r.get("name") or pat)
+    return True, ext, hit
+
+
+def _hls_key_to_hex(raw) -> str:
+    """猫抓的密钥是 base64 串（有时是字节数组），而 ffmpeg / N_m3u8DL-RE 要 16 进制。"""
+    if isinstance(raw, (list, tuple)):
+        try:
+            return bytes(int(x) & 0xFF for x in raw).hex()
+        except Exception:
+            return ""
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+    if re.fullmatch(r"[0-9a-fA-F]{16,128}", s):
+        return s.lower()
+    try:
+        import base64
+        data = base64.b64decode(s + "=" * (-len(s) % 4))
+    except Exception:
+        return ""
+    return data.hex() if 0 < len(data) <= 64 else ""
+
+
+def _catcatch_items(data) -> List[dict]:
+    """猫抓请求体里的 data：对象、数组、字符串化 JSON、裸链接这几种版本形状都收下。"""
+    if isinstance(data, str):
+        s = data.strip()
+        if s[:1] in ("{", "["):
+            try:
+                return _catcatch_items(json.loads(s))
+            except Exception:
+                return []
+        return [{"url": s}] if s.startswith("http") else []
+    if isinstance(data, dict):
+        return [data]
+    if isinstance(data, list):
+        out: List[dict] = []
+        for x in data:
+            out.extend(_catcatch_items(x))
+        return out
+    return []
+
+
+@app.post("/api/catcatch/push")
+async def api_catcatch_push(request: Request):
+    """猫抓「发送数据」的接收端。无论成败都回 200 + {ok}，报错只写运行日志，不打密钥与 Cookie 内容。"""
+    try:
+        raw = (await request.body()).decode("utf-8", errors="ignore")
+    except Exception:
+        raw = ""
+    try:
+        payload = json.loads(raw) if raw.strip() else {}
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {"data": payload}
+    action = str(payload.get("action") or "").strip().lower()
+    tab_id = str(payload.get("tabId") if payload.get("tabId") is not None else "") or "-"
+
+    if action in ("addkey", "key"):
+        hexk = _hls_key_to_hex(payload.get("data"))
+        if not hexk:
+            log_mgr.log("猫抓推送：密钥格式没认出来（要 base64 或 16 进制），本条已忽略", "warning")
+            return {"ok": False, "msg": "密钥格式不识别（要 base64 或 16 进制）"}
+        with _catcatch_lock:
+            _catcatch_keys[tab_id] = {"hex": hexk, "ts": time.time()}
+            _catcatch_stat["keys"] += 1
+        log_mgr.log(
+            f"猫抓推送：收到 HLS 解密钥 {len(hexk) // 2} 字节（标签页 {tab_id}），"
+            f"1 小时内推来的 m3u8 自动带上"
+        )
+        return {"ok": True, "action": "addKey"}
+
+    items = _catcatch_items(payload.get("data", payload))
+    results, dropped = [], 0
+    for it in items:
+        url = str(it.get("url") or it.get("link") or "").strip()
+        if not url.startswith("http"):
+            continue
+        keep, ext_tag, rule_name = _catcatch_match(url)
+        if not keep:
+            dropped += 1
+            with _catcatch_lock:
+                _catcatch_stat["dropped"] += 1
+            log_mgr.log(f"猫抓推送：黑名单规则「{rule_name}」挡下 {url[:120]}", "warning")
+            continue
+        hdrs = it.get("requestHeaders") or it.get("headers") or {}
+        opts: dict = {"skip_plugins": True}  # 推来的已是真实媒体地址，不必再走插件解析
+        ref = str(hdrs.get("referer") or hdrs.get("referrer") or it.get("href") or "").strip()
+        ck = str(hdrs.get("cookie") or "").strip()
+        ua = str(hdrs.get("userAgent") or hdrs.get("user-agent") or "").strip()
+        if ref:
+            opts["referer"] = ref
+        if ck:
+            opts["cookie"] = ck
+        if ua:
+            opts["user_agent"] = ua
+        nm = str(it.get("name") or "").strip()
+        if nm:
+            opts["title"] = safe_filename_component(
+                re.sub(r"\.[A-Za-z0-9]{1,5}$", "", nm) or nm, 60
+            )
+        note = []
+        if ref:
+            note.append("带 Referer")
+        if ck:
+            note.append(f"带 Cookie（{len(ck)} 字）")
+        if ext_tag:
+            note.append(f"规则标注 .{ext_tag}")
+        if _sniff_looks_hls(url):
+            with _catcatch_lock:
+                k = _catcatch_keys.get(tab_id)
+            if k and time.time() - float(k.get("ts") or 0) < _CATCATCH_KEY_TTL:
+                opts["hls_key"] = k["hex"]
+                note.append("带上刚才收到的解密钥")
+        try:
+            r = _sniff_enqueue([url], opts)
+            results.append({"url": url[:200], "ok": True, "ids": r.get("ids") or []})
+            log_mgr.log(f"猫抓推送：入队 {url[:120]}" + (f"（{'、'.join(note)}）" if note else ""))
+        except HTTPException as e:
+            results.append({"url": url[:200], "ok": False, "msg": str(e.detail)})
+            log_mgr.log(f"猫抓推送：{url[:120]} 没能入队：{e.detail}", "error")
+        except Exception as e:
+            results.append({"url": url[:200], "ok": False, "msg": str(e)})
+            log_mgr.log(f"猫抓推送：{url[:120]} 入队异常：{e}", "error")
+    with _catcatch_lock:
+        _catcatch_stat["received"] += len(results)
+        _catcatch_stat["last"] = (
+            f"{datetime.now().strftime('%H:%M:%S')} 收到 {len(results)} 条，挡下 {dropped} 条"
+            if results or dropped
+            else _catcatch_stat.get("last", "")
+        )
+    if not results and not dropped:
+        log_mgr.log("猫抓推送：请求体里没有可用的媒体链接（请求体模板或 ${action} 可能填错了）", "warning")
+    return {
+        "ok": bool(results),
+        "received": len(results),
+        "dropped": dropped,
+        "results": results,
+    }
+
+
+@app.get("/api/catcatch/status")
+def api_catcatch_status():
+    """界面用：接收端地址、要填进猫抓的请求体模板、已导入规则与最近接收统计。"""
+    with _catcatch_lock:
+        waiting = sum(
+            1 for v in _catcatch_keys.values() if time.time() - float(v.get("ts") or 0) < _CATCATCH_KEY_TTL
+        )
+    return {
+        "ok": True,
+        "endpoint": f"http://127.0.0.1:{_catcatch_port()}/api/catcatch/push",
+        "body_template": '{"action": "${action}", "data": ${data}, "tabId": "${tabId}"}',
+        "rules": _load_catcatch_rules(),
+        "stat": dict(_catcatch_stat),
+        "keys_waiting": waiting,
+    }
+
+
+def _collect_regex_rules(node, _depth: int = 0) -> List[dict]:
+    """在猫抓导出的配置 JSON 里递归找出带 regex 字段的规则对象，不猜它的存储键名。"""
+    out: List[dict] = []
+    if _depth > 6:
+        return out
+    if isinstance(node, str):
+        s = node.strip()
+        if s[:1] in ("{", "["):
+            try:
+                out.extend(_collect_regex_rules(json.loads(s), _depth + 1))
+            except Exception:
+                pass
+        return out
+    if isinstance(node, dict):
+        rx = node.get("regex")
+        # regex 的值必须是字符串才算一条规则：猫抓的规则数组本身就可能挂在这个键名下，
+        # 只看「有没有这个键」会把整只容器当成一条规则，里面真正的规则反而一条都进不来。
+        if isinstance(rx, str) and rx.strip():
+            return [node]
+        for v in node.values():
+            out.extend(_collect_regex_rules(v, _depth + 1))
+    elif isinstance(node, list):
+        for v in node:
+            out.extend(_collect_regex_rules(v, _depth + 1))
+    return out
+
+
+@app.post("/api/catcatch/import-config")
+def api_catcatch_import_config(body: dict = None):
+    """导入猫抓「设置 → 导入/导出配置」导出的 txt（全量配置 JSON）里的正则规则。"""
+    body = body or {}
+    text = str(body.get("text") or "")
+    if not text.strip():
+        raise HTTPException(400, "内容为空：请把猫抓导出的 cat-catch-版本-日期.txt 全文粘进来，或用下面的选文件")
+    try:
+        conf = json.loads(text)
+    except Exception as e:
+        raise HTTPException(400, f"这不是合法的 JSON（{e}）：请确认选的是猫抓自己导出的配置文件")
+    found = _collect_regex_rules(conf)
+    if not found:
+        raise HTTPException(400, "这份配置里没有正则规则：先在猫抓「设置 → 正则规则」里加几条规则再导出")
+    rules = _load_catcatch_rules()
+    have = {(str(r.get("regex") or ""), bool(r.get("blacklist"))) for r in rules}
+    added, dup, bad = 0, 0, []
+    for r in found:
+        pat = str(r.get("regex") or "").strip()
+        black = bool(r.get("blackList") or r.get("blacklist"))
+        try:
+            re.compile(pat)
+        except re.error as e:
+            bad.append({"regex": pat[:80], "reason": str(e)})
+            continue
+        if (pat, black) in have:
+            dup += 1
+            continue
+        have.add((pat, black))
+        state = str(r.get("state", "1")).strip().lower()
+        rules.append({
+            "name": str(r.get("name") or "")[:60],
+            "regex": pat,
+            "ext": str(r.get("ext") or "").strip()[:16],
+            "blacklist": black,
+            "enabled": state not in ("0", "false", "off"),
+            "source": "cat-catch",
+        })
+        added += 1
+    _save_catcatch_rules(rules)
+    log_mgr.log(
+        f"导入猫抓配置：正则规则 {len(found)} 条 → 新增 {added}、重复跳过 {dup}、正则非法 {len(bad)}"
+    )
+    return {"ok": True, "found": len(found), "added": added, "duplicated": dup,
+            "invalid": bad, "total": len(rules)}
+
+
+def _catcatch_rule_update(body: dict, action: str) -> dict:
+    body = body or {}
+    try:
+        idx = int(body.get("index"))
+    except Exception:
+        raise HTTPException(400, "缺少规则编号")
+    rules = _load_catcatch_rules()
+    if not 0 <= idx < len(rules):
+        raise HTTPException(400, f"规则编号 {idx} 已失效，请刷新页面")
+    if action == "delete":
+        gone = rules.pop(idx)
+        log_mgr.log(f"删除猫抓规则「{str(gone.get('name') or gone.get('regex'))[:60]}」")
+    else:
+        rules[idx]["enabled"] = not rules[idx].get("enabled", True)
+    _save_catcatch_rules(rules)
+    return {"ok": True, "rules": rules}
+
+
+@app.post("/api/catcatch/rules/toggle")
+def api_catcatch_rules_toggle(body: dict = None):
+    return _catcatch_rule_update(body, "toggle")
+
+
+@app.post("/api/catcatch/rules/delete")
+def api_catcatch_rules_delete(body: dict = None):
+    return _catcatch_rule_update(body, "delete")
+
+
+@app.post("/api/catcatch/rules/clear")
+def api_catcatch_rules_clear():
+    n = len(_load_catcatch_rules())
+    _save_catcatch_rules([])
+    log_mgr.log(f"清空猫抓规则（原有 {n} 条）")
+    return {"ok": True, "rules": []}
+
+
+LIBRARY_CACHE = APP_DIR / "library_cache.json"
+
+
+def _ffprobe_bin() -> str:
+    """返回 ffprobe 路径；空串表示本机没有 —— 校验时这意味着「没法判」，不是「文件坏了」。"""
+    ff = ffmpeg_mgr.find()
+    probe = str(Path(ff).with_name("ffprobe.exe" if sys.platform == "win32" else "ffprobe")) if ff else ""
+    if probe and Path(probe).exists():
+        return probe
+    return shutil.which("ffprobe") or ""
+
+
+def _ffprobe_info(path: Path) -> dict:
+    probe = _ffprobe_bin()
+    if not probe:
+        return {}
+    try:
+        cmd = [
+            probe, "-v", "quiet", "-print_format", "json",
+            "-show_format", "-show_streams", str(path),
+        ]
+        r = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=30,
+            encoding="utf-8", errors="replace",
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        )
+        if r.returncode != 0:
+            return {}
+        data = json.loads(r.stdout or "{}")
+        duration = 0.0
+        width = height = 0
+        vcodec = acodec = ""
+        try:
+            duration = float((data.get("format") or {}).get("duration") or 0)
+        except Exception:
+            pass
+        for s in data.get("streams") or []:
+            disp = s.get("disposition") or {}
+            ctype = s.get("codec_type")
+            if ctype == "video" and not width and not disp.get("attached_pic"):
+                width = int(s.get("width") or 0)
+                height = int(s.get("height") or 0)
+                vcodec = s.get("codec_name") or ""
+            if ctype == "audio" and not acodec:
+                acodec = s.get("codec_name") or ""
+        return {
+            "duration": duration,
+            "width": width,
+            "height": height,
+            "vcodec": vcodec,
+            "acodec": acodec,
+            "size": path.stat().st_size,
+            "format": (data.get("format") or {}).get("format_name") or path.suffix.lstrip("."),
+        }
+    except Exception:
+        return {}
+
+
+# 常见容器魔数（当前只用来认「这确实是个媒体容器」，认不出不判失败）
+_MAGIC_CONTAINERS = (
+    (b"\x1aE\xdf\xa3", "matroska/webm"),
+    (b"RIFF", "avi/wav"),
+    (b"OggS", "ogg"),
+    (b"fLaC", "flac"),
+    (b"ID3", "mp3"),
+    (b"\xff\xfb", "mp3"),
+    (b"\xff\xf3", "mp3"),
+    (b"\xff\xf2", "mp3"),
+    (b"FORM", "aiff"),
+    (b"\x30\x26\xb2\x75", "asf/wmv"),
+    (b"\x00\x00\x01\xba", "mpeg-ps"),
+    (b"\x00\x00\x01\xb3", "mpeg"),
+)
+
+
+def _looks_like_html(head: bytes) -> bool:
+    t = head[:600].decode("latin-1", "ignore").lstrip("\ufeff\x00\r\n\t ").lower()
+    return t.startswith("<!doctype html") or t.startswith("<html") or t.startswith("<head") or "<head" in t[:300]
+
+
+def sniff_media_format(path: Path) -> str:
+    """看文件头猜容器，认不出返回空串。"""
+    try:
+        with Path(path).open("rb") as f:
+            head = f.read(400)
+    except OSError:
+        return ""
+    if head[4:8] == b"ftyp":
+        return "mp4/mov"
+    if head[:1] == b"G" and head[188:189] == b"G":
+        return "mpeg-ts"
+    for magic, name in _MAGIC_CONTAINERS:
+        if head.startswith(magic):
+            return name
+    return ""
+
+
+def verify_media_file(path) -> str:
+    """下载结束后的体检：工具正常退出 ≠ 文件能播。返回空串表示通过，否则是一句能直接给人看的原因。
+
+    宁可漏判也不误杀：没有 ffprobe、格式认不出、时长读不出，一律当通过。
+    """
+    p = Path(path)
+    if not p.is_file():
+        return "工具报告成功，但目标文件不存在"
+    size = p.stat().st_size
+    if size == 0:
+        return "文件为 0 字节"
+    if size < 1024:
+        return f"文件只有 {size} 字节，不像一次完整下载"
+    try:
+        with p.open("rb") as f:
+            head = f.read(4096)
+    except OSError as e:
+        return f"文件读不出来：{str(e)[:80]}"
+    named = risk_control.describe_downloaded_bytes(head)
+    if named:
+        return named
+    if _looks_like_html(head):
+        return "内容其实是网页而不是媒体（多半是被站点拦下或缺少登录 Cookie）"
+    probe = _ffprobe_bin()
+    if not probe:
+        return ""
+    kind = sniff_media_format(p)
+    try:
+        r = subprocess.run(
+            [probe, "-v", "error", "-show_format", "-show_streams", "-of", "json", str(p)],
+            capture_output=True, text=True, timeout=60,
+            encoding="utf-8", errors="replace",
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        )
+    except Exception:
+        return ""
+    if r.returncode != 0:
+        err = re.sub(r"\x1b\[[0-9;]*m", "", (r.stderr or "")).strip().replace("\n", " ")
+        return ("文件无法解析，很可能不完整或已损坏"
+                + (f"（文件头是 {kind}，容器没问题、数据被截断）" if kind else "")
+                + (f"：{err[:120]}" if err else ""))
+    try:
+        data = json.loads(r.stdout or "{}")
+    except Exception:
+        return ""
+    streams = data.get("streams") or []
+    if not any(s.get("codec_type") in ("video", "audio") for s in streams):
+        return "文件里没有任何音视频流"
+    try:
+        dur = float((data.get("format") or {}).get("duration") or 0)
+    except Exception:
+        dur = 0.0
+    if 0 < dur < 0.5 and size > 2_000_000:
+        return f"只有 {dur:.2f} 秒却有 {size // 1024 // 1024}MB，像是被截断的下载"
+    return ""
+
+
+def scan_library(root=None) -> List[dict]:
+    base = Path(root or cfg.data.get("download_dir") or DEFAULT_DOWNLOAD_DIR)
+    if not base.is_dir():
+        return []
+    # 音频口径取 music_search 那份（下载链真会产出 flac/opus/ogg；这里少一个就扫不到成品）
+    from music_search import MUSIC_AUDIO_EXTS, audio_file_meta
+    audio_ext = {e for e in MUSIC_AUDIO_EXTS if e != ".webm"}   # webm 在本页按视频处理
+    media_ext = {".mp4", ".mkv", ".webm", ".flv", ".ts", ".mov", ".avi"} | audio_ext
+    items = []
+    files = [p for p in base.rglob("*") if p.is_file() and p.suffix.lower() in media_ext and not p.name.startswith(".")]
+    files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+    for p in files[:500]:
+        try:
+            st = p.stat()
+        except Exception:
+            continue
+        is_audio = p.suffix.lower() in audio_ext
+        ameta = audio_file_meta(str(p), log=log_mgr.log) if is_audio else {}
+        meta = {} if (is_audio and ameta.get("duration_s")) else _ffprobe_info(p)
+        try:
+            rel = str(p.relative_to(base))
+        except Exception:
+            rel = p.name
+        row = {
+            "path": str(p),
+            "name": p.name,
+            "rel": rel,
+            "size": st.st_size,
+            "mtime": datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+            "ext": p.suffix.lower().lstrip("."),
+            "duration": meta.get("duration") or ameta.get("duration_s") or 0,
+            "width": meta.get("width") or 0,
+            "height": meta.get("height") or 0,
+            "vcodec": meta.get("vcodec") or "",
+            "acodec": meta.get("acodec") or ameta.get("codec") or "",
+            "kind": "audio" if is_audio else "video",
+        }
+        if is_audio:
+            row.update({
+                "title": ameta.get("title") or "",
+                "artists": ameta.get("artists") or "",
+                "album": ameta.get("album") or "",
+                "bit_depth": ameta.get("bit_depth") or 0,
+                "sample_rate": ameta.get("sample_rate") or 0,
+                "channels": ameta.get("channels") or 0,
+                "bitrate_kbps": ameta.get("bitrate_kbps") or 0,
+                "lossless": bool(ameta.get("lossless")),
+                "quality": ameta.get("quality") or "",
+                "has_cover": bool(ameta.get("has_cover")),
+            })
+        items.append(row)
+    try:
+        LIBRARY_CACHE.write_text(json.dumps(items, ensure_ascii=False, indent=1), encoding="utf-8")
+    except Exception:
+        pass
+    return items
+
+
+@app.get("/api/library")
+def api_library(refresh: int = 0):
+    if not refresh and LIBRARY_CACHE.exists():
+        try:
+            items = json.loads(LIBRARY_CACHE.read_text(encoding="utf-8"))
+            return {"ok": True, "items": items, "cached": True}
+        except Exception:
+            pass
+    items = scan_library()
+    return {"ok": True, "items": items, "cached": False}
+
+
+@app.post("/api/library/scan")
+def api_library_scan():
+    items = scan_library()
+    return {"ok": True, "count": len(items), "items": items}
+
+
+RSS_FILE = APP_DIR / "rss_feeds.json"
+
+
+def _load_rss() -> list:
+    if RSS_FILE.exists():
+        try:
+            return json.loads(RSS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return []
+
+
+def migrate_rss_to_subs() -> int:
+    """旧 RSS 源并进「订阅」统一管理 → 搬走的条数。
+
+    已见集合直接当追新游标用，搬家后不会把老条目当成新增再下一遍；
+    旧文件改名保留，不删数据。
+    """
+    feeds = _load_rss()
+    if not feeds:
+        return 0
+    moved = 0
+    for f in feeds:
+        url = str(f.get("url") or "")
+        if not url:
+            continue
+        try:
+            item = sub_mgr.add(url, str(f.get("title") or url), "", "rss")
+        except Exception as e:
+            log_mgr.log(f"RSS 源「{f.get('title') or url}」并入订阅失败：{e}", "warning")
+            continue
+        with sub_mgr._lock:
+            s = next((x for x in sub_mgr.subs if x.get("id") == item.get("id")), None)
+            if s is not None:
+                s["last_ids"] = list(f.get("seen_ids") or [])[:300]
+                s["last_check"] = str(f.get("last_scan") or "")
+                s["auto_download"] = bool(f.get("auto_download"))
+        sub_mgr.save()
+        moved += 1
+    try:
+        RSS_FILE.rename(RSS_FILE.with_name(RSS_FILE.name + ".migrated"))
+    except Exception as e:
+        log_mgr.log(f"RSS 旧文件改名失败（订阅已并入 {moved} 源，可手动删 {RSS_FILE.name}）：{e}", "warning")
+    if moved:
+        log_mgr.log(f"RSS 订阅搬家：{moved} 个源已并入「订阅」页统一管理，已见记录一并带过去不会重复下载")
+    return moved
+
+
+def parse_rss_feed(feed_url: str, proxy: str = "") -> dict:
+    headers = {"User-Agent": "MediaDownloaderRSS/1.0"}
+    proxies = http_proxies(feed_url, proxy)
+    r = requests.get(feed_url, headers=headers, proxies=proxies, timeout=20, verify=False)
+    r.raise_for_status()
+    text = r.text
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(text)
+
+    def local(tag):
+        return tag.split("}")[-1] if tag else ""
+
+    channel_title = feed_url
+    entries = []
+    if local(root.tag) == "rss" or root.find("channel") is not None:
+        ch = root.find("channel") if local(root.tag) == "rss" else root
+        if ch is None:
+            ch = root
+        t = ch.find("title")
+        if t is not None and t.text:
+            channel_title = t.text.strip()
+        for item in ch.findall("item"):
+            title = (item.findtext("title") or "").strip()
+            link = (item.findtext("link") or "").strip()
+            guid = (item.findtext("guid") or link or title).strip()
+            pub = (item.findtext("pubDate") or "").strip()
+            enclosure = ""
+            enc = item.find("enclosure")
+            if enc is not None:
+                enclosure = enc.get("url") or ""
+            if not enclosure:
+                for c in item:
+                    if local(c.tag) in ("content", "group"):
+                        u = c.get("url") or ""
+                        if u:
+                            enclosure = u
+                            break
+            entries.append({
+                "id": guid,
+                "title": title,
+                "link": link,
+                "published": pub,
+                "enclosure": enclosure,
+            })
+    else:
+        for c in root:
+            if local(c.tag) == "title" and c.text:
+                channel_title = c.text.strip()
+        for entry in root:
+            if local(entry.tag) != "entry":
+                continue
+            title = link = guid = pub = enclosure = ""
+            for c in entry:
+                ln = local(c.tag)
+                if ln == "title" and c.text:
+                    title = c.text.strip()
+                elif ln == "id" and c.text:
+                    guid = c.text.strip()
+                elif ln == "link":
+                    href = c.get("href") or ""
+                    rel = c.get("rel") or "alternate"
+                    typ = c.get("type") or ""
+                    if rel == "enclosure" or typ.startswith("audio") or typ.startswith("video"):
+                        enclosure = href
+                    elif not link:
+                        link = href
+                elif ln in ("updated", "published") and c.text:
+                    pub = c.text.strip()
+            entries.append({
+                "id": guid or link or title,
+                "title": title,
+                "link": link,
+                "published": pub,
+                "enclosure": enclosure,
+            })
+    return {"title": channel_title, "entries": entries}
+
+
+TRANSCODE_PRESETS = {
+    "mp4": {
+        "label": "转 MP4 (H.264 + AAC)",
+        "args": ["-c:v", "libx264", "-preset", "fast", "-crf", "23", "-c:a", "aac", "-b:a", "192k"],
+        "ext": ".mp4",
+    },
+    "mp4_1080": {
+        "label": "转 MP4 并限制 1080p",
+        "args": ["-vf", "scale=-2:1080", "-c:v", "libx264", "-preset", "fast", "-crf", "23", "-c:a", "aac", "-b:a", "192k"],
+        "ext": ".mp4",
+    },
+    "audio_mp3": {
+        "label": "抽取音频 MP3",
+        "args": ["-vn", "-c:a", "libmp3lame", "-q:a", "2"],
+        "ext": ".mp3",
+    },
+    "audio_m4a": {
+        "label": "抽取音频 M4A",
+        "args": ["-vn", "-c:a", "aac", "-b:a", "192k"],
+        "ext": ".m4a",
+    },
+    "mkv_copy": {
+        "label": "封装为 MKV (无重编码)",
+        "args": ["-c", "copy"],
+        "ext": ".mkv",
+    },
+    "flv_to_mp4": {
+        "label": "FLV/TS -> MP4 (优先 copy)",
+        "args": ["-c", "copy", "-bsf:a", "aac_adtstoasc"],
+        "ext": ".mp4",
+    },
+}
+
+
+@app.get("/api/transcode/presets")
+def api_transcode_presets():
+    return {
+        "presets": [
+            {"id": k, "label": v["label"], "ext": v["ext"]}
+            for k, v in TRANSCODE_PRESETS.items()
+        ]
+    }
+
+
+class TranscodeBody(BaseModel):
+    path: str
+    preset: str = "mp4"
+    delete_source: bool = False
+
+
+@app.post("/api/transcode")
+def api_transcode(body: TranscodeBody):
+    src = Path(body.path)
+    if not src.is_file():
+        raise HTTPException(400, "文件不存在")
+    preset = TRANSCODE_PRESETS.get(body.preset) or TRANSCODE_PRESETS["mp4"]
+    ff = ffmpeg_mgr.find()
+    if not ff:
+        raise HTTPException(400, "未找到 FFmpeg")
+    out = src.with_suffix(preset["ext"])
+    if out.resolve() == src.resolve():
+        out = src.with_name(src.stem + "_out" + preset["ext"])
+    cmd = [ff, "-y", "-i", str(src)] + list(preset["args"]) + [str(out)]
+    try:
+        r = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=3600,
+            encoding="utf-8", errors="replace",
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        )
+        if r.returncode != 0 or not out.is_file():
+            err = (r.stderr or r.stdout or "")[-500:]
+            if body.preset == "flv_to_mp4":
+                cmd2 = [
+                    ff, "-y", "-i", str(src),
+                    "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                    "-c:a", "aac", "-b:a", "192k", str(out),
+                ]
+                r2 = subprocess.run(
+                    cmd2, capture_output=True, text=True, timeout=3600,
+                    encoding="utf-8", errors="replace",
+                    creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+                )
+                if r2.returncode != 0 or not out.is_file():
+                    raise HTTPException(500, "转码失败: " + (r2.stderr or "")[-300:])
+            else:
+                raise HTTPException(500, "转码失败: " + err)
+        if body.delete_source and out.is_file() and src.resolve() != out.resolve():
+            try:
+                src.unlink()
+            except Exception:
+                pass
+        log_mgr.log("转码完成: " + out.name)
+        return {"ok": True, "path": str(out), "name": out.name}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+
+# -------------------- 插件 / aria2 / 命名队列 API --------------------
+# GET /api/plugins 在上方「文件与目录」段已注册（返回 list_url_plugins()，含 description / priority）
+
+
+@app.post("/api/plugins/test")
+def api_plugins_test(body: dict):
+    url = (body.get("url") or "").strip()
+    if not url:
+        raise HTTPException(400, "缺少 url")
+    result = try_resolve_with_plugins(
+        url, {"proxy": proxy_arg(url), "log": log_mgr.log}
+    )
+    return {"ok": True, "resolved": result}
+
+
+@app.get("/api/aria2/status")
+def api_aria2_status():
+    if not cfg.data.get("aria2_enabled"):
+        return {"ok": True, "enabled": False, "online": False}
+    try:
+        from aria2_client import Aria2Client
+        ac = Aria2Client(
+            rpc_url=cfg.data.get("aria2_rpc") or "http://127.0.0.1:6800/jsonrpc",
+            secret=cfg.data.get("aria2_secret") or "",
+        )
+        online = ac.ping()
+        return {"ok": True, "enabled": True, "online": online, "rpc": cfg.data.get("aria2_rpc")}
+    except Exception as e:
+        return {"ok": True, "enabled": True, "online": False, "error": str(e)}
+
+
+@app.get("/api/queues")
+def api_named_queues():
+    names = list(cfg.data.get("named_queues") or ["default", "night", "subscribe", "sniff"])
+    counts = {n: 0 for n in names}
+    for t in queue.tasks.values():
+        qn = t.queue_name or "default"
+        counts[qn] = counts.get(qn, 0) + 1
+    return {"ok": True, "queues": names, "counts": counts}
+
+
+@app.post("/api/queues/set")
+def api_set_task_queue(body: dict):
+    ids = body.get("ids") or []
+    name = (body.get("queue_name") or "default").strip() or "default"
+    for tid in ids:
+        t = queue.tasks.get(tid)
+        if t:
+            t.queue_name = name
+    return {"ok": True}
+
+
+# -------------------- SSE 实时推送 --------------------
+# 思路：不去改每一处进度回调，而是后台线程按固定节拍做「快照 + 签名比对」，
+# 只有界面会变形的字段变了才推一帧。丢帧无所谓：下一帧就是最新状态，前端还留着轮询兜底。
+
+SSE_TICK_SEC = 0.6
+SSE_PROG_STATUSES = ("downloading",)
+# progress/speed/eta/elapsed 秒秒在跳，若把它们算进结构签名，state 每拍都要重发整张表
+SSE_VOLATILE_KEYS = ("progress", "speed", "eta", "elapsed_sec")
+
+
+class SSEHub:
+    def __init__(self, maxsize: int = 8):
+        self._clients: List[ThreadQueue] = []
+        self._lock = threading.Lock()
+        self._maxsize = maxsize
+        self.dropped = 0
+
+    def subscribe(self) -> ThreadQueue:
+        q = ThreadQueue(maxsize=self._maxsize)
+        with self._lock:
+            self._clients.append(q)
+        return q
+
+    def unsubscribe(self, q) -> None:
+        with self._lock:
+            try:
+                self._clients.remove(q)
+            except ValueError:
+                pass
+
+    def clients(self) -> int:
+        with self._lock:
+            return len(self._clients)
+
+    def publish(self, topic: str, payload) -> None:
+        if not topic:
+            return
+        item = (topic, payload)
+        with self._lock:
+            targets = list(self._clients)
+        for q in targets:
+            try:
+                q.put_nowait(item)
+            except QueueFull:
+                self.dropped += 1  # 客户端太慢：丢这帧，下帧补上
+            except Exception:
+                pass
+
+
+SSE_HUB = SSEHub()
+
+
+def _sse_pack(topic: str, payload) -> str:
+    return f"event: {topic}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _sse_state() -> dict:
+    return {
+        "tasks": queue.list_tasks(sort_by="queue"),
+        "running": queue.running,
+        "paused": bool(queue.paused),
+        "pending": len(queue.pending),
+        "throttle": HOST_THROTTLE.snapshot(),
+    }
+
+
+def _sse_state_sig(state: dict) -> str:
+    """结构签名：任务增删、改名、换队列、变状态才算变；进度交给 prog 主题。
+    throttle 的剩余秒数每拍都在掉，所以只带不签。"""
+    slim = [{k: v for k, v in t.items() if k not in SSE_VOLATILE_KEYS} for t in state["tasks"]]
+    return json.dumps(
+        {"t": slim, "r": state["running"], "p": state["paused"], "n": state["pending"]},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
+def _sse_prog() -> dict:
+    rows = {}
+    for t in queue.tasks.values():
+        if t.status in SSE_PROG_STATUSES:
+            rows[t.id] = {
+                "progress": t.progress,
+                "speed": t.speed,
+                "eta": t.eta,
+                "elapsed_sec": _sse_elapsed(t),
+            }
+    return {"rows": rows, "running": queue.running, "pending": len(queue.pending)}
+
+
+def _sse_elapsed(t) -> int:
+    if not t.started_at:
+        return 0
+    try:
+        t0 = datetime.fromisoformat(t.started_at)
+        return max(0, int((datetime.now() - t0).total_seconds()))
+    except Exception:
+        return 0
+
+
+def _sse_logs_after(cursor: int):
+    with log_mgr._lock:
+        fresh = [e for e in log_mgr.entries if int(e.get("seq") or 0) > cursor]
+    return fresh[:200]
+
+
+def _sse_hardsub() -> list:
+    with HARDSUB_LOCK:
+        return [{k: v for k, v in j.items() if k != "proc"} for j in HARDSUB_JOBS.values()]
+
+
+def _sse_loop():
+    state_sig = prog_sig = hard_sig = ""
+    log_cursor = 0
+    while True:
+        try:
+            if SSE_HUB.clients() == 0:
+                time.sleep(1.0)
+                continue
+            st = _sse_state()
+            sig = _sse_state_sig(st)
+            if sig != state_sig:
+                state_sig = sig
+                SSE_HUB.publish("state", st)
+
+            pr = _sse_prog()
+            psig = json.dumps(pr, ensure_ascii=False, sort_keys=True)
+            if psig != prog_sig:
+                prog_sig = psig
+                SSE_HUB.publish("prog", pr)
+
+            fresh = _sse_logs_after(log_cursor)
+            if fresh:
+                log_cursor = max(int(e.get("seq") or 0) for e in fresh)
+                SSE_HUB.publish("logs", fresh)
+
+            hs = _sse_hardsub()
+            hsig = json.dumps(hs, ensure_ascii=False, sort_keys=True)
+            if hsig != hard_sig:
+                hard_sig = hsig
+                SSE_HUB.publish("hardsub", hs)
+        except Exception as e:
+            try:
+                log_mgr.log(f"SSE 广播异常: {e}", "warning")
+            except Exception:
+                pass
+        time.sleep(SSE_TICK_SEC)
+
+
+_sse_thread: Optional[threading.Thread] = None
+_sse_start_lock = threading.Lock()
+
+
+def start_sse_broadcaster():
+    global _sse_thread
+    with _sse_start_lock:
+        if _sse_thread and _sse_thread.is_alive():
+            return _sse_thread
+        _sse_thread = threading.Thread(target=_sse_loop, daemon=True, name="sse-broadcaster")
+        _sse_thread.start()
+        return _sse_thread
+
+
+@app.get("/api/events")
+async def api_events(request: Request):
+    """任务队列 / 日志 / 硬字幕进度的服务端推送。EventSource 断开后会自动重连。"""
+    start_sse_broadcaster()
+    q = SSE_HUB.subscribe()
+
+    async def gen():
+        idle = 0.0
+        try:
+            yield _sse_pack("hello", {"ok": True, "tick_sec": SSE_TICK_SEC, "ts": time.time()})
+            yield _sse_pack("state", _sse_state())
+            while True:
+                if await request.is_disconnected():
+                    break
+                sent = 0
+                while sent < 20:
+                    try:
+                        topic, payload = q.get_nowait()
+                    except QueueEmpty:
+                        break
+                    sent += 1
+                    yield _sse_pack(topic, payload)
+                if sent:
+                    idle = 0.0
+                    continue
+                await asyncio.sleep(0.2)
+                idle += 0.2
+                if idle >= 5.0:  # 反代/浏览器会掐空闲连接，靠注释行续命
+                    idle = 0.0
+                    yield ": ping\n\n"
+        finally:
+            SSE_HUB.unsubscribe(q)
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.get("/api/events/stats")
+def api_events_stats():
+    return {"ok": True, "clients": SSE_HUB.clients(), "dropped": SSE_HUB.dropped, "tick_sec": SSE_TICK_SEC}
+
+
+def main():
+    import uvicorn
+
+    # 启动时按配置放宽 SSL（解决 bytefcdn 等 Hostname mismatch）
+    if cfg.data.get("nocheckcertificate", True) is not False:
+        try:
+            import ssl as _ssl
+            _ssl._create_default_https_context = _ssl._create_unverified_context
+            log_mgr.log("已关闭全局 SSL 证书校验（nocheckcertificate）")
+        except Exception:
+            pass
+
+    start_live_monitor_scheduler()
+    start_telegram_command_poller()
+    try:
+        migrate_rss_to_subs()
+    except Exception as e:
+        log_mgr.log(f"RSS 源并入订阅失败: {e}", "warning")
+    # 启动时加载监控；若仍在直播且无进行中任务，自动开录
+    def _boot_live_monitors():
+        try:
+            time.sleep(2)  # 等服务与队列就绪
+            items = _load_live_monitors()
+            log_mgr.log(f"已加载直播监控 {len(items)} 个房间，开始检测开播…")
+            if items:
+                r = api_live_monitor_scan()
+                log_mgr.log(f"启动扫描完成，新开录制 {r.get('started', 0)} 路")
+        except Exception as e:
+            log_mgr.log(f"启动时刷新直播监控失败: {e}", "warning")
+
+    threading.Thread(target=_boot_live_monitors, daemon=True).start()
+    host = os.environ.get("MEDIADOWNLOADER_HOST") or "127.0.0.1"
+    try:
+        port = int(os.environ.get("MEDIADOWNLOADER_PORT") or 8765)
+    except ValueError:
+        port = 8765
+    log_mgr.log(f"Web 服务启动 | FFmpeg={ffmpeg_mgr.version()} | yt-dlp={engine.check_ytdlp()}")
+    print("=" * 50)
+    print("  多媒体下载器 Web 版 (Element Plus)")
+    print(f"  打开浏览器访问: http://{host}:{port}")
+    print("=" * 50)
+    uvicorn.run(app, host=host, port=port, log_level="warning")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,20 @@
+fastapi>=0.110
+python-multipart>=0.0.9
+uvicorn[standard]>=0.27
+requests>=2.31
+yt-dlp>=2024.8.0
+pydantic>=2.0
+faster-whisper>=1.0.0
+qrcode[pil]>=7.4
+websocket-client>=1.7.0
+curl_cffi>=0.6.0; platform_system != "Emscripten"
+# 音乐下载页（搜索/歌词/封面/标签/TTS/翻译）
+musicdl>=2.13
+mutagen>=1.47
+edge-tts>=6.1
+deep-translator>=1.11
+# 匹配判据是「归一后精确相等」，繁體歌名在简体曲库里必然对不上，比较前统一成简体
+zhconv>=1.4
+# Telegram 私有/受限频道（用户会话）：telethon 是 MTProto 客户端，python-socks 让它能走 SOCKS5 代理
+telethon>=1.45
+python-socks[asyncio]>=2.4

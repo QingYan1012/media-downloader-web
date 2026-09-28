@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 40" fill="none" role="img" aria-label="MediaDownloader mark">
+  <defs>
+    <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#1e1b4b"/>
+      <stop offset="50%" stop-color="#4f46e5"/>
+      <stop offset="100%" stop-color="#3b82f6"/>
+    </linearGradient>
+  </defs>
+  <path
+    d="M6 26
+       C16 26 18 14 28 14
+       C38 14 40 30 50 30
+       C60 30 62 10 74 10
+       C86 10 88 24 98 22"
+    stroke="url(#g)"
+    stroke-width="2.8"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    fill="none"
+  />
+  <circle cx="104" cy="21.5" r="2.6" fill="#3b82f6"/>
+</svg>

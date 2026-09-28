@@ -1,0 +1,24 @@
+# 本仓库只收源码、文档与离线自检脚本，因此采用「默认全忽略、再逐项放行」的白名单写法：
+# 新增的本机状态文件（配置、Cookie、历史、缓存、日志、下载物）落在根目录时会被自动挡住。
+/*
+
+!/.gitignore
+!/LICENSE
+!/README.md
+!/CHANGELOG.md
+!/Dockerfile
+!/docker-compose.yml
+!/requirements.txt
+!/*.py
+!/static/
+!/extension/
+!/plugins/
+!/tests/
+
+# 放行目录内的编译产物与系统垃圾
+__pycache__/
+*.py[cod]
+.DS_Store
+Thumbs.db
+*.egg-info/
+.venv/
