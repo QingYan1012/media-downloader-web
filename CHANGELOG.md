@@ -96,6 +96,13 @@
 > - **随包文档暂时落后于仓库**：这一轮只动 `README.md` 与 `README.en.md`，按用户决定**没有重出 v1.2.8 便携包**，所以包内那两份仍是说明十三的版本；下次真出版时文档会一并带上，出包后仍需按老规矩核包内文档 md5 与磁盘一致。
 >
 > 说明十五：2026-09-29 按用户要求把说明十四那轮文档**重进了包里** —— 版本号不变仍是 v1.2.8，`python pack_release.py --skip-runtime` 重出 `dist\MediaDownloader-1.2.8-portable.zip`，上一条末尾那句「包内文档仍是说明十三的版本」到此为止。现在包内 `README.md` / `README.en.md` / `CHANGELOG.md` / `LICENSE` 与磁盘 md5 逐字节一致（本条说明十五是出包之前写进 CHANGELOG 的，所以包里那份也带着它）。四道自检（内嵌 pip 就绪 / tkinter 在位 / 包内 pip 真装真卸 / 包内服务冒烟）与私密文件泄漏扫描逐条过；冒烟走 8791 端口，不撞本机在跑的 8765，试跑落下的 `config.json`、按天运行日志、`Downloads\`、`local_index\`、`__pycache__` 仍按老规矩在压缩前就地删净。仓库侧本轮只提交 `README.md` / `README.en.md` / `CHANGELOG.md` 三份文档，代码一行没动。
+>
+> 说明十六：2026-09-29 两份 README 补上真实界面截图，占位段作废。版式参照了一个开源项目页的写法（首屏一张居中大图 + 一句话描述式的 `alt`、徽章行、图片进仓库目录用相对路径引），内容全部换成本工具自己的界面。
+> - **截图来自一份隔离实例，不是本机那份**：把已出的 `MediaDownloader-1.2.8-portable.zip` 解到 `C:\tmp\MediaDownloader-1.2.8-portable`，用 `MEDIADOWNLOADER_PORT=8793` 起一份全新实例 —— 程序的读写目录锚在它自己所在的文件夹（`APP_DIR = Path(__file__).resolve().parent`），所以这份副本里没有下载历史、没有 Cookie、没有订阅源，保存目录是包内默认值。取图用 Playwright 无头 Chromium，1920×1080 视口，按当前页可见的 `.content .card` 包围盒裁掉多余空白；深色那两张由点顶栏的月亮按钮得到。
+> - **入库 6 张，共 0.81 MB**（`docs/screenshots/`）：`home-light.png`、`home-dark.png`、`music-search.png`、`aggregate-search.png`、`telegram-channel.png`、`subscriptions.png`。**设置页与嗅探页被排除**：那两页必然带出本机代理端口与已登录站点名，不属于能公开的画面。每张发布前都用人眼读过一遍。
+> - **README 侧改动**：删掉「截图位（暂未上传）」/「Screenshot slot (deliberately empty)」两处占位，换成先声明「下面每一张都取自新解压、没用过的实例」，再接 2×2 图组（音乐搜索 / 聚合搜索 / Telegram 频道批量 / 订阅追踪）+ 深色模式一张；首屏徽章行下方加 `home-light.png` 作 hero。中英两份结构与图片一致，`alt` 各写成一句完整描述。
+> - **顺带修掉的文档缺陷**：英文版新加的两处内链写成 `#page-overview`、`#ui-themes`，而实际标题是 `The 16 pages` 与 `Themes`，已改为 `#the-16-pages`、`#themes`；校验脚本复查两份 `## ` 标题生成的锚点，站内锚点零死链，`<img>` 各 6 个、指向的文件全部存在、`alt` 无空或过短。
+> - **出包接线**：`.gitignore` 是默认拒绝式白名单，加了 `!/docs/` 才让截图进得了仓库；`pack_release.py` 的 `APP_DIRS` 加 `docs/screenshots`（现 4 项），`.png` 不在排除正则里，所以**下一次出包会把图一起带进包**（包内 README 的相对链接才指得到）。已发布的那只 v1.2.8 包内 README 仍是说明十五那版、带的是占位文字而不是图片链接，所以包内没有断图；本轮按老规矩**没有重出包**，是否现在就重出 v1.2.8 并重换 Release 资产等用户定。
 
 ### 功能
 

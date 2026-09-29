@@ -13,6 +13,10 @@
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Docker-blueviolet)](#30-秒上手)
 [![Data](https://img.shields.io/badge/Data-100%25%20local-lightgrey)](#隐私)
 
+<p>
+  <img src="docs/screenshots/home-light.png" alt="下载解析页：上方粘贴媒体链接并解析成可选码率，左下是输出偏好与附加内容开关，右侧是快捷预设与精细控制" width="100%" />
+</p>
+
 中文 · [English](README.en.md)
 
 </div>
@@ -171,9 +175,19 @@ docker compose --profile aria2 up -d   # 可选：带 aria2
 
 ## 界面截图
 
-> **截图位（暂未上传）**。本节将放下载解析页、队列页、音乐搜索页、订阅页与设置页的界面图。
->
-> 之所以现在是空的：界面里必然带得出本机文件名、下载目录与已登录站点名，属于本机数据，不能顺手贴进公开仓库。脱敏后的截图会补进 `docs/screenshots/` 目录，届时这一节才放图片链接。想看真实界面，直接跑起来看（见[30 秒上手](#30-秒上手)），或用包内 `使用说明.txt` 与下方各节的界面入口名称对照。
+下面每一张都取自一份**新解压、没有用过的实例**：没有下载记录、没有 Cookie、没有订阅源，保存目录是包内默认值。界面文字为中文，各页职责见[页面总览](#页面总览)。
+
+| 音乐搜索：24 个平台按曲名并行取歌，可选匹配源与音质要求 | 聚合搜索：YouTube / B 站 / 抖音按关键词与内容类型检索 |
+| --- | --- |
+| <img src="docs/screenshots/music-search.png" alt="音乐搜索页：上方是搜索框与源勾选，下方是结果与自建收藏清单" width="100%" /> | <img src="docs/screenshots/aggregate-search.png" alt="聚合搜索页：关键词输入框下方是平台、内容类型与排序三行筛选" width="100%" /> |
+| Telegram 频道批量：匿名读取公开频道历史，或改用已登录账号会话 | 订阅追踪：频道 / 播放列表 / RSS / 音乐歌单一处管理，新条目自动下 |
+| <img src="docs/screenshots/telegram-channel.png" alt="Telegram 频道批量页：可填频道名、类型、条数上限与日期范围后列出历史" width="100%" /> | <img src="docs/screenshots/subscriptions.png" alt="订阅追踪页：上方粘贴订阅地址，右侧是追新与扫描开关，下方是订阅源列表" width="100%" /> |
+
+暗色模式与浅色模式功能完全一致，顶栏的月亮 / 太阳按钮随时切换，另有五套主题色可选（见[界面主题](#界面主题)）。
+
+<p align="center">
+  <img src="docs/screenshots/home-dark.png" alt="下载解析页的暗色模式，版面与浅色模式一致，仅表面色与文字色反转" width="100%" />
+</p>
 
 ## 下载与队列
 

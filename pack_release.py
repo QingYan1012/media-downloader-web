@@ -63,7 +63,7 @@ APP_PY = [
     "voice_tools.py",
 ]
 APP_FILES = ["requirements.txt", "README.md", "README.en.md", "CHANGELOG.md", "LICENSE", "Dockerfile", "docker-compose.yml"]
-APP_DIRS = ["static", "plugins", "extension"]
+APP_DIRS = ["static", "plugins", "extension", "docs/screenshots"]
 TOOLS_FILES = ["ffmpeg.exe", "ffprobe.exe", "N_m3u8DL-RE.exe", "yt-dlp.exe"]
 
 EXCLUDE_DIR_NAMES = {

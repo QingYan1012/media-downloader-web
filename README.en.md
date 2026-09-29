@@ -13,6 +13,10 @@ Settings, cookies, history and downloaded files all stay in the folder the progr
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Docker-blueviolet)](#get-started-in-30-seconds)
 [![Storage](https://img.shields.io/badge/Data-100%25%20local-lightgrey)](#privacy)
 
+<p>
+  <img src="docs/screenshots/home-light.png" alt="Download & parse page: paste media links and resolve them into selectable formats, with output preferences and add-on switches on the left, presets and fine control on the right" width="100%" />
+</p>
+
 [中文（主文档）](README.md) · English
 
 </div>
@@ -175,9 +179,19 @@ Aggregate search can sort by relevance, view count or publish date. Changing the
 
 ## Screenshots
 
-> **Screenshot slot (deliberately empty).** This section will hold images of the parse page, queue, music search, subscriptions and settings.
->
-> It is empty for a reason: any real screenshot exposes local filenames, the download directory path and which sites you are logged into — that is your data, and it does not belong in a public repository. Redacted screenshots will be added under `docs/screenshots/` and only then will image links appear here. To see the actual UI, run the app (see [Get started in 30 seconds](#get-started-in-30-seconds)) and compare against the page names above.
+Every image below comes from a **freshly unpacked, never-used instance**: no download history, no cookies, no subscriptions, and the save directory is the package default. The interface itself is Chinese-only; the page names are glossed in [The 16 pages](#the-16-pages).
+
+| Music search: 24 platforms queried in parallel by song title, with match source and audio-quality gates | Aggregate search: keyword search across YouTube / Bilibili / Douyin with content-type filters |
+| --- | --- |
+| <img src="docs/screenshots/music-search.png" alt="Music search page: search box and source checkboxes on top, results and the user-built favourites list below" width="100%" /> | <img src="docs/screenshots/aggregate-search.png" alt="Aggregate search page: keyword box followed by three rows of platform, content type and sort filters" width="100%" /> |
+| Telegram channel batch: list public channel history anonymously, or use a logged-in account session | Subscriptions: channels / playlists / RSS / music playlists in one table, new items download automatically |
+| <img src="docs/screenshots/telegram-channel.png" alt="Telegram channel batch page: channel name, media type, item limit and date range before listing history" width="100%" /> | <img src="docs/screenshots/subscriptions.png" alt="Subscriptions page: paste addresses on the left, scan controls on the right, subscription table below" width="100%" /> |
+
+Dark mode is the same application with inverted surface colours — the moon / sun button in the header switches at any time, and five accent colours are available (see [Themes](#themes)).
+
+<p align="center">
+  <img src="docs/screenshots/home-dark.png" alt="The download & parse page in dark mode, identical layout to the light theme" width="100%" />
+</p>
 
 ## Download & queue
 

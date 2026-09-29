@@ -15,6 +15,7 @@
 !/extension/
 !/plugins/
 !/tests/
+!/docs/
 
 # 放行目录内的编译产物与系统垃圾
 __pycache__/
