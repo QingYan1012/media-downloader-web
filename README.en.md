@@ -4,15 +4,14 @@
 
 **Link parsing & download · page sniffing · cross-platform music · subtitles & AI · voice tools · subscription tracking**
 
-A media downloader and processor that runs entirely on your own machine: a single-file FastAPI backend plus a single-file Vue 3 / Element Plus front end. Everything is operated from the browser and every byte of data stays local.
+A media downloader and processor that runs entirely on your own machine: paste a link and it downloads, and the browser handles queues, m3u8 captured from pages, music lookup by song title, subtitles, transcription and subscription tracking.
+Settings, cookies, history and downloaded files all stay in the folder the program runs from — nothing is uploaded anywhere.
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue)](LICENSE)
 [![Version](https://img.shields.io/badge/Version-v1.2.8-informational)](CHANGELOG.md)
 [![Python](https://img.shields.io/badge/Python-3.12-green)](requirements.txt)
-[![Backend](https://img.shields.io/badge/Backend-FastAPI-teal)](server.py)
-[![Frontend](https://img.shields.io/badge/Frontend-Vue%203%20%2B%20Element%20Plus-42b883)](static/index.html)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Docker-blueviolet)](#get-started-in-30-seconds)
 [![Storage](https://img.shields.io/badge/Data-100%25%20local-lightgrey)](#privacy)
-[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Docker-blueviolet)](#getting-the-portable-package)
 
 [中文（主文档）](README.md) · English
 
@@ -20,46 +19,56 @@ A media downloader and processor that runs entirely on your own machine: a singl
 
 > **Note on UI language.** The interface itself is Chinese-only (labels are given below with English glosses). This file documents behaviour; it does not translate the app.
 
+This tool does **not** bypass login walls, paywalls, DRM or human-verification challenges. It never executes a site's JS challenge and never forges its anti-bot signature. Full boundaries: [Out of scope by design](#out-of-scope-by-design).
+
 ## Contents
 
-- [Getting the portable package](#getting-the-portable-package)
-- [Running from source](#running-from-source)
-- [Feature overview](#feature-overview)
-- [The 16 pages](#the-16-pages)
-- [Screenshots](#screenshots)
-- [Offline self-tests](#offline-self-tests)
-- [Download & queue](#download--queue)
-- [Cookies & site logins](#cookies--site-logins)
-- [Network & proxies](#network--proxies)
-- [Subtitles & AI processing](#subtitles--ai-processing)
-- [Voice tools](#voice-tools)
-- [Music](#music)
-- [Telegram](#telegram)
-- [Subscriptions](#subscriptions)
-- [Notifications](#notifications)
-- [Components & dependencies: updated from inside the app](#components--dependencies-updated-from-inside-the-app)
-- [Browser extension](#browser-extension)
-- [Resolver plugins & aria2](#resolver-plugins--aria2)
-- [Themes](#themes)
-- [Repository layout](#repository-layout)
-- [Common API endpoints](#common-api-endpoints)
-- [Privacy](#privacy)
-- [Known limitations](#known-limitations)
-- [FAQ](#faq)
-- [Contributing](#contributing)
-- [Out of scope by design](#out-of-scope-by-design)
-- [Acknowledgements](#acknowledgements)
-- [License](#license)
-- [Disclaimer](#disclaimer)
+- **Start**: [Get started in 30 seconds](#get-started-in-30-seconds) · [What is in the portable package](#what-is-in-the-portable-package) · [Screenshots](#screenshots)
+- **Capabilities**: [Features](#features) · [The 16 pages](#the-16-pages) · [Download & queue](#download--queue) · [Cookies & site logins](#cookies--site-logins) · [Network & proxies](#network--proxies) · [Music](#music) · [Telegram](#telegram) · [Subscriptions](#subscriptions) · [Subtitles & AI processing](#subtitles--ai-processing) · [Voice tools](#voice-tools) · [Browser extension](#browser-extension) · [Components & dependencies](#components--dependencies-updated-from-inside-the-app) · [Resolver plugins & aria2](#resolver-plugins--aria2) · [Notifications](#notifications) · [Themes](#themes)
+- **Development**: [Offline self-tests](#offline-self-tests) · [Repository layout](#repository-layout) · [Common API endpoints](#common-api-endpoints) · [Contributing](#contributing)
+- **Boundaries & licence**: [Privacy](#privacy) · [Known limitations](#known-limitations) · [FAQ](#faq) · [Out of scope by design](#out-of-scope-by-design) · [Acknowledgements](#acknowledgements) · [License](#license) · [Disclaimer](#disclaimer)
 
-## Getting the portable package
+## Get started in 30 seconds
+
+**Windows, no install (recommended)**
+
+1. Download `MediaDownloader-1.2.8-portable.zip` (~218 MB) from [Releases](https://github.com/QingYan1012/media-downloader-web/releases/latest).
+2. Unpack it to a path with no non-ASCII characters and no spaces, and not under `C:\Program Files`.
+3. Double-click `启动.bat`; `http://127.0.0.1:8765` opens by itself after about 3 seconds.
+
+The archive bundles the Python runtime and pip, FFmpeg / ffprobe, yt-dlp, N_m3u8DL-RE and fpcalc, and generates a clean default configuration on first start.
+
+**From source**
+
+```bash
+pip install -r requirements.txt
+python server.py
+```
+
+The app then serves `http://127.0.0.1:8765`. Changes to `.py` files need a process restart; changes to `static/index.html` only need a page reload.
+
+**Docker (NAS / home server)**
+
+```bash
+docker compose up -d --build
+docker compose --profile aria2 up -d   # optional: with aria2
+```
+
+Port already busy, a component missing, or you want member-tier audio? Each has a one-line answer in the [FAQ](#faq).
+
+## What is in the portable package
+
+The only real trade-off of the no-install route: the voice stack (faster-whisper plus models, Demucs, librosa) is gigabytes, so it is not bundled — every red-dot item installs on demand from **Settings → Components & dependencies**, no re-download needed.
+
+<details>
+<summary>Details: the three install routes, what is bundled and what is not, the privacy exclusion leak-scan, port override and unpack location</summary>
 
 Three ways to get running; pick one.
 
 | Route | Who it is for | How | After that |
 | --- | --- | --- | --- |
 | **Portable package (no install, recommended)** | Windows users who do not want Python | `MediaDownloader-1.2.8-portable.zip` (~218 MB) in this repository's [Releases](https://github.com/QingYan1012/media-downloader-web/releases/latest) | Unpack, double-click `启动.bat` (the launcher); `http://127.0.0.1:8765` opens in ~3 s. Bundles its own Python runtime **with pip**, plus FFmpeg / yt-dlp / N_m3u8DL-RE |
-| **Run from source** | You already have Python 3.12 | `git clone`, then [Running from source](#running-from-source) | Put ffmpeg / ffprobe / yt-dlp / N_m3u8DL-RE into `tools/`, or install them from Settings |
+| **Run from source** | You already have Python 3.12 | `git clone`, then [Get started in 30 seconds](#get-started-in-30-seconds) | Put ffmpeg / ffprobe / yt-dlp / N_m3u8DL-RE into `tools/`, or install them from Settings |
 | **Docker** | NAS / home server | `docker compose up -d --build` (optionally `--profile aria2`) | See [Dockerfile](Dockerfile) and [docker-compose.yml](docker-compose.yml) |
 
 What the portable archive does and does not contain:
@@ -79,16 +88,48 @@ What the portable archive does and does not contain:
 - Port busy? Create a `改端口启动.bat` containing two lines — `set MEDIADOWNLOADER_PORT=8899` and `启动.bat` — and double-click it.
 - The Git repository holds source, docs and offline self-tests only. No binaries, no downloads: `.gitignore` uses a default-deny allowlist, so new top-level files are ignored until explicitly unignored.
 
-## Running from source
+</details>
 
-```bash
-pip install -r requirements.txt
-python server.py
-```
+## Features
 
-The app then serves `http://127.0.0.1:8765`. Changes to `.py` files need a process restart; changes to `static/index.html` only need a page reload.
+**Downloading and streaming**
 
-## Feature overview
+- Paste one link or a batch; it resolves to selectable formats and enqueues, with normalization and de-duplication. Queue-only mode is available.
+- Queues support multi-select, pause/resume, pin to top, move to front and "later"; named queues get their own limits, plus a per-host concurrency cap, adaptive 429 throttling and a global speed cap.
+- HLS / DASH segments go to the dedicated N_m3u8DL-RE engine (falling back to ffmpeg / yt-dlp); segmented streams can be range-trimmed.
+- MKV by default: a single-file mp4 stream is losslessly remuxed, never re-encoded; post-download integrity verification kills "fake success".
+- Optional embedded cover art, metadata, chapters and per-language subtitles, plus a sidecar `.vtt`; Bilibili videos also save danmaku as `.xml` and embeddable `.ass`.
+
+**Sniffing**
+
+- The bundled browser extension watches m3u8 / mp4 / ts / m4s requests and pushes the selected ones into the local queue.
+- It also receives POST pushes from the third-party cat-catch sniffer and can import the regex rules from its settings export.
+
+**Music**
+
+- Multi-source search (each source has a time budget, and an empty result says why), lyrics / cover / tag writing by title, whole-playlist download, source switching, self-built favourites list.
+- "Is this the same song?" is one scoring gate: title, artist and duration are scored separately and must clear an acceptance threshold; rejected candidates are logged with the reason.
+- Local library index plus a persistent bottom playback bar; quality requirements reorder results, can refuse to fetch below spec, and finished files are re-verified from their own tags.
+- The "lossless reference" adds Qobuz / Tidal **metadata only** (ISRC, duration, bit depth / sample rate, lossless flag) — not a byte of audio.
+
+**Subtitles, AI and voice**
+
+- Per-language subtitle selection, glossary-checked translations, smart line wrapping, bilingual export as SRT / VTT / ASS, hardsub burning.
+- Four-stage AI pipeline: subtitles → polish → summary → translation, each stage written to disk and re-runnable on its own.
+- Local transcription with speaker diarization (click a timestamp to jump), Edge-TTS dubbing, Demucs vocal / instrumental separation, audio analysis (BPM, key, loudness, spectral centroid), AcoustID fingerprint lookup.
+
+**Automation and operations**
+
+- Telegram: anonymous `t.me/s/` history listing, batch downloads through your own account session, and subscription tracking.
+- Four subscription source types (RSS, web-page changes, Telegram channels, music playlists) scanned on a schedule, each with per-subscription rules.
+- Three notification channels — Telegram Bot, WeCom, ServerChan — each with separate finished / failed / subscription switches.
+- Components and dependencies update from inside the app (including a one-click batch update), mirror probing, and an operation log that records every UI action and rotates daily.
+- 5 accent themes × light / dark; every bit of data stays local.
+
+Which engine backs each capability area is in the table below and in the sections that follow.
+
+<details>
+<summary>Capability table: what each area does and what implements it</summary>
 
 | Area | What it does | Backed by |
 | --- | --- | --- |
@@ -109,6 +150,8 @@ The app then serves `http://127.0.0.1:8765`. Changes to `.py` files need a proce
 | Notifications | Telegram Bot, WeCom, ServerChan — separate switches for finished / failed / subscription events | outbound push (keys local only) |
 | Operations | Full operation log including every UI action (daily files, auto-deleted after 7 days, path shown in the UI with a one-click "open folder"), in-app component updates, mirror probing, 5 themes × light/dark | `pkg_update.py` |
 
+</details>
+
 ## The 16 pages
 
 The sidebar has 16 pages in 5 groups:
@@ -121,21 +164,27 @@ The sidebar has 16 pages in 5 groups:
 | Automation | 订阅追踪 (subscriptions) | Scheduled scanning and enqueueing for RSS, web changes, Telegram channels, music playlists |
 | System | 运行日志 (log) / 设置 (settings) | Complete operation log (UI actions included; daily rotation, auto-delete past 7 days, file location shown and openable from the page), cookies, network, notifications, components |
 
+<details>
+<summary>List behaviour: pagination rules, what header sorting covers, aggregate-search ordering and result caps</summary>
+
 Lists longer than one screen (queue / files / history / aggregate search / music / Telegram / favourites / subscriptions / resources / web sniffing / live) paginate at 50 rows with previous, next and jump-to-page; the pager is hidden when there are fewer than 50 rows. Header sorting applies to the whole result set, not just the current page. Favourites / following fetch all upstream pages (Bilibili collections 500, following lists 2000, YouTube playlists up to 200); when a real cap is hit the table says so above it.
 
 Aggregate search can sort by relevance, view count or publish date. Changing the sort re-fetches with the platform's own sort parameter (Bilibili `order`, YouTube `sp`) rather than re-ordering whatever the front end already holds. One platform, one content type returns 100 items per request; the aggregate result caps at 300, and the results area states how many the upstream returned when it was cut.
+
+</details>
 
 ## Screenshots
 
 > **Screenshot slot (deliberately empty).** This section will hold images of the parse page, queue, music search, subscriptions and settings.
 >
-> It is empty for a reason: any real screenshot exposes local filenames, the download directory path and which sites you are logged into — that is your data, and it does not belong in a public repository. Redacted screenshots will be added under `docs/screenshots/` and only then will image links appear here. To see the actual UI, run the app (see [Running from source](#running-from-source)) and compare against the page names above.
-
-## Offline self-tests
-
-`tests/` contains standalone self-test scripts (e.g. `python tests/musicarchive_test.py`). Each prints PASS/FAIL per assertion and exits 0 only when everything is green. They write only into temporary directories, never touch `config.json`, and never write into the download directory. Install `requirements.txt` first; the diarization suites additionally use the ffmpeg binary in `tools/`. `tests/fixtures/` holds four HTML snapshots of **public** pages — three `t.me/s/` channel pages and one fragment of a Douyin anti-bot challenge page — with no login content and no cookies, so the Telegram crawler and Douyin risk-classification tests can assert offline.
+> It is empty for a reason: any real screenshot exposes local filenames, the download directory path and which sites you are logged into — that is your data, and it does not belong in a public repository. Redacted screenshots will be added under `docs/screenshots/` and only then will image links appear here. To see the actual UI, run the app (see [Get started in 30 seconds](#get-started-in-30-seconds)) and compare against the page names above.
 
 ## Download & queue
+
+Paste → resolve to selectable formats → enqueue. If something this job must have is missing locally, pressing “start download” fails on the spot, names the exact row to install from, and creates no task at all.
+
+<details>
+<summary>Details: the pre-enqueue dependency check, named queues, per-host concurrency and where 429 throttling is triggered, global speed cap, MKV remux and integrity verification, why range trimming only works on segmented streams</summary>
 
 - Multiple URLs can be pasted at once; they are normalized and de-duplicated. "Queue only, download later" enqueues without starting.
 - **Dependency preflight before enqueueing**: if you press "start download" and this machine lacks something the job must use — yt-dlp for site resolution, FFmpeg for subtitle / cover / chapter embedding, MKV muxing or range trimming, faster-whisper for local transcription, N_m3u8DL-RE for HLS, telethon for `tgmt://`, or a download directory you cannot write to — the request fails on the spot, naming which row of **Settings → Components & dependencies** to install, and **no task is created at all**. The refusal is also written to the operation log. Cases that merely make things slower or lower-quality (no FFmpeg but a direct mp4 download) are not blocked; they get a log note.
@@ -147,7 +196,14 @@ Aggregate search can sort by relevance, view count or publish date. Changing the
 - **Extras** checkboxes: embed cover thumbnail (`thumb`), metadata (`embed_metadata`), chapters (`embed_chapters`). Bilibili videos additionally save danmaku as `.xml` plus an embeddable `.ass`.
 - **Range selection** `download_section`: enter `00:01:00-00:02:30`. Under the hood this uses yt-dlp's `download_ranges` with a forced `*` auto-segment prefix, **so only HLS/m3u8-style segmented streams can be trimmed**; for single-file streams the parameter is ignored and the task log says so.
 
+</details>
+
 ## Cookies & site logins
+
+Sites that need a login are handled with cookies, either read straight from your own browser or a Netscape-format `cookies.txt` dropped into `cookies/`. Music-platform login cookies are stored per platform and never leave the machine.
+
+<details>
+<summary>Details: browser-read constraints, the YouTube bot check, how Douyin's no-cookie responses are classified, the three-state display and merge rules for the three music-platform cookies</summary>
 
 Two ways, pick either:
 
@@ -160,7 +216,14 @@ Cookie-less Douyin search returns two shapes in local testing: the search API an
 
 The music side keeps its own per-platform cookies under Settings → "音乐平台登录 Cookie" in three separate fields (NetEase Cloud Music / QQ Music / Kugou). Leaving them empty just means the free tier. The NetEase field offers "get by QR", using NetEase's own login QR (confirm in the mobile app, then press "check scan status" to import the session) — no third-party login service is involved. QQ Music and Kugou have **no** QR flow: their QR endpoints require an anti-bot signature, and forging one would cross the line, so you still copy-paste from browser dev tools. Each field reports tri-state "logged in / missing key fields / not configured" based on the keys that platform actually needs and names the missing ones (e.g. "missing token or userid, this source cannot reach member quality"), so pasting a useless key string no longer shows as configured. These three cookies are merged with the global cookie above into one string for the downloader (each platform picks the keys it recognizes); a cookie pasted into the search box overrides only same-named keys and does not evict the saved login. Cookie values are written only into the local `config.json`; logs record key counts, never values, and `cookies/` plus that file are on the packing exclusion list.
 
+</details>
+
 ## Network & proxies
+
+Three proxy modes: automatic per platform (foreign through a proxy, domestic forced direct), always, or leave it to the system. Each platform can be overridden individually and the address actually in use is shown.
+
+<details>
+<summary>Details: the per-platform proxy table, one-click system proxy and what “reset the network” clears, mirror probing, TLS fingerprinting and the PO Token health gate</summary>
 
 - Three proxy policies: `auto` (per platform: overseas through the proxy, domestic forced direct) / `always` / `none` (leave it to the system).
 - In auto mode, **Settings → Network & concurrency → per-platform proxy** lists each platform and music source with this run's verdict, a manual override (auto / via proxy / forced direct) and the proxy address actually in effect; changes save and apply immediately.
@@ -168,21 +231,14 @@ The music side keeps its own per-platform cookies under Settings → "音乐平�
 - **Mirror probing**: `/api/mirrors/probe` speed-tests the built-in GitHub / HuggingFace mirror candidates and picks usable prefixes; when direct access fails, the download tools try the built-in mirrors in order automatically.
 - TLS fingerprint impersonation (curl_cffi), optional SSL verification skip, PO Token health gating and the `player_client` fallback chain are all configurable in Settings.
 
-## Subtitles & AI processing
-
-- Site-provided subtitles are embedded per language you tick (exact language-code matching), and can additionally be saved as sidecar `.vtt` files.
-- Local transcription: faster-whisper (with speaker diarization, voiceprint-clustering variant); clicking a timestamp in the transcript seeks to it.
-- Glossary / custom dictionary verification of translated terms, smart subtitle line wrapping, bilingual export as **SRT / VTT / ASS**.
-- **AI pipeline**: subtitles → polish → summarize → translate, four stages, each artifact persisted and individually re-runnable (`/api/ai/pipeline`).
-- **Hardsub burning**: file page, per-video "more → burn subtitles" — pick subtitles and styling and you get `name.hardsub.mp4`; the source file is untouched.
-
-## Voice tools
-
-faster-whisper transcription, Edge-TTS synthesis, Demucs vocal/instrumental separation and voiceprint speaker diarization all live on the "voice" page; models and dependencies are installable from Settings (the portable package omits them by default — see [Getting the portable package](#getting-the-portable-package) and [Components & dependencies](#components--dependencies-updated-from-inside-the-app)).
-
-**Audio analysis** is on the file page under "more → audio analysis": librosa reports BPM, key (Krumhansl style-correlation matching), loudness in dBFS, spectral centroid and total duration. The result is written to the operation log and to a sidecar `name.analysis.json`; only the first 180 seconds are used by default so long videos do not eat memory. Audio is always extracted to 22050 Hz mono PCM via ffmpeg first, so `.mkv` / `.mp4` and `.mp3` are treated identically. Before spawning the thread, the file header is probed with ffmpeg: files that yield no media info (an image or a script picked by mistake) or have no audio track at all fail immediately with the reason in the dialog, instead of answering "analyzing" and burying the failure in the log. The same applies when librosa is not installed — instant error, pointing at "Components & dependencies".
+</details>
 
 ## Music
+
+Multi-source search, whole-playlist download, cross-platform matching by song title, source switching and a self-built favourites list. This is the longest section: every rule about fetch behaviour, de-duplication, index caching and quality verification is inside the collapse.
+
+<details>
+<summary>Details: default and fallback match sources, every threshold of the scoring gate and its rejection reasons, playlist de-duplication and chunked batches, skipping songs already downloaded, when source switching rewrites a row, the local library snapshot index, quality requirements and the lossless reference, favourites list and filename template</summary>
 
 Aggregate search and the music search page use `musicdl` for multi-source search (each source has a time budget; when a source returns 0 items the reason is put on screen), plus lyrics, cover art, tag writing, MusicBrainz lookups and AcoustID audio fingerprinting (`chromaprint/fpcalc.exe` is bundled).
 
@@ -224,39 +280,69 @@ Clicking "favourite" on a search result row accumulates songs found across platf
 
 The **filename template** accepts `{name}`, `{artist}`, `{album}`, `{source}`, `{id}`, `{ext}` plus the archival fields `{track}`, `{disc}`, `{year}`, `{date}`, e.g. `{artist}/{album}/{year}/{track} - {name}` — the directory layout Emby / Jellyfin-style libraries read. Track numbers are zero-padded to `01`, otherwise a library sorts them 1, 10, 11, 2; `{track}` prefers the platform's own track number (key names differ per platform: NetEase hides the release date inside the album's millisecond timestamp, QQ puts the track number on the entry itself), falling back to the row's position in the playlist. Fields with no value stay empty: empty directory levels are not created, a dangling leading/trailing "- " is trimmed, and a mistyped placeholder (`{track_no}`) never appears literally as braces in a filename. Dates accept `2005-01-01`, `2005.1.1`, `2005年1月1日`, `20050101` and second / millisecond timestamps; anything unrecognized stays empty rather than producing a weird folder name.
 
+</details>
+
 ## Telegram
+
+Public channels can be listed anonymously; private ones go through your own account session (api_id / api_hash + phone verification code + 2FA) to batch-download media your account can already access. Channels where the owner enabled “restrict saving content” are treated as an explicit do-not-save signal and are not worked around.
+
+<details>
+<summary>Details: the anonymous listing endpoint, MTProto sessions and `tgmt://` routing, how restricted channels are flagged and confirmed one by one, the two branches used for subscription tracking</summary>
 
 - **Anonymous history listing**: `t.me/s/` pages are listed without downloading (`/api/telegram/list`), with a date window and quick ranges.
 - **MTProto user session**: enter api_id / api_hash plus a phone login code and 2FA to sign in as **your own** account, then batch-download media your account can legitimately access in private channels (`tgmt://` tasks are routed to this engine). This is the only login method; there is no QR sign-in.
 - A channel whose owner enabled "restrict saving content" is treated as an explicit no-save signal; the program does not work around that protection. When the API refuses, the reason is shown verbatim, restricted channels are highlighted in red and confirmed one by one.
 - **Subscription tracking**: public channels go through the anonymous path, private ones through your session; a local incremental cursor downloads only new entries, and a date window can backfill history.
 
+</details>
+
 ## Subscriptions
+
+RSS, web-page changes, Telegram channels and music playlists are managed on one page; each scan enqueues only entries that are new. Rules can be set per subscription, and blank means follow the global setting.
+
+<details>
+<summary>Details: rule fields and when they apply, how scans are logged, why the playlist cursor is keyed on title+artist+duration, and why new entries are not marked read while a batch is still running</summary>
 
 RSS / web-page / Telegram channel / music playlist sources are all managed on the "subscriptions" page (there is no separate screen any more). Top-left is the "add subscription" card (paste a link, detect the source type, choose how Telegram is read); top-right is the "tracking & scan" card with "scan all now", the "auto-download new items" switch and a `共 N 个 · 已启用 N` counter; the full-width card below is the list itself. Each subscription can carry its own rules: content type (long video / short video / live / audio-podcast), duration range, must-contain and exclude words, date window, quality and naming template, audio-only, and a maximum number of items per run. Blank means follow the global setting. Rules apply only to entries that appear after they are set; the operation log states for every scan how many were downloaded, how many were blocked and why. `sub_first_download_n` controls whether a first scan also fetches the most recent N items (0 = record IDs only).
 
 Music platform playlist links (NetEase / QQ / Kugou / Migu / Kuwo / Spotify / Apple and similar) are recognized as "music playlist" sources: each scan re-fetches the whole list and downloads only newly appearing tracks. Cursors for these sources key on "title + artist + duration", so the same song listed by another platform is not downloaded twice. Some platforms in "list titles only" fast mode give only a title per row (no artist, no duration); in that case a hash of that row's link is appended to the key so that two different songs sharing a title (an original and a remix) are not merged into one entry. Rows that carry only a title have no audio address, so the program re-resolves them by title against the match sources instead of dumping them into the general download queue. Each round looks at 300 items and the cursor stores 300 (songs must not be permanently missed because the window was too narrow). Entries of this kind always count as "audio/podcast", so ticking only "long video" in the content-type rule blocks the entire playlist every round. Batch music has a single channel in the program: if the previous music batch is still running, this round's new songs are **not marked as read** (marking them would leave nobody to fetch them) and the log says "will be picked up next scan". Title matching may also find nothing at all (no such song in the match sources, or a row that only has a title to go on); the log lists every unfound track in full, but those rows are still marked as read and will not be retried next round — to retry, either make the playlist spell that row differently or change the match sources and press "scan now". These sources have no reliable per-track publish time, so "backfill by date" speaks for the whole playlist when no date window is given, instead of pretending a window applied.
 
-## Notifications
+</details>
 
-- **Telegram Bot**: Bot Token and Chat ID, with three independent switches — `telegram_notify_done` / `_fail` / `_sub`.
-- **WeCom (企业微信)**: CorpID / Secret / AgentID / touser plus a test send, with the same three tiers `wecom_notify_*`.
-- **ServerChan**: a SendKey pushes on download completion; no separate switches for the other tiers.
-- All secrets live only in the local `config.json`; they are never packed and never logged.
+## Subtitles & AI processing
 
-## Components & dependencies: updated from inside the app
+Site subtitles can be embedded per language or saved as a sidecar `.vtt`; local transcription, glossary checks, bilingual export and the four-stage AI pipeline all live on this path.
 
-Settings → "Components & dependencies": every item shows a green dot (ready) or red dot (not installed) with an update or install button.
+<details>
+<summary>Details: language-code matching, diarization and timestamp seeking, the SRT / VTT / ASS trio, stage artefacts on disk with single-stage re-runs, the hardsub entry point and output naming</summary>
 
-- Tools (FFmpeg, yt-dlp, N_m3u8DL-RE) are fetched from GitHub through the mirror prefix in Settings, switching sources automatically on failure.
-- Python dependencies (musicdl, zhconv, mutagen, edge-tts, deep-translator, numpy, librosa, telethon, python-socks, cryptg, faster-whisper) install through the pip bundled in the package and the PyPI mirror in Settings, falling back to the official index and other regional mirrors on failure. `zhconv` does one thing: it normalizes song titles and artists to Simplified Chinese before cross-platform title matching (the matching criterion is "exactly equal after normalization", so a Traditional-Chinese playlist matches nothing in a Simplified catalog and shows up as "not found"). Without it the app still works; you just get the old "Traditional does not match" behaviour. `librosa` is what "audio analysis" needs (it pulls numba / llvmlite). `cryptg` is optional, but without it telethon falls back to pure-Python cryptography and Telegram operations become noticeably slow — those two startup log lines `Failed to load SSL library` / `cryptg module not installed` are exactly that (portable packages from v1.2.8 onwards bundle cryptg, so no install needed).
-- **Three versions per row**: `current` = what the running process uses; `bundled` = what shipped inside the portable package (shown only after you updated something, so it differs from current); `latest` = the upstream version, fetched only when you press "check upstream versions". The bundled versions come from `components_bundled.json`, written into the package at build time (it records the runtime and each `tools/` binary). Running from source has no such manifest, so "bundled" simply does not appear. "Latest" is asked of pip itself (`pip index versions`), so the PyPI mirror in Settings applies, and results are cached for 10 minutes; FFmpeg and N_m3u8DL-RE are not on PyPI, so those two rows have no `latest`. When it cannot be determined, the row states why rather than leaving a blank.
-- **Update all**: the first button in the card's button row queues the whole batch at once instead of clicking row by row. It handles "not installed" plus "checked upstream and genuinely newer" — with no version check performed it only fills in what is missing, never guessing at latest versions; a line under the button states in advance which items this run covers. Clicking opens an item-by-item list (`install X (current: not installed)` / `update Y: old → new`); after confirmation it runs **strictly sequentially**, never concurrently (two pip installs would trample each other). Progress and "last batch update: N / M succeeded" show under the button; if faster-whisper is included the models come with it, which can take a while and occupy hundreds of MB. A failure affects only that item and the batch continues, with the source used and the outcome logged per item. Pressing the button while a batch is running says "a batch is already running" and does not queue. If a selected item is not recognized on this machine, the whole batch is rejected on the spot and names the item.
-- **How far numpy can go is decided by numba**: librosa depends on numba, and numba caps numpy (`numba 0.65.0` requires `numpy < 2.5`). In testing, upgrading numpy alone from 2.4.6 to 2.5.3 broke every call to "voice → audio analysis" and voiceprint diarization with `Numba needs NumPy 2.4 or less. Got NumPy 2.5.`. `numba 0.67.0` raises the cap to `numpy < 2.6`, so the two packages must be upgraded together. But numba has no row in the components table, so it has to be upgraded with pip directly; if that is a hassle, leave numpy out of this batch. This only bites machines that already had an older numba and then upgraded numpy alone: a fresh librosa install lets pip pair them correctly, and the portable package ships neither, so installing gets current versions.
-- The whole process is visible in the operation log (which source was used, whether it worked). The running process may still hold the old version in memory; restart to apply.
-- The "command-line PATH" block can add `tools/` and `chromaprint/` to your user PATH with one click (user variable only, removable at any time; on macOS / Linux it just prints the export command).
+- Site-provided subtitles are embedded per language you tick (exact language-code matching), and can additionally be saved as sidecar `.vtt` files.
+- Local transcription: faster-whisper (with speaker diarization, voiceprint-clustering variant); clicking a timestamp in the transcript seeks to it.
+- Glossary / custom dictionary verification of translated terms, smart subtitle line wrapping, bilingual export as **SRT / VTT / ASS**.
+- **AI pipeline**: subtitles → polish → summarize → translate, four stages, each artifact persisted and individually re-runnable (`/api/ai/pipeline`).
+- **Hardsub burning**: file page, per-video "more → burn subtitles" — pick subtitles and styling and you get `name.hardsub.mp4`; the source file is untouched.
+
+</details>
+
+## Voice tools
+
+Transcription, dubbing and vocal separation are on the voice page; audio analysis and fingerprint lookup are under “more” on the files page. Models and dependencies are not bundled and install from Settings.
+
+<details>
+<summary>Details: the five analysis metrics and the 180-second sampling rule, why everything is downmixed to PCM first, the pre-flight checks before a thread starts, the bundled fpcalc fallback and the client-key trap</summary>
+
+faster-whisper transcription, Edge-TTS synthesis, Demucs vocal/instrumental separation and voiceprint speaker diarization all live on the "voice" page; models and dependencies are installable from Settings (the portable package omits them by default — see [What is in the portable package](#what-is-in-the-portable-package) and [Components & dependencies](#components--dependencies-updated-from-inside-the-app)).
+
+**Audio analysis** is on the file page under "more → audio analysis": librosa reports BPM, key (Krumhansl style-correlation matching), loudness in dBFS, spectral centroid and total duration. The result is written to the operation log and to a sidecar `name.analysis.json`; only the first 180 seconds are used by default so long videos do not eat memory. Audio is always extracted to 22050 Hz mono PCM via ffmpeg first, so `.mkv` / `.mp4` and `.mp3` are treated identically. Before spawning the thread, the file header is probed with ffmpeg: files that yield no media info (an image or a script picked by mistake) or have no audio track at all fail immediately with the reason in the dialog, instead of answering "analyzing" and burying the failure in the log. The same applies when librosa is not installed — instant error, pointing at "Components & dependencies".
+
+</details>
 
 ## Browser extension
+
+The bundled extension watches m3u8 / mp4 / ts / m4s on the page and pushes selections into the local queue; if you would rather not install it, you can only receive cat-catch pushes.
+
+<details>
+<summary>Details: the MV2 / MV3 manifests and install steps, intercepting browser downloads, the dedicated-engine fallback chain, the cat-catch request body and how AES keys are held, regex rule import, why the URL must stay 127.0.0.1</summary>
 
 `extension/` contains two manifests: `manifest.json` (MV2, Firefox) and `manifest.chrome.json` (MV3, Chrome / Edge).
 
@@ -274,14 +360,60 @@ The third-party sniffing extension [cat-catch](https://github.com/xifangczy/cat-
 - "import cat-catch config" reads the `cat-catch-<version>-<date>.txt` file that cat-catch itself exports (its full configuration JSON) and takes only the regex rules: ordinary rules annotate addresses with an extension, while the `blackList` entry works the opposite way — a matching address is not enqueued and the log names which rule blocked it. Rules are stored in `catcatch_rules.json`, can be disabled or deleted individually, and are on the packaging exclusion list.
 - A push contains the site's login cookies, so the "send data URL" should only ever be `http://127.0.0.1:8765/...`; do not point it at an external address. The card states this too.
 
+</details>
+
+## Components & dependencies: updated from inside the app
+
+Every row shows a green or red dot with an install / update button: tools come from GitHub, Python packages through the bundled pip and a mirror, with automatic fallback. “Update all” runs the whole batch in one go.
+
+<details>
+<summary>Details: what breaks without zhconv / librosa / cryptg, where the current / bundled / latest versions come from, how a batch update is ordered and how failures are handled, why numba caps numpy, the scope of the one-click PATH button</summary>
+
+Settings → "Components & dependencies": every item shows a green dot (ready) or red dot (not installed) with an update or install button.
+
+- Tools (FFmpeg, yt-dlp, N_m3u8DL-RE) are fetched from GitHub through the mirror prefix in Settings, switching sources automatically on failure.
+- Python dependencies (musicdl, zhconv, mutagen, edge-tts, deep-translator, numpy, librosa, telethon, python-socks, cryptg, faster-whisper) install through the pip bundled in the package and the PyPI mirror in Settings, falling back to the official index and other regional mirrors on failure. `zhconv` does one thing: it normalizes song titles and artists to Simplified Chinese before cross-platform title matching (the matching criterion is "exactly equal after normalization", so a Traditional-Chinese playlist matches nothing in a Simplified catalog and shows up as "not found"). Without it the app still works; you just get the old "Traditional does not match" behaviour. `librosa` is what "audio analysis" needs (it pulls numba / llvmlite). `cryptg` is optional, but without it telethon falls back to pure-Python cryptography and Telegram operations become noticeably slow — those two startup log lines `Failed to load SSL library` / `cryptg module not installed` are exactly that (portable packages from v1.2.8 onwards bundle cryptg, so no install needed).
+- **Three versions per row**: `current` = what the running process uses; `bundled` = what shipped inside the portable package (shown only after you updated something, so it differs from current); `latest` = the upstream version, fetched only when you press "check upstream versions". The bundled versions come from `components_bundled.json`, written into the package at build time (it records the runtime and each `tools/` binary). Running from source has no such manifest, so "bundled" simply does not appear. "Latest" is asked of pip itself (`pip index versions`), so the PyPI mirror in Settings applies, and results are cached for 10 minutes; FFmpeg and N_m3u8DL-RE are not on PyPI, so those two rows have no `latest`. When it cannot be determined, the row states why rather than leaving a blank.
+- **Update all**: the first button in the card's button row queues the whole batch at once instead of clicking row by row. It handles "not installed" plus "checked upstream and genuinely newer" — with no version check performed it only fills in what is missing, never guessing at latest versions; a line under the button states in advance which items this run covers. Clicking opens an item-by-item list (`install X (current: not installed)` / `update Y: old → new`); after confirmation it runs **strictly sequentially**, never concurrently (two pip installs would trample each other). Progress and "last batch update: N / M succeeded" show under the button; if faster-whisper is included the models come with it, which can take a while and occupy hundreds of MB. A failure affects only that item and the batch continues, with the source used and the outcome logged per item. Pressing the button while a batch is running says "a batch is already running" and does not queue. If a selected item is not recognized on this machine, the whole batch is rejected on the spot and names the item.
+- **How far numpy can go is decided by numba**: librosa depends on numba, and numba caps numpy (`numba 0.65.0` requires `numpy < 2.5`). In testing, upgrading numpy alone from 2.4.6 to 2.5.3 broke every call to "voice → audio analysis" and voiceprint diarization with `Numba needs NumPy 2.4 or less. Got NumPy 2.5.`. `numba 0.67.0` raises the cap to `numpy < 2.6`, so the two packages must be upgraded together. But numba has no row in the components table, so it has to be upgraded with pip directly; if that is a hassle, leave numpy out of this batch. This only bites machines that already had an older numba and then upgraded numpy alone: a fresh librosa install lets pip pair them correctly, and the portable package ships neither, so installing gets current versions.
+- The whole process is visible in the operation log (which source was used, whether it worked). The running process may still hold the old version in memory; restart to apply.
+- The "command-line PATH" block can add `tools/` and `chromaprint/` to your user PATH with one click (user variable only, removable at any time; on macOS / Linux it just prints the export command).
+
+</details>
+
 ## Resolver plugins & aria2
+
+Drop a `.py` into `plugins/` implementing `match(url)` and `resolve(url, ctx)` and it gets loaded; aria2 is optional and used for segmented CDN direct links.
+
+<details>
+<summary>Details: the plugin interface and reload endpoints, the two example plugins, how aria2 is enabled and the Docker profile</summary>
 
 - **Resolver plugins**: drop a `.py` into `plugins/` implementing `match(url)` and `resolve(url, ctx)` and it is loaded (`/api/plugins` lists them, `/api/plugins/test` trial-resolves, `/api/plugins/reload` hot-reloads). Page links are resolved to real media URLs before enqueueing; the repository includes `example_passthrough.py` and `site_b23_short.py` as references.
 - **aria2 (optional)**: when enabled in Settings, CDN direct links are sharded through aria2 (`aria2_client.py`, status at `/api/aria2/status`). Docker Compose has an `aria2` profile to start the RPC service.
 
+</details>
+
+## Notifications
+
+Outbound push through Telegram Bot, WeCom and ServerChan, each with separate finished / failed / subscription switches. Keys are stored only in the local `config.json`, never packaged, never logged.
+
+<details>
+<summary>Details: the fields and switch keys each channel needs</summary>
+
+- **Telegram Bot**: Bot Token and Chat ID, with three independent switches — `telegram_notify_done` / `_fail` / `_sub`.
+- **WeCom (企业微信)**: CorpID / Secret / AgentID / touser plus a test send, with the same three tiers `wecom_notify_*`.
+- **ServerChan**: a SendKey pushes on download completion; no separate switches for the other tiers.
+- All secrets live only in the local `config.json`; they are never packed and never logged.
+
+</details>
+
 ## Themes
 
 5 accent themes (annual blue by default / vivid orange / pop pink / meadow green / terracotta) × light and dark, switched from the top bar's right side (colour dots plus a light/dark toggle); the choice persists in `ui_theme` and `dark_mode`. The reference-project and dependency credits live under "Settings → Credits / reference projects" and must be kept in sync when a dependency or reference is added. UI copy is currently Chinese-only.
+
+## Offline self-tests
+
+`tests/` contains standalone self-test scripts (e.g. `python tests/musicarchive_test.py`). Each prints PASS/FAIL per assertion and exits 0 only when everything is green. They write only into temporary directories, never touch `config.json`, and never write into the download directory. Install `requirements.txt` first; the diarization suites additionally use the ffmpeg binary in `tools/`. `tests/fixtures/` holds four HTML snapshots of **public** pages — three `t.me/s/` channel pages and one fragment of a Douyin anti-bot challenge page — with no login content and no cookies, so the Telegram crawler and Douyin risk-classification tests can assert offline.
 
 ## Repository layout
 
@@ -305,9 +437,35 @@ Every intermediate file the tool creates stays in the program folder, never in y
 
 ## Common API endpoints
 
+The backend is a single FastAPI file; the full route list is browsable and testable at `/docs`.
+
+<details>
+<summary>Details: the general endpoints and the music-path endpoints</summary>
+
 `GET /api/status` `POST /api/analyze` `POST /api/download` `GET /api/tasks` `GET /api/net/info` `GET /api/components` `GET /api/plugins` `GET /api/queues` `GET /api/events` (SSE progress) `POST /api/ui_event` (front-end action telemetry, local only).
 
 The music side additionally has: `GET /api/music/status` (source list, default sources, stored strategies, the four settings echoes for naming template / tag embedding / filtering unavailable / including the local library, plus the current quality requirement and the four tier tables), `POST /api/music/search`, `POST /api/music/playlist`, `POST /api/music/probe`, `POST /api/music/download` (de-duplication and the "skip already downloaded" check run first; both accept `quality_spec`; `GET /api/music/download_status` reports batch progress and unmatched lists), `POST /api/music/check_quality` (reads each finished file's own tags against this batch's requirement; only paths inside the download directory are accepted), `POST /api/music/switch_source`, `GET/POST /api/music/favorites` with `/favorites/remove`, `/favorites/download` and `/favorites/mark`, `POST /api/music/local_scan` and `GET /api/music/local_cover`, `GET/POST /api/music/cookies` (the three per-platform logins), and `GET /api/music/netease/qr/generate` / `POST /api/music/netease/qr/poll` (NetEase's own QR login). The full list is in `server.py` under the `@app.` decorators or at `/docs`.
+
+</details>
+
+## Contributing
+
+Single-file backend `server.py` plus single-file front end `static/index.html`; editing `.py` requires a restart. When opening a PR, state the reproduction steps and which self-tests you ran.
+
+<details>
+<summary>Details: environment setup, adding a site resolver, self-tests and fixtures, the three places a new dependency must be added, UI and copy rules, re-packaging after document edits, how the default-deny allowlist unignores files</summary>
+
+1. Bring it up: `pip install -r requirements.txt`, then `python server.py`, and open `http://127.0.0.1:8765`. Put ffmpeg / ffprobe / yt-dlp / N_m3u8DL-RE into `tools/`, or install them from Settings.
+2. Read this before editing: the backend is the single file `server.py`, the front end the single file `static/index.html`; `.py` changes need a process restart.
+3. Adding a site resolver: drop a `.py` into `plugins/` implementing `match(url)` and `resolve(url, ctx)`; trial it with `/api/plugins/test`.
+4. Run the self-tests: `python tests/<name>_test.py` prints PASS/FAIL per assertion and exits 0 when green. `tests/fixtures/` contains four HTML snapshots of public pages (no login content, no cookies) so the offline assertions stay offline.
+5. A new dependency must be registered in three places: `requirements.txt`, `PKGS` in `pack_release.py`, and the "Components & dependencies" table (including the `CREDITS` array in the front end; reference projects likewise). A new top-level `.py` module **must** be added to `APP_PY` in `pack_release.py` — omitting it means the packaged app cannot import it.
+6. UI conventions: new controls default to `size="small"`, only the primary CTA uses `large`; the accent colour stays blue, with green and yellow reserved for status; one section per screen equals one card; lists beyond one screen paginate at 50 with jump-to-page; every UI action must write to the operation log. Copy should be formal but plain, refer to actual control names, and error messages must keep every technical fact.
+7. Rebuilding docs and package: after touching `server.py`, `static/index.html`, README or CHANGELOG the archive does not follow automatically — re-run `python pack_release.py --skip-runtime`; the md5 of the documents inside the zip must equal the ones on disk.
+8. Do not commit local state: `.gitignore` is default-deny with an explicit allowlist, so new documentation or directories need their own unignore line. `config.json`, cookies, history, downloads and session files never go in.
+9. In pull requests, describe the reproduction steps and which self-tests you ran. Changes that would bypass a login, a paywall, DRM, a human-verification challenge or a platform's anti-bot signature are not accepted — see [Out of scope by design](#out-of-scope-by-design).
+
+</details>
 
 ## Privacy
 
@@ -353,18 +511,6 @@ What cannot be done is stated in the UI as well; the app never pretends to succe
 **I installed dependencies but nothing changed.** The running process still holds the old version in memory — restart (`python server.py`, or relaunch `启动.bat`). Front-end-only changes in `static/index.html` just need a page reload.
 
 **Where is the log file?** The "log" page states its location at the top — it is in the program folder — and opens it with one click. Files rotate daily and are deleted after 7 days.
-
-## Contributing
-
-1. Bring it up: `pip install -r requirements.txt`, then `python server.py`, and open `http://127.0.0.1:8765`. Put ffmpeg / ffprobe / yt-dlp / N_m3u8DL-RE into `tools/`, or install them from Settings.
-2. Read this before editing: the backend is the single file `server.py`, the front end the single file `static/index.html`; `.py` changes need a process restart.
-3. Adding a site resolver: drop a `.py` into `plugins/` implementing `match(url)` and `resolve(url, ctx)`; trial it with `/api/plugins/test`.
-4. Run the self-tests: `python tests/<name>_test.py` prints PASS/FAIL per assertion and exits 0 when green. `tests/fixtures/` contains four HTML snapshots of public pages (no login content, no cookies) so the offline assertions stay offline.
-5. A new dependency must be registered in three places: `requirements.txt`, `PKGS` in `pack_release.py`, and the "Components & dependencies" table (including the `CREDITS` array in the front end; reference projects likewise). A new top-level `.py` module **must** be added to `APP_PY` in `pack_release.py` — omitting it means the packaged app cannot import it.
-6. UI conventions: new controls default to `size="small"`, only the primary CTA uses `large`; the accent colour stays blue, with green and yellow reserved for status; one section per screen equals one card; lists beyond one screen paginate at 50 with jump-to-page; every UI action must write to the operation log. Copy should be formal but plain, refer to actual control names, and error messages must keep every technical fact.
-7. Rebuilding docs and package: after touching `server.py`, `static/index.html`, README or CHANGELOG the archive does not follow automatically — re-run `python pack_release.py --skip-runtime`; the md5 of the documents inside the zip must equal the ones on disk.
-8. Do not commit local state: `.gitignore` is default-deny with an explicit allowlist, so new documentation or directories need their own unignore line. `config.json`, cookies, history, downloads and session files never go in.
-9. In pull requests, describe the reproduction steps and which self-tests you ran. Changes that would bypass a login, a paywall, DRM, a human-verification challenge or a platform's anti-bot signature are not accepted — see [Out of scope by design](#out-of-scope-by-design).
 
 ## Out of scope by design
 

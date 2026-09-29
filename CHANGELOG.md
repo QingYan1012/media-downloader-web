@@ -86,6 +86,14 @@
 > - **数字与清单是核过的，不是抄的**：「16 个页面 / 5 组」按 `static/index.html:4409-4432` 的 `navs` 与 `NAV_GROUPS` 数出来；「包内不带 numpy / librosa / numba / faster-whisper」按 `pack_release.py` 的 `PKGS` 与 `requirements.txt` 逐项对；`tools/` 四件与 `chromaprint/fpcalc.exe` 按包内实际文件；版本号 v1.2.8 来自 `appVersion`（`static/index.html:4492`）。**`tests/fixtures/` 那四份按内容逐份认过**（每份都探 `tgme_channel_info_counter` 这个类名）：三份全是 `t.me/s/` 频道页，第四份是抖音挑战页的头部片段 —— 英文稿初稿写成「两份频道页 + 一份消息页」是错的，已改回「三份频道页 + 一份抖音挑战页头部」，与说明十二里那句「三个 `t.me/s/` 频道首页 + 一份抖音话题页头部」对齐。
 > - **随包发布与入库接线**：`pack_release.py` 的 `APP_FILES` 加 `README.en.md`（现 7 项），`.gitignore` 加一行 `!/README.en.md`。文档改完重跑 `python pack_release.py --skip-runtime` 出 v1.2.8 包，包内 `README.md` / `README.en.md` / `CHANGELOG.md` / `LICENSE` 与磁盘 md5 逐字节一致，四道自检（pip 就绪 / tkinter / 包内 pip 真装真卸 / 包内服务冒烟）与私密文件泄漏扫描全过。
 > - **便携包挂到仓库 Releases**：tag `v1.2.8`，资产就是上面那只重出的 `MediaDownloader-1.2.8-portable.zip`（约 218 MB，走 Release 资产而不是仓库文件，因此不撞仓库那 100 MB 单文件红线）；README 的「下载与获取便携包」与徽章都指向 `releases/latest`，所以以后每出一版只发一条 Release，文档里的链接不用改。上传前先按包内顶层清单再数一次私密文件，确认零命中。
+>
+> 说明十四：2026-09-28 两份 README 再改一轮版式，目标是**首屏能扫完、技术细节展开才看**，做法是把长段落折叠而不是删掉，一条事实都没走。
+> - **首屏只留四块**：标题 + 徽章 + 两句定位（改了写法，删掉「FastAPI 单文件 + Vue 3 单文件」这类只在开发节才有意义的措辞，换成「粘链接就能下、浏览器里管队列 / 抓 m3u8 / 找歌 / 做字幕 / 追新」与「数据全在程序所在文件夹，不上传」）；紧跟一句「本工具不绕过登录墙、付费墙、DRM 与人机校验，不执行站点 JS、不伪造反爬签名」并链到「不在本工具范围内」；然后是分四组的一行式目录（上手 / 功能 / 开发 / 边界与许可）。
+> - **「30 秒上手」把三条路一次写清**：免安装是编号三步（Releases 下 zip → 解压位置的两条规矩 → 双击 `启动.bat` 自动开 `http://127.0.0.1:8765`），源码与 Docker 各一个代码块，`.py` 要重启、`static/index.html` 只要刷新那句留在源码那块下面；末尾把「端口被占用 / 缺组件 / 要会员音质」三种卡点统一指到「常见问题」。原「下载与获取便携包」整节收进新的「便携包里有什么」的折叠块，「启动」一节被首屏取代后取消。
+> - **折叠的口径**：17 个 `<details>`，每一节外面只留一句人话概述（说清这节解决什么、哪一步会当场报错），阈值、判定链、缓存 TTL、端点名这类留在 `<summary>` 里当索引。摘要句是新写的，正文一律**原文照搬**：改造用脚本按 `## ` 切节后重新拼装，逐节把旧正文塞进 `<details>`，所以正文与 git 里那份 `HEAD:README.md` 的差异只有首屏与节序，没有段落改写。
+> - **顺带查出并修掉的渲染与链接缺陷**：`</details>` 紧跟下一行内容时，CommonMark 会把紧随其后的 `## 标题` 吞进 HTML 块（17 处全中），标题在 GitHub 上变成裸文本 —— 已统一补空行；同一类问题还有 10 处标题前没有空行。锚点两处失效：`#启动`（3 处）与 `#下载与获取便携包`（1 处），分别改指 `#30-秒上手` 与 `#便携包里有什么`；英文侧对应 `#running-from-source`、`#getting-the-portable-package`。校验项：`<details>` / `</details>` 各 17、代码围栏 6 行成对、`## ` 标题 30 个且全部前面有空行、站内锚点零死链。
+> - **英文版与中文树一一对应**：同样的首屏四块、同样的 17 个折叠、同样的节序（Features / The 16 pages / Screenshots 可见，Download & queue … Contributing 折叠）。改动过程中一度把「The sidebar has 16 pages in 5 groups:」与「The app then serves …」两句挤掉，已按行数差异查出来补回，其余正文保持原样。
+> - **随包文档暂时落后于仓库**：这一轮只动 `README.md` 与 `README.en.md`，按用户决定**没有重出 v1.2.8 便携包**，所以包内那两份仍是说明十三的版本；下次真出版时文档会一并带上，出包后仍需按老规矩核包内文档 md5 与磁盘一致。
 
 ### 功能
 

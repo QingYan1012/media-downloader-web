@@ -4,69 +4,67 @@
 
 **解析下载 · 页面嗅探 · 跨平台音乐 · 字幕与 AI · 语音工具 · 订阅追新**
 
-一个只跑在你自己电脑上的多媒体工作台：FastAPI 单文件后端 + Vue 3 / Element Plus 单文件前端，浏览器里操作，数据只落本机。
+一个只跑在自己电脑上的多媒体工作台：粘链接就能下，浏览器里管队列、抓页面里的 m3u8、按曲名找歌与歌词封面、做字幕转写与翻译、订阅追新。
+设置、Cookie、历史与下载内容全部留在程序所在文件夹，不上传到任何地方。
 
-[![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue)](LICENSE)
+[![License](https://img.shields.io/badge/License-GPL--3.0-blue)](LICENSE)
 [![Version](https://img.shields.io/badge/Version-v1.2.8-informational)](CHANGELOG.md)
 [![Python](https://img.shields.io/badge/Python-3.12-green)](requirements.txt)
-[![Backend](https://img.shields.io/badge/Backend-FastAPI-teal)](server.py)
-[![Frontend](https://img.shields.io/badge/Frontend-Vue%203%20%2B%20Element%20Plus-42b883)](static/index.html)
-[![Storage](https://img.shields.io/badge/Data-100%25%20local-lightgrey)](#隐私)
-[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Docker-blueviolet)](#下载与获取便携包)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Docker-blueviolet)](#30-秒上手)
+[![Data](https://img.shields.io/badge/Data-100%25%20local-lightgrey)](#隐私)
 
 中文 · [English](README.en.md)
 
 </div>
 
-## Overview
-
-MediaDownloader Web is a self-hosted media downloader and processor that runs entirely on your own machine. One FastAPI file (`server.py`) serves a single-file Vue 3 / Element Plus front end (`static/index.html`) on `http://127.0.0.1:8765` — no cloud service of ours, no telemetry. Settings, cookies, history and downloaded files all stay in the program folder.
-
-It covers link parsing and queueing (yt-dlp, FFmpeg, N_m3u8DL-RE), browser-request sniffing, multi-source music search with a scoring gate for "is this the same song", lyrics / cover / tag writing, subtitle embedding and an AI pipeline (transcribe → polish → summarize → translate), local ASR with speaker diarization, TTS and vocal separation, Telegram channel batches and four kinds of subscription tracking, plus self-updating components from inside the UI.
-
-What this tool deliberately does **not** do: it never bypasses a login wall, a paywall, DRM or a human-verification challenge, it does not execute a site's JS challenge or forge its anti-bot signature, it does not work around Telegram's "restrict saving content" flag, and the Qobuz / Tidal "lossless reference" reads **metadata only** (no audio, no tokens, no credentials). See [免责声明](#免责声明) and [README.en.md](README.en.md) for the full English documentation.
-
----
+本工具**不绕过**登录墙、付费墙、DRM 与人机校验，不执行站点下发的 JS，也不伪造反爬签名。完整边界见[不在本工具范围内](#不在本工具范围内)。
 
 ## 目录
 
-- [下载与获取便携包](#下载与获取便携包)
-- [启动](#启动)
-- [功能一览](#功能一览)
-- [页面总览](#页面总览)
-- [界面截图](#界面截图)
-- [离线自检](#离线自检)
-- [下载与队列](#下载与队列)
-- [Cookie 与站点登录](#cookie-与站点登录)
-- [网络与代理](#网络与代理)
-- [字幕与 AI 处理](#字幕与-ai-处理)
-- [语音工具](#语音工具)
-- [音乐](#音乐)
-- [Telegram](#telegram)
-- [订阅追踪](#订阅追踪)
-- [通知](#通知)
-- [组件与依赖：在程序里更新](#组件与依赖在程序里更新)
-- [浏览器扩展](#浏览器扩展)
-- [解析插件与 aria2](#解析插件与-aria2)
-- [界面主题](#界面主题)
-- [目录结构](#目录结构)
-- [常用 API](#常用-api)
-- [隐私](#隐私)
-- [已知限制](#已知限制)
-- [常见问题](#常见问题)
-- [贡献方式](#贡献方式)
-- [鸣谢](#鸣谢)
-- [许可](#许可)
-- [免责声明](#免责声明)
+- **上手**：[30 秒上手](#30-秒上手) · [便携包里有什么](#便携包里有什么) · [界面截图](#界面截图)
+- **功能**：[能做什么](#能做什么) · [页面总览](#页面总览) · [下载与队列](#下载与队列) · [Cookie 与站点登录](#cookie-与站点登录) · [网络与代理](#网络与代理) · [音乐](#音乐) · [Telegram](#telegram) · [订阅追踪](#订阅追踪) · [字幕与 AI 处理](#字幕与-ai-处理) · [语音工具](#语音工具) · [浏览器扩展](#浏览器扩展) · [组件与依赖](#组件与依赖在程序里更新) · [解析插件与 aria2](#解析插件与-aria2) · [通知](#通知) · [界面主题](#界面主题)
+- **开发**：[离线自检](#离线自检) · [目录结构](#目录结构) · [常用 API](#常用-api) · [贡献方式](#贡献方式)
+- **边界与许可**：[隐私](#隐私) · [已知限制](#已知限制) · [常见问题](#常见问题) · [不在本工具范围内](#不在本工具范围内) · [鸣谢](#鸣谢) · [许可](#许可) · [免责声明](#免责声明)
 
-## 下载与获取便携包
+## 30 秒上手
+
+**Windows 免安装（推荐）**
+
+1. 下载 [Releases](https://github.com/QingYan1012/media-downloader-web/releases/latest) 里的 `MediaDownloader-1.2.8-portable.zip`（约 218 MB）。
+2. 解压到路径里不含中文与空格、且不在 `C:\Program Files` 下的目录。
+3. 双击 `启动.bat`，约 3 秒后自动打开 `http://127.0.0.1:8765`。
+
+包内自带 Python runtime 与 pip、FFmpeg / ffprobe、yt-dlp、N_m3u8DL-RE、fpcalc，首次启动生成一份干净的默认配置。
+
+**源码运行**
+
+```bash
+pip install -r requirements.txt
+python server.py
+```
+
+**Docker（群晖 / 家用服务器）**
+
+```bash
+docker compose up -d --build
+docker compose --profile aria2 up -d   # 可选：带 aria2
+```
+
+端口被占用、缺组件、想要会员音质这三种情况各有一行办法，见[常见问题](#常见问题)。
+
+## 便携包里有什么
+
+免安装这条路只有一个取舍：语音那几项（faster-whisper 与模型、Demucs、librosa）体积数 GB，包里不带；红点项在「设置 → 组件与依赖」点一下就装好，不用重新发包。
+
+<details>
+<summary>技术细节：三种取法对照、包内已带与不带、本机数据强制排除与出包自检、换端口与解压位置</summary>
 
 三种取法，按需选一种：
 
 | 方式 | 适合谁 | 怎么拿 | 装完之后 |
 | --- | --- | --- | --- |
 | **便携包（免安装，推荐）** | Windows，不想装 Python | 本仓库 [Releases](https://github.com/QingYan1012/media-downloader-web/releases/latest) 里的 `MediaDownloader-1.2.8-portable.zip`（约 218 MB） | 解压后双击 `启动.bat`，3 秒后自动打开 `http://127.0.0.1:8765`；包内自带 Python runtime、pip 与 FFmpeg / yt-dlp / N_m3u8DL-RE |
-| **源码运行** | 已经有 Python 3.12 | `git clone` 后按[启动](#启动)一节装依赖 | 外部工具要自己放进 `tools/`，或在「设置 → 组件与依赖」点安装 |
+| **源码运行** | 已经有 Python 3.12 | `git clone` 后按[30 秒上手](#30-秒上手)一节装依赖 | 外部工具要自己放进 `tools/`，或在「设置 → 组件与依赖」点安装 |
 | **Docker** | 群晖 / 家用服务器 | `docker compose up -d --build`（可选 `--profile aria2`） | 见 [Dockerfile](Dockerfile) 与 [docker-compose.yml](docker-compose.yml) |
 
 便携包里有什么、不带什么：
@@ -86,25 +84,48 @@ What this tool deliberately does **not** do: it never bypasses a login wall, a p
 - 端口被占用：新建一个 `改端口启动.bat`，写两行 `set MEDIADOWNLOADER_PORT=8899` 与 `启动.bat`，然后双击它。
 - 仓库里只有源码、文档与离线自检脚本，不含任何二进制工具与下载物（`.gitignore` 用「默认全忽略、再逐项放行」的白名单写法）。
 
-## 启动
+</details>
 
-源码运行：
+## 能做什么
 
-```bash
-pip install -r requirements.txt
-python server.py
-```
+**下载与流媒体**
 
-免安装：解压便携包后双击 `启动.bat`，包内自带 Python runtime 与 FFmpeg / yt-dlp / N_m3u8DL-RE。换端口见上一节。
+- 粘一条或一批链接解析成可选码率并入队，自动归一去重；可以只排队不下。
+- 队列支持多选、暂停/继续、置顶、移到队首、稍后下载；命名队列分开限速与放行，同域并发上限 + 命中 429 自动降速 + 全局限速。
+- HLS / DASH 分片走专用引擎 N_m3u8DL-RE（回落 ffmpeg / yt-dlp），分片流可以框选区间。
+- 默认封装 mkv：站点只给单条 mp4 流时只做无损换壳、不重编码；下载后做完整性校验，杜绝「假成功」。
+- 可勾选嵌封面、嵌元数据、嵌章节、按语言嵌字幕、另存外挂 `.vtt`；B 站视频额外存弹幕 `.xml` 与可内嵌 `.ass`。
 
-Docker：
+**嗅探**
 
-```bash
-docker compose up -d --build
-docker compose --profile aria2 up -d   # 可选：带 aria2
-```
+- 自带浏览器扩展监听页面里的 m3u8 / mp4 / ts / m4s，勾选后一键送进本机队列。
+- 也接收第三方嗅探扩展猫抓（cat-catch）的 POST 推送，并可导入它导出的正则规则文件。
 
-## 功能一览
+**音乐**
+
+- 多平台聚合搜索（每个源有时间预算，一条也没有时把原因写上屏）、歌词 / 封面 / 标签写入、歌单整单下载、换源、自建收藏清单。
+- 「是不是同一首歌」过的是一道打分闸门：曲名、歌手、时长分开评分再过录取线，被刷掉的候选写明原因。
+- 本地音乐库索引 + 窗口底部常驻播放条；音质要求可以参与排序、可以「不达标不下」、成品落盘后按它自带的标签复核。
+- 「无损参照」只补 Qobuz / Tidal 的元数据（ISRC、时长、位深 / 采样率、是否无损），音频一个字都不取。
+
+**字幕 / AI / 语音**
+
+- 站点字幕按语言勾选，术语表校验译名，字幕智能换行，双语导出 SRT / VTT / ASS，支持硬字幕烧录。
+- AI 流水线四阶段：字幕 → 润色 → 摘要 → 翻译，每阶段产物落盘、可单独重跑。
+- 本地转写（含声纹说话人分离，点时间可跳播）、Edge-TTS 配音、Demucs 人声 / 伴奏分离、音频分析（BPM / 调性 / 响度 / 频谱质心）、AcoustID 指纹识别。
+
+**自动化与运维**
+
+- Telegram：`t.me/s/` 匿名列历史；用自己的账号会话批量下载私有频道里可访问的媒体；接入订阅追新。
+- 订阅追新四类源（RSS / 网页更新 / Telegram 频道 / 音乐歌单）定时扫描入队，每条订阅单设规则。
+- 通知三套：Telegram Bot、企业微信、Server酱，完成 / 失败 / 订阅各自独立开关。
+- 组件与依赖在程序里更新（含一键更新）、镜像站一键测速、运行日志记录每次页面动作并按天归档。
+- 5 套主题色 × 明亮 / 暗色；全部数据只落本机。
+
+每项能力靠哪个引擎实现，见下面这张对照表与后面各节。
+
+<details>
+<summary>能力域对照表：每个能力域做什么、靠什么实现</summary>
 
 | 能力域 | 做什么 | 靠什么 |
 | --- | --- | --- |
@@ -125,6 +146,8 @@ docker compose --profile aria2 up -d   # 可选：带 aria2
 | 通知 | Telegram Bot、企业微信、Server酱，完成 / 失败 / 订阅各自独立开关 | 出站推送（密钥只存本机） |
 | 运维 | 运行日志（含每次页面动作，按天归档、超 7 天自动删）、组件与依赖在程序里更新、镜像站一键测速、5 套主题 × 明暗 | `pkg_update.py` |
 
+</details>
+
 ## 页面总览
 
 侧栏 16 个页面，分 5 组：
@@ -137,21 +160,27 @@ docker compose --profile aria2 up -d   # 可选：带 aria2
 | 自动化 | 订阅追踪 | RSS、网页更新、Telegram 频道、音乐歌单四种订阅源的定时扫描入队 |
 | 系统 | 运行日志 / 设置 | 全量操作日志（含每次页面动作，按天归档、超过 7 天自动删除；页面上写明日志文件在程序所在文件夹并可一键打开）、Cookie、网络、通知、组件与依赖 |
 
+<details>
+<summary>列表口径：分页规则、表头排序的作用范围、聚合搜索的排序参数与一次取回多少条</summary>
+
 超过一屏的列表（队列 / 文件 / 历史 / 聚合搜索 / 音乐 / Telegram / 收藏关注 / 订阅 / 资源库 / 网页嗅探 / 直播）统一每页 50 条并带上一页、下一页与跳页，不足 50 条时不显示分页条；表头排序作用于全量结果，不是只排当前这一页。收藏 / 关注会把平台接口的分页取全（B 站收藏夹 500 条、关注列表 2000 条、YouTube 播放列表 200 条以内），真的碰到上限时表格上方会写明「只返回了前 N 条」。
 
 聚合搜索可选排序：相似度 / 播放量 / 发布时间。切换排序会带着平台的排序参数重新取数（B 站 `order`、YouTube `sp`），不是把已拿到的结果在前端重排；单平台单类内容一次取回 100 条、聚合一次最多返回 300 条，被截断时结果区会写明上游返回了多少条。
+
+</details>
 
 ## 界面截图
 
 > **截图位（暂未上传）**。本节将放下载解析页、队列页、音乐搜索页、订阅页与设置页的界面图。
 >
-> 之所以现在是空的：界面里必然带得出本机文件名、下载目录与已登录站点名，属于本机数据，不能顺手贴进公开仓库。脱敏后的截图会补进 `docs/screenshots/` 目录，届时这一节才放图片链接。想看真实界面，直接跑起来看（见[启动](#启动)），或用包内 `使用说明.txt` 与下方各节的界面入口名称对照。
-
-## 离线自检
-
-`tests/` 下是一套套可独立运行的自检脚本（`python tests/musicarchive_test.py`），逐条打印 PASS/FAIL，全绿时退出码 0。它们只在临时目录里落文件，不改 `config.json`、不写下载目录；跑之前先装好 `requirements.txt`，其中声纹分离那几套还要用到 `tools/` 里的 ffmpeg。
+> 之所以现在是空的：界面里必然带得出本机文件名、下载目录与已登录站点名，属于本机数据，不能顺手贴进公开仓库。脱敏后的截图会补进 `docs/screenshots/` 目录，届时这一节才放图片链接。想看真实界面，直接跑起来看（见[30 秒上手](#30-秒上手)），或用包内 `使用说明.txt` 与下方各节的界面入口名称对照。
 
 ## 下载与队列
+
+粘链接 → 解析成可选码率 → 入队下载。点了「开始下载」而本机缺了这单必然要用的东西，会当场回错并指名去哪一行点「安装」，任务一条也不会建。
+
+<details>
+<summary>技术细节：入队前的依赖检查、命名队列、同域并发与 429 降速打点、全局限速、mkv 封装与完整性校验、框选区间为什么只对分片流生效</summary>
 
 - 支持一次粘贴多条 URL，自动归一化与去重；可只入队不下（「仅排队，稍后下载」）。
 - **入队前先查依赖**：点了「开始下载」而本机缺了这单必然要用的东西（解析站点靠的 yt-dlp、嵌字幕 / 嵌封面 / 嵌章节 / 封装 mkv / 选段靠的 FFmpeg、本地转写靠的 faster-whisper、HLS 专用引擎 N_m3u8DL-RE、`tgmt://` 靠的 telethon，以及写不进去的下载目录），当场回错并指名去「设置 → 组件与依赖」的哪一行点「安装」，任务一条也不会创建，运行日志同步记下这次拒绝。只是会慢、会降质的情况（例如没有 FFmpeg 但仍直下 mp4）不拦，只在日志里提示一句。
@@ -163,7 +192,14 @@ docker compose --profile aria2 up -d   # 可选：带 aria2
 - **附加内容**可勾选：嵌入封面缩略图（`thumb`）、元数据（`embed_metadata`）、章节（`embed_chapters`）；B 站视频额外存弹幕的 `.xml` 与可内嵌的 `.ass`。
 - **框选片段** `download_section`：填 `00:01:00-00:02:30`，底层走 yt-dlp 的 `download_ranges` 且强制加 `*` 自动分片前缀，**因此只有 HLS/m3u8 这类分片流能裁区间**；单文件流会忽略该参数并在任务日志里写明。
 
+</details>
+
 ## Cookie 与站点登录
+
+需要登录的站点靠 Cookie 两条路：从本机浏览器直接读，或把 Netscape 格式的 `cookies.txt` 丢进 `cookies/`。音乐平台的登录 Cookie 另按平台分三格存，只写在本机。
+
+<details>
+<summary>技术细节：从浏览器读取的限制、YouTube 风控表现、抖音无 Cookie 的几种返回与分类判定、三平台音乐 Cookie 的三态显示与合并规则</summary>
 
 两条路，任选其一：
 
@@ -176,7 +212,14 @@ YouTube 未带 Cookie 时会命中「sign in to confirm you're not a bot」风�
 
 音乐这条线另有一套按平台分开保存的登录 Cookie，在设置 → 「音乐平台登录 Cookie」里分三格（网易云音乐 / QQ 音乐 / 酷狗音乐），不带就是免费那一档音质。网易云那格有「扫码获取」，走网易云自己的登录二维码（手机 App 扫码确认后点「检查扫码状态」把会话收进来），不借任何第三方登录服务；QQ 音乐与酷狗**没有**扫码——那两家的二维码接口要带风控签名，做签名绕过就越界了，所以仍是从浏览器开发者工具复制粘贴。每格会按该平台真正需要的键显示三态「已登录 / 缺关键字段 / 未配置」，缺哪个键直接点名（例如「缺 token 或 userid，这个源拿不到会员音质」），填了一串用不上的键不会再被显示成已配置。三条 Cookie 会与上面那条全局 Cookie 合并成一条交给下载器（各平台只挑自己认的键），搜索框临时粘贴的那串只覆盖同名键，不会把设置页存好的登录挤掉。Cookie 值只写进本机 `config.json`，日志只写键名个数，出包时 `cookies/` 与该文件都在排除表里。
 
+</details>
+
 ## 网络与代理
+
+代理三档：按平台自动（境外走代理、境内强制直连）/ 始终 / 交给系统。可在「设置 → 网络与并发」逐平台覆写，并看到本次实际生效的代理地址。
+
+<details>
+<summary>技术细节：按平台代理表、一键取系统代理与「清空并重置网络」的范围、镜像站测速、TLS 指纹与 PO Token 健康门控</summary>
 
 - 代理策略三档：`auto`（按平台自动：境外走代理、境内强制直连）/ `always` / `none`（交给系统）。
 - 自动模式下「设置 → 网络与并发 → 按平台代理」列出每个平台与音乐源的本次结论、手动覆写（自动 / 走代理 / 强制直连）与实际生效的代理地址，改动即时保存生效。
@@ -184,21 +227,14 @@ YouTube 未带 Cookie 时会命中「sign in to confirm you're not a bot」风�
 - **镜像站一键获取**：`/api/mirrors/probe` 对内置 GitHub / HF 镜像候选逐个测速，取可用前缀；直连不通时下载工具会自动依次试内置镜像。
 - TLS 指纹模拟（curl_cffi）、跳过 SSL 证书校验、PO Token 健康门控与 `player_client` 回退链均在设置里可控。
 
-## 字幕与 AI 处理
-
-- 站点自带字幕按语言勾选嵌入容器（语言码整码匹配），并可「另存独立字幕文件」出外挂 `.vtt`。
-- 本地转写：faster-whisper（含说话人分离，声纹聚类版）；转写结果点时间可跳播。
-- 术语表 / 自定义词典校验译名，字幕智能换行，双语字幕导出 **SRT / VTT / ASS 三件套**。
-- **AI 流水线**：字幕 → 润色 → 摘要 → 翻译四阶段，每阶段产物落盘并可单独重跑（`/api/ai/pipeline`）。
-- **硬字幕烧录**：文件页视频行「更多 → 烧录字幕」，选字幕与样式后输出 `原名.hardsub.mp4`，源文件不动。
-
-## 语音工具
-
-faster-whisper 转写、Edge-TTS 合成、Demucs 人声/伴奏分离、声纹说话人分离，均在「语音」页；模型与依赖可在设置里安装（便携包默认不带，见「[下载与获取便携包](#下载与获取便携包)」与「[组件与依赖](#组件与依赖在程序里更新)」）。
-
-**音频分析**在文件页「更多 → 音频分析」：librosa 给出 BPM、调性（Krumhansl 风格相关匹配）、响度 dBFS、频谱质心与整段时长，结果既写运行日志也落一份 `原名.analysis.json` 旁路文件，默认只取前 180 秒以免长视频占内存。音轨统一先经 ffmpeg 抽成 22050Hz 单声道 PCM 再分析，因此 `.mkv` / `.mp4` 与 `.mp3` 一视同仁。起线程前先用 ffmpeg 读一次文件头做前置检查：读不出媒体信息（例如误选了图片或脚本文本）、或压根没有声轨的，当场弹错并写明原因，不会先回一句「正在分析」再把失败埋进日志。没装 librosa 时同理直接弹错并指明在「组件与依赖」里安装。
+</details>
 
 ## 音乐
+
+多源搜索、歌单整单下载、跨平台按曲名匹配、换源与自建收藏清单都在这一路。这一节最长：取值口径、去重判定、索引缓存与音质复核的每一条规则都写在折叠里。
+
+<details>
+<summary>技术细节：匹配源的默认与回落、打分闸门的每一条阈值与拒因、歌单去重与分片批量、跳过已下载、换源的改写条件、本地库快照索引、音质要求与无损参照、收藏清单与文件名模板</summary>
 
 聚合搜索与音乐搜索页：`musicdl` 多源搜索（每源有时间预算，0 条时把原因写上屏）、歌词、封面、标签写入、MusicBrainz 查找与 AcoustID 音频指纹（包内带 `chromaprint/fpcalc.exe`）。
 
@@ -242,39 +278,69 @@ Spotify 歌单因 DRM 无法整单下载，做法是「只列曲目 + 到其他�
 
 文件页「更多 → 指纹识别」用包内的 `chromaprint/fpcalc.exe` 生成指纹，不需要再把它加入 PATH（「一键 PATH」只影响之后新开的终端，正在跑的服务读不到）。设置里那栏要填 **应用** 的 client key（在 acoustid.org 注册应用得到），登录账户后看到的 user API key 会被 AcoustID 以 `invalid API key` 拒收。缺 fpcalc、Key 被拒、文件没有声轨这三种情况都在点击时直接弹错，不会先回「正在指纹识别」再把失败埋进日志。
 
+</details>
+
 ## Telegram
+
+公开频道可以匿名列出历史；私有频道用你自己的账号会话（api_id / api_hash + 手机验证码 + 2FA）批量下载你的账号本来就能访问的媒体。频道主人开启「限制保存内容」的视为明确的禁止保存信号，不去绕。
+
+<details>
+<summary>技术细节：匿名爬取端点、MTProto 会话与 `tgmt://` 任务分流、受限频道如何标红与逐个确认、接入订阅追新的两条分支</summary>
 
 - **匿名历史爬取**：`t.me/s/` 页面列出不下载（`/api/telegram/list`），支持日期窗与快捷范围。
 - **MTProto 用户会话**：填 api_id / api_hash + 手机验证码 + 2FA 登录你自己的账号，可批量下载私有频道里你的账号能正常访问的媒体（`tgmt://` 任务分流）。登录方式只有这一种，不做扫码。
 - 频道主人开启「限制保存内容」的频道视为明确的禁止保存信号，程序不会去绕这个保护；API 拒绝时把原因如实上屏，受限频道会标红并逐个确认。
 - **接入订阅追新**：公开频道走匿名、私有走会话两条分支，本地增量游标只下新条目，也可按日期窗回填历史。
 
+</details>
+
 ## 订阅追踪
+
+RSS、网页更新、Telegram 频道、音乐歌单四类源在同一页管理，定时扫描后只把新出现的条目入队。每条订阅可单设规则，留空即跟随全局设置。
+
+<details>
+<summary>技术细节：规则字段与生效范围、扫描结果的日志口径、音乐歌单游标为什么按曲名+歌手+时长算、批量通道被占用时不记已读</summary>
 
 RSS / 网页 / Telegram 频道 / 音乐歌单四类源统一在「订阅」页管理（不再有独立界面）。页面上方左侧是「添加订阅」卡（粘贴链接、识别来源类型、Telegram 读取方式），右侧「追新与扫描」卡放着「立即扫描全部」、「新条目自动下载」开关和 `共 N 个 · 已启用 N` 的计数；下方整行「订阅源」卡是列表本身。每条订阅可单设规则：内容类型（长视频 / 短视频 / 直播 / 音频播客）、时长区间、标题必含与排除词、日期窗、画质与命名模板、是否只下音频、单次最多入队条数；留空即跟随全局设置。规则只对设好之后新出现的条目生效，运行日志会写明每次扫描下了几条、挡了几条、为什么挡。`sub_first_download_n` 控制首次扫描是否顺带下最近 N 条（0 = 只记 ID）。
 
 音乐平台的歌单链接（网易云 / QQ / 酷狗 / 咪咕 / 酷我 / Spotify / Apple 等）粘进来会被识别成「音乐歌单」源，每轮扫描重取一次整单、只下新出现的曲目。这类源的追新游标按「曲名 + 歌手 + 时长」算，所以同一首歌换个平台收录也不会重复下；有的平台在「只列曲目」这种快模式下每行只给曲名（不给歌手与时长），此时键尾会再补一段该曲链接的哈希，免得一张歌单里两首同名不同曲（原声版与混音版）被并成一条；这种只列了曲名的行没有音频地址，程序按曲名去匹配源里重新取址，而不是丢给通用下载队列；每轮看 300 条、游标也存 300 条（歌单里的歌不能因为窗口太窄被永久漏掉）。这一类源的条目一律算作「音频/播客」，所以「内容类型」规则里只勾长视频会让整张歌单每一轮都被挡掉。音乐批量在程序里只有一条通道，若上一批音乐下载还没跑完，这一轮的新歌**不会记成已读**（记了就没人补下），日志写明「等下轮扫描再补」。按曲名匹配也可能一首也没找到（匹配源里没这首歌、或这一行只有曲名可依据），日志会整份列出没找到的曲目，但这些行照常记成已读——下一轮不会重试，要再试得在歌单里让那一首换个写法、或改匹配源后手动「立即扫描」。这类源没有可靠的单曲发布时间可用，所以「按日期回填」在没填日期窗时按整张歌单说话，不会假装成某个窗口之内。
 
-## 通知
+</details>
 
-- **Telegram Bot**：填 Bot Token 与 Chat ID，三个独立开关 —— `telegram_notify_done` / `_fail` / `_sub`。
-- **企业微信**：CorpID / Secret / AgentID / touser + 测试发送，同样三档 `wecom_notify_*`。
-- **Server酱**：填 SendKey 后在下载完成时推送，无独立开关与其他档位。
-- 所有密钥只存本机 `config.json`，不出包、不进日志。
+## 字幕与 AI 处理
 
-## 组件与依赖：在程序里更新
+站点自带字幕可按语言勾选嵌入容器或另存外挂 `.vtt`；本地转写、术语表校验译名、双语字幕导出与 AI 四阶段流水线都在这一路。
 
-设置 → 「组件与依赖」，每项绿点（就绪）/ 红点（未安装）配一个更新或安装按钮：
+<details>
+<summary>技术细节：语言码匹配、说话人分离与点时间跳播、SRT / VTT / ASS 三件套、AI 流水线阶段产物落盘与单步重跑、硬字幕烧录的入口与产物命名</summary>
 
-- 工具（FFmpeg、yt-dlp、N_m3u8DL-RE）从 GitHub 拉，走设置里的镜像前缀，失败自动换源。
-- Python 依赖（musicdl、zhconv、mutagen、edge-tts、deep-translator、numpy、librosa、telethon、python-socks、cryptg、faster-whisper）走包内自带 pip 与设置里的 PyPI 镜像，失败回落到官方源与其它国内镜像。`zhconv` 只管一件事：跨平台按曲名匹配前把歌名与歌手统一成简体（匹配判据是「归一后精确相等」，繁體歌单在简体曲库里会一首也认不出，表现为「找不到」）；没装也能用，只是退回「繁體匹配不上」的旧行为。`librosa` 是「音频分析」要用的库（会连带装 numba / llvmlite）；`cryptg` 不给也能用，但 telethon 会退回纯 Python 加密，Telegram 相关操作明显变慢，启动日志里那两行 `Failed to load SSL library` / `cryptg module not installed` 说的就是这件事（v1.2.8 起的便携包已自带 cryptg，不必再点「安装」）。
-- **每行三个版本**：`当前` = 程序此刻在用的；`随包` = 便携包里原本带来的（只有在你更新过、与当前不一致时才显示）；`最新` = 上游最新版，点「查询上游最新版本」才联网获取。随包版本来自打包时写进包内的 `components_bundled.json`（记录包内 runtime 与 `tools/` 各是什么版本），源码运行没有这份清单，因而不会出现「随包」。上游最新版是问 pip 本人要的（`pip index versions`），所以设置里的 PyPI 镜像照样生效，结果缓存 10 分钟；FFmpeg 与 N_m3u8DL-RE 不在 PyPI，这两行没有 `最新`。查不到时那一行写明原因，不留空白。
-- **一键更新**：卡上按钮行的第一枚，把整批要处理的条目一次排完，不必一行一行点。它处理的是「没装上的」加上「点过「查询上游最新版本」且确实有新版的」——没查过版本时只补缺的，不会替你猜最新版；按钮下方一行会先写明本次会处理哪几项。点下去弹逐项清单（`安装 X（当前：未安装）` / `更新 Y：旧版 → 新版`），确认后**按表里的顺序一项一项跑**，不并发（pip 同时装两个包会互相踩）；进度与「上次一键更新：成功 N / M」显示在按钮下方，含 faster-whisper 时会连同模型一起下，可能耗时较久且占用数百 MB。某一项失败只记那一项并接着跑下一项，运行日志逐条写明用的哪个源、成功没有。已有批次在跑时再点会提示「已经有一批更新在跑」，不排队；选中的项里有本机不认识的，整批当场拒掉并点名是哪一项。
-- **numpy 能升到哪一版，由 numba 决定**：librosa 依赖 numba，而 numba 对 numpy 有上限（`numba 0.65.0` 要求 `numpy < 2.5`）。实测只把 numpy 从 2.4.6 升到 2.5.3 后，「语音 → 音频分析」和声纹说话人分离的每次调用都会当场失败，报 `Numba needs NumPy 2.4 or less. Got NumPy 2.5.`。`numba 0.67.0` 把上限放宽到 `numpy < 2.6`，所以这两个包要一起升。但「组件与依赖」的表里没有 numba 这一行，只能用 pip 单独升它；嫌麻烦就先把 numpy 排除在本次批次之外。这一条只咬「已经装过老 numba、又只升 numpy」的机器：全新装 librosa 时 pip 会自己配成对，而便携包两个都不带，装上即是新版。
-- 过程写在运行日志里（能看到用的哪个源、成功没有）。装完当前进程可能仍用内存里的旧版本，重启一次即可生效。
-- 「命令行 PATH」区可一键把 `tools/` 与 `chromaprint/` 加入用户 PATH（只动用户变量，可随时移除；Mac / Linux 只打印 export 命令）。
+- 站点自带字幕按语言勾选嵌入容器（语言码整码匹配），并可「另存独立字幕文件」出外挂 `.vtt`。
+- 本地转写：faster-whisper（含说话人分离，声纹聚类版）；转写结果点时间可跳播。
+- 术语表 / 自定义词典校验译名，字幕智能换行，双语字幕导出 **SRT / VTT / ASS 三件套**。
+- **AI 流水线**：字幕 → 润色 → 摘要 → 翻译四阶段，每阶段产物落盘并可单独重跑（`/api/ai/pipeline`）。
+- **硬字幕烧录**：文件页视频行「更多 → 烧录字幕」，选字幕与样式后输出 `原名.hardsub.mp4`，源文件不动。
+
+</details>
+
+## 语音工具
+
+转写、配音、人声 / 伴奏分离在「语音」页，音频分析与指纹识别在文件页的「更多」里。模型与依赖默认不在包里，可在设置里现装。
+
+<details>
+<summary>技术细节：音频分析给的五个指标与 180 秒取样口径、统一先抽 PCM 的原因、起线程前的前置检查、fpcalc 回落与 client key 的坑</summary>
+
+faster-whisper 转写、Edge-TTS 合成、Demucs 人声/伴奏分离、声纹说话人分离，均在「语音」页；模型与依赖可在设置里安装（便携包默认不带，见「[便携包里有什么](#便携包里有什么)」与「[组件与依赖](#组件与依赖在程序里更新)」）。
+
+**音频分析**在文件页「更多 → 音频分析」：librosa 给出 BPM、调性（Krumhansl 风格相关匹配）、响度 dBFS、频谱质心与整段时长，结果既写运行日志也落一份 `原名.analysis.json` 旁路文件，默认只取前 180 秒以免长视频占内存。音轨统一先经 ffmpeg 抽成 22050Hz 单声道 PCM 再分析，因此 `.mkv` / `.mp4` 与 `.mp3` 一视同仁。起线程前先用 ffmpeg 读一次文件头做前置检查：读不出媒体信息（例如误选了图片或脚本文本）、或压根没有声轨的，当场弹错并写明原因，不会先回一句「正在分析」再把失败埋进日志。没装 librosa 时同理直接弹错并指明在「组件与依赖」里安装。
+
+</details>
 
 ## 浏览器扩展
+
+自带扩展监听页面里的 m3u8 / mp4 / ts / m4s 并一键送进本机队列；不想装扩展也可以只把第三方猫抓（cat-catch）的推送收进来。
+
+<details>
+<summary>技术细节：MV2 / MV3 两份清单与安装步骤、拦截浏览器下载、专用引擎回落链、cat-catch 推送的请求体对接与解密密钥暂存、正则规则导入、为什么只填 127.0.0.1</summary>
 
 `extension/` 内含两份清单：`manifest.json`（MV2，Firefox）与 `manifest.chrome.json`（MV3，Chrome / Edge）。
 
@@ -292,14 +358,60 @@ RSS / 网页 / Telegram 频道 / 音乐歌单四类源统一在「订阅」页�
 - 「导入猫抓配置文件」读的是猫抓自己导出的 `cat-catch-版本-日期.txt`（全量配置 JSON），只取其中的正则规则：普通规则给地址标注扩展名，`blackList` 那条作用相反 —— 命中的地址直接不入队并在日志点名是哪条规则挡的。规则存在 `catcatch_rules.json`，可按条停用或删除，出分享包时该文件在排除清单里。
 - 推送内容含该网站的登录 Cookie，所以「发送数据 URL」只应填 `http://127.0.0.1:8765/...`，不要改成外网地址；卡上已写明这条。
 
+</details>
+
+## 组件与依赖：在程序里更新
+
+设置里每一项绿点（就绪）/ 红点（未安装）配一个按钮：工具从 GitHub 拉、Python 依赖走包内 pip 与镜像，失败自动换源。整批要处理的条目用「一键更新」一次排完。
+
+<details>
+<summary>技术细节：zhconv / librosa / cryptg 各自不给会怎样、当前 / 随包 / 最新三个版本的来源、一键更新的批次规则与失败处理、numpy 上限由 numba 决定、PATH 一键添加的范围</summary>
+
+设置 → 「组件与依赖」，每项绿点（就绪）/ 红点（未安装）配一个更新或安装按钮：
+
+- 工具（FFmpeg、yt-dlp、N_m3u8DL-RE）从 GitHub 拉，走设置里的镜像前缀，失败自动换源。
+- Python 依赖（musicdl、zhconv、mutagen、edge-tts、deep-translator、numpy、librosa、telethon、python-socks、cryptg、faster-whisper）走包内自带 pip 与设置里的 PyPI 镜像，失败回落到官方源与其它国内镜像。`zhconv` 只管一件事：跨平台按曲名匹配前把歌名与歌手统一成简体（匹配判据是「归一后精确相等」，繁體歌单在简体曲库里会一首也认不出，表现为「找不到」）；没装也能用，只是退回「繁體匹配不上」的旧行为。`librosa` 是「音频分析」要用的库（会连带装 numba / llvmlite）；`cryptg` 不给也能用，但 telethon 会退回纯 Python 加密，Telegram 相关操作明显变慢，启动日志里那两行 `Failed to load SSL library` / `cryptg module not installed` 说的就是这件事（v1.2.8 起的便携包已自带 cryptg，不必再点「安装」）。
+- **每行三个版本**：`当前` = 程序此刻在用的；`随包` = 便携包里原本带来的（只有在你更新过、与当前不一致时才显示）；`最新` = 上游最新版，点「查询上游最新版本」才联网获取。随包版本来自打包时写进包内的 `components_bundled.json`（记录包内 runtime 与 `tools/` 各是什么版本），源码运行没有这份清单，因而不会出现「随包」。上游最新版是问 pip 本人要的（`pip index versions`），所以设置里的 PyPI 镜像照样生效，结果缓存 10 分钟；FFmpeg 与 N_m3u8DL-RE 不在 PyPI，这两行没有 `最新`。查不到时那一行写明原因，不留空白。
+- **一键更新**：卡上按钮行的第一枚，把整批要处理的条目一次排完，不必一行一行点。它处理的是「没装上的」加上「点过「查询上游最新版本」且确实有新版的」——没查过版本时只补缺的，不会替你猜最新版；按钮下方一行会先写明本次会处理哪几项。点下去弹逐项清单（`安装 X（当前：未安装）` / `更新 Y：旧版 → 新版`），确认后**按表里的顺序一项一项跑**，不并发（pip 同时装两个包会互相踩）；进度与「上次一键更新：成功 N / M」显示在按钮下方，含 faster-whisper 时会连同模型一起下，可能耗时较久且占用数百 MB。某一项失败只记那一项并接着跑下一项，运行日志逐条写明用的哪个源、成功没有。已有批次在跑时再点会提示「已经有一批更新在跑」，不排队；选中的项里有本机不认识的，整批当场拒掉并点名是哪一项。
+- **numpy 能升到哪一版，由 numba 决定**：librosa 依赖 numba，而 numba 对 numpy 有上限（`numba 0.65.0` 要求 `numpy < 2.5`）。实测只把 numpy 从 2.4.6 升到 2.5.3 后，「语音 → 音频分析」和声纹说话人分离的每次调用都会当场失败，报 `Numba needs NumPy 2.4 or less. Got NumPy 2.5.`。`numba 0.67.0` 把上限放宽到 `numpy < 2.6`，所以这两个包要一起升。但「组件与依赖」的表里没有 numba 这一行，只能用 pip 单独升它；嫌麻烦就先把 numpy 排除在本次批次之外。这一条只咬「已经装过老 numba、又只升 numpy」的机器：全新装 librosa 时 pip 会自己配成对，而便携包两个都不带，装上即是新版。
+- 过程写在运行日志里（能看到用的哪个源、成功没有）。装完当前进程可能仍用内存里的旧版本，重启一次即可生效。
+- 「命令行 PATH」区可一键把 `tools/` 与 `chromaprint/` 加入用户 PATH（只动用户变量，可随时移除；Mac / Linux 只打印 export 命令）。
+
+</details>
+
 ## 解析插件与 aria2
+
+把 `.py` 放进 `plugins/`、实现 `match(url)` 与 `resolve(url, ctx)` 就会被加载；aria2 是可选项，用于 CDN 直链分片。
+
+<details>
+<summary>技术细节：插件接口与热加载端点、自带的两个示例、aria2 的开启方式与 Docker profile</summary>
 
 - **插件解析**：把 `.py` 丢进 `plugins/`，实现 `match(url)` 与 `resolve(url, ctx)` 即会被加载（`/api/plugins` 看清单、`/api/plugins/test` 试解析、`/api/plugins/reload` 热加载）。入队前自动尝试把页面链解析成真实媒体 URL，仓库自带 `example_passthrough.py` 与 `site_b23_short.py` 两个示例。
 - **aria2（可选）**：设置开启后 CDN 直链走 aria2 分片（`aria2_client.py`，状态见 `/api/aria2/status`）。Docker Compose 有 `aria2` profile 可一键起 RPC。
 
+</details>
+
+## 通知
+
+Telegram Bot、企业微信、Server酱三种出站推送，完成 / 失败 / 订阅各自独立开关。所有密钥只存本机 `config.json`，不出包、不进日志。
+
+<details>
+<summary>技术细节：三套通知各要填哪些字段与开关键名</summary>
+
+- **Telegram Bot**：填 Bot Token 与 Chat ID，三个独立开关 —— `telegram_notify_done` / `_fail` / `_sub`。
+- **企业微信**：CorpID / Secret / AgentID / touser + 测试发送，同样三档 `wecom_notify_*`。
+- **Server酱**：填 SendKey 后在下载完成时推送，无独立开关与其他档位。
+- 所有密钥只存本机 `config.json`，不出包、不进日志。
+
+</details>
+
 ## 界面主题
 
 5 套主题色（年度蓝默认 / 活力橘 / 流行粉 / 草地绿 / 陶土色）× 明亮与暗色，切换点在顶栏右侧（色点 + 明暗开关），选择存 `ui_theme` 与 `dark_mode`。参考项目与依赖的鸣谢名单在「设置 → 鸣谢 / 参考项目」，新增依赖或参考项目时要同步跟进。界面文案目前只有中文。
+
+## 离线自检
+
+`tests/` 下是一套套可独立运行的自检脚本（`python tests/musicarchive_test.py`），逐条打印 PASS/FAIL，全绿时退出码 0。它们只在临时目录里落文件，不改 `config.json`、不写下载目录；跑之前先装好 `requirements.txt`，其中声纹分离那几套还要用到 `tools/` 里的 ffmpeg。
 
 ## 目录结构
 
@@ -323,9 +435,35 @@ _preview/            「试听」取的那份临时音频（只留最近 20 份�
 
 ## 常用 API
 
+后端是单文件 FastAPI，完整路由清单看 `/docs` 可以直接试。
+
+<details>
+<summary>技术细节：常用端点与音乐这一路的端点清单</summary>
+
 `GET /api/status` `POST /api/analyze` `POST /api/download` `GET /api/tasks` `GET /api/net/info` `GET /api/components` `GET /api/plugins` `GET /api/queues` `GET /api/events`（SSE 进度推送）`POST /api/ui_event`（前端操作埋点）。
 
 音乐这一路另有：`GET /api/music/status`（源清单、默认源、已存策略，以及命名模板 / 嵌入标签 / 过滤不可用 / 包含本地库四项设置的原值回显，另带回音质要求的当前值与四张档位表）、`POST /api/music/search` `POST /api/music/playlist` `POST /api/music/probe` `POST /api/music/download`（下载前先过去重与「跳过已下载」，两者都接收 `quality_spec`，`GET /api/music/download_status` 报本批进度与未匹配清单）、`POST /api/music/check_quality`（逐份读成品自己的标签核对本批音质要求，只接受下载目录之内的路径）、`POST /api/music/switch_source`（跨平台换一条来路重取地址）、`GET/POST /api/music/favorites` 与 `/favorites/remove`、`/favorites/download`、`/favorites/mark`（自建收藏清单）、`POST /api/music/local_scan` 与 `GET /api/music/local_cover`（本地库索引与内嵌封面）、`GET/POST /api/music/cookies`（三平台各自的登录 Cookie）、`GET /api/music/netease/qr/generate` 与 `POST /api/music/netease/qr/poll`（网易云官方扫码登录）。完整列表看 `server.py` 里的 `@app.` 路由或 `/docs`。
+
+</details>
+
+## 贡献方式
+
+单文件后端 `server.py` + 单文件前端 `static/index.html`，改 `.py` 要重启进程才生效。提 PR 请写明复现步骤与跑过哪几套自检。
+
+<details>
+<summary>技术细节：起环境、加站点解析的做法、自检与 fixtures、加依赖必须同步的三处、界面与文案规矩、改了文档要重出包、白名单 .gitignore 的放行</summary>
+
+1. 起环境：`pip install -r requirements.txt` 后 `python server.py`，浏览器打开 `http://127.0.0.1:8765`。外部工具放 `tools/`（ffmpeg / ffprobe / yt-dlp / N_m3u8DL-RE），或在设置里点安装。
+2. 改代码前先读这一节：后端是单文件 `server.py`、前端是单文件 `static/index.html`；改 `.py` 需要重启进程才生效。
+3. 加站点解析：在 `plugins/` 放一个 `.py`，实现 `match(url)` 与 `resolve(url, ctx)`，`/api/plugins/test` 可试解析。
+4. 跑自检：`python tests/<名字>_test.py` 逐条打印 PASS/FAIL，全绿退出码 0。`tests/fixtures/` 是四份**公开页面**的 HTML 快照（无登录内容、无 Cookie），让 Telegram 与抖音风控那几套能离线断言。
+5. 加依赖要三处同步：`requirements.txt`、`pack_release.py` 的 `PKGS`、以及「设置 → 组件与依赖」那张表（含界面里的 `CREDITS` 数组，参考项目同理要跟进）。新增顶层 `.py` 模块必须同时加进 `pack_release.py` 的 `APP_PY`，漏了包里直接 import 不到。
+6. 界面规矩：新控件默认 `size="small"`，只有主 CTA 用 `large`；主色只留蓝，绿与黄用作状态色；一屏一节对应一张卡；超过一屏的列表统一每页 50 条并带跳页；每个页面动作都要写运行日志。文案要书面但易懂，指代落到具体控件名，报错保留全部技术事实。
+7. 出包与验证：改了 `server.py` / `static/index.html` / README / CHANGELOG 之后 zip 不会自动跟进，要重跑 `python pack_release.py --skip-runtime`，包内文档 md5 必须与磁盘一致。
+8. 不要把本机状态文件提交进来：`.gitignore` 采用「默认全忽略、再逐项放行」的白名单，新增文档或目录要显式加一行放行；`config.json`、Cookie、历史、下载物、会话文件一律不入。
+9. 提 PR 时请写明复现步骤与跑过哪几套自检。涉及「绕过登录 / 付费 / DRM / 人机校验 / 站点风控签名」的改动不会被接受，见下一节。
+
+</details>
 
 ## 隐私
 
@@ -371,18 +509,6 @@ _preview/            「试听」取的那份临时音频（只留最近 20 份�
 **装完依赖没生效。** 当前进程仍用内存里的旧版本，重启一次（源码运行重跑 `python server.py`，便携包重启 `启动.bat`）即可。前端只改了 `static/index.html` 时刷新页面就够。
 
 **日志文件在哪。** 「运行日志」页顶部写明它在程序所在文件夹，可一键打开；按天归档、超过 7 天自动删除。
-
-## 贡献方式
-
-1. 起环境：`pip install -r requirements.txt` 后 `python server.py`，浏览器打开 `http://127.0.0.1:8765`。外部工具放 `tools/`（ffmpeg / ffprobe / yt-dlp / N_m3u8DL-RE），或在设置里点安装。
-2. 改代码前先读这一节：后端是单文件 `server.py`、前端是单文件 `static/index.html`；改 `.py` 需要重启进程才生效。
-3. 加站点解析：在 `plugins/` 放一个 `.py`，实现 `match(url)` 与 `resolve(url, ctx)`，`/api/plugins/test` 可试解析。
-4. 跑自检：`python tests/<名字>_test.py` 逐条打印 PASS/FAIL，全绿退出码 0。`tests/fixtures/` 是四份**公开页面**的 HTML 快照（无登录内容、无 Cookie），让 Telegram 与抖音风控那几套能离线断言。
-5. 加依赖要三处同步：`requirements.txt`、`pack_release.py` 的 `PKGS`、以及「设置 → 组件与依赖」那张表（含界面里的 `CREDITS` 数组，参考项目同理要跟进）。新增顶层 `.py` 模块必须同时加进 `pack_release.py` 的 `APP_PY`，漏了包里直接 import 不到。
-6. 界面规矩：新控件默认 `size="small"`，只有主 CTA 用 `large`；主色只留蓝，绿与黄用作状态色；一屏一节对应一张卡；超过一屏的列表统一每页 50 条并带跳页；每个页面动作都要写运行日志。文案要书面但易懂，指代落到具体控件名，报错保留全部技术事实。
-7. 出包与验证：改了 `server.py` / `static/index.html` / README / CHANGELOG 之后 zip 不会自动跟进，要重跑 `python pack_release.py --skip-runtime`，包内文档 md5 必须与磁盘一致。
-8. 不要把本机状态文件提交进来：`.gitignore` 采用「默认全忽略、再逐项放行」的白名单，新增文档或目录要显式加一行放行；`config.json`、Cookie、历史、下载物、会话文件一律不入。
-9. 提 PR 时请写明复现步骤与跑过哪几套自检。涉及「绕过登录 / 付费 / DRM / 人机校验 / 站点风控签名」的改动不会被接受，见下一节。
 
 ## 不在本工具范围内
 
