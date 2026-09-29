@@ -102,7 +102,8 @@
 > - **入库 6 张，共 0.81 MB**（`docs/screenshots/`）：`home-light.png`、`home-dark.png`、`music-search.png`、`aggregate-search.png`、`telegram-channel.png`、`subscriptions.png`。**设置页与嗅探页被排除**：那两页必然带出本机代理端口与已登录站点名，不属于能公开的画面。每张发布前都用人眼读过一遍。
 > - **README 侧改动**：删掉「截图位（暂未上传）」/「Screenshot slot (deliberately empty)」两处占位，换成先声明「下面每一张都取自新解压、没用过的实例」，再接 2×2 图组（音乐搜索 / 聚合搜索 / Telegram 频道批量 / 订阅追踪）+ 深色模式一张；首屏徽章行下方加 `home-light.png` 作 hero。中英两份结构与图片一致，`alt` 各写成一句完整描述。
 > - **顺带修掉的文档缺陷**：英文版新加的两处内链写成 `#page-overview`、`#ui-themes`，而实际标题是 `The 16 pages` 与 `Themes`，已改为 `#the-16-pages`、`#themes`；校验脚本复查两份 `## ` 标题生成的锚点，站内锚点零死链，`<img>` 各 6 个、指向的文件全部存在、`alt` 无空或过短。
-> - **出包接线**：`.gitignore` 是默认拒绝式白名单，加了 `!/docs/` 才让截图进得了仓库；`pack_release.py` 的 `APP_DIRS` 加 `docs/screenshots`（现 4 项），`.png` 不在排除正则里，所以**下一次出包会把图一起带进包**（包内 README 的相对链接才指得到）。已发布的那只 v1.2.8 包内 README 仍是说明十五那版、带的是占位文字而不是图片链接，所以包内没有断图；本轮按老规矩**没有重出包**，是否现在就重出 v1.2.8 并重换 Release 资产等用户定。
+> - **出包接线**：`.gitignore` 是默认拒绝式白名单，加了 `!/docs/` 才让截图进得了仓库；`pack_release.py` 的 `APP_DIRS` 加 `docs/screenshots`（现 4 项），`.png` 不在排除正则里，所以**这一版包会把图一起带进包**（包内 README 的相对链接才指得到）。
+> - **随即重出包并换掉 Release 资产**（按用户确认，版本号仍是 v1.2.8）：`python pack_release.py --skip-runtime` 重出 `dist\MediaDownloader-1.2.8-portable.zip`，包内多出 `docs\screenshots\` 六张图；本条说明十六是出包之前写进 CHANGELOG 的，所以包里那份也带着它。Release `v1.2.8` 的资产走「先传临时名 → 轮询到 `uploaded` 并核对大小与 sha256 → 删旧资产 → 改名」的顺序，中间没有任何一刻 Release 没有可下载的包。
 
 ### 功能
 
