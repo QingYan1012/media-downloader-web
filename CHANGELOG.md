@@ -94,6 +94,8 @@
 > - **顺带查出并修掉的渲染与链接缺陷**：`</details>` 紧跟下一行内容时，CommonMark 会把紧随其后的 `## 标题` 吞进 HTML 块（17 处全中），标题在 GitHub 上变成裸文本 —— 已统一补空行；同一类问题还有 10 处标题前没有空行。锚点两处失效：`#启动`（3 处）与 `#下载与获取便携包`（1 处），分别改指 `#30-秒上手` 与 `#便携包里有什么`；英文侧对应 `#running-from-source`、`#getting-the-portable-package`。校验项：`<details>` / `</details>` 各 17、代码围栏 6 行成对、`## ` 标题 30 个且全部前面有空行、站内锚点零死链。
 > - **英文版与中文树一一对应**：同样的首屏四块、同样的 17 个折叠、同样的节序（Features / The 16 pages / Screenshots 可见，Download & queue … Contributing 折叠）。改动过程中一度把「The sidebar has 16 pages in 5 groups:」与「The app then serves …」两句挤掉，已按行数差异查出来补回，其余正文保持原样。
 > - **随包文档暂时落后于仓库**：这一轮只动 `README.md` 与 `README.en.md`，按用户决定**没有重出 v1.2.8 便携包**，所以包内那两份仍是说明十三的版本；下次真出版时文档会一并带上，出包后仍需按老规矩核包内文档 md5 与磁盘一致。
+>
+> 说明十五：2026-09-29 按用户要求把说明十四那轮文档**重进了包里** —— 版本号不变仍是 v1.2.8，`python pack_release.py --skip-runtime` 重出 `dist\MediaDownloader-1.2.8-portable.zip`，上一条末尾那句「包内文档仍是说明十三的版本」到此为止。现在包内 `README.md` / `README.en.md` / `CHANGELOG.md` / `LICENSE` 与磁盘 md5 逐字节一致（本条说明十五是出包之前写进 CHANGELOG 的，所以包里那份也带着它）。四道自检（内嵌 pip 就绪 / tkinter 在位 / 包内 pip 真装真卸 / 包内服务冒烟）与私密文件泄漏扫描逐条过；冒烟走 8791 端口，不撞本机在跑的 8765，试跑落下的 `config.json`、按天运行日志、`Downloads\`、`local_index\`、`__pycache__` 仍按老规矩在压缩前就地删净。仓库侧本轮只提交 `README.md` / `README.en.md` / `CHANGELOG.md` 三份文档，代码一行没动。
 
 ### 功能
 
