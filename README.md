@@ -8,7 +8,7 @@
 设置、Cookie、历史与下载内容全部留在程序所在文件夹，不上传到任何地方。
 
 [![License](https://img.shields.io/badge/License-GPL--3.0-blue)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-v1.2.8-informational)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-v1.2.9-informational)](CHANGELOG.md)
 [![Python](https://img.shields.io/badge/Python-3.12-green)](requirements.txt)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Docker-blueviolet)](#30-秒上手)
 [![Data](https://img.shields.io/badge/Data-100%25%20local-lightgrey)](#隐私)
@@ -34,7 +34,7 @@
 
 **Windows 免安装（推荐）**
 
-1. 下载 [Releases](https://github.com/QingYan1012/media-downloader-web/releases/latest) 里的 `MediaDownloader-1.2.8-portable.zip`（约 218 MB）。
+1. 下载 [Releases](https://github.com/QingYan1012/media-downloader-web/releases/latest) 里的 `MediaDownloader-1.2.9-portable.zip`（约 218 MB）。
 2. 解压到路径里不含中文与空格、且不在 `C:\Program Files` 下的目录。
 3. 双击 `启动.bat`，约 3 秒后自动打开 `http://127.0.0.1:8765`。
 
@@ -67,7 +67,7 @@ docker compose --profile aria2 up -d   # 可选：带 aria2
 
 | 方式 | 适合谁 | 怎么拿 | 装完之后 |
 | --- | --- | --- | --- |
-| **便携包（免安装，推荐）** | Windows，不想装 Python | 本仓库 [Releases](https://github.com/QingYan1012/media-downloader-web/releases/latest) 里的 `MediaDownloader-1.2.8-portable.zip`（约 218 MB） | 解压后双击 `启动.bat`，3 秒后自动打开 `http://127.0.0.1:8765`；包内自带 Python runtime、pip 与 FFmpeg / yt-dlp / N_m3u8DL-RE |
+| **便携包（免安装，推荐）** | Windows，不想装 Python | 本仓库 [Releases](https://github.com/QingYan1012/media-downloader-web/releases/latest) 里的 `MediaDownloader-1.2.9-portable.zip`（约 218 MB） | 解压后双击 `启动.bat`，3 秒后自动打开 `http://127.0.0.1:8765`；包内自带 Python runtime、pip 与 FFmpeg / yt-dlp / N_m3u8DL-RE |
 | **源码运行** | 已经有 Python 3.12 | `git clone` 后按[30 秒上手](#30-秒上手)一节装依赖 | 外部工具要自己放进 `tools/`，或在「设置 → 组件与依赖」点安装 |
 | **Docker** | 群晖 / 家用服务器 | `docker compose up -d --build`（可选 `--profile aria2`） | 见 [Dockerfile](Dockerfile) 与 [docker-compose.yml](docker-compose.yml) |
 
@@ -123,7 +123,7 @@ docker compose --profile aria2 up -d   # 可选：带 aria2
 - Telegram：`t.me/s/` 匿名列历史；用自己的账号会话批量下载私有频道里可访问的媒体；接入订阅追新。
 - 订阅追新四类源（RSS / 网页更新 / Telegram 频道 / 音乐歌单）定时扫描入队，每条订阅单设规则。
 - 通知三套：Telegram Bot、企业微信、Server酱，完成 / 失败 / 订阅各自独立开关。
-- 组件与依赖在程序里更新（含一键更新）、镜像站一键测速、运行日志记录每次页面动作并按天归档。
+- 组件与依赖在程序里更新（含一键更新、打开程序时自动检测上游版本）、镜像站一键测速、运行日志记录每次页面动作并按天归档。
 - 5 套主题色 × 明亮 / 暗色；全部数据只落本机。
 
 每项能力靠哪个引擎实现，见下面这张对照表与后面各节。
@@ -376,16 +376,17 @@ faster-whisper 转写、Edge-TTS 合成、Demucs 人声/伴奏分离、声纹说
 
 ## 组件与依赖：在程序里更新
 
-设置里每一项绿点（就绪）/ 红点（未安装）配一个按钮：工具从 GitHub 拉、Python 依赖走包内 pip 与镜像，失败自动换源。整批要处理的条目用「一键更新」一次排完。
+设置里每一项绿点（就绪）/ 红点（未安装）配一个按钮：工具从 GitHub 拉、Python 依赖走包内 pip 与镜像，失败自动换源。整批要处理的条目用「一键更新」一次排完。打开程序时会自动查一遍上游最新版，有得更新就弹一次提醒并在左侧「设置」标一个橙点（这个自动检测可以在卡上关掉）。
 
 <details>
-<summary>技术细节：zhconv / librosa / cryptg 各自不给会怎样、当前 / 随包 / 最新三个版本的来源、一键更新的批次规则与失败处理、numpy 上限由 numba 决定、PATH 一键添加的范围</summary>
+<summary>技术细节：zhconv / librosa / cryptg 各自不给会怎样、当前 / 随包 / 最新三个版本的来源、打开程序时的上游版本自动检测、一键更新的批次规则与失败处理、numpy 上限由 numba 决定、PATH 一键添加的范围</summary>
 
 设置 → 「组件与依赖」，每项绿点（就绪）/ 红点（未安装）配一个更新或安装按钮：
 
 - 工具（FFmpeg、yt-dlp、N_m3u8DL-RE）从 GitHub 拉，走设置里的镜像前缀，失败自动换源。
 - Python 依赖（musicdl、zhconv、mutagen、edge-tts、deep-translator、numpy、librosa、telethon、python-socks、cryptg、faster-whisper）走包内自带 pip 与设置里的 PyPI 镜像，失败回落到官方源与其它国内镜像。`zhconv` 只管一件事：跨平台按曲名匹配前把歌名与歌手统一成简体（匹配判据是「归一后精确相等」，繁體歌单在简体曲库里会一首也认不出，表现为「找不到」）；没装也能用，只是退回「繁體匹配不上」的旧行为。`librosa` 是「音频分析」要用的库（会连带装 numba / llvmlite）；`cryptg` 不给也能用，但 telethon 会退回纯 Python 加密，Telegram 相关操作明显变慢，启动日志里那两行 `Failed to load SSL library` / `cryptg module not installed` 说的就是这件事（v1.2.8 起的便携包已自带 cryptg，不必再点「安装」）。
 - **每行三个版本**：`当前` = 程序此刻在用的；`随包` = 便携包里原本带来的（只有在你更新过、与当前不一致时才显示）；`最新` = 上游最新版，点「查询上游最新版本」才联网获取。随包版本来自打包时写进包内的 `components_bundled.json`（记录包内 runtime 与 `tools/` 各是什么版本），源码运行没有这份清单，因而不会出现「随包」。上游最新版是问 pip 本人要的（`pip index versions`），所以设置里的 PyPI 镜像照样生效，结果缓存 10 分钟；FFmpeg 与 N_m3u8DL-RE 不在 PyPI，这两行没有 `最新`。查不到时那一行写明原因，不留空白。
+- **打开程序自动检测上游版本**：启动 3 秒后在后台线程查一遍（不挡启动、也不挡界面），结果缓存 10 分钟，同一张表反复刷新不会反复问 pip。确有可更新版本时弹窗提醒一次（每个浏览器会话只弹一次，之后只留橙点不再打扰），左侧「设置」同时标一个橙点；点弹窗里的「去组件与依赖」会切到设置页并滚到那张卡。两类不参与判定：没装上的（faster-whisper 这类是故意不随包发的，算进来就是每次开机催同一件事）、不在 PyPI 的 FFmpeg 与 N_m3u8DL-RE。卡上另有「立即检测」按钮（作废那 10 分钟缓存、真去问一次上游）和一个开关；关掉开关后不再自动查、也不再弹窗，改动要点「保存设置」，下次启动生效。接口是 `GET` / `POST /api/components/update-check`，`GET /api/components` 一并带回 `auto_check` 与本次检测结果。
 - **一键更新**：卡上按钮行的第一枚，把整批要处理的条目一次排完，不必一行一行点。它处理的是「没装上的」加上「点过「查询上游最新版本」且确实有新版的」——没查过版本时只补缺的，不会替你猜最新版；按钮下方一行会先写明本次会处理哪几项。点下去弹逐项清单（`安装 X（当前：未安装）` / `更新 Y：旧版 → 新版`），确认后**按表里的顺序一项一项跑**，不并发（pip 同时装两个包会互相踩）；进度与「上次一键更新：成功 N / M」显示在按钮下方，含 faster-whisper 时会连同模型一起下，可能耗时较久且占用数百 MB。某一项失败只记那一项并接着跑下一项，运行日志逐条写明用的哪个源、成功没有。已有批次在跑时再点会提示「已经有一批更新在跑」，不排队；选中的项里有本机不认识的，整批当场拒掉并点名是哪一项。
 - **numpy 能升到哪一版，由 numba 决定**：librosa 依赖 numba，而 numba 对 numpy 有上限（`numba 0.65.0` 要求 `numpy < 2.5`）。实测只把 numpy 从 2.4.6 升到 2.5.3 后，「语音 → 音频分析」和声纹说话人分离的每次调用都会当场失败，报 `Numba needs NumPy 2.4 or less. Got NumPy 2.5.`。`numba 0.67.0` 把上限放宽到 `numpy < 2.6`，所以这两个包要一起升。但「组件与依赖」的表里没有 numba 这一行，只能用 pip 单独升它；嫌麻烦就先把 numpy 排除在本次批次之外。这一条只咬「已经装过老 numba、又只升 numpy」的机器：全新装 librosa 时 pip 会自己配成对，而便携包两个都不带，装上即是新版。
 - 过程写在运行日志里（能看到用的哪个源、成功没有）。装完当前进程可能仍用内存里的旧版本，重启一次即可生效。

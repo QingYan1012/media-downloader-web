@@ -8,7 +8,7 @@ A media downloader and processor that runs entirely on your own machine: paste a
 Settings, cookies, history and downloaded files all stay in the folder the program runs from — nothing is uploaded anywhere.
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-v1.2.8-informational)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-v1.2.9-informational)](CHANGELOG.md)
 [![Python](https://img.shields.io/badge/Python-3.12-green)](requirements.txt)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Docker-blueviolet)](#get-started-in-30-seconds)
 [![Storage](https://img.shields.io/badge/Data-100%25%20local-lightgrey)](#privacy)
@@ -36,7 +36,7 @@ This tool does **not** bypass login walls, paywalls, DRM or human-verification c
 
 **Windows, no install (recommended)**
 
-1. Download `MediaDownloader-1.2.8-portable.zip` (~218 MB) from [Releases](https://github.com/QingYan1012/media-downloader-web/releases/latest).
+1. Download `MediaDownloader-1.2.9-portable.zip` (~218 MB) from [Releases](https://github.com/QingYan1012/media-downloader-web/releases/latest).
 2. Unpack it to a path with no non-ASCII characters and no spaces, and not under `C:\Program Files`.
 3. Double-click `启动.bat`; `http://127.0.0.1:8765` opens by itself after about 3 seconds.
 
@@ -71,7 +71,7 @@ Three ways to get running; pick one.
 
 | Route | Who it is for | How | After that |
 | --- | --- | --- | --- |
-| **Portable package (no install, recommended)** | Windows users who do not want Python | `MediaDownloader-1.2.8-portable.zip` (~218 MB) in this repository's [Releases](https://github.com/QingYan1012/media-downloader-web/releases/latest) | Unpack, double-click `启动.bat` (the launcher); `http://127.0.0.1:8765` opens in ~3 s. Bundles its own Python runtime **with pip**, plus FFmpeg / yt-dlp / N_m3u8DL-RE |
+| **Portable package (no install, recommended)** | Windows users who do not want Python | `MediaDownloader-1.2.9-portable.zip` (~218 MB) in this repository's [Releases](https://github.com/QingYan1012/media-downloader-web/releases/latest) | Unpack, double-click `启动.bat` (the launcher); `http://127.0.0.1:8765` opens in ~3 s. Bundles its own Python runtime **with pip**, plus FFmpeg / yt-dlp / N_m3u8DL-RE |
 | **Run from source** | You already have Python 3.12 | `git clone`, then [Get started in 30 seconds](#get-started-in-30-seconds) | Put ffmpeg / ffprobe / yt-dlp / N_m3u8DL-RE into `tools/`, or install them from Settings |
 | **Docker** | NAS / home server | `docker compose up -d --build` (optionally `--profile aria2`) | See [Dockerfile](Dockerfile) and [docker-compose.yml](docker-compose.yml) |
 
@@ -127,7 +127,7 @@ What the portable archive does and does not contain:
 - Telegram: anonymous `t.me/s/` history listing, batch downloads through your own account session, and subscription tracking.
 - Four subscription source types (RSS, web-page changes, Telegram channels, music playlists) scanned on a schedule, each with per-subscription rules.
 - Three notification channels — Telegram Bot, WeCom, ServerChan — each with separate finished / failed / subscription switches.
-- Components and dependencies update from inside the app (including a one-click batch update), mirror probing, and an operation log that records every UI action and rotates daily.
+- Components and dependencies update from inside the app (one-click batch update, plus an automatic upstream-version check when the app opens), mirror probing, and an operation log that records every UI action and rotates daily.
 - 5 accent themes × light / dark; every bit of data stays local.
 
 Which engine backs each capability area is in the table below and in the sections that follow.
@@ -378,16 +378,17 @@ The third-party sniffing extension [cat-catch](https://github.com/xifangczy/cat-
 
 ## Components & dependencies: updated from inside the app
 
-Every row shows a green or red dot with an install / update button: tools come from GitHub, Python packages through the bundled pip and a mirror, with automatic fallback. “Update all” runs the whole batch in one go.
+Every row shows a green or red dot with an install / update button: tools come from GitHub, Python packages through the bundled pip and a mirror, with automatic fallback. “Update all” runs the whole batch in one go. On startup the app also checks upstream versions automatically and, when something is actually newer, shows the reminder once and marks “Settings” with an orange dot (this auto-check can be turned off on the card).
 
 <details>
-<summary>Details: what breaks without zhconv / librosa / cryptg, where the current / bundled / latest versions come from, how a batch update is ordered and how failures are handled, why numba caps numpy, the scope of the one-click PATH button</summary>
+<summary>Details: what breaks without zhconv / librosa / cryptg, where the current / bundled / latest versions come from, the upstream-version auto-check at startup, how a batch update is ordered and how failures are handled, why numba caps numpy, the scope of the one-click PATH button</summary>
 
 Settings → "Components & dependencies": every item shows a green dot (ready) or red dot (not installed) with an update or install button.
 
 - Tools (FFmpeg, yt-dlp, N_m3u8DL-RE) are fetched from GitHub through the mirror prefix in Settings, switching sources automatically on failure.
 - Python dependencies (musicdl, zhconv, mutagen, edge-tts, deep-translator, numpy, librosa, telethon, python-socks, cryptg, faster-whisper) install through the pip bundled in the package and the PyPI mirror in Settings, falling back to the official index and other regional mirrors on failure. `zhconv` does one thing: it normalizes song titles and artists to Simplified Chinese before cross-platform title matching (the matching criterion is "exactly equal after normalization", so a Traditional-Chinese playlist matches nothing in a Simplified catalog and shows up as "not found"). Without it the app still works; you just get the old "Traditional does not match" behaviour. `librosa` is what "audio analysis" needs (it pulls numba / llvmlite). `cryptg` is optional, but without it telethon falls back to pure-Python cryptography and Telegram operations become noticeably slow — those two startup log lines `Failed to load SSL library` / `cryptg module not installed` are exactly that (portable packages from v1.2.8 onwards bundle cryptg, so no install needed).
 - **Three versions per row**: `current` = what the running process uses; `bundled` = what shipped inside the portable package (shown only after you updated something, so it differs from current); `latest` = the upstream version, fetched only when you press "check upstream versions". The bundled versions come from `components_bundled.json`, written into the package at build time (it records the runtime and each `tools/` binary). Running from source has no such manifest, so "bundled" simply does not appear. "Latest" is asked of pip itself (`pip index versions`), so the PyPI mirror in Settings applies, and results are cached for 10 minutes; FFmpeg and N_m3u8DL-RE are not on PyPI, so those two rows have no `latest`. When it cannot be determined, the row states why rather than leaving a blank.
+- **Auto-check on startup**: three seconds after launch a background thread asks upstream once (it blocks neither startup nor the UI) and caches the result for 10 minutes, so refreshing the same table does not keep asking pip. Only when something really is newer does a reminder pop up — once per browser session; after that the orange dot is left alone and nothing nags you again — and “Settings” in the sidebar gets an orange dot too. Clicking “Go to components & dependencies” in the popup switches to the settings page and scrolls to that card. Two groups are excluded from the judgement: items that are not installed at all (faster-whisper is deliberately not shipped, so counting it would nag about the same thing at every boot), and FFmpeg and N_m3u8DL-RE, which are not on PyPI. The card also has a “Check now” button (it discards the 10-minute cache and really asks upstream) and a switch; with the switch off there is no automatic check and no popup. The change needs “Save settings” and takes effect on the next start. API: `GET` / `POST /api/components/update-check`; `GET /api/components` also returns `auto_check` plus the current check result.
 - **Update all**: the first button in the card's button row queues the whole batch at once instead of clicking row by row. It handles "not installed" plus "checked upstream and genuinely newer" — with no version check performed it only fills in what is missing, never guessing at latest versions; a line under the button states in advance which items this run covers. Clicking opens an item-by-item list (`install X (current: not installed)` / `update Y: old → new`); after confirmation it runs **strictly sequentially**, never concurrently (two pip installs would trample each other). Progress and "last batch update: N / M succeeded" show under the button; if faster-whisper is included the models come with it, which can take a while and occupy hundreds of MB. A failure affects only that item and the batch continues, with the source used and the outcome logged per item. Pressing the button while a batch is running says "a batch is already running" and does not queue. If a selected item is not recognized on this machine, the whole batch is rejected on the spot and names the item.
 - **How far numpy can go is decided by numba**: librosa depends on numba, and numba caps numpy (`numba 0.65.0` requires `numpy < 2.5`). In testing, upgrading numpy alone from 2.4.6 to 2.5.3 broke every call to "voice → audio analysis" and voiceprint diarization with `Numba needs NumPy 2.4 or less. Got NumPy 2.5.`. `numba 0.67.0` raises the cap to `numpy < 2.6`, so the two packages must be upgraded together. But numba has no row in the components table, so it has to be upgraded with pip directly; if that is a hassle, leave numpy out of this batch. This only bites machines that already had an older numba and then upgraded numpy alone: a fresh librosa install lets pip pair them correctly, and the portable package ships neither, so installing gets current versions.
 - The whole process is visible in the operation log (which source was used, whether it worked). The running process may still hold the old version in memory; restart to apply.

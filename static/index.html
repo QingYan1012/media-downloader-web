@@ -542,6 +542,17 @@
       justify-content: center;
     }
     .nav-item.active .nav-badge { background: rgba(255,255,255,.28); }
+    /* 侧栏「设置」上的橙点：只表示「组件有可更新版本」，进页面不消，查过没新版才消 */
+    .nav-dot {
+      margin-left: auto;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #f59e0b;
+      box-shadow: 0 0 0 3px rgba(245, 158, 11, .18);
+      flex: none;
+    }
+    .nav-badge + .nav-dot { margin-left: 6px; }
     /* 防止下拉被裁切 */
     .el-select-dropdown,
     .el-popper {
@@ -557,6 +568,10 @@
       gap: var(--gap);
     }
     .row--tight, .chip-row { gap: var(--gap-tight); }
+    /* 一排 el-button 会踩两个坑：Element 给相邻按钮补的 margin-left 与 gap 叠成两倍间距，
+       换行后每行开头还凭空缩进这 12px。抹掉它，行首才和上方标题左对齐。 */
+    .row--flush { gap: var(--gap-loose); }
+    .row--flush .el-button + .el-button { margin-left: 0; }
     /* 纵向堆叠容器：同一组里的行更紧，组与组之间用 --row-mt */
     .stack {
       display: flex;
@@ -1553,6 +1568,7 @@
             >
               <i :data-lucide="item.icon" class="nav-lucide"></i><span>{{ item.label }}</span>
               <span v-if="navBadge(item.key)" class="nav-badge">{{ navBadge(item.key) }}</span>
+              <span v-if="navDot(item.key)" class="nav-dot" :title="navDot(item.key)"></span>
             </div>
           </template>
         </div>
@@ -1907,7 +1923,7 @@
               </div>
               <div v-if="mediaInfo.quality_presets && mediaInfo.quality_presets.length" style="margin-top:18px">
                 <div class="section-title">按清晰度选择（基于实际 format）</div>
-                <div class="row row--tight">
+                <div class="row row--flush">
                   <el-button
                     v-for="(qp, qi) in mediaInfo.quality_presets"
                     :key="qi"
@@ -4197,13 +4213,21 @@
                   <div class="hint" style="margin-top:8px">模型缓存：Whisper/models。HF Token 可在 huggingface.co/settings/tokens 免费创建。保存设置后再单击更新。</div>
                 </el-form>
               </div>
-              <div class="card">
+              <div id="comp-card" class="card">
                 <div class="section-title">组件与依赖</div>
                 <div class="hint" style="margin-bottom:10px;line-height:1.5">
                   绿点=就绪，红点=未安装。单击右侧按钮由程序联网获取：工具（FFmpeg / yt-dlp / N_m3u8DL-RE）使用 GitHub 镜像，
                   Python 依赖使用 pip 镜像；两者均在上方「网络与并发」中设置，失败会自动换源重试。进度见「运行日志」。<br>
                   版本口径：<b>当前</b> = 程序此刻在用的；<b>随包</b> = 便携包里原本带来的（只有在你更新过、与当前不一致时才显示）；
                   <b>最新</b> = 上游最新版，点下方「查询上游最新版本」才联网获取（FFmpeg 与 N_m3u8DL-RE 不在 PyPI，查不到最新版）。
+                </div>
+                <div class="row row--tight" style="margin-bottom:10px">
+                  <el-switch size="small" v-model="settings.components_auto_check"></el-switch>
+                  <span class="hint" style="margin:0">打开程序时自动检测组件更新（有可更新版本时弹窗提醒一次，并在左侧「设置」标橙点；改动需点「保存设置」，下次启动生效）</span>
+                </div>
+                <div class="row row--tight" style="margin-bottom:10px">
+                  <el-button size="small" :loading="compCheckBusy" @click="startCompCheck(true)">立即检测</el-button>
+                  <span class="hint" style="margin:0">{{ compCheckText }}</span>
                 </div>
                 <div class="env-list">
                   <div class="comp-item" v-for="it in components" :key="it.key">
@@ -4489,7 +4513,7 @@
           if (rest.length) gs.push({ title: '其他', items: rest });
           return gs;
         });
-        const appVersion = 'v1.2.8 · Element Plus';
+        const appVersion = 'v1.2.9 · Element Plus';
         const pageTitle = computed(() => {
           const m = { home: '下载解析', sniff: '网页嗅探', queue: '下载队列', info: '媒体信息', search: '聚合搜索', music: '音乐搜索', tg: 'Telegram 频道批量', voice: '语音工具', subs: '订阅追踪', favs: '收藏关注', live: '直播录制', library: '资源库', files: '文件浏览', history: '历史记录', log: '运行日志', settings: '设置' };
           return m[page.value] || '';
@@ -4645,6 +4669,7 @@
           po_provider_url: 'http://127.0.0.1:4416',
           github_mirror: 'https://ghproxy.net/',
           pip_mirror: 'https://pypi.tuna.tsinghua.edu.cn/simple',
+          components_auto_check: true,
           sub_first_download_n: 0,
           local_ai_transcribe: false,
           local_ai_translate: false,
@@ -5386,6 +5411,7 @@
           '/api/tasks/start-later': '启动稍后下载的任务',
           '/api/config': '保存设置',
           '/api/components/update-all': '一键更新组件与依赖',
+          '/api/components/update-check': '检测组件上游版本',
           '/api/open-folder': '打开下载目录',
           '/api/browse': '选择本机文件或文件夹',
           '/api/test-cookie': '检测浏览器登录凭证可用性',
@@ -5607,11 +5633,143 @@
             const d = await api('/api/components' + (askedLatest.value ? '?latest=1' : ''));
             components.value = d.items || [];
             compInfo.value = d || {};
+            applyCompCheck(d.update_check);
           } catch (e) {
             ElementPlus.ElMessage.error('组件状态读取失败: ' + e.message);
           } finally {
             if (withLatest) latestBusy.value = false;
           }
+        }
+
+        /* ---- 组件上游版本自动检测：查询在后端后台线程跑，界面读状态、缺一次就补发 ---- */
+        const COMP_POPUP_KEY = 'mdCompUpdatePopupShown';
+        const compUpdates = ref([]);   // 确有可更新版本的组件；未安装的和查不到上游版的都不算
+        const compCheckAt = ref('');
+        const compCheckError = ref('');
+        const compCheckBusy = ref(false);
+        let compPopupShown = false;
+
+        function navDot(k) {
+          if (k !== 'settings' || !compUpdates.value.length) return '';
+          return compUpdates.value.length + ' 个组件有可更新版本，见「设置 → 组件与依赖」';
+        }
+
+        const compCheckText = computed(() => {
+          if (compCheckBusy.value) return '正在联网查询上游最新版本…';
+          if (compCheckError.value) return '上次检测失败：' + compCheckError.value;
+          if (!compCheckAt.value) return '尚未检测上游版本';
+          const at = compCheckAt.value.slice(5);  // 去掉年份，界面里只留「月-日 时:分:秒」
+          if (!compUpdates.value.length) return `最近检测 ${at}：已在用组件都是最新版本`;
+          const names = compUpdates.value.map((u) => u.label.split('（')[0]);
+          const shown = names.slice(0, 3).join('、') + (names.length > 3 ? ` 等 ${names.length} 项` : '');
+          return `最近检测 ${at}：${shown} 有可更新版本，点各行可逐项更新`;
+        });
+
+        // 自动检测已经拿到最新版，直接补进表格的「最新」列，不用再点一次「查询上游最新版本」
+        function mergeCompLatest() {
+          const map = {};
+          (compUpdates.value || []).forEach((u) => { map[u.key] = u.latest; });
+          (components.value || []).forEach((it) => { if (!it.latest && map[it.key]) it.latest = map[it.key]; });
+        }
+
+        function applyCompCheck(st) {
+          if (!st) return;
+          compUpdates.value = st.available || [];
+          compCheckAt.value = st.finished || '';
+          compCheckError.value = st.error || '';
+          mergeCompLatest();
+        }
+
+        async function fetchCompCheck() {
+          const d = await api('/api/components/update-check', { noLog: true });
+          applyCompCheck(d);
+          return d;
+        }
+
+        // 一次查询要两三秒，界面每 1.5 秒读一次状态，最多等 90 秒（后端还在跑，下次打开能看到）
+        async function waitCompCheck() {
+          for (let i = 0; i < 60; i++) {
+            await new Promise((r) => setTimeout(r, 1500));
+            try {
+              const d = await fetchCompCheck();
+              if (d.status !== 'running') return d;
+            } catch (_) { return null; }
+          }
+          return null;
+        }
+
+        async function startCompCheck(fromUser) {
+          compCheckBusy.value = true;
+          let d = null;
+          try {
+            d = await api('/api/components/update-check', {
+              method: 'POST',
+              body: JSON.stringify({ force: !!fromUser }),
+              noLog: !fromUser,
+              uiName: fromUser ? '组件与依赖：点「立即检测」联网查询上游版本' : undefined,
+            });
+            applyCompCheck(d);
+            if (d.status === 'running') d = await waitCompCheck();
+            if (fromUser) {
+              if (!d) ElementPlus.ElMessage.warning('上游版本查询未在预期时间内返回，可稍后再点「立即检测」');
+              else if (compCheckError.value) ElementPlus.ElMessage.error('检测失败：' + compCheckError.value);
+              else if (compUpdates.value.length) {
+                ElementPlus.ElMessage.success(`检测完成：${compUpdates.value.length} 个组件有可更新版本`);
+              } else ElementPlus.ElMessage.success('检测完成：已在用组件都是最新版本');
+            }
+          } catch (e) {
+            ElementPlus.ElMessage.error(String(e.message || e));
+            compCheckBusy.value = false;
+            return;
+          }
+          compCheckBusy.value = false;
+          if (d && (fromUser || d.auto_check)) maybePopupCompUpdates(fromUser);
+        }
+
+        function maybePopupCompUpdates(fromUser) {
+          if (!compUpdates.value.length) return;
+          if (!fromUser) {
+            // 自动检测每次浏览器会话只弹一次，之后靠侧栏「设置」上的橙点提醒，不再打扰
+            if (compPopupShown) return;
+            compPopupShown = true;
+            try {
+              if (sessionStorage.getItem(COMP_POPUP_KEY)) return;
+              sessionStorage.setItem(COMP_POPUP_KEY, '1');
+            } catch (_) {}
+          }
+          const rows = compUpdates.value.map((u) => `<li><b>${escHtml(u.label)}</b>：`
+            + `${escHtml(u.current)} → ${escHtml(u.latest)}</li>`);
+          ElementPlus.ElMessageBox.confirm(
+            `<div style="margin-bottom:6px">以下组件有可更新版本：</div>`
+            + `<ul style="margin:0;padding-left:18px;line-height:1.7">${rows.join('')}</ul>`
+            + `<div style="margin-top:8px">进入「设置 → 组件与依赖」后可逐项更新，或点「一键更新」批量处理。`
+            + `未安装的组件不计入本提醒；FFmpeg 与 N_m3u8DL-RE 不在 PyPI，查不到它们的最新版。</div>`,
+            `${compUpdates.value.length} 个组件有可更新版本`,
+            { dangerouslyUseHTMLString: true, confirmButtonText: '去组件与依赖', cancelButtonText: '稍后', type: 'warning' }
+          ).then(() => {
+            logAction('弹窗跳转：设置 → 组件与依赖');
+            page.value = 'settings';
+            // 切页时 .content 正在放 translateY 入场动画，这段时间里 smooth 滚动会被浏览器静默丢弃，只用瞬时滚动
+            setTimeout(() => {
+              const el = document.getElementById('comp-card');
+              if (el) el.scrollIntoView({ block: 'start' });
+            }, 120);
+          }).catch(() => {});
+        }
+
+        async function bootCompCheck() {
+          try {
+            let d = await fetchCompCheck();
+            if (d.status === 'idle' && d.auto_check) {
+              // 开关开着但后端那次没跑起来（比如刚把开关打开）：这里补发一次，查询本身在后台
+              d = await api('/api/components/update-check', {
+                method: 'POST', body: JSON.stringify({ force: false }), noLog: true,
+              });
+              applyCompCheck(d);
+            }
+            if (d.status === 'running') d = await waitCompCheck();
+            if (d && d.auto_check) maybePopupCompUpdates(false);
+          } catch (_) {}
         }
 
         async function setEnvPath(action) {
@@ -9538,6 +9696,7 @@
           await loadConfig();
           await loadStatus();
           ensureMusicStatus().catch(() => {});   // 一进页面就知道 musicdl 是否内置，决定「安装」按钮显不显示
+          bootCompCheck();                        // 读后端的上游版本检测结果：有新版弹一次，侧栏「设置」标橙点
           try {
             if ('Notification' in window && Notification.permission === 'default') {
               Notification.requestPermission();
@@ -9622,7 +9781,7 @@
         });
 
         return {
-          page, navs, navGroups, CREDITS, appVersion, queueStat, subNewTotal, navBadge, pageTitle, urlText, urlPasteStat, extractUrls, friendlyError, glossaryStat, checkGlossary, exportBilingual, exportBilingualSelected, pipelineRow, pipelineView, showPipeline, closePipeline, refreshPipeline, rerunStage, pipeStatusLabel, pipeStatusType, opts, videoQualities, audioQualities, formats, codecOptions,
+          page, navs, navGroups, CREDITS, appVersion, queueStat, subNewTotal, navBadge, navDot, pageTitle, urlText, urlPasteStat, extractUrls, friendlyError, glossaryStat, checkGlossary, exportBilingual, exportBilingualSelected, pipelineRow, pipelineView, showPipeline, closePipeline, refreshPipeline, rerunStage, pipeStatusLabel, pipeStatusType, opts, videoQualities, audioQualities, formats, codecOptions,
           pagers, favSort, onFavSortChange, musicSort, onMusicSortChange, tgSort, onTgSortChange,
           subLangOptions, subLangList, selectAllSubLangs, clearSubLangs, toggleSubLang,
           selectedIds, selectAll, queuePaused, taskSort, sseOn, toggleSelect, toggleSelectAll,
@@ -9670,6 +9829,7 @@
           loadStatus, checkEnv, updateYtdlp, updateFfmpeg,
           components, compInfo, updatingComp, latestBusy, verCmp, loadComponents, updateComponent, pathBusy, setEnvPath,
           compAll, compAllBusy, compTargets, compAllSummary, updateAllComponents,
+          compUpdates, compCheckBusy, compCheckText, startCompCheck,
           loadHistory, loadLogs, clearHistory, clearLogs, openLogDir, logLoc, saveSettings, saveAcoustid,
           mirrorOpts, mirrorProbing, mirrorLabel, mirrorHint, probeMirrors,
           netInfo, netBusy, loadNetInfo, netVerdictText, netOverrideValue, setProxyOverride,

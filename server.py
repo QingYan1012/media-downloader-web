@@ -2899,6 +2899,7 @@ class ConfigManager:
         "yt_player_clients": "default,web_safari,tv,android,ios",  # 从左到右回退，被拒时换下一个
         "github_mirror": "https://ghproxy.net/",  # GitHub/HF 下载镜像前缀，空=直连
         "pip_mirror": "https://pypi.tuna.tsinghua.edu.cn/simple",  # 程序内 pip 更新依赖的镜像源，空=官方
+        "components_auto_check": True,  # 打开程序时自动查一遍上游最新版，有得更新就在侧栏「设置」标橙点并弹窗
         # 订阅首次可下最近 N 条（0=只记 ID）
         "sub_first_download_n": 0,
 
@@ -7425,6 +7426,7 @@ class ConfigBody(BaseModel):
     yt_player_clients: Optional[str] = None
     github_mirror: Optional[str] = None
     pip_mirror: Optional[str] = None
+    components_auto_check: Optional[bool] = None
     sub_first_download_n: Optional[int] = None
     named_queues: Optional[list] = None
     concurrent_fragments: Optional[int] = None
@@ -8952,9 +8954,8 @@ def latest_versions_cached(mirror: str) -> dict:
     return data
 
 
-@app.get("/api/components")
-def api_components(latest: str = ""):
-    """设置页「组件与依赖」：随包版本 / 当前版本 /（点了「查询最新版本」才有）上游最新版。"""
+def _component_rows(lv: dict, manifest: dict) -> list:
+    """拼「组件与依赖」那张表：当前版本现取，上游最新版由调用方传进来（传空就一律留白）。"""
     ff = str(ffmpeg_mgr.version() or "")
     ff_ok = bool(ffmpeg_mgr.find(ffmpeg_mgr.manual_path))
     ytd = str(engine.check_ytdlp() or "")
@@ -8983,13 +8984,6 @@ def api_components(latest: str = ""):
         v = pkg_update.installed_version(p["name"])
         items.append({"key": p["name"], "label": p["label"], "tool": "", "pkg": p["name"],
                       "active": v or "未安装", "ok": bool(v), "update": "/api/update/pkg"})
-    manifest = bundled_manifest()
-    lv: dict = {}
-    if latest:
-        try:
-            lv = latest_versions_cached(str(cfg.data.get("pip_mirror") or ""))
-        except Exception as e:
-            log_mgr.log(f"上游版本查询失败：{str(e)[:160]}", "warning")
     for it in items:
         it["bundled"] = _bundled_version(manifest, it)
         it["latest"] = ""
@@ -8998,8 +8992,21 @@ def api_components(latest: str = ""):
         if row:
             it["latest"] = str(row.get("version") or "")
             it["latest_note"] = "" if it["latest"] else str(row.get("error") or "")
+    return items
+
+
+@app.get("/api/components")
+def api_components(latest: str = ""):
+    """设置页「组件与依赖」：随包版本 / 当前版本 /（点了「查询最新版本」才有）上游最新版。"""
+    lv: dict = {}
+    if latest:
+        try:
+            lv = latest_versions_cached(str(cfg.data.get("pip_mirror") or ""))
+        except Exception as e:
+            log_mgr.log(f"上游版本查询失败：{str(e)[:160]}", "warning")
+    manifest = bundled_manifest()
     return {
-        "items": items,
+        "items": _component_rows(lv, manifest),
         "env_path": env_path_status(),
         "pip": pkg_update.pip_available(),
         "pip_version": pkg_update.pip_version(),
@@ -9011,7 +9018,121 @@ def api_components(latest: str = ""):
         "github_mirror": str(cfg.data.get("github_mirror") or ""),
         "pip_mirrors": [m for m in pkg_update.PIP_MIRRORS if m],
         "update_all": dict(_COMP_ALL),
+        "auto_check": bool(cfg.data.get("components_auto_check")),
+        "update_check": _comp_check_state(),
     }
+
+
+def _ver_seg(s: str) -> list:
+    """取版本号里第一段数字（'2026.8.19 (local)'、'未安装' 都要能进这里）。"""
+    m = re.search(r"\d+(?:\.\d+)*", str(s or ""))
+    return [int(x) for x in m.group(0).split(".")] if m else []
+
+
+def _ver_newer(current: str, latest: str) -> bool:
+    """上游版是否比本机版新。两侧都对齐补零后逐段比，全等则不算有新版。"""
+    a, b = _ver_seg(current), _ver_seg(latest)
+    if not b:
+        return False
+    if not a:
+        return True
+    for i in range(max(len(a), len(b))):
+        d = (a[i] if i < len(a) else 0) - (b[i] if i < len(b) else 0)
+        if d:
+            return d < 0
+    return False
+
+
+# 打开程序就自动查一遍上游版本：查一次要两三秒，绝不能挡在启动路径上，
+# 所以只放后台线程跑，界面拿到的永远是「状态 + 上次结果」。
+_COMP_CHECK: Dict[str, Any] = {"status": "idle", "started": "", "finished": "",
+                               "available": [], "error": ""}
+_COMP_CHECK_LOCK = threading.Lock()
+
+
+def _comp_check_state() -> dict:
+    with _COMP_CHECK_LOCK:
+        st = dict(_COMP_CHECK)
+    st["available"] = list(st["available"])
+    return st
+
+
+def _comp_check_with_flag() -> dict:
+    """状态里始终带上开关，界面据此决定要不要自动弹窗。"""
+    return {"auto_check": bool(cfg.data.get("components_auto_check")), **_comp_check_state()}
+
+
+def _comp_available_updates(rows: list) -> list:
+    """挑出确有可更新版本的组件。
+
+    没装上的不算「有更新」：faster-whisper 这类是故意不随包发的，把它算进来就会每次开机
+    都弹窗催装同一个东西。不在 PyPI 的（FFmpeg / N_m3u8DL-RE）没有上游版可比，同样跳过。
+    """
+    out = []
+    for it in rows:
+        if not it.get("pkg") or not it.get("ok"):
+            continue
+        latest = str(it.get("latest") or "")
+        if latest and _ver_newer(str(it.get("active") or ""), latest):
+            out.append({"key": it["key"], "label": it["label"],
+                        "current": str(it.get("active") or ""), "latest": latest})
+    return out
+
+
+def _comp_check_worker() -> None:
+    try:
+        lv = latest_versions_cached(str(cfg.data.get("pip_mirror") or ""))
+        available = _comp_available_updates(_component_rows(lv, bundled_manifest()))
+        with _COMP_CHECK_LOCK:
+            _COMP_CHECK.update(
+                status="done",
+                finished=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                available=available, error="")
+        log_mgr.log(f"[组件] 检测上游版本：{len(available)} 个组件有可更新版本"
+                    if available else "[组件] 检测上游版本：已在用组件都是最新")
+    except Exception as e:
+        with _COMP_CHECK_LOCK:
+            _COMP_CHECK.update(
+                status="error",
+                finished=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                error=f"{type(e).__name__}: {str(e)[:160]}")
+        log_mgr.log(f"[组件] 检测上游版本失败：{type(e).__name__}: {str(e)[:160]}", "warning")
+
+
+def _comp_check_start(force: bool = False) -> dict:
+    """起一次检测；已经在跑就直接复用那一次，界面轮询时不会把同一个查询打很多遍。"""
+    with _COMP_CHECK_LOCK:
+        if _COMP_CHECK["status"] != "running":
+            _COMP_CHECK["status"] = "running"
+            _COMP_CHECK["started"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            _COMP_CHECK["error"] = ""
+            run = True
+        else:
+            run = False
+    if run:
+        if force:
+            _latest_cache["ts"] = 0.0  # 「立即检测」要看真实上游，不许吃 10 分钟前的缓存
+        threading.Thread(target=_comp_check_worker, daemon=True).start()
+    return _comp_check_with_flag()
+
+
+@app.get("/api/components/update-check")
+def api_components_update_check_get():
+    return _comp_check_with_flag()
+
+
+class CompCheckBody(BaseModel):
+    force: bool = False
+    kick: bool = True
+
+
+@app.post("/api/components/update-check")
+def api_components_update_check(body: CompCheckBody = None):
+    """界面（或启动线程）用来触发一次上游版本检测：立即返回，结果靠后续 GET 轮。"""
+    body = body or CompCheckBody()
+    if not body.kick:
+        return _comp_check_with_flag()
+    return _comp_check_start(bool(body.force))
 
 
 # 「一键更新」：一次只跑一批，批内串行 —— pip 并发装会互相踩，GitHub 大文件同时下也没意义
@@ -15626,6 +15747,18 @@ def main():
             log_mgr.log(f"启动时刷新直播监控失败: {e}", "warning")
 
     threading.Thread(target=_boot_live_monitors, daemon=True).start()
+
+    # 打开程序就查一遍组件上游版本：查一次要两三秒，放后台线程，界面只读结果
+    def _boot_component_check():
+        try:
+            time.sleep(3)  # 等接口与配置就绪，别把查询压在启动路径上
+            if not cfg.data.get("components_auto_check"):
+                return
+            _comp_check_start()
+        except Exception as e:
+            log_mgr.log(f"启动时自动检测组件更新失败: {e}", "warning")
+
+    threading.Thread(target=_boot_component_check, daemon=True).start()
     host = os.environ.get("MEDIADOWNLOADER_HOST") or "127.0.0.1"
     try:
         port = int(os.environ.get("MEDIADOWNLOADER_PORT") or 8765)

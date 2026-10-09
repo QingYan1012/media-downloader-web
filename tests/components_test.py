@@ -1,4 +1,4 @@
-r"""组件页三版本 + 入队前 preflight 的离线自检。
+r"""组件页三版本 + 入队前 preflight + 上游版本自动检测的离线自检。
 
 全程不联网、不起服务、不碰 config.json：随包清单指向 Temp 文件，依赖状态与 pip 查询都用假对象顶掉。
 反向验证同样做了 —— 依赖齐全时必须一条错都不报，否则「检查通过」只是空跑。
@@ -536,6 +536,232 @@ try:
 finally:
     S._COMP_ALL.update({"running": False, "total": 0, "done": 0, "current": "", "results": [], "started": ""})
     S._COMP_ALL.update(_real_comp_all)
+
+# ---------------------------------------------------------------- 6. 打开程序时的自动检测
+print("== G. 上游版本自动检测：判定口径、后台跑法与接口 ==")
+
+# G0 版本比较器：这套规则必须和界面里的 verCmp 一致（'2026.8.19 (local)'、'未安装' 都要能比）
+ck("G0a 上游更高算有新版", S._ver_newer("2026.8.19 (local)", "2026.9.1") is True)
+ck("G0b 版本相同不算有新版", S._ver_newer("2.13.11", "2.13.11") is False)
+ck("G0c 上游反而更旧（本机已自行升过）不算有新版", S._ver_newer("1.48.1", "1.47.0") is False)
+ck("G0d 段数不等时补零比较：1.2 < 1.2.3", S._ver_newer("1.2", "1.2.3") is True)
+ck("G0e 反过来 1.2.3 不比 1.2 新", S._ver_newer("1.2.3", "1.2") is False)
+ck("G0f 本机没版本号（未安装）时上游版就是新的", S._ver_newer("未安装", "1.2.0") is True)
+ck("G0g 上游没版本号一律不给结论（不许拿'未安装'当最新版）", S._ver_newer("1.0", "") is False)
+ck("G0h 反向验证：把两串写成同一串时判定为假（证明比的是数字不是字符串真假）",
+   S._ver_newer("2026.9.1", "2026.9.1") is False and S._ver_newer("2026.9.10", "2026.9.9") is False)
+
+# 真实 PIP_PACKAGES 里就有 yt-dlp：tools\ 的 exe 与 pip 包是两行、同一个 pkg 名，判定要各算各的
+PIP3 = [{"name": "yt-dlp", "label": "yt-dlp Python 包（tools\\ 里没有 exe 时才用它）"},
+        {"name": "musicdl", "label": "musicdl（音乐搜索）"},
+        {"name": "mutagen", "label": "mutagen"},
+        {"name": "nohelib", "label": "nohelib（没装的）"},
+        {"name": "nolatest", "label": "nolatest（查不到上游版）"}]
+INSTALLED = {"musicdl": "2.13.11", "mutagen": "1.48.1", "nohelib": "", "nolatest": "1.0.0",
+             "yt-dlp": ""}
+LATEST = {"musicdl": "2.13.11", "mutagen": "1.47.0", "nohelib": "3.0.0",
+          "yt-dlp": "2026.9.1", "faster-whisper": "1.2.0"}
+GLATEST_CALLS: list[int] = []
+GSLOW = [0.0]
+GLOGS: list[tuple] = []
+
+
+def g_stub_pkg(latest_map=None):
+    lm = latest_map or LATEST
+
+    def _latest(names, mirror=""):
+        GLATEST_CALLS.append(1)
+        if GSLOW[0]:
+            time.sleep(GSLOW[0])
+        return {n: {"version": lm.get(n, ""), "source": "official",
+                    "error": "" if lm.get(n) else "没查到"} for n in names}
+
+    return type("PU", (), {
+        "PIP_PACKAGES": PIP3,
+        "PIP_MIRRORS": P.PIP_MIRRORS,
+        "installed_version": staticmethod(lambda n: INSTALLED.get(n, "")),
+        "pip_available": staticmethod(lambda: True),
+        "pip_version": staticmethod(lambda: "24.0"),
+        "latest_versions": staticmethod(_latest),
+    })()
+
+
+def g_env(auto=True, latest_map=None, boom=False):
+    """把 G 段用到的真对象全部换成桩，返回 (要还原的原件, 恢复函数)。"""
+    keep = (S.ffmpeg_mgr, S.engine, S.whisper_status, S.n_m3u8dl_version, S.cfg, S.pkg_update, S.log_mgr)
+    keep_cache = dict(S._latest_cache)
+    keep_state = dict(S._COMP_CHECK)
+
+    def _restore():
+        S.ffmpeg_mgr, S.engine, S.whisper_status, S.n_m3u8dl_version, S.cfg, S.pkg_update, S.log_mgr = keep
+        S._latest_cache.update(keep_cache)
+        S._COMP_CHECK.clear()
+        S._COMP_CHECK.update(keep_state)
+        GSLOW[0] = 0.0
+
+    S.ffmpeg_mgr = FakeFFmpeg()
+    S.engine = FakeEngine()
+    S.whisper_status = lambda: {"faster_whisper": False, "cli": "", "label": "未安装"}
+    S.n_m3u8dl_version = lambda: ""
+    S.cfg = FakeCfg({"pip_mirror": "", "github_mirror": "",
+                     "components_auto_check": auto, "download_dir": str(TMP)})
+    S.pkg_update = g_stub_pkg(latest_map)
+    S.log_mgr = FakeLogMgr()
+    LOGS.clear()
+    S._latest_cache.update(ts=0.0, mirror=None, data={})
+    S._COMP_CHECK.update(status="idle", started="", finished="", available=[], error="")
+    return _restore
+
+
+def g_wait(sec=6.0):
+    end = time.time() + sec
+    while time.time() < end and S._COMP_CHECK["status"] == "running":
+        time.sleep(0.05)
+    return dict(S._COMP_CHECK)
+
+
+_restore = g_env()
+try:
+    d = S.api_components(latest="1")
+    avail = S._comp_available_updates(d["items"])
+    ck("G1 只有「已装 + 上游确实更高」的进可更新名单",
+       [a["key"] for a in avail] == ["ytdlp"], str([a["key"] for a in avail]))
+    ck("G2 版本相同 / 上游更旧 / 查不到最新版都不算可更新",
+       all(a["key"] not in ("musicdl", "mutagen") for a in avail))
+    ck("G3 没装的（nohelib、faster-whisper）不算「有更新」：不然每次开机都催同一件事",
+       all(a["key"] not in ("nohelib", "faster-whisper") for a in avail), str(avail))
+    ck("G4 不在 PyPI 的 FFmpeg / N_m3u8DL-RE 不参与判定",
+       all(a["key"] not in ("ffmpeg", "n_m3u8dl") for a in avail))
+    ck("G4b 查不到上游版的已装组件不算可更新（不拿空白当新版）",
+       all(a["key"] != "nolatest" for a in avail), str([a["key"] for a in avail]))
+    ck("G4c 同一个包的两行各算各的：exe 那行有新版、pip 那行没装 → 只报 exe 那行",
+       [a["key"] for a in avail] == ["ytdlp"]
+       and {i["key"]: i["ok"] for i in d["items"]}["yt-dlp"] is False
+       and {i["key"]: i["active"] for i in d["items"]}["yt-dlp"] == "未安装",
+       str([a["key"] for a in avail]))
+    ck("G5 可更新条目带着「当前 → 最新」，弹窗直接用",
+       avail[0]["current"] == "2026.8.19 (local)" and avail[0]["latest"] == "2026.9.1", str(avail[:1]))
+    ck("G6 接口默认不查上游，检测要显式发起",
+       all(i["latest"] == "" for i in S.api_components()["items"]) and S._COMP_CHECK["status"] == "idle")
+
+    # 后台检测：发起后立刻返回，结果靠轮
+    print("== G7 后台一次检测的完整往返 ==")
+    GLATEST_CALLS.clear()
+    GSLOW[0] = 0.5          # 让真 worker 在联网那一步停一下，才能确证接口没有等它
+    t0 = time.time()
+    r = S.api_components_update_check(S.CompCheckBody(force=True))
+    spent = time.time() - t0
+    GSLOW[0] = 0.0
+    ck("G7a 发起后马上返回 running，不把请求卡在联网上",
+       r["status"] == "running" and spent < 0.3, f"{spent:.2f}s / {r['status']}")
+    st = g_wait()
+    ck("G7b 后台跑完落到 done，并记下完成时间与结果",
+       st["status"] == "done" and st["finished"] and [a["key"] for a in st["available"]] == ["ytdlp"], str(st))
+    ck("G7c 一次检测只问一遍 pip（批量查，不一个包问一次）", len(GLATEST_CALLS) == 1, str(GLATEST_CALLS))
+    ck("G7d 日志留了一行可更新数",
+       any("检测上游版本：1 个组件有可更新版本" in m for _, m in LOGS), str(LOGS[-1:]))
+    g = S.api_components_update_check_get()
+    ck("G7e GET 回的是同一份状态，并带着开关",
+       g["status"] == "done" and g["auto_check"] is True and len(g["available"]) == 1, str(g)[:120])
+    ck("G7f GET /api/components 也顺带把检测结果带出（界面不必多问一次）",
+       S.api_components()["update_check"]["status"] == "done"
+       and S.api_components()["auto_check"] is True)
+    cp = S._comp_check_state()
+    cp["available"].clear()
+    ck("G7g 反向验证：改返回值改不动真状态（available 是副本，不是引用）",
+       len(S._COMP_CHECK["available"]) == 1, str(S._COMP_CHECK["available"]))
+
+    # 正在跑时重复发起不该重复联网
+    print("== G8 幂等与收尾 ==")
+    _restore()
+    _restore = g_env()
+    hold = [threading.Event()]
+    keep_worker = S._comp_check_worker
+    n_run: list[int] = []
+
+    def slow_worker():
+        n_run.append(1)
+        hold[0].wait(5)
+        S._COMP_CHECK.update(status="done", finished="t", available=[], error="")
+
+    S._comp_check_worker = slow_worker
+    try:
+        S.api_components_update_check(S.CompCheckBody())
+        a = S._comp_check_start()
+        b = S._comp_check_start()
+        ck("G8a 已有一批在跑时不再开第二批（界面轮询不会把同一个查询打很多遍）",
+           len(n_run) == 1 and a["status"] == "running" and b["status"] == "running", str(n_run))
+        hold[0].set()
+        g_wait()
+        ck("G8b 跑完后状态确实离开 running（否则界面永远等不到结果）",
+           S._COMP_CHECK["status"] == "done" and len(n_run) == 1, str(n_run))
+        hold[0] = threading.Event()     # 换一只没置位的闩，第二批才会停在 running 供断言
+        c = S._comp_check_start()
+        ck("G8c 收尾之后能再起一批（不是一次性的）",
+           len(n_run) == 2 and c["status"] == "running", str(n_run))
+        hold[0].set()
+        g_wait()
+    finally:
+        S._comp_check_worker = keep_worker
+
+    # ---- 强制刷新是否真的作废了 10 分钟缓存（不让真线程回填，只验「发起」这一侧）
+    print("== G8d/G8e 缓存与 force ==")
+    keep_w2 = S._comp_check_worker
+    S._comp_check_worker = lambda: None
+    try:
+        S._COMP_CHECK.update(status="idle")
+        S._latest_cache.update(ts=time.time(), mirror="", data={"x": 1})
+        S._comp_check_start(force=True)
+        ck("G8d force 会把 10 分钟缓存作废（「立即检测」必须看到真上游）", S._latest_cache["ts"] == 0.0)
+        S._COMP_CHECK.update(status="idle")
+        S._latest_cache.update(ts=time.time(), mirror="", data={"x": 1})
+        S._comp_check_start()
+        ck("G8e 不 force 时保留缓存（自动检测不该反复问 pip）", S._latest_cache["ts"] != 0.0)
+    finally:
+        S._comp_check_worker = keep_w2
+        S._COMP_CHECK.update(status="idle")
+
+    # 全部最新：一条都不报
+    print("== G9 全部最新 / 检测失败 ==")
+    _restore()
+    _restore = g_env(latest_map={"musicdl": "2.13.11", "mutagen": "1.48.1", "yt-dlp": "2026.8.19"})
+    S.api_components_update_check(S.CompCheckBody())
+    st = g_wait()
+    ck("G9a 全是最新时 available 为空，日志说「都是最新」",
+       st["status"] == "done" and st["available"] == []
+       and any("已在用组件都是最新" in m for _, m in LOGS), str(st))
+    _restore()
+    _restore = g_env()
+    S.pkg_update = type("PU", (), {
+        "PIP_PACKAGES": PIP3, "PIP_MIRRORS": P.PIP_MIRRORS,
+        "installed_version": staticmethod(lambda n: ""),
+        "pip_available": staticmethod(lambda: True), "pip_version": staticmethod(lambda: ""),
+        "latest_versions": staticmethod(lambda names, mirror="": (_ for _ in ()).throw(OSError("全部源都超时"))),
+    })()
+    S.api_components_update_check(S.CompCheckBody())
+    st = g_wait()
+    ck("G9c 查询抛异常时状态记 error 并带着异常类型（界面要显示原因，不能卡在 running）",
+       st["status"] == "error" and "OSError" in st["error"], str(st))
+    ck("G9d 失败也写一行 warning 日志",
+       any(lvl == "warning" and "检测上游版本失败" in m for lvl, m in LOGS), str(LOGS[-1:]))
+
+    # 开关关掉：检测结果不再自动弹窗
+    print("== G10 开关 ==")
+    _restore()
+    _restore = g_env(auto=False)
+    ck("G10a 关掉自动检测后接口把 auto_check 回成 False（界面据此不弹窗，但仍可手动检测）",
+       S.api_components_update_check_get()["auto_check"] is False)
+    ck("G10b 关掉开关不影响「立即检测」本身", S._comp_check_start()["status"] == "running")
+    st = g_wait()
+    ck("G10c 手动检测照样出结果", st["status"] == "done" and len(st["available"]) == 1, str(st))
+    _restore()
+    _restore = g_env()
+    ck("G10d 默认配置里这个开关是开的（新装机第一次打开就会查）",
+       S.ConfigManager.DEFAULTS["components_auto_check"] is True)
+    ck("G10e 开关能存进配置：ConfigBody 收了它（不然是静默丢弃）",
+       "components_auto_check" in S.ConfigBody.model_fields)
+finally:
+    _restore()
 
 print()
 print("FAILED:", ", ".join(FAILED) if FAILED else "none")

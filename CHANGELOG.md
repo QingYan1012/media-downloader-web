@@ -5,6 +5,38 @@
 
 ---
 
+## v1.2.9 · 2026-10-09
+
+本版两处改动都在界面上，彼此无关。**「组件与依赖」那张表学会了自己开口**：程序一打开就在后台查一遍上游最新版，确有得更新才提醒一次，没事时什么都不说。**信息页「按清晰度选择」那一排按钮的左对齐**：看上去只是没对齐，底下是 Element Plus 给相邻按钮补的那 12px 与 flex 间距叠在了一起。下载链、音乐、Telegram 那几条线一行没动，后端只多了一条检测链与一个开关。
+
+> 说明一：判定口径与接线全部由**离线自检**覆盖 —— `tests/components_test.py` 今天（2026-10-09）本机跑完 **106 项全绿**、`FAILED: none`、退出码 0，其中新增的 **G 段 36 项**就是这条自动检测链。几处值得单独记的断言：
+> - **G0a–G0h 版本比较器**（`_ver_newer` / `_ver_seg`）必须和界面里的 `verCmp()` 同口径：`2026.8.19 (local)` 对上游 `2026.9.1` 算有新版（括号那段不参与比较）、段数不等时补零（`1.2 < 1.2.3`，反向亦然）、本机显示「未安装」时上游版即算新的、**上游查不到版本号时一律不给结论**（不许拿空白当最新版）。反向验证 G0h：两串写成同一串必须判假，证明比的是数字段而不是字符串真假。
+> - **G1–G4c 谁算「有可更新版本」**：只有「已装上 + 上游确实更高」进名单；版本相同、上游反而更旧（本机自己升过）、查不到上游版的都不算；**没装上的不算**（faster-whisper 这类故意不随包发，算进来就是每次开机催同一件事）；不在 PyPI 的 FFmpeg 与 N_m3u8DL-RE 不参与；同一个包的两行（`tools\` 里的 exe 与 pip 包）各算各的 —— exe 那行有新版、pip 那行没装时，只报 exe 那一行。
+> - **G6 默认不联网**：`GET /api/components` 不带 `latest` 时那一行仍是空的、检测状态仍为 `idle`，检测必须由「立即检测」或启动那一次显式发起。
+> - **G7 一次检测的完整往返**：桩子里故意让联网那一步停 0.5 秒，`POST /api/components/update-check` 仍在 **0.3 秒内**返回 `running`（证明请求没被卡在网络上，界面不转圈）；后台跑完落到 `done` 并记下完成时间；**一次检测只问一遍 pip**（`latest_versions` 被调用 1 次，不是每个包问一次）；`app.log` 留一行可更新数；`GET` 与 `GET /api/components` 带回的是同一份状态并都附带 `auto_check`。**G7g 反向验证**：把 `_comp_check_state()` 返回的 `available` 清空，真状态纹丝不动（给的是副本不是引用，界面改不动后端）。
+> - **G8 幂等**：已有检测在跑时再发起不产生第二批（界面轮询不会把同一个查询打很多遍），而收尾之后能再起一批（不是一次性的）。**G8d/G8e 缓存**：`force=True` 确实把那 10 分钟（`LATEST_TTL = 600`）缓存作废（`_latest_cache["ts"]` 归零），不 force 时保留 —— 自动检测不该反复问 pip。
+> - **G10 开关**：关掉之后 `GET` 回 `auto_check:false`（界面据此不查也不弹），但「立即检测」本身照样跑得通；`cfg.DEFAULTS["components_auto_check"]` 默认为真（新装机第一次打开就会查）；`ConfigBody` 收得到这个字段 —— 不然是静默丢弃，界面上关了、后端还在开。
+>
+> 说明二：线上读回分两层。**「没事时不打扰」这一条在本机 8765 那份正在跑的实例上读到了**（那是用户自己在用的进程，10:47:50 起来，本轮没重启它、也没写它的配置）：`GET /api/components/update-check` 回 `auto_check=true, status=done, started=10:47:51, finished=10:48:01, available=[]`，即启动后约一秒发起、整批联网 **10.0 秒**跑完；`app.log` seq 6 那句是「[组件] 检测上游版本：已在用组件都是最新」；`GET /api/components` 同时带回这同一份结果（界面不必多问一次），表里 15 项全绿 —— 没有可更新项，界面上既没有橙点也没有弹窗。收尾时 `/api/tasks` 数到 0 条任务。
+> - **「有得更新才提醒」那一层在隔离实例上读**：另起一份副本实例、独立端口，用桩上游把其中一行的最新版抬高，浏览器里断言到侧栏「设置」出橙点、弹窗出现并点名是哪几项、`sessionStorage` 里 `mdCompUpdatePopupShown` 置位后同一会话第二次刷新不再弹；测完配置还原、真实 `config.json` 里根本没有这个键。
+> - **跳转查出一个真缺陷并改掉**：弹窗里点「去组件与依赖」，页切过去了、滚动没动。原因是切页时 `.content` 正在放 `pageIn` 入场动画（`transform: translateY(6px)`，`watch(page, …)` 每次切页都会重新挂上 `is-enter`），**这段时间里 `scrollIntoView({behavior:'smooth'})` 会被 Chromium 静默丢弃**。改成动画窗口之后（120ms）走瞬时 `scrollIntoView({block:'start'})`，读回 `scrollTop` 从 0 走到 12534、那张卡的顶边落在 58px。
+> - **摘要行初版太长把卡片撑歪了**：`compCheckText` 一开始把整份可更新名单铺出来，实测九行。改成最多列三项、超出写「等 N 项」、时间戳去掉年份之后量到 **两行 / 39px**，明亮与暗色两套都不越界。
+> - **`bootCompCheck()` 初版无论开关都补发一次检测** —— 关着开关还去联网，那就是把用户明确关掉的事又做了一遍。加上 `&& d.auto_check` 之后，关掉开关时的网络面板只剩 `GET`、没有 `POST`。
+
+### 功能
+
+- **打开程序自动检测上游版本**：`main()` 里挂一只 daemon 线程，`sleep(3)` 等接口与配置就绪后读 `components_auto_check`，开着才调 `_comp_check_start()` —— 一次查询要十来秒，压在启动路径上会让程序看起来卡住，压在界面请求上会让设置页转圈，所以它既不挡启动也不挡界面，界面只读结果。结果存在 `_COMP_CHECK`（`status` / `started` / `finished` / `available` / `error`），读写都过 `_COMP_CHECK_LOCK`，对外一律给 `_comp_check_state()` 的副本。上游最新版复用既有的那层 10 分钟缓存（`LATEST_TTL = 600`），所以同一张表反复刷新不会反复问 pip，而「立即检测」以 `force=true` 作废缓存去问一次真的。可更新名单由 `_comp_available_updates()` 按上面的口径算（只已装、只 PyPI 上有号的、只 `_ver_newer` 判更高的）。新增两个接口：`GET /api/components/update-check` 读状态、`POST /api/components/update-check` 发起（`CompCheckBody(force, kick)`），`GET /api/components` 也一并带回 `update_check` 与 `auto_check`。前端 `bootCompCheck()` 先 `GET`，若后端那次没跑起来且开关开着（例如刚把开关打开）才补发一次；拿到结果后 `mergeCompLatest()` 把最新版灌进表里各行、`navDot('settings')` 让左侧「设置」亮橙点、`maybePopupCompUpdates()` 在有可更新项时弹一次（`sessionStorage` 键 `mdCompUpdatePopupShown` 加内存标记，保证每个浏览器会话只弹一次，之后只留橙点不再打扰）。卡上配「立即检测」按钮和一个「打开程序时自动检测」开关，开关写在 `components_auto_check`（`DEFAULTS` 默认开、`ConfigBody` 已收该字段），改动要点「保存设置」、下次启动生效。离线自检 G 段 36 项覆盖以上每一条。
+
+### 界面
+
+- **信息页「按清晰度选择（基于实际 format）」那一排对齐**：那一行是 v-for 出来的一排 `el-button`，看上去是按钮没跟上面的标题对齐，实测根因有两条，都来自 Element Plus 的 `.el-button + .el-button { margin-left: 12px }`：它和容器的 flex `gap`（那一行用的是 `--gap-tight` 8px）**叠成 20px**，按钮之间的间距因此比设计令牌说的其它任何一行都宽；更要命的是这份左边距**在换行后仍留在每一行开头那枚按钮上**，于是第二行、第三行凭空缩进 12px，左边缘和上面标题对不齐。改法是给共享行容器家族加一个变体 `.row--flush`（`gap: var(--gap-loose)` 即 16px，并把 `.el-button + .el-button` 的 `margin-left` 归零），那一行由 `row row--tight` 改为 `row row--flush`。这 12px 的抹平在代码里不是第一次做（`.tool-bar`、`.search-actions`、`.btn-grid` 各自都抹过），这次是把它做成一处共享变体而不是第四次重复。**没有顺手推给所有 `.row`** —— 那会连带改动已经验证过的其它布局，要不要全站统一留给用户定。验证用 Playwright 固定视口量左边界（内置浏览器标签页的视口会塌成 0×0，量出来全是 0）：宽窄两档视口下逐行数到每枚按钮的左边界与其所在行的左边缘一致、行首不再有那 12px 凭空缩进，另存了宽窄两张截图人眼复核。
+
+### 发布物
+
+- 版本号真源 `static/index.html` 的 `appVersion` 升到 `v1.2.9 · Element Plus`，`pack_release.py` 的 `app_version()` 从同一处抓取，包名跟着变成 `MediaDownloader-1.2.9-portable.zip`；`README.md` / `README.en.md` 的徽章、下载指引与便携包名同步，两份文档各补一节「打开程序自动检测上游版本」（功能一览、节首概述、`<details>` 摘要与正文四条落点，中英对应）。依赖清单没动（本版的改动不涉及任何包），出包按 `--skip-runtime` 复用上版装好的内嵌 runtime，只重跑复制与包内自检。
+
+---
+
 ## v1.2.8 · 2026-09-24
 
 本版落在三条线上。音乐是主线，只有一件事：**把「这是不是同一首歌」从一个判断做成一个口径**。过去「按曲名匹配」「歌单去重」「目录里已有成品」三处各自写着一套字符串相等与文件名的比法，同一个症状（同一首歌被下两遍、或者认成两首歌）要改三个地方。现在三处共用同一道打分闸门，并且顺着这个口径补齐了它周围的能力：本地音乐读出文件自带的真标签、跨平台换一条来路重下、监听歌单追新、把跨平台的歌攒成自己的一单、网易云扫码登录、按 Emby / Jellyfin 读库的排法命名归档、给出音质要求并按它与无损参照核对成品。
