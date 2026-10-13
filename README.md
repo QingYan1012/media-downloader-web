@@ -2,13 +2,13 @@
 
 # 多媒体下载器 Web · MediaDownloader Web
 
-**解析下载 · 页面嗅探 · 跨平台音乐 · 字幕与 AI · 语音工具 · 订阅追新**
+**解析下载 · 磁力与种子 · 页面嗅探 · 跨平台音乐 · 字幕与 AI · 语音工具 · 订阅追新**
 
-一个只跑在自己电脑上的多媒体工作台：粘链接就能下，浏览器里管队列、抓页面里的 m3u8、按曲名找歌与歌词封面、做字幕转写与翻译、订阅追新。
+一个只跑在自己电脑上的多媒体工作台：粘链接就能下，浏览器里管队列、下磁力与种子、抓页面里的 m3u8、按曲名找歌与歌词封面、做字幕转写与逐句校对、订阅追新。
 设置、Cookie、历史与下载内容全部留在程序所在文件夹，不上传到任何地方。
 
 [![License](https://img.shields.io/badge/License-GPL--3.0-blue)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-v1.2.9-informational)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-v1.3.0-informational)](CHANGELOG.md)
 [![Python](https://img.shields.io/badge/Python-3.12-green)](requirements.txt)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Docker-blueviolet)](#30-秒上手)
 [![Data](https://img.shields.io/badge/Data-100%25%20local-lightgrey)](#隐私)
@@ -26,19 +26,19 @@
 ## 目录
 
 - **上手**：[30 秒上手](#30-秒上手) · [便携包里有什么](#便携包里有什么) · [界面截图](#界面截图)
-- **功能**：[能做什么](#能做什么) · [页面总览](#页面总览) · [下载与队列](#下载与队列) · [Cookie 与站点登录](#cookie-与站点登录) · [网络与代理](#网络与代理) · [音乐](#音乐) · [Telegram](#telegram) · [订阅追踪](#订阅追踪) · [字幕与 AI 处理](#字幕与-ai-处理) · [语音工具](#语音工具) · [浏览器扩展](#浏览器扩展) · [组件与依赖](#组件与依赖在程序里更新) · [解析插件与 aria2](#解析插件与-aria2) · [通知](#通知) · [界面主题](#界面主题)
-- **开发**：[离线自检](#离线自检) · [目录结构](#目录结构) · [常用 API](#常用-api) · [贡献方式](#贡献方式)
+- **功能**：[能做什么](#能做什么) · [页面总览](#页面总览) · [下载与队列](#下载与队列) · [磁力与种子](#磁力与种子) · [Cookie 与站点登录](#cookie-与站点登录) · [网络与代理](#网络与代理) · [音乐](#音乐) · [Telegram](#telegram) · [订阅追踪](#订阅追踪) · [字幕与 AI 处理](#字幕与-ai-处理) · [语音工具](#语音工具) · [浏览器扩展](#浏览器扩展) · [组件与依赖](#组件与依赖在程序里更新) · [解析插件与 aria2](#解析插件与-aria2) · [通知](#通知) · [界面主题](#界面主题)
+- **开发**：[离线自检](#离线自检) · [MCP 接口桥](#mcp-接口桥) · [目录结构](#目录结构) · [常用 API](#常用-api) · [贡献方式](#贡献方式)
 - **边界与许可**：[隐私](#隐私) · [已知限制](#已知限制) · [常见问题](#常见问题) · [不在本工具范围内](#不在本工具范围内) · [鸣谢](#鸣谢) · [许可](#许可) · [免责声明](#免责声明)
 
 ## 30 秒上手
 
 **Windows 免安装（推荐）**
 
-1. 下载 [Releases](https://github.com/QingYan1012/media-downloader-web/releases/latest) 里的 `MediaDownloader-1.2.9-portable.zip`（约 218 MB）。
+1. 下载 [Releases](https://github.com/QingYan1012/media-downloader-web/releases/latest) 里的 `MediaDownloader-1.3.0-portable.zip`。
 2. 解压到路径里不含中文与空格、且不在 `C:\Program Files` 下的目录。
 3. 双击 `启动.bat`，约 3 秒后自动打开 `http://127.0.0.1:8765`。
 
-包内自带 Python runtime 与 pip、FFmpeg / ffprobe、yt-dlp、N_m3u8DL-RE、fpcalc，首次启动生成一份干净的默认配置。
+包内自带 Python runtime 与 pip、FFmpeg / ffprobe、yt-dlp、N_m3u8DL-RE、fpcalc，首次启动生成一份干净的默认配置。**aria2c 不在包里**，要用「磁力 / 种子」那一页得自备（见[磁力与种子](#磁力与种子)）。
 
 **源码运行**
 
@@ -58,7 +58,7 @@ docker compose --profile aria2 up -d   # 可选：带 aria2
 
 ## 便携包里有什么
 
-免安装这条路只有一个取舍：语音那几项（faster-whisper 与模型、Demucs、librosa）体积数 GB，包里不带；红点项在「设置 → 组件与依赖」点一下就装好，不用重新发包。
+免安装这条路只有一个取舍：语音那几项（faster-whisper 与模型、Demucs、librosa）体积数 GB，包里不带；红点项在「设置 → 组件与依赖」点一下就装好，不用重新发包。aria2c（「磁力 / 种子」那一页的引擎）与 psutil（结束直播录制时收拉流子进程要用）同样不在包里，取法见下面那张对照表。
 
 <details>
 <summary>技术细节：三种取法对照、包内已带与不带、本机数据强制排除与出包自检、换端口与解压位置</summary>
@@ -67,7 +67,7 @@ docker compose --profile aria2 up -d   # 可选：带 aria2
 
 | 方式 | 适合谁 | 怎么拿 | 装完之后 |
 | --- | --- | --- | --- |
-| **便携包（免安装，推荐）** | Windows，不想装 Python | 本仓库 [Releases](https://github.com/QingYan1012/media-downloader-web/releases/latest) 里的 `MediaDownloader-1.2.9-portable.zip`（约 218 MB） | 解压后双击 `启动.bat`，3 秒后自动打开 `http://127.0.0.1:8765`；包内自带 Python runtime、pip 与 FFmpeg / yt-dlp / N_m3u8DL-RE |
+| **便携包（免安装，推荐）** | Windows，不想装 Python | 本仓库 [Releases](https://github.com/QingYan1012/media-downloader-web/releases/latest) 里的 `MediaDownloader-1.3.0-portable.zip` | 解压后双击 `启动.bat`，3 秒后自动打开 `http://127.0.0.1:8765`；包内自带 Python runtime、pip 与 FFmpeg / yt-dlp / N_m3u8DL-RE |
 | **源码运行** | 已经有 Python 3.12 | `git clone` 后按[30 秒上手](#30-秒上手)一节装依赖 | 外部工具要自己放进 `tools/`，或在「设置 → 组件与依赖」点安装 |
 | **Docker** | 群晖 / 家用服务器 | `docker compose up -d --build`（可选 `--profile aria2`） | 见 [Dockerfile](Dockerfile) 与 [docker-compose.yml](docker-compose.yml) |
 
@@ -78,8 +78,8 @@ docker compose --profile aria2 up -d   # 可选：带 aria2
 | 内嵌 Python runtime **与 pip** | faster-whisper 本体与 Whisper 模型（数 GB） |
 | `tools/`：ffmpeg、ffprobe、yt-dlp、N_m3u8DL-RE | Demucs / torch |
 | 音乐这条线的依赖：musicdl、mutagen、edge-tts、deep-translator、zhconv | librosa / numba（「音频分析」要用） |
-| Telegram：telethon、python-socks、cryptg | —— |
-| 音频指纹：`chromaprint/fpcalc.exe` | —— |
+| Telegram：telethon、python-socks、cryptg | psutil（结束直播录制时收拉流子进程要用，pip 现装） |
+| 音频指纹：`chromaprint/fpcalc.exe` | **aria2c.exe**（「磁力 / 种子」那一页的引擎，要自己下载放进 `tools/` 或 PATH） |
 | `启动.bat`、`使用说明.txt`、`README.md` / `README.en.md` / `CHANGELOG.md` / `LICENSE` | —— |
 
 - 红点项（缺的组件）在「设置 → 组件与依赖」里点「安装」或「一键更新」就能用包内 pip 现装，不需要重新发包；装完重启一次 `启动.bat` 生效。
@@ -99,6 +99,8 @@ docker compose --profile aria2 up -d   # 可选：带 aria2
 - HLS / DASH 分片走专用引擎 N_m3u8DL-RE（回落 ffmpeg / yt-dlp），分片流可以框选区间。
 - 默认封装 mkv：站点只给单条 mp4 流时只做无损换壳、不重编码；下载后做完整性校验，杜绝「假成功」。
 - 可勾选嵌封面、嵌元数据、嵌章节、按语言嵌字幕、另存外挂 `.vtt`；B 站视频额外存弹幕 `.xml` 与可内嵌 `.ass`。
+- 解析结果里每一档画质都带预估体积，队列卡片显示实际下到的清晰度、字节数与封面；限速可以按一天分几档（`00:00-08:00 -> 2M`）。
+- **磁力 / 种子**独立成一页：下载、选内部文件、做种看护、tracker 加料、按名字自动分类、上下行分别限速，引擎是本机的 aria2。
 
 **嗅探**
 
@@ -115,15 +117,17 @@ docker compose --profile aria2 up -d   # 可选：带 aria2
 **字幕 / AI / 语音**
 
 - 站点字幕按语言勾选，术语表校验译名，字幕智能换行，双语导出 SRT / VTT / ASS，支持硬字幕烧录。
+- 机翻之后逐句查一遍可疑（十类问题写进运行日志，可选反射修），并在「逐句校对」里改字幕本身：改前留备份，字幕被别人改写过会拒写并点名改写时刻。
 - AI 流水线四阶段：字幕 → 润色 → 摘要 → 翻译，每阶段产物落盘、可单独重跑。
 - 本地转写（含声纹说话人分离，点时间可跳播）、Edge-TTS 配音、Demucs 人声 / 伴奏分离、音频分析（BPM / 调性 / 响度 / 频谱质心）、AcoustID 指纹识别。
 
 **自动化与运维**
 
 - Telegram：`t.me/s/` 匿名列历史；用自己的账号会话批量下载私有频道里可访问的媒体；接入订阅追新。
-- 订阅追新四类源（RSS / 网页更新 / Telegram 频道 / 音乐歌单）定时扫描入队，每条订阅单设规则。
-- 通知三套：Telegram Bot、企业微信、Server酱，完成 / 失败 / 订阅各自独立开关。
-- 组件与依赖在程序里更新（含一键更新、打开程序时自动检测上游版本）、镜像站一键测速、运行日志记录每次页面动作并按天归档。
+- 订阅追新四类源（RSS / 网页更新 / Telegram 频道 / 音乐歌单）定时扫描入队，每条订阅单设规则；扫描前先给一份「这轮打算怎么做」的计划，上游删掉的条目留档不凭空消失。
+- 通知三套：Telegram Bot、企业微信、Server酱，完成 / 失败 / 订阅各自独立开关；浏览器桌面通知可以直接点开那条任务。
+- 组件与依赖在程序里更新（含一键更新、打开程序时自动检测上游版本）、镜像站一键测速、运行日志记录每次页面动作并按天归档、一键导出脱敏诊断包。
+- 整站接口另挂了一条 MCP 桥（`mcp_server.py`，只连本机），把接口原样交给支持 MCP 的智能体调用。
 - 5 套主题色 × 明亮 / 暗色；全部数据只落本机。
 
 每项能力靠哪个引擎实现，见下面这张对照表与后面各节。
@@ -133,8 +137,9 @@ docker compose --profile aria2 up -d   # 可选：带 aria2
 
 | 能力域 | 做什么 | 靠什么 |
 | --- | --- | --- |
-| 解析与下载 | 粘链接解析成可选码率并入队，一次可粘多条并自动归一去重；可只排队不下 | yt-dlp、插件解析 |
-| 队列调度 | 多选、暂停/继续、置顶、移到队首、稍后下载；命名队列分开限速与放行；同域并发上限 + 429 自动降速 + 全局限速 | 内置调度器 |
+| 解析与下载 | 粘链接解析成可选码率并入队，一次可粘多条并自动归一去重；可只排队不下；每档画质带预估体积 | yt-dlp、插件解析 |
+| 队列调度 | 多选、暂停/继续、置顶、移到队首、稍后下载；命名队列分开限速与放行；同域并发上限 + 429 自动降速 + 全局限速 + 按时段分档限速 | 内置调度器 |
+| 磁力与种子 | 磁力链接与本地 `.torrent` 下载、选内部文件、做种看护、tracker 加料、按名字自动分类、上下行分别限速 | aria2 JSON-RPC（需自备 aria2c） |
 | 流媒体 | HLS / DASH 分片下载、嗅探到的 m3u8 走专用引擎；**框选片段**只对分片流可裁 | N_m3u8DL-RE，回落 ffmpeg / yt-dlp |
 | 页面嗅探 | 浏览器扩展监听 m3u8/mp4/ts/m4s 一键送进本机队列；也可接收第三方猫抓（cat-catch）POST 推送 | `extension/`、`POST /api/catcatch/push` |
 | 成品质量 | 默认封装 mkv（单条 mp4 流只做无损换壳、不重编码），下载后做完整性校验，杜绝「假成功」 | FFmpeg |
@@ -142,27 +147,28 @@ docker compose --profile aria2 up -d   # 可选：带 aria2
 | 音乐 | 多源聚合搜索、按曲名取歌词 / 封面 / 标签、歌单整单下载、跨平台按曲名匹配、换源、自建收藏清单、本地库索引、底部常驻播放条 | musicdl、mutagen、AcoustID / MusicBrainz |
 | 同曲判定 | 一条打分闸门：曲名 / 歌手 / 时长分开评分再过录取线，被刷掉的候选写明原因 | 内置匹配器 |
 | 音质 | 音质要求参与排序、可「不达标不下」、成品落盘后按自带标签复核；「无损参照」只补 Qobuz / Tidal 元数据 | mutagen、ffprobe |
-| 字幕与 AI | 站点字幕按语言勾选、术语表校验译名、智能换行、双语导出 SRT / VTT / ASS、硬字幕烧录、AI 四阶段流水线 | faster-whisper、deep-translator |
+| 字幕与 AI | 站点字幕按语言勾选、术语表校验译名、智能换行、双语导出 SRT / VTT / ASS、硬字幕烧录、AI 四阶段流水线、译后逐句质检、逐句校对台 | faster-whisper、deep-translator |
 | 语音 | 本地转写（含声纹说话人分离）、Edge-TTS 配音、Demucs 人声/伴奏分离、音频分析（BPM / 调性 / 响度 / 频谱质心）、指纹识别 | faster-whisper、Demucs、librosa、chromaprint |
 | Telegram | `t.me/s/` 匿名列历史、MTProto 用户会话批量下自己账号可访问的媒体、接入订阅追新 | telethon、cryptg |
-| 订阅追新 | RSS / 网页更新 / Telegram 频道 / 音乐歌单四类源定时扫描入队，每条订阅单设规则（类型、时长、必含与排除词、日期窗、画质、命名模板、单次上限） | 内置扫描器 |
+| 订阅追新 | RSS / 网页更新 / Telegram 频道 / 音乐歌单四类源定时扫描入队，每条订阅单设规则（类型、时长、必含与排除词、日期窗、画质、命名模板、单次上限）；扫描前给同步计划，上游删条目进留档 | 内置扫描器 |
 | 媒体库 | 资源库检索播放与打包、文件浏览、B 站与 YouTube 收藏夹 / 关注同步、下载历史导出 | 本机扫描 |
-| 通知 | Telegram Bot、企业微信、Server酱，完成 / 失败 / 订阅各自独立开关 | 出站推送（密钥只存本机） |
-| 运维 | 运行日志（含每次页面动作，按天归档、超 7 天自动删）、组件与依赖在程序里更新、镜像站一键测速、5 套主题 × 明暗 | `pkg_update.py` |
+| 通知 | Telegram Bot、企业微信、Server酱，完成 / 失败 / 订阅各自独立开关；桌面通知点击跳到那条任务 | 出站推送（密钥只存本机） |
+| 运维 | 运行日志（含每次页面动作，按天归档、超 7 天自动删）、组件与依赖在程序里更新、镜像站一键测速、脱敏诊断包一键导出、5 套主题 × 明暗 | `pkg_update.py` |
+| 对外接口 | 把本机接口原样挂成 MCP 工具供智能体调用，工具清单从 `/openapi.json` 现取 | `mcp_server.py`（stdio，只连本机） |
 
 </details>
 
 ## 页面总览
 
-侧栏 16 个页面，分 5 组：
+侧栏 17 个页面，分 5 组：
 
 | 分组 | 页面 | 干什么 |
 | --- | --- | --- |
-| 下载 | 下载解析 / 队列 / 嗅探 / 媒体信息 | 粘链接解析入队、排队与暂停续传、抓页面里的 m3u8 与 mp4、看容器与码流 |
+| 下载 | 下载解析 / 队列 / 磁力 · 种子 / 嗅探 / 媒体信息 | 粘链接解析入队、排队与暂停续传、磁力与种子下载与做种、抓页面里的 m3u8 与 mp4、看容器与码流 |
 | 获取与处理 | 聚合搜索 / 音乐搜索 / Telegram 频道批量 / 直播录制 / 语音工具 | 多源搜索后挑一条下、按曲名拿歌词封面标签、频道历史批量、开播录制与托管浏览器嗅探、转写与配音 |
 | 媒体库 | 资源库 / 文件浏览 / 收藏关注 / 历史记录 | 已下载内容的检索播放与打包、B 站与 YouTube 收藏夹同步、下载历史导出 |
 | 自动化 | 订阅追踪 | RSS、网页更新、Telegram 频道、音乐歌单四种订阅源的定时扫描入队 |
-| 系统 | 运行日志 / 设置 | 全量操作日志（含每次页面动作，按天归档、超过 7 天自动删除；页面上写明日志文件在程序所在文件夹并可一键打开）、Cookie、网络、通知、组件与依赖 |
+| 系统 | 运行日志 / 设置 | 全量操作日志（含每次页面动作，按天归档、超过 7 天自动删除；页面上写明日志文件在程序所在文件夹并可一键打开，另有「导出诊断包」一键取一份脱敏的排查件）、Cookie、网络、通知、组件与依赖 |
 
 <details>
 <summary>列表口径：分页规则、表头排序的作用范围、聚合搜索的排序参数与一次取回多少条</summary>
@@ -194,17 +200,46 @@ docker compose --profile aria2 up -d   # 可选：带 aria2
 粘链接 → 解析成可选码率 → 入队下载。点了「开始下载」而本机缺了这单必然要用的东西，会当场回错并指名去哪一行点「安装」，任务一条也不会建。
 
 <details>
-<summary>技术细节：入队前的依赖检查、命名队列、同域并发与 429 降速打点、全局限速、mkv 封装与完整性校验、框选区间为什么只对分片流生效</summary>
+<summary>技术细节：入队前的依赖检查、命名队列、同域并发与 429 降速打点、限速（全局 / 时段 / 单任务）、mkv 封装与完整性校验、框选区间为什么只对分片流生效、每档预估体积、播放列表区间勾选、自定义 yt-dlp 参数的闸门、落盘文件名清洗、直播每房间设置</summary>
 
 - 支持一次粘贴多条 URL，自动归一化与去重；可只入队不下（「仅排队，稍后下载」）。
 - **入队前先查依赖**：点了「开始下载」而本机缺了这单必然要用的东西（解析站点靠的 yt-dlp、嵌字幕 / 嵌封面 / 嵌章节 / 封装 mkv / 选段靠的 FFmpeg、本地转写靠的 faster-whisper、HLS 专用引擎 N_m3u8DL-RE、`tgmt://` 靠的 telethon，以及写不进去的下载目录），当场回错并指名去「设置 → 组件与依赖」的哪一行点「安装」，任务一条也不会创建，运行日志同步记下这次拒绝。只是会慢、会降质的情况（例如没有 FFmpeg 但仍直下 mp4）不拦，只在日志里提示一句。
-- 队列：多选、暂停/继续、置顶、移到队首、稍后下载；任务卡片显示「置顶」「稍后」标记。
+- 队列：多选、暂停/继续、置顶、移到队首、稍后下载；任务卡片显示「置顶」「稍后」标记，并显示这条实际下到的清晰度、已下 / 总字节与封面（`1080p HDR 60fps · 420.0 MB / 1000.0 MB`，鼠标停留给出完整一句）。这几项由 SSE 的进度帧带着推，没量到的那项就不占位，界面上不会出现「0 MB」。
 - **命名队列** `queue_name`：`default` / `night` / `subscribe` / `sniff`（设置里 `named_queues`，音乐批量走 `music`），可按队列分开限速与放行。
 - **同域并发上限** `max_per_host`（默认 2），配合 **429 自动降速** `adaptive_throttle`：命中站点限流后把该域名临时降到 1 并发并冷却（冷却时长取「风控与加速 → 遇 429 冷却（秒）」，反爬校验页那类判定用的也是这一个值），队列页顶部会出现「站点降速中」条，可手动立即恢复。触发点不止下载循环里的 HTTP 429：抖音搜索被 `risk_control` 判成「限流」或「反爬校验页」时也会打一次同样的降速点，下载失败原因归入这两类时亦然；判成「要先登录」的不打点，因为放慢对它没有用。抖音搜索入口在发请求之前先查这张表：冷却还没过时，直接把上一次的判定复述上屏（`本次没有再向它发请求`），一条请求都不发、也不再叠加 strike —— 每多点一次搜索就把同一域名罚得更久，而重试本来就是用户唯一能做的动作。想在冷却结束前真搜一次，点「站点降速中」条上的「立即恢复」。
 - **全局限速** `global_speed_limit`（如 `2M`，与单任务 `speed_limit` 二选一）。
 - 默认封装 mkv：站点给单条 mp4 流时只做无损换壳，不重新编码。下载后做完整性校验，杜绝「假成功」；失败原因全部翻成人话并附原始报错。
 - **附加内容**可勾选：嵌入封面缩略图（`thumb`）、元数据（`embed_metadata`）、章节（`embed_chapters`）；B 站视频额外存弹幕的 `.xml` 与可内嵌的 `.ass`。
 - **框选片段** `download_section`：填 `00:01:00-00:02:30`，底层走 yt-dlp 的 `download_ranges` 且强制加 `*` 自动分片前缀，**因此只有 HLS/m3u8 这类分片流能裁区间**；单文件流会忽略该参数并在任务日志里写明。
+- **每档画质的预估体积**：解析结果里每一档给出按该分流码率乘时长折算的预估大小（`_estimate_tier_sizes()`，纯音频那档不把视频轨重复算进去）。上限之上没有对应分流时**回退到实际最高档**，回退不会算出比 `best` 更大的值；视频压根查不到时不当成「算好了但体积是 0」。
+- **合集 / 播放列表按区间勾选**：两个序号框（起 / 止）实时显示「区间起点：第 N 条《标题》」，点「勾选这一区间」批量勾上，再点下载才提交；序号区间与逐条勾选共存（勾了 5–9 而其中一条已下过就只提 4 条，提示写「已加入 4 个任务」）。
+- **自定义 yt-dlp 参数** `ytdlp_extra_args`：设置里一栏全局，首页任务栏一栏单任务（任务级覆盖全局）。**不是原样转发** —— 逐项过闸门，被拒的项当场逐条点名并指回该去的地方：`--exec`（会在下载完成后执行任意命令）、`-f` / `--format`（格式由首页档位决定，要指定某条流请用「指定 format_id」）、自带 Cookie（指回设置页）、外挂配置文件、会改变失败处理的参数、会连带指定格式的预设。没被拒的参数不陪绑，照常附加；「已保存，其中 N 项参数没生效：…」的弹窗保持不关，改完可以直接再存一次。
+- **限速按时段分档** `speed_windows`：一行一条 `00:00-08:00 -> 2M`，`->` `=>` `→` 空格 `=` `–` `~` 「至」「到」都认，全角冒号归一，最多 30 行。优先级是**任务级 > 命中时段 > 全局**；卡上「体检一下」按钮（`POST /api/config/speed_windows/check`）只按设置本身判、不碰任务级那一档，回报认出几档、哪几行报错、此刻钟点命中哪一档。
+- **落盘文件名统一清洗**：`safe_filename_component()` 是唯一入口，Windows 保留字符与保留名、零宽与方向控制符（`\u200b-\u200f`、`\u202a-\u202e`）统一处理。**多后缀不被截**（`app.tar.gz` 还是 `app.tar.gz`），**截断之后才查保留名**（截短本身可能把名字截成 `CON` / `NUL`，那时补下划线前缀）。Telegram 批量下载那一路用的是同一套清洗，不再有第二套正则；清洗改过名字时日志点名（「标题里有 Windows 不能用于文件名的字符，落盘名已清洗为「…」」）。
+- **直播录制的每房间设置**：一间房单独设六项 —— 容器（跟随软件设置 / mkv / mp4 / webm）、画质档、转码预设（如「转 MP4 (H.264 + AAC)」「转 MP4 并限制 1080p」「抽取音频 MP3」）、最长录制时长（`0–1440` 分钟，0 = 不限）、监控时段起 / 止（支持跨零点，如 20:00–02:00；只填一端不生效）。六项存进 `live_monitors.json`，非法值逐条点名拒绝且不入库；录满设定时长会自己结束本场并转为暂停（等下播再放开），日志写「本房间已录满 N 分钟，自动结束录制」；时段外如实报「直播中(不在监控时段 …)」但一条任务都不开。
+
+</details>
+
+## 磁力与种子
+
+磁力链接与本地 `.torrent` 都在侧栏「磁力 / 种子」这一页，下载、做种、加料、分类、限速一体。这一页**完全靠 aria2**：本机没有可用的 aria2c 时点「开始下载」会当场说清缺什么，任务一条也不建。
+
+<details>
+<summary>技术细节：aria2 的 RPC 与自动拉起、tracker 运行时抓取与缓存、注入上限、做种看护、自动分类与试匹配、哪些设置只对新任务生效、只做种</summary>
+
+页面上五节：**添加磁力链接或种子** / **种子任务** / **Tracker 与限速** / **自动分类** / **aria2 与做种**。
+
+- **交给 aria2**：`aria2_client.py` 走 JSON-RPC（`aria2_rpc`，留空即 `http://127.0.0.1:6800/jsonrpc`，可选 `aria2_secret`）。RPC 没人应答时，`aria2_autostart`（默认开）让程序自己拉起一个**只监听 127.0.0.1** 的 aria2c（`aria2_daemon.py`，退出程序时一并关闭）；`aria2_bin` 留空按 `tools/` → PATH → 环境变量找。「检测 aria2」按钮读回 RPC 是否可连、aria2c 在哪。
+- **添加**：一行一条 `magnet:?xt=urn:btih:...`，本地种子写 `file:///H:/…/影片.torrent` 或直接写盘符路径，也可以点「上传种子」选 `.torrent`（`POST /api/torrent/upload`）。认不出的行不计入并写明有多少行被忽略；缺 `xt=urn:btih`、或那一串既不是 40 位十六进制也不是 32 位 base32 的，报错直接指着是哪一条。
+- **只做种**：本机已经有成品、只想挂上去做种时勾这一项（`torrent_seed_only`），已有文件不会被重新下载。磁力链接这一刻还没有文件清单，勾了「只做种」会被挡下 —— 请先用「上传种子」给出 `.torrent`。
+- **选内部文件**：拿到种子元数据之后（磁力要先等这一步，`torrent_meta_timeout` 默认 180 秒，超时即判失败并说明通常是此刻没有做种者），点「文件 n/m」改选要下的部分（`POST /api/torrent/select`）。
+- **Tracker 加料**：列表**运行时抓**，`bt_tracker_sources` 默认是 ngosang/trackerslist 与 XIU2/TrackersListCollection 两个公开维护的地址 —— 源码与发布包里都不写死任何一条 tracker，抓回来的清单只存本机 `torrent_state/`。`bt_trackers` 是自己填的 announce，排在抓来的前面，只有 http / https 的会被收下。`bt_tracker_auto_update` 开着时，提交新任务前若缓存缺某个来源就补抓一次；**抓不到不拿空白当最新**，旧缓存照用，任务也不许被这一步打死。`bt_tracker_max`（默认 30，可填 0 = 不注入）限的是**一次给任务带多少条**，不是列表本身 —— aria2 是挨个问的，堆太多第一轮反而慢。`GET /api/bt/trackers` 读现状，`POST /api/bt/trackers/refresh` 强制刷。
+- **限速与首尾优先**：`bt_dl_limit` / `bt_ul_limit`（`1M` / `512K`，留空不限）只加在新提交的任务上，做种阶段同样吃上传限速；已经在任务行上单独改过的以那一行读回值为准。`bt_prioritize_piece` 先下每个文件首尾各 1M，边下边预览时能更早打开。
+- **做种看护**：`torrent_seed_ratio`（上传量达到下载量的该倍数时停，0 = 不按比率停）与 `torrent_seed_time`（做满该秒数停，0 = 不按时长停）；两者同时为 0 时任务下完会一直上传，要在「正在做种」面板手动停（`POST /api/torrent/stop-seed`）。做种只上传，不占下载并发，**停止做种不会删除已下载的文件**。「正在做种」面板（`GET /api/torrent/seeding`）带 aria2 当场读数：上传速率 / 连接数 / 对方做种人数 / 这份种子里的 tracker 条数，aria2 没回的那项就不显示；面板还会区分「本程序登记的」与「aria2 里其他的」。
+- **自动分类**：`bt_auto_rules` 按种子里的名字决定存到全局下载目录下的哪个子目录，规则从上往下问、第一条命中就定下来（名字包含 / 正则两种），都不中落 `bt_auto_fallback`（留空 = 就用默认下载目录）。没配规则时不凭空造目录；没写文件名的磁力在拿到元数据前没有名字可比，也会被兜底那一档接住。子目录是下载目录之下的相对路径（可多级），带盘符或 `..` 的当场顶回去。`POST /api/torrent/rules/test` 让「试匹配」先在界面上试一个名字或贴一条链接，不必存了才知道命中哪条。规则只决定**之后新提交**的任务存在哪：已经在下载或已经在做种的不搬迁，勾了「只做种」的也不改落点。
+- **只对新任务生效的东西要讲明白**：tracker 与首尾优先改不了已存在的任务 —— aria2 对 `bt-tracker` 当场回「Cannot change option」，对 `seed-ratio` / `bt-prioritize-piece` / `check-integrity` 甚至回 OK 但值原样不动。所以界面上只有按任务的上下行限速能写成「立即生效」，其余都写明「对新任务生效」。
+- **aria2 的报错码逐条翻成人话**：例如码 12 会明确写出「同一个种子在 aria2 里只能登记一次，先删掉或停止做种再重提」。
+- **进度里的字节是 aria2 报的整个下载**（所有选中文件之和），不是主文件那一份 —— 单文件种子里两者能差一个数量级。
 
 </details>
 
@@ -213,7 +248,7 @@ docker compose --profile aria2 up -d   # 可选：带 aria2
 需要登录的站点靠 Cookie 两条路：从本机浏览器直接读，或把 Netscape 格式的 `cookies.txt` 丢进 `cookies/`。音乐平台的登录 Cookie 另按平台分三格存，只写在本机。
 
 <details>
-<summary>技术细节：从浏览器读取的限制、YouTube 风控表现、抖音无 Cookie 的几种返回与分类判定、三平台音乐 Cookie 的三态显示与合并规则</summary>
+<summary>技术细节：从浏览器读取的限制、YouTube 风控表现、抖音无 Cookie 的几种返回与分类判定、三平台音乐 Cookie 的三态显示与合并规则、登录态红标怎么来的与为什么重启就没了</summary>
 
 两条路，任选其一：
 
@@ -225,6 +260,8 @@ YouTube 未带 Cookie 时会命中「sign in to confirm you're not a bot」风�
 抖音的无 Cookie 搜索在本机实测下有两种返回：搜索接口给 HTTP 200 + `{"status_code":2483,"status_msg":"请先登录，再继续搜索吧"}`，搜索页 HTML 给一张字节的 JS 挑战页（`Set-Cookie: __ac_nonce`，正文含 `byted_acrawler` / `__ac_signature`）。两者都不是「没有这条内容」。现在这类情况会被分成要登录 / 反爬挑战 / 限流 / 接口报错 / 确实没有，原因直接显示在聚合搜索的结果区，并在日志里带上判断依据；下载失败的报错也会附上同一套分类说法。这里只做识别与转述：程序不会执行站点下发的 JS，也不伪造签名。
 
 音乐这条线另有一套按平台分开保存的登录 Cookie，在设置 → 「音乐平台登录 Cookie」里分三格（网易云音乐 / QQ 音乐 / 酷狗音乐），不带就是免费那一档音质。网易云那格有「扫码获取」，走网易云自己的登录二维码（手机 App 扫码确认后点「检查扫码状态」把会话收进来），不借任何第三方登录服务；QQ 音乐与酷狗**没有**扫码——那两家的二维码接口要带风控签名，做签名绕过就越界了，所以仍是从浏览器开发者工具复制粘贴。每格会按该平台真正需要的键显示三态「已登录 / 缺关键字段 / 未配置」，缺哪个键直接点名（例如「缺 token 或 userid，这个源拿不到会员音质」），填了一串用不上的键不会再被显示成已配置。三条 Cookie 会与上面那条全局 Cookie 合并成一条交给下载器（各平台只挑自己认的键），搜索框临时粘贴的那串只覆盖同名键，不会把设置页存好的登录挤掉。Cookie 值只写进本机 `config.json`，日志只写键名个数，出包时 `cookies/` 与该文件都在排除表里。
+
+Cookie 卡片还会**自己报「这一家的登录态可能不行」**：某平台的下载被判定为需要先登录时，后端在内存里记一面旗，那一行从「已配置 / 未配置」变成红标「疑似需登录」，鼠标停留写明是哪一次下载判的、什么时候判的、该做什么，卡顶另有一行汇总说明有几家被标出。行尾「清除标记」调 `POST /api/platforms/cookies/clear-flag`，重新导入该平台的 Cookie 也会自动把旗摘掉。这面旗（`_LOGIN_FLAGS`）**只保留到程序关闭、不写进配置** —— 它是当下的网络事实而不是设置，所以重启或换一次网络它可能重新出现，「昨天标过的那一家」今天不会自己提醒。
 
 </details>
 
@@ -313,9 +350,15 @@ Spotify 歌单因 DRM 无法整单下载，做法是「只列曲目 + 到其他�
 RSS、网页更新、Telegram 频道、音乐歌单四类源在同一页管理，定时扫描后只把新出现的条目入队。每条订阅可单设规则，留空即跟随全局设置。
 
 <details>
-<summary>技术细节：规则字段与生效范围、扫描结果的日志口径、音乐歌单游标为什么按曲名+歌手+时长算、批量通道被占用时不记已读</summary>
+<summary>技术细节：规则字段与生效范围、扫描结果的日志口径、同步计划预览为什么不动队列与游标、上游删条目去哪了、音乐歌单游标为什么按曲名+歌手+时长算、批量通道被占用时不记已读</summary>
 
 RSS / 网页 / Telegram 频道 / 音乐歌单四类源统一在「订阅」页管理（不再有独立界面）。页面上方左侧是「添加订阅」卡（粘贴链接、识别来源类型、Telegram 读取方式），右侧「追新与扫描」卡放着「立即扫描全部」、「新条目自动下载」开关和 `共 N 个 · 已启用 N` 的计数；下方整行「订阅源」卡是列表本身。每条订阅可单设规则：内容类型（长视频 / 短视频 / 直播 / 音频播客）、时长区间、标题必含与排除词、日期窗、画质与命名模板、是否只下音频、单次最多入队条数；留空即跟随全局设置。规则只对设好之后新出现的条目生效，运行日志会写明每次扫描下了几条、挡了几条、为什么挡。`sub_first_download_n` 控制首次扫描是否顺带下最近 N 条（0 = 只记 ID）。
+
+**扫描前先给一份计划**：`POST /api/subs/preview` 回答的是「这一轮打算怎么做」—— 读到多少条、其中多少条未读、按当前规则会入队几条、被哪条规则挡掉，日志把这三件事分开写清。**它是纯干跑**：不入队、不动 `last_ids` 游标、不落任何盘，所以点了预览之后队列条数一条也不会多，也不会因此「已读」掉某条。查不存在的订阅、或给它查留档，都当场回 404。
+
+**上游删掉的条目不再凭空消失**：`_feed_sync` 的对照口径改成「本轮读到的这一批 = 下一轮的基准」，条目从源上消失时进留档（`POST /api/subs/archived`，可 `POST /api/subs/archived/clear` 清掉）而不是直接不见了；留档每源最多 `SUB_ARCHIVE_CAP=100` 条，超出按最老的挤掉。
+
+订阅源表与历史表原先让内容自己决定列宽，长链接把表撑到 1500px 以上而容器只有一千一二，右侧「操作」列被推出屏幕。两张表现在用一个共享变体（`table-layout: fixed` + 单元格溢出转省略号）并各自声明列宽，标题与链接装不下就截断、完整值留在鼠标停留的 `title` 里，1440 与 1280 两档量到「容器宽 == 表宽」、不用横向滚动；本版新出的同步计划那几张表直接用同一个变体。1024 档仍需横向滚（见[已知限制](#已知限制)）。
 
 音乐平台的歌单链接（网易云 / QQ / 酷狗 / 咪咕 / 酷我 / Spotify / Apple 等）粘进来会被识别成「音乐歌单」源，每轮扫描重取一次整单、只下新出现的曲目。这类源的追新游标按「曲名 + 歌手 + 时长」算，所以同一首歌换个平台收录也不会重复下；有的平台在「只列曲目」这种快模式下每行只给曲名（不给歌手与时长），此时键尾会再补一段该曲链接的哈希，免得一张歌单里两首同名不同曲（原声版与混音版）被并成一条；这种只列了曲名的行没有音频地址，程序按曲名去匹配源里重新取址，而不是丢给通用下载队列；每轮看 300 条、游标也存 300 条（歌单里的歌不能因为窗口太窄被永久漏掉）。这一类源的条目一律算作「音频/播客」，所以「内容类型」规则里只勾长视频会让整张歌单每一轮都被挡掉。音乐批量在程序里只有一条通道，若上一批音乐下载还没跑完，这一轮的新歌**不会记成已读**（记了就没人补下），日志写明「等下轮扫描再补」。按曲名匹配也可能一首也没找到（匹配源里没这首歌、或这一行只有曲名可依据），日志会整份列出没找到的曲目，但这些行照常记成已读——下一轮不会重试，要再试得在歌单里让那一首换个写法、或改匹配源后手动「立即扫描」。这类源没有可靠的单曲发布时间可用，所以「按日期回填」在没填日期窗时按整张歌单说话，不会假装成某个窗口之内。
 
@@ -323,15 +366,18 @@ RSS / 网页 / Telegram 频道 / 音乐歌单四类源统一在「订阅」页�
 
 ## 字幕与 AI 处理
 
-站点自带字幕可按语言勾选嵌入容器或另存外挂 `.vtt`；本地转写、术语表校验译名、双语字幕导出与 AI 四阶段流水线都在这一路。
+站点自带字幕可按语言勾选嵌入容器或另存外挂 `.vtt`；本地转写、术语表校验译名、双语字幕导出与 AI 四阶段流水线都在这一路。机翻之后还能**逐句查一遍可疑**，并在「逐句校对」里直接改字幕本身。
 
 <details>
-<summary>技术细节：语言码匹配、说话人分离与点时间跳播、SRT / VTT / ASS 三件套、AI 流水线阶段产物落盘与单步重跑、硬字幕烧录的入口与产物命名</summary>
+<summary>技术细节：语言码匹配、说话人分离与点时间跳播、SRT / VTT / ASS 三件套、AI 流水线阶段产物落盘与单步重跑、译后质检的十类判定与反射修、逐句校对台的备份与 409 闸门、硬字幕烧录的入口与产物命名</summary>
 
 - 站点自带字幕按语言勾选嵌入容器（语言码整码匹配），并可「另存独立字幕文件」出外挂 `.vtt`。
 - 本地转写：faster-whisper（含说话人分离，声纹聚类版）；转写结果点时间可跳播。
-- 术语表 / 自定义词典校验译名，字幕智能换行，双语字幕导出 **SRT / VTT / ASS 三件套**。
+- 术语表 / 自定义词典校验译名，字幕智能换行（每行字数 `subtitle_wrap_width` 默认 16、每条最多 `subtitle_wrap_lines` 行默认 3），双语字幕导出 **SRT / VTT / ASS 三件套**。
 - **AI 流水线**：字幕 → 润色 → 摘要 → 翻译四阶段，每阶段产物落盘并可单独重跑（`/api/ai/pipeline`）。
+- **译后质检** `POST /api/subtitle/qc`（开关 `subtitle_qc`，默认开）：对照原文逐句查十类可疑 —— 没有译文 / 没翻译 / 没换成目标语言 / 疑似漏译 / 疑似加戏 / 术语没照表 / 数字对不上 / 疑似复读 / 超出每行字数 / 样式标签丢失。单次最多看 `QC_ROWS_CAP=200` 行，**结果只写进运行日志、不改动字幕**。可疑的那几行可以再交对话模型改一遍（`subtitle_qc_reflect`，默认关，要多花一次 token，一次一批 `REFLECT_CAP=80` 句）：合并成段落时**只收带序号的行**，认不出序号就整句留着第一遍的译文 —— 宁可不改，也不把模型的说明抄进字幕。「超出每行字数」与「样式标签丢失」这两类反射修不了，交给下面两件工具。
+- **按每行字数重新断行** `POST /api/subtitle/rewrap`：已经译好的字幕按设置里那两个数值重新断行，不必重跑翻译。
+- **逐句校对台**（文件页「逐句校对」）：`GET /api/ai/srt` 按字幕路径或媒体路径读出每句的序号 / 起 / 止 / 说话人 / 正文，`.srt` 与 `.vtt` 都支持（毫秒按位数换算，写回 `.vtt` 时首行仍是 `WEBVTT`、时间用点分隔）；改完只有点「保存」（`POST /api/ai/srt/save`）才写盘，**写前在同目录留一份 `原名.bak-<时间>` 备份**（一秒内连续保存也不会互相覆盖，撞名补 `.1 / .2`）。空正文那行跳过并回报 `dropped`，止比起早的兜到至少 40 毫秒、负起点夹到 0；说话人标记写回时保留，选中句可前后平移（按「起点 + 句长」重算止点）、合并、删句。**如果字幕在「读完之后」又被流水线或别人改写了，保存返回 409 并在报错里点名文件与改写时刻**，界面据此要求重读，绝不覆盖刚生成的内容 —— 不传 `base_mtime` 的老调用方不受这道闸门影响。整条平移仍走既有的「时间轴校准」。
 - **硬字幕烧录**：文件页视频行「更多 → 烧录字幕」，选字幕与样式后输出 `原名.hardsub.mp4`，源文件不动。
 
 </details>
@@ -396,26 +442,27 @@ faster-whisper 转写、Edge-TTS 合成、Demucs 人声/伴奏分离、声纹说
 
 ## 解析插件与 aria2
 
-把 `.py` 放进 `plugins/`、实现 `match(url)` 与 `resolve(url, ctx)` 就会被加载；aria2 是可选项，用于 CDN 直链分片。
+把 `.py` 放进 `plugins/`、实现 `match(url)` 与 `resolve(url, ctx)` 就会被加载；aria2 是可选项，CDN 直链分片与「磁力 / 种子」那一页都靠它。
 
 <details>
 <summary>技术细节：插件接口与热加载端点、自带的两个示例、aria2 的开启方式与 Docker profile</summary>
 
 - **插件解析**：把 `.py` 丢进 `plugins/`，实现 `match(url)` 与 `resolve(url, ctx)` 即会被加载（`/api/plugins` 看清单、`/api/plugins/test` 试解析、`/api/plugins/reload` 热加载）。入队前自动尝试把页面链解析成真实媒体 URL，仓库自带 `example_passthrough.py` 与 `site_b23_short.py` 两个示例。
-- **aria2（可选）**：设置开启后 CDN 直链走 aria2 分片（`aria2_client.py`，状态见 `/api/aria2/status`）。Docker Compose 有 `aria2` profile 可一键起 RPC。
+- **aria2（可选）**：设置开启后 CDN 直链走 aria2 分片（`aria2_client.py`，状态见 `/api/aria2/status`）。**「磁力 / 种子」那一页整个引擎就是它** —— RPC 地址、密钥、自动拉起、做种看护这些设置同在这一页的「aria2 与做种」一节，详见[磁力与种子](#磁力与种子)；包内不带 aria2c，要自备。Docker Compose 有 `aria2` profile 可一键起 RPC。
 
 </details>
 
 ## 通知
 
-Telegram Bot、企业微信、Server酱三种出站推送，完成 / 失败 / 订阅各自独立开关。所有密钥只存本机 `config.json`，不出包、不进日志。
+Telegram Bot、企业微信、Server酱三种出站推送，完成 / 失败 / 订阅各自独立开关。所有密钥只存本机 `config.json`，不出包、不进日志。浏览器这边还有桌面通知，点一下跳到那条任务。
 
 <details>
-<summary>技术细节：三套通知各要填哪些字段与开关键名</summary>
+<summary>技术细节：三套通知各要填哪些字段与开关键名、桌面通知点击跳转的口径</summary>
 
 - **Telegram Bot**：填 Bot Token 与 Chat ID，三个独立开关 —— `telegram_notify_done` / `_fail` / `_sub`。
 - **企业微信**：CorpID / Secret / AgentID / touser + 测试发送，同样三档 `wecom_notify_*`。
 - **Server酱**：填 SendKey 后在下载完成时推送，无独立开关与其他档位。
+- **浏览器桌面通知可点击**：任务完成时弹的那条通知挂了 `onclick`，点它就跳到那条任务所在的页（磁力 / 种子的任务跳「磁力 / 种子」，其余跳队列）并把那张卡片闪一下（2600 毫秒）。跳转落在切页入场动画之后 120 毫秒再做 —— 那段时间里平滑滚动会被浏览器静默丢弃，所以这里走瞬时滚动。任务已经被清掉时说「这个任务已经不在列表里了，可能已被清掉」并把通知收起，不留一条点了没反应的横幅。
 - 所有密钥只存本机 `config.json`，不出包、不进日志。
 
 </details>
@@ -428,20 +475,41 @@ Telegram Bot、企业微信、Server酱三种出站推送，完成 / 失败 / �
 
 `tests/` 下是一套套可独立运行的自检脚本（`python tests/musicarchive_test.py`），逐条打印 PASS/FAIL，全绿时退出码 0。它们只在临时目录里落文件，不改 `config.json`、不写下载目录；跑之前先装好 `requirements.txt`，其中声纹分离那几套还要用到 `tools/` 里的 ffmpeg。
 
+磁力 / 种子那条链是 `torrent_test.py` 与 `bt_boost_test.py`（aria2 用桩替掉，不需要本机真装一个），逐句校对台是 `srtedit_test.py`，MCP 桥是 `mcp_test.py`，Cookie 登录态红标是 `cookielogin_test.py`，「请求体走没走对通道」是 `routebody_test.py`。批量跑记得带上 `PYTHONIOENCODING=utf-8`（子进程继承控制台编码时，GBK 会在中文输出上炸 `UnicodeEncodeError`）。
+
+## MCP 接口桥
+
+`mcp_server.py` 把本机的 HTTP 接口原样映射成 MCP 工具，让支持 MCP 的智能体直接调这个下载器。**界面里没有这一项**，它是一条命令行：服务先跑起来，再 `python mcp_server.py` 让 MCP 客户端拉起，`python mcp_server.py --tools` 只看映射结果不连服务。
+
+<details>
+<summary>技术细节：工具清单从 openapi 现取、只允许环回、没有鉴权所以别对外、调用日志的脱敏口径</summary>
+
+- **清单不手写**：开桥时从 `<BASE>/openapi.json` 现取，接口增减自动跟上（本版 193 条路由里，除首页之外的 192 条 `/api/*` 各挂成一个工具）。query / path / body 三类入参摊平成一份 `inputSchema`，必填项来自 openapi 而不是猜的；接口签名是自由 `dict` 的，给一个 `payload` 整包传。`/api/events` 那条是实时推送流，取第一条事件就收口，不会挂在那儿等。
+- **只连本机**：`DEFAULT_BASE` 是 `http://127.0.0.1:8765`，可以用环境变量改端口，但 host 不是 `127.0.0.1 / localhost / ::1` 就当场退出 —— **这条桥没有鉴权**，改成远端等于把「改设置、发起下载、删任务」这些写操作裸暴露出去。环回地址也不走系统代理，否则连本机要绕一圈、失败信息还难看。
+- **出错要说原话**：调用失败时把状态码与响应体摘要一起带出来，只回「调用失败」等于没报。
+- **日志脱敏**：`mcp_calls.log` 只记调了哪个工具、参数形状与结果状态；参数名里含 `cookie` / `token` / `secret` / `password` / `api_hash` / `key` 等字样的，值一律替成 `<已隐藏>`，响应体一个字都不落盘。即便如此，日志里仍有接口路径、参数名与队列内容，**别把它当无害的调试件发给别人**。
+- 用它的边界与[不在本工具范围内](#不在本工具范围内)一致：桥只是把既有接口挂出来，不会因为「是智能体调的」就多出绕过登录 / 付费 / DRM 的能力。
+
+</details>
+
 ## 目录结构
 
 ```
 server.py            FastAPI 后端（路由、下载调度、字幕与 AI 处理）
+mcp_server.py        MCP 桥：把接口原样挂给智能体（stdio，只连本机）
 music_search.py      音乐聚合搜索与歌单匹配      telegram_channel.py  t.me/s 匿名爬虫
 telegram_mt.py       MTProto 会话与私有频道批量   voice_tools.py       TTS / Demucs
 ai_pipeline.py       AI 流水线阶段产物            diarize_tools.py     声纹说话人分离
 audio_analyze.py     音频分析与指纹               pkg_update.py        组件与依赖自更新
-risk_control.py      风控与反爬返回的分类判定     aria2_client.py      可选 aria2 RPC 客户端
+risk_control.py      风控与反爬返回的分类判定     aria2_client.py      aria2 RPC 客户端（分片加速 + 磁力 / 种子）
+aria2_daemon.py      RPC 没人应答时拉起一个只监听 127.0.0.1 的 aria2c
+bt_trackers.py       运行时抓 tracker 列表并缓存在本机（源码里不写死任何一条）
 pack_release.py      便携包出包脚本（含自检）
 static/              前端（单文件 Vue 3 应用）    extension/           浏览器嗅探扩展
 plugins/             URL 解析插件                 tools/               ffmpeg / ffprobe / yt-dlp / N_m3u8DL-RE
 tests/               离线自检脚本与 fixtures      cookies/             cookies.txt
 Downloads/           默认下载目录
+torrent_state/       上传过的种子、tracker 缓存、aria2 会话文件（记的是本机下过什么，出包整目录排除）
 musicdl_outputs/     musicdl 的中间缓存（搜索 pkl、未归档的临时成品）
 _preview/            「试听」取的那份临时音频（只留最近 20 份）
 ```
@@ -455,9 +523,13 @@ _preview/            「试听」取的那份临时音频（只留最近 20 份�
 <details>
 <summary>技术细节：常用端点与音乐这一路的端点清单</summary>
 
-`GET /api/status` `POST /api/analyze` `POST /api/download` `GET /api/tasks` `GET /api/net/info` `GET /api/components` `GET /api/plugins` `GET /api/queues` `GET /api/events`（SSE 进度推送）`POST /api/ui_event`（前端操作埋点）。
+`GET /api/status` `POST /api/analyze` `POST /api/download` `GET /api/tasks` `GET /api/net/info` `GET /api/components` `GET /api/plugins` `GET /api/queues` `GET /api/events`（SSE 进度推送）`POST /api/ui_event`（前端操作埋点）`GET /openapi.json`。
 
-音乐这一路另有：`GET /api/music/status`（源清单、默认源、已存策略，以及命名模板 / 嵌入标签 / 过滤不可用 / 包含本地库四项设置的原值回显，另带回音质要求的当前值与四张档位表）、`POST /api/music/search` `POST /api/music/playlist` `POST /api/music/probe` `POST /api/music/download`（下载前先过去重与「跳过已下载」，两者都接收 `quality_spec`，`GET /api/music/download_status` 报本批进度与未匹配清单）、`POST /api/music/check_quality`（逐份读成品自己的标签核对本批音质要求，只接受下载目录之内的路径）、`POST /api/music/switch_source`（跨平台换一条来路重取地址）、`GET/POST /api/music/favorites` 与 `/favorites/remove`、`/favorites/download`、`/favorites/mark`（自建收藏清单）、`POST /api/music/local_scan` 与 `GET /api/music/local_cover`（本地库索引与内嵌封面）、`GET/POST /api/music/cookies`（三平台各自的登录 Cookie）、`GET /api/music/netease/qr/generate` 与 `POST /api/music/netease/qr/poll`（网易云官方扫码登录）。完整列表看 `server.py` 里的 `@app.` 路由或 `/docs`。
+磁力 / 种子这一路：`POST /api/torrent/upload`（种子文件）`POST /api/torrent/select`（选内部文件）`GET /api/torrent/seeding` `POST /api/torrent/stop-seed` `POST /api/torrent/rules/test`（试匹配自动分类规则）`GET /api/bt/trackers` `POST /api/bt/trackers/refresh` `POST /api/bt/limit`（按任务改上下行限速），aria2 自身状态仍看 `/api/aria2/status`。
+
+字幕与排障这一路：`GET /api/ai/srt` 与 `POST /api/ai/srt/save`（逐句校对台读 / 写，写前留备份、被改写过回 409）、`POST /api/subtitle/qc`（译后质检）`POST /api/subtitle/rewrap`（按每行字数重排）、`POST /api/config/speed_windows/check`（限速时段体检）、`POST /api/subs/preview`（同步计划干跑）与 `POST /api/subs/archived` / `POST /api/subs/archived/clear`（上游删条目留档）、`POST /api/live/monitors/set`（直播每房间设置）、`POST /api/platforms/cookies/clear-flag`（清登录态红标）、`POST /api/diagnostics/export`（导出脱敏诊断包）。
+
+音乐这一路另有：`GET /api/music/status`（源清单、默认源、已存策略，以及命名模板 / 嵌入标签 / 过滤不可用 / 包含本地库四项设置的原值回显，另带回音质要求的当前值与四张档位表）、`POST /api/music/search` `POST /api/music/playlist` `POST /api/music/probe` `POST /api/music/download`（下载前先过去重与「跳过已下载」，两者都接收 `quality_spec`，`GET /api/music/download_status` 报本批进度与未匹配清单）、`POST /api/music/check_quality`（逐份读成品自己的标签核对本批音质要求，只接受下载目录之内的路径）、`POST /api/music/switch_source`（跨平台换一条来路重取地址）、`GET/POST /api/music/favorites` 与 `/favorites/remove`、`/favorites/download`、`/favorites/mark`（自建收藏清单）、`POST /api/music/local_scan` 与 `GET /api/music/local_cover`（本地库索引与内嵌封面）、`GET/POST /api/music/cookies`（三平台各自的登录 Cookie）、`GET /api/music/netease/qr/generate` 与 `POST /api/music/netease/qr/poll`（网易云官方扫码登录）。完整列表看 `server.py` 里的 `@app.` 路由或 `/docs`，也可以让 `python mcp_server.py --tools` 把整份清单打出来（见[MCP 接口桥](#mcp-接口桥)）。
 
 </details>
 
@@ -472,7 +544,7 @@ _preview/            「试听」取的那份临时音频（只留最近 20 份�
 2. 改代码前先读这一节：后端是单文件 `server.py`、前端是单文件 `static/index.html`；改 `.py` 需要重启进程才生效。
 3. 加站点解析：在 `plugins/` 放一个 `.py`，实现 `match(url)` 与 `resolve(url, ctx)`，`/api/plugins/test` 可试解析。
 4. 跑自检：`python tests/<名字>_test.py` 逐条打印 PASS/FAIL，全绿退出码 0。`tests/fixtures/` 是四份**公开页面**的 HTML 快照（无登录内容、无 Cookie），让 Telegram 与抖音风控那几套能离线断言。
-5. 加依赖要三处同步：`requirements.txt`、`pack_release.py` 的 `PKGS`、以及「设置 → 组件与依赖」那张表（含界面里的 `CREDITS` 数组，参考项目同理要跟进）。新增顶层 `.py` 模块必须同时加进 `pack_release.py` 的 `APP_PY`，漏了包里直接 import 不到。
+5. 加依赖要三处同步：`requirements.txt`、`pack_release.py` 的 `PKGS`、以及「设置 → 组件与依赖」那张表（含界面里的 `CREDITS` 数组，参考项目同理要跟进）。新增顶层 `.py` 模块必须同时加进 `pack_release.py` 的 `APP_PY`，漏了包里直接 import 不到。新增或删掉接口不用另外维护第二份清单：MCP 桥与接口文档都从 `/openapi.json` 现取，但请求体模型必须写成能被 openapi 生成的形式（`body: SomeBody` 不带默认值会被当成查询参数，既收不到 JSON 也会让 `/openapi.json` 生成失败）。
 6. 界面规矩：新控件默认 `size="small"`，只有主 CTA 用 `large`；主色只留蓝，绿与黄用作状态色；一屏一节对应一张卡；超过一屏的列表统一每页 50 条并带跳页；每个页面动作都要写运行日志。文案要书面但易懂，指代落到具体控件名，报错保留全部技术事实。
 7. 出包与验证：改了 `server.py` / `static/index.html` / README / CHANGELOG 之后 zip 不会自动跟进，要重跑 `python pack_release.py --skip-runtime`，包内文档 md5 必须与磁盘一致。
 8. 不要把本机状态文件提交进来：`.gitignore` 采用「默认全忽略、再逐项放行」的白名单，新增文档或目录要显式加一行放行；`config.json`、Cookie、历史、下载物、会话文件一律不入。
@@ -484,7 +556,8 @@ _preview/            「试听」取的那份临时音频（只留最近 20 份�
 
 - 全部数据留在本机：配置 `config.json`、历史 `history.json`、Cookie、下载内容都在工作目录内，程序不上传任何内容。
 - 日志只记动作与报错，不记 Token / Secret / api_hash / 密码 / Cookie 内容 / SendKey；设置保存只记变更的键名与数量。
-- 便携包强制排除 `config.json`、`cookies/`、`Downloads/`、`history.json`、`subscriptions.json`、`rss_feeds.json`、`music_favorites.json`（自建的音乐收藏清单）、`local_index/`（本地音乐索引快照，记的是本机文件的真实路径）、`tg_session/`、`browser_sniff_profile/`、各类本机缓存与日志；出包前的泄漏自检发现混入即中止。
+- 「导出诊断包」（`POST /api/diagnostics/export`）是给**别人**看的，所以脱敏在后端做掉：Cookie 文件本身、`tg_session`、下载成品、做种状态目录一律不带；配置里 `music_platform_cookies` / `musicdl_cookies` / `platform_cookie_content` 等字段整体摘掉并在 `meta.json` 里写明隐藏了几处，正文再按字段名过一遍（密钥、令牌、`user:pass` 形式的代理地址）；包里的 `README.txt` 提醒对方上传前自查。
+- 便携包强制排除 `config.json`、`cookies/`、`Downloads/`、`history.json`、`subscriptions.json`、`rss_feeds.json`、`music_favorites.json`（自建的音乐收藏清单）、`local_index/`（本地音乐索引快照，记的是本机文件的真实路径）、`tg_session/`、`torrent_state/`（上传过的种子、tracker 缓存与 aria2 会话文件）、`mcp_calls.log`（MCP 调用记录，值已脱敏但仍含接口路径与队列内容）、`browser_sniff_profile/`、各类本机缓存与日志；出包前的泄漏自检发现混入即中止。
 
 ## 已知限制
 
@@ -493,6 +566,14 @@ _preview/            「试听」取的那份临时音频（只留最近 20 份�
 | 限制 | 表现 | 为什么 |
 | --- | --- | --- |
 | 区间裁剪只认分片流 | 单文件 mp4 填了 `download_section` 会被忽略，任务日志写明 | 底层走 yt-dlp 的 `download_ranges`，它按 HLS 分片边界工作 |
+| 便携包里没有 aria2c | 「磁力 / 种子」那一页点了「开始下载」当场回错并说清缺什么，任务一条不建 | 包内 `tools/` 只带 ffmpeg / ffprobe / yt-dlp / N_m3u8DL-RE；这条链完全靠 aria2 的 RPC，要自备 aria2c（放进 `tools/` 或 PATH，或在「aria2 与做种」里填路径） |
+| tracker 与首尾优先只对新任务生效 | 改完这几项要重新提交任务；已存在的任务改不动 | aria2 的 `changeOption` 对 `bt-tracker` 当场回「Cannot change option」，对 `seed-ratio` / `bt-prioritize-piece` 甚至回 OK 但值不动 |
+| 便携包的内嵌 runtime 里没有 psutil | 结束直播录制时收不掉 yt-dlp 派出去拉流的那个 ffmpeg 子进程，成品可能一直变大、删了又长；后端只 warning 不炸 | 本版只把它加进 `requirements.txt` 与「组件与依赖」的可安装清单，没重打 runtime；装上（或在「组件与依赖」点安装）即可 |
+| MCP 桥只连本机、没有鉴权 | BASE 的 host 不是 `127.0.0.1 / localhost / ::1` 就当场退出 | 它把 192 条接口原样挂出去，其中包含改设置、发起下载、删任务这类写操作，所以不要拿它对外提供服务 |
+| 登录态红标只活到程序关闭 | 重启或换一次网络就可能重新出现，「昨天标过的那一家」今天不会自己提醒 | `_LOGIN_FLAGS` 不落盘 —— 它是当下的网络事实，不是配置 |
+| 自定义 yt-dlp 参数是白名单式放行 | 闸门认得的危险项（`--exec`、自带 Cookie、外挂配置、改失败处理、指定格式）被点名拒掉，**没列进闸门的项按原样附加** | yt-dlp 的参数面很宽，这一串只对「本机自己下的任务」负责 |
+| 逐句校对与质检不在同一处 | 质检结果只写运行日志（`QC_ROWS_CAP=200` 之内），要逐条看还得开校对台；字幕被流水线重跑会覆盖人工改动 | 409 闸门只挡「读之后被改写」这一种情形，先保存再重跑的顺序仍需人来守 |
+| 1024 宽以下两张表仍需横向滚动 | 订阅源表与历史表在窄屏要靠容器自己的滚动条 | `table-layout: fixed` 的列宽有下限（时间列、操作列要放得下按钮），要收口得先定哪一列可以不要 |
 | YouTube 要 Cookie | 无 Cookie 时解析失败或只给 360p | 站点侧「sign in to confirm you're not a bot」风控 |
 | 抖音无 Cookie 搜不到 | 分成「要先登录 / 反爬校验页 / 限流 / 接口报错 / 确实没有」并写明依据 | 搜索接口回 200 配 `status_code:2483` 登录墙，或回一张需要执行 JS 的挑战页；本工具不执行站点 JS、不伪造签名 |
 | Spotify / Apple 没有官方音频通路 | 只能「只列曲目 + 到其他平台按曲名匹配」，或经第三方转链（每首约十秒、时常失败） | DRM；所以这两家不进默认匹配源 |
@@ -517,6 +598,18 @@ _preview/            「试听」取的那份临时音频（只留最近 20 份�
 
 **音频分析报 `Numba needs NumPy 2.4 or less. Got NumPy 2.5.`** numpy 的上限由 numba 决定，「组件与依赖」的表里没有 numba 这一行，要么单独用 pip 一起升 numba，要么把 numpy 排除在本次批次之外。
 
+**「磁力 / 种子」页点了「开始下载」直接回错。** 这一页完全靠 aria2：没装 aria2c（便携包不带）或 RPC 连不上时当场说清缺什么，任务一条也不会建。装上 aria2c 后在「aria2 与做种」里填路径或放进 PATH，点「检测 aria2」确认 RPC 可连；勾了「自动拉起 aria2」（默认开）时程序会自己起一个只监听 127.0.0.1 的。
+
+**磁力任务挂了很久没有文件清单。** 先拿种子元数据才知道里面有哪几个文件，`torrent_meta_timeout`（默认 180 秒）超时即判失败，通常是此刻没有做种者 —— 不是地址写错了。
+
+**结束直播录制后成品还在变大、删了又长。** 便携包的内嵌 runtime 里没有 psutil，收不掉 yt-dlp 派出去拉流的那个 ffmpeg 子进程；在「组件与依赖」里装 psutil 或手动确认那个进程。
+
+**逐句校对点保存报「字幕已被改写」。** 那是 409 闸门：你读完之后流水线（或另一个窗口）动过这个文件，所以拒写以免覆盖刚生成的内容。按提示重读一遍再改即可；保存前本来就会在同目录留 `原名.bak-<时间>` 备份。
+
+**MCP 桥起不来 / 报取不到 openapi。** 它不独立提供服务，要先让 `server.py` 跑起来（默认 `http://127.0.0.1:8765`，改端口用环境变量）；把 `MEDIADOWNLOADER_BASE_URL` 指到非环回地址会被当场拒绝，那是刻意的 —— 这条桥没有鉴权。
+
+**要别人帮忙排查。** 日志页点「导出诊断包」，拿到的 zip 里是版本与运行环境、状态、组件表、队列、脱敏后的配置与近期日志；Cookie、会话、下载成品、做种状态目录都不在包里，`meta.json` 逐条列出排除了什么。
+
 **启动日志两行 `Failed to load SSL library` / `cryptg module not installed`。** 说的是 telethon 退回纯 Python 加密，Telegram 操作会变慢。v1.2.8 起的便携包已自带 cryptg；源码运行时装上即可。
 
 **指纹识别报 `invalid API key`。** 设置里那栏要填 acoustid.org **应用**的 client key，不是登录账户后看到的 user API key。
@@ -534,12 +627,13 @@ _preview/            「试听」取的那份临时音频（只留最近 20 份�
 - Telegram 频道主人开启「限制保存内容」视为明确的禁止保存信号，不去绕；登录只走 api_id / api_hash + 手机验证码 + 2FA，不做扫码。
 - Qobuz / Tidal 的「无损参照」只取元数据，音频一个字都不取。
 - 猫抓推送里的 HLS 密钥，只接收你自己已经抓到的那一份，不去取、不去破。
+- 「自定义 yt-dlp 参数」不做成执行命令的入口：`--exec`（下载完成后执行任意命令）这类会被点名拒掉；MCP 桥只连本机，不拿它对外提供服务。
 
 ## 鸣谢
 
 本工具是把已有的公开接口与开源下载组件串起来，主要依赖：[yt-dlp](https://github.com/yt-dlp/yt-dlp)、[N_m3u8DL-RE](https://github.com/nilaoda/N_m3u8DL-RE)、[FFmpeg](https://ffmpeg.org)、[aria2](https://github.com/aria2/aria2)、[musicdl](https://github.com/CharlesPikachu/musicdl)、[mutagen](https://github.com/quodlibet/mutagen)、[edge-tts](https://github.com/rany2/edge-tts)、[deep-translator](https://github.com/nidhaloff/deep-translator)、[faster-whisper](https://github.com/SYSTRAN/faster-whisper)、[Demucs](https://github.com/facebookresearch/demucs)、[Telethon](https://github.com/LonamiWebs/Telethon)、[Chromaprint / fpcalc](https://github.com/acoustid/chromaprint)、[AcoustID](https://acoustid.org)、[MusicBrainz](https://musicbrainz.org)、[FastAPI](https://github.com/fastapi/fastapi)、[Vue](https://vuejs.org)、[Element Plus](https://element-plus.org)。
 
-界面与功能上参考过：[Ghost-Downloader-3](https://github.com/XiaoYouChR/Ghost-Downloader-3)、[voice-pro](https://github.com/abus-aikorea/voice-pro)、[AI-Video-Transcriber](https://github.com/wendy7756/AI-Video-Transcriber)、[cat-catch](https://github.com/xifangczy/cat-catch)（GPL-3.0，本工具只做它「发送数据」的接收端与正则规则导入，按公开配置格式对接，未复制代码）、[spotDL](https://github.com/spotdl/spotDL)（同曲打分闸门的思路参考，未复制代码）、Emby / Jellyfin（命名模板按目录读曲的口径参考）。
+界面与功能上参考过：[Ghost-Downloader-3](https://github.com/XiaoYouChR/Ghost-Downloader-3)、[voice-pro](https://github.com/abus-aikorea/voice-pro)、[AI-Video-Transcriber](https://github.com/wendy7756/AI-Video-Transcriber)、[cat-catch](https://github.com/xifangczy/cat-catch)（GPL-3.0，本工具只做它「发送数据」的接收端与正则规则导入，按公开配置格式对接，未复制代码）、[spotDL](https://github.com/spotdl/spotDL)（同曲打分闸门的思路参考，未复制代码）、[qBittorrent Enhanced Edition](https://github.com/c0re100/qBittorrent-Enhanced-Edition)（GPL-3.0，「磁力 / 种子」那一页的 tracker 自动更新、做种与限速这些功能照着它的产品形态设计，未复制任何代码，tracker 列表也不写死在源码里而是运行时按 URL 抓取）、[ngosang/trackerslist](https://github.com/ngosang/trackerslist) 与 [XIU2/TrackersListCollection](https://github.com/XIU2/TrackersListCollection)（公开维护的 BitTorrent announce 列表，本工具只在设置里存地址、正文每次现抓，不落进发布包）、Emby / Jellyfin（命名模板按目录读曲的口径参考）。
 
 完整名单（含用途说明）在「设置 → 鸣谢 / 参考项目」，界面上可直接点开各项目主页。
 

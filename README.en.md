@@ -2,13 +2,13 @@
 
 # MediaDownloader Web · 多媒体下载器 Web
 
-**Link parsing & download · page sniffing · cross-platform music · subtitles & AI · voice tools · subscription tracking**
+**Link parsing & download · torrents & magnets · page sniffing · cross-platform music · subtitles & AI · voice tools · subscription tracking**
 
-A media downloader and processor that runs entirely on your own machine: paste a link and it downloads, and the browser handles queues, m3u8 captured from pages, music lookup by song title, subtitles, transcription and subscription tracking.
+A media downloader and processor that runs entirely on your own machine: paste a link and it downloads, and the browser handles queues, magnet and `.torrent` jobs, m3u8 captured from pages, music lookup by song title, subtitles with sentence-by-sentence proofreading, transcription and subscription tracking.
 Settings, cookies, history and downloaded files all stay in the folder the program runs from — nothing is uploaded anywhere.
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-v1.2.9-informational)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-v1.3.0-informational)](CHANGELOG.md)
 [![Python](https://img.shields.io/badge/Python-3.12-green)](requirements.txt)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Docker-blueviolet)](#get-started-in-30-seconds)
 [![Storage](https://img.shields.io/badge/Data-100%25%20local-lightgrey)](#privacy)
@@ -28,19 +28,19 @@ This tool does **not** bypass login walls, paywalls, DRM or human-verification c
 ## Contents
 
 - **Start**: [Get started in 30 seconds](#get-started-in-30-seconds) · [What is in the portable package](#what-is-in-the-portable-package) · [Screenshots](#screenshots)
-- **Capabilities**: [Features](#features) · [The 16 pages](#the-16-pages) · [Download & queue](#download--queue) · [Cookies & site logins](#cookies--site-logins) · [Network & proxies](#network--proxies) · [Music](#music) · [Telegram](#telegram) · [Subscriptions](#subscriptions) · [Subtitles & AI processing](#subtitles--ai-processing) · [Voice tools](#voice-tools) · [Browser extension](#browser-extension) · [Components & dependencies](#components--dependencies-updated-from-inside-the-app) · [Resolver plugins & aria2](#resolver-plugins--aria2) · [Notifications](#notifications) · [Themes](#themes)
-- **Development**: [Offline self-tests](#offline-self-tests) · [Repository layout](#repository-layout) · [Common API endpoints](#common-api-endpoints) · [Contributing](#contributing)
+- **Capabilities**: [Features](#features) · [The 17 pages](#the-17-pages) · [Download & queue](#download--queue) · [Torrents & magnets](#torrents--magnets) · [Cookies & site logins](#cookies--site-logins) · [Network & proxies](#network--proxies) · [Music](#music) · [Telegram](#telegram) · [Subscriptions](#subscriptions) · [Subtitles & AI processing](#subtitles--ai-processing) · [Voice tools](#voice-tools) · [Browser extension](#browser-extension) · [Components & dependencies](#components--dependencies-updated-from-inside-the-app) · [Resolver plugins & aria2](#resolver-plugins--aria2) · [Notifications](#notifications) · [Themes](#themes)
+- **Development**: [Offline self-tests](#offline-self-tests) · [MCP bridge](#mcp-bridge) · [Repository layout](#repository-layout) · [Common API endpoints](#common-api-endpoints) · [Contributing](#contributing)
 - **Boundaries & licence**: [Privacy](#privacy) · [Known limitations](#known-limitations) · [FAQ](#faq) · [Out of scope by design](#out-of-scope-by-design) · [Acknowledgements](#acknowledgements) · [License](#license) · [Disclaimer](#disclaimer)
 
 ## Get started in 30 seconds
 
 **Windows, no install (recommended)**
 
-1. Download `MediaDownloader-1.2.9-portable.zip` (~218 MB) from [Releases](https://github.com/QingYan1012/media-downloader-web/releases/latest).
+1. Download `MediaDownloader-1.3.0-portable.zip` from [Releases](https://github.com/QingYan1012/media-downloader-web/releases/latest).
 2. Unpack it to a path with no non-ASCII characters and no spaces, and not under `C:\Program Files`.
 3. Double-click `启动.bat`; `http://127.0.0.1:8765` opens by itself after about 3 seconds.
 
-The archive bundles the Python runtime and pip, FFmpeg / ffprobe, yt-dlp, N_m3u8DL-RE and fpcalc, and generates a clean default configuration on first start.
+The archive bundles the Python runtime and pip, FFmpeg / ffprobe, yt-dlp, N_m3u8DL-RE and fpcalc, and generates a clean default configuration on first start. **aria2c is not in the package** — the "磁力 / 种子" (torrents & magnets) page needs one you supply yourself, see [Torrents & magnets](#torrents--magnets).
 
 **From source**
 
@@ -62,7 +62,7 @@ Port already busy, a component missing, or you want member-tier audio? Each has 
 
 ## What is in the portable package
 
-The only real trade-off of the no-install route: the voice stack (faster-whisper plus models, Demucs, librosa) is gigabytes, so it is not bundled — every red-dot item installs on demand from **Settings → Components & dependencies**, no re-download needed.
+The only real trade-off of the no-install route: the voice stack (faster-whisper plus models, Demucs, librosa) is gigabytes, so it is not bundled — every red-dot item installs on demand from **Settings → Components & dependencies**, no re-download needed. aria2c (the engine behind the torrents & magnets page) and psutil (needed to reap the streaming subprocess when a live recording ends) are not bundled either; where to get them is in the table below.
 
 <details>
 <summary>Details: the three install routes, what is bundled and what is not, the privacy exclusion leak-scan, port override and unpack location</summary>
@@ -71,7 +71,7 @@ Three ways to get running; pick one.
 
 | Route | Who it is for | How | After that |
 | --- | --- | --- | --- |
-| **Portable package (no install, recommended)** | Windows users who do not want Python | `MediaDownloader-1.2.9-portable.zip` (~218 MB) in this repository's [Releases](https://github.com/QingYan1012/media-downloader-web/releases/latest) | Unpack, double-click `启动.bat` (the launcher); `http://127.0.0.1:8765` opens in ~3 s. Bundles its own Python runtime **with pip**, plus FFmpeg / yt-dlp / N_m3u8DL-RE |
+| **Portable package (no install, recommended)** | Windows users who do not want Python | `MediaDownloader-1.3.0-portable.zip` in this repository's [Releases](https://github.com/QingYan1012/media-downloader-web/releases/latest) | Unpack, double-click `启动.bat` (the launcher); `http://127.0.0.1:8765` opens in ~3 s. Bundles its own Python runtime **with pip**, plus FFmpeg / yt-dlp / N_m3u8DL-RE |
 | **Run from source** | You already have Python 3.12 | `git clone`, then [Get started in 30 seconds](#get-started-in-30-seconds) | Put ffmpeg / ffprobe / yt-dlp / N_m3u8DL-RE into `tools/`, or install them from Settings |
 | **Docker** | NAS / home server | `docker compose up -d --build` (optionally `--profile aria2`) | See [Dockerfile](Dockerfile) and [docker-compose.yml](docker-compose.yml) |
 
@@ -82,8 +82,8 @@ What the portable archive does and does not contain:
 | Embedded Python runtime **and pip** | faster-whisper itself and the Whisper models (several GB) |
 | `tools/`: ffmpeg, ffprobe, yt-dlp, N_m3u8DL-RE | Demucs / torch |
 | Music stack: musicdl, mutagen, edge-tts, deep-translator, zhconv | librosa / numba (needed by "audio analysis") |
-| Telegram stack: telethon, python-socks, cryptg | — |
-| Audio fingerprinting: `chromaprint/fpcalc.exe` | — |
+| Telegram stack: telethon, python-socks, cryptg | psutil (reaps the streaming subprocess when a live recording ends; installs with pip) |
+| Audio fingerprinting: `chromaprint/fpcalc.exe` | **aria2c.exe** (the engine of the torrents & magnets page; download it yourself into `tools/` or PATH) |
 | `启动.bat`, `使用说明.txt` (usage notes), `README.md` / `README.en.md` / `CHANGELOG.md` / `LICENSE` | — |
 
 - Anything shown as a red dot in **Settings → Components & dependencies** installs on demand with the bundled pip (or with "update all"), so a missing extra never requires re-downloading the package. Restart the launcher afterwards to load it.
@@ -103,6 +103,8 @@ What the portable archive does and does not contain:
 - HLS / DASH segments go to the dedicated N_m3u8DL-RE engine (falling back to ffmpeg / yt-dlp); segmented streams can be range-trimmed.
 - MKV by default: a single-file mp4 stream is losslessly remuxed, never re-encoded; post-download integrity verification kills "fake success".
 - Optional embedded cover art, metadata, chapters and per-language subtitles, plus a sidecar `.vtt`; Bilibili videos also save danmaku as `.xml` and embeddable `.ass`.
+- Every quality tier in a resolved result carries an estimated file size, and queue cards show the resolution actually downloaded, bytes done / total and the cover image; the speed limit can be split into windows across a day (`00:00-08:00 -> 2M`).
+- **Torrents & magnets** are their own page: download, pick files inside the torrent, seeding supervision, tracker injection, auto-categorisation by name and separate down / up limits — the engine is your local aria2.
 
 **Sniffing**
 
@@ -119,15 +121,17 @@ What the portable archive does and does not contain:
 **Subtitles, AI and voice**
 
 - Per-language subtitle selection, glossary-checked translations, smart line wrapping, bilingual export as SRT / VTT / ASS, hardsub burning.
+- After machine translation every line is checked for suspicious output (ten kinds, written to the operation log, with an optional reflective fix pass), and the subtitle itself can be edited line by line in the sentence editor: a backup is taken before writing, and the save is refused — naming the moment it was changed — if the file was rewritten by someone else since you read it.
 - Four-stage AI pipeline: subtitles → polish → summary → translation, each stage written to disk and re-runnable on its own.
 - Local transcription with speaker diarization (click a timestamp to jump), Edge-TTS dubbing, Demucs vocal / instrumental separation, audio analysis (BPM, key, loudness, spectral centroid), AcoustID fingerprint lookup.
 
 **Automation and operations**
 
 - Telegram: anonymous `t.me/s/` history listing, batch downloads through your own account session, and subscription tracking.
-- Four subscription source types (RSS, web-page changes, Telegram channels, music playlists) scanned on a schedule, each with per-subscription rules.
-- Three notification channels — Telegram Bot, WeCom, ServerChan — each with separate finished / failed / subscription switches.
-- Components and dependencies update from inside the app (one-click batch update, plus an automatic upstream-version check when the app opens), mirror probing, and an operation log that records every UI action and rotates daily.
+- Four subscription source types (RSS, web-page changes, Telegram channels, music playlists) scanned on a schedule, each with per-subscription rules; before a scan you can get a plan of what it intends to do, and entries the upstream deleted are archived instead of vanishing.
+- Three notification channels — Telegram Bot, WeCom, ServerChan — each with separate finished / failed / subscription switches; a browser desktop notification can be clicked to jump to that task.
+- Components and dependencies update from inside the app (one-click batch update, plus an automatic upstream-version check when the app opens), mirror probing, an operation log that records every UI action and rotates daily, and a one-click redacted diagnostics export.
+- The whole HTTP surface is additionally exposed as an MCP bridge (`mcp_server.py`, loopback only) so MCP-capable agents can call the app directly.
 - 5 accent themes × light / dark; every bit of data stays local.
 
 Which engine backs each capability area is in the table below and in the sections that follow.
@@ -137,8 +141,9 @@ Which engine backs each capability area is in the table below and in the section
 
 | Area | What it does | Backed by |
 | --- | --- | --- |
-| Parsing & download | Paste links, resolve to selectable formats, enqueue; multiple URLs at once with normalization and de-duplication; queue-only mode | yt-dlp, resolver plugins |
-| Queue control | Multi-select, pause/resume, pin to top, move to front, "later"; named queues with per-queue limits; per-host concurrency cap, adaptive 429 throttling, global speed cap | built-in scheduler |
+| Parsing & download | Paste links, resolve to selectable formats, enqueue; multiple URLs at once with normalization and de-duplication; queue-only mode; each tier carries an estimated size | yt-dlp, resolver plugins |
+| Queue control | Multi-select, pause/resume, pin to top, move to front, "later"; named queues with per-queue limits; per-host concurrency cap, adaptive 429 throttling, global speed cap, speed limits split into time windows | built-in scheduler |
+| Torrents & magnets | Magnet links and local `.torrent` download, pick files inside, seeding supervision, tracker injection, auto-categorisation by name, separate down / up limits | aria2 JSON-RPC (bring your own aria2c) |
 | Streaming | HLS / DASH segment downloads; sniffer-detected m3u8 goes to a dedicated engine; **range trimming works only on segmented streams** | N_m3u8DL-RE, falling back to ffmpeg / yt-dlp |
 | Page sniffing | Browser extension watches m3u8/mp4/ts/m4s requests and pushes them to the local queue; also receives POST pushes from the third-party cat-catch extension | `extension/`, `POST /api/catcatch/push` |
 | Output integrity | Mux to MKV by default (a single-file mp4 stream is losslessly remuxed, never re-encoded); post-download integrity verification kills "fake success"; every failure reason is phrased in plain language with the original error attached | FFmpeg |
@@ -146,27 +151,28 @@ Which engine backs each capability area is in the table below and in the section
 | Music | Multi-source search, lyrics / cover / tag writing by song title, whole-playlist download, cross-platform title matching, source switching, self-built favourites list, local library index, persistent bottom playback bar | musicdl, mutagen, AcoustID / MusicBrainz |
 | Same-song detection | One scoring gate: title, artist and duration scored separately, then combined against an acceptance threshold; rejected candidates are logged with the reason | built-in matcher |
 | Audio quality | Quality requirements reorder results, can refuse to fetch below spec, and re-verify finished files from their own tags; the "lossless reference" adds Qobuz / Tidal **metadata only** | mutagen, ffprobe |
-| Subtitles & AI | Per-language subtitle embedding, glossary-aware translation checks, smart line wrapping, bilingual export as SRT / VTT / ASS, hardsub burning, four-stage AI pipeline | faster-whisper, deep-translator |
+| Subtitles & AI | Per-language subtitle embedding, glossary-aware translation checks, smart line wrapping, bilingual export as SRT / VTT / ASS, hardsub burning, four-stage AI pipeline, post-translation line checking, sentence-by-sentence editor | faster-whisper, deep-translator |
 | Voice | Local transcription with speaker diarization (voiceprint clustering), Edge-TTS dubbing, Demucs vocal/instrumental separation, audio analysis (BPM, key, loudness, spectral centroid), fingerprint lookup | faster-whisper, Demucs, librosa, chromaprint |
 | Telegram | Anonymous `t.me/s/` history listing, MTProto session login for batch media from channels your own account can access, subscription tracking | telethon, cryptg |
-| Subscriptions | RSS, web-page changes, Telegram channels and music playlists, scanned on a schedule and enqueued; per-subscription rules (type, duration, must-contain / exclude words, date window, quality, naming template, per-run cap) | built-in scanner |
+| Subscriptions | RSS, web-page changes, Telegram channels and music playlists, scanned on a schedule and enqueued; per-subscription rules (type, duration, must-contain / exclude words, date window, quality, naming template, per-run cap); a dry-run sync plan before scanning, deleted upstream entries go to an archive | built-in scanner |
 | Library | Resource browser with playback and packaging, file browser, Bilibili / YouTube favourites & following sync, exportable download history | local scans |
-| Notifications | Telegram Bot, WeCom, ServerChan — separate switches for finished / failed / subscription events | outbound push (keys local only) |
-| Operations | Full operation log including every UI action (daily files, auto-deleted after 7 days, path shown in the UI with a one-click "open folder"), in-app component updates, mirror probing, 5 themes × light/dark | `pkg_update.py` |
+| Notifications | Telegram Bot, WeCom, ServerChan — separate switches for finished / failed / subscription events; clicking a desktop notification jumps to that task | outbound push (keys local only) |
+| Operations | Full operation log including every UI action (daily files, auto-deleted after 7 days, path shown in the UI with a one-click "open folder"), in-app component updates, mirror probing, redacted diagnostics export, 5 themes × light/dark | `pkg_update.py` |
+| External interface | Exposes the local HTTP endpoints verbatim as MCP tools; the tool list is taken from `/openapi.json` at start-up | `mcp_server.py` (stdio, loopback only) |
 
 </details>
 
-## The 16 pages
+## The 17 pages
 
-The sidebar has 16 pages in 5 groups:
+The sidebar has 17 pages in 5 groups:
 
 | Group | Pages | Purpose |
 | --- | --- | --- |
-| Download | 下载解析 (parse) / 队列 (queue) / 嗅探 (sniff) / 媒体信息 (media info) | Paste and resolve links, queue and pause/resume, capture m3u8 and mp4 from a page, inspect containers and streams |
+| Download | 下载解析 (parse) / 队列 (queue) / 磁力 · 种子 (torrents) / 嗅探 (sniff) / 媒体信息 (media info) | Paste and resolve links, queue and pause/resume, download and seed magnet / `.torrent` jobs, capture m3u8 and mp4 from a page, inspect containers and streams |
 | Acquire & process | 聚合搜索 (aggregate search) / 音乐搜索 (music) / Telegram 频道批量 / 直播录制 (live recording) / 语音工具 (voice) | Search several sources then pick one, fetch lyrics / cover / tags by title, batch channel history, record on-air streams with a managed-browser sniffer, transcribe and dub |
 | Library | 资源库 (resources) / 文件浏览 (files) / 收藏关注 (favourites & following) / 历史记录 (history) | Search, play and package downloaded content, sync Bilibili and YouTube collections, export history |
 | Automation | 订阅追踪 (subscriptions) | Scheduled scanning and enqueueing for RSS, web changes, Telegram channels, music playlists |
-| System | 运行日志 (log) / 设置 (settings) | Complete operation log (UI actions included; daily rotation, auto-delete past 7 days, file location shown and openable from the page), cookies, network, notifications, components |
+| System | 运行日志 (log) / 设置 (settings) | Complete operation log (UI actions included; daily rotation, auto-delete past 7 days, file location shown and openable from the page, plus an "export diagnostics" button that produces one redacted archive for troubleshooting), cookies, network, notifications, components |
 
 <details>
 <summary>List behaviour: pagination rules, what header sorting covers, aggregate-search ordering and result caps</summary>
@@ -179,7 +185,7 @@ Aggregate search can sort by relevance, view count or publish date. Changing the
 
 ## Screenshots
 
-Every image below comes from a **freshly unpacked, never-used instance**: no download history, no cookies, no subscriptions, and the save directory is the package default. The interface itself is Chinese-only; the page names are glossed in [The 16 pages](#the-16-pages).
+Every image below comes from a **freshly unpacked, never-used instance**: no download history, no cookies, no subscriptions, and the save directory is the package default. The interface itself is Chinese-only; the page names are glossed in [The 17 pages](#the-17-pages).
 
 | Music search: 24 platforms queried in parallel by song title, with match source and audio-quality gates | Aggregate search: keyword search across YouTube / Bilibili / Douyin with content-type filters |
 | --- | --- |
@@ -198,17 +204,46 @@ Dark mode is the same application with inverted surface colours — the moon / s
 Paste → resolve to selectable formats → enqueue. If something this job must have is missing locally, pressing “start download” fails on the spot, names the exact row to install from, and creates no task at all.
 
 <details>
-<summary>Details: the pre-enqueue dependency check, named queues, per-host concurrency and where 429 throttling is triggered, global speed cap, MKV remux and integrity verification, why range trimming only works on segmented streams</summary>
+<summary>Details: the pre-enqueue dependency check, named queues, per-host concurrency and where 429 throttling is triggered, speed limits (global / time window / per task), MKV remux and integrity verification, why range trimming only works on segmented streams, per-tier size estimates, playlist range selection, the gate on custom yt-dlp arguments, output filename sanitising, per-room live recording settings</summary>
 
 - Multiple URLs can be pasted at once; they are normalized and de-duplicated. "Queue only, download later" enqueues without starting.
 - **Dependency preflight before enqueueing**: if you press "start download" and this machine lacks something the job must use — yt-dlp for site resolution, FFmpeg for subtitle / cover / chapter embedding, MKV muxing or range trimming, faster-whisper for local transcription, N_m3u8DL-RE for HLS, telethon for `tgmt://`, or a download directory you cannot write to — the request fails on the spot, naming which row of **Settings → Components & dependencies** to install, and **no task is created at all**. The refusal is also written to the operation log. Cases that merely make things slower or lower-quality (no FFmpeg but a direct mp4 download) are not blocked; they get a log note.
-- Queue: multi-select, pause / resume, pin to top, move to front, download later; task cards show "pinned" and "later" badges.
+- Queue: multi-select, pause / resume, pin to top, move to front, download later; task cards show "pinned" and "later" badges, plus the resolution this task actually downloaded, bytes done / total and the cover image (`1080p HDR 60fps · 420.0 MB / 1000.0 MB`, with the full sentence on hover). Those fields ride on the SSE progress frame, and a field that was never measured is simply left out — the card never shows a placeholder "0 MB".
 - **Named queues** `queue_name`: `default` / `night` / `subscribe` / `sniff` (configurable via `named_queues`; batch music uses `music`). Speed limits and gating can be set per queue.
 - **Per-host concurrency cap** `max_per_host` (default 2) combined with **adaptive 429 throttling** `adaptive_throttle`: after a site rate-limits you, that domain is temporarily dropped to one concurrent connection and put into cooldown (duration taken from "risk control → 429 cooldown (seconds)", which is also the value used for anti-bot challenge-page classification). A "site throttled" bar appears at the top of the queue page and can be reset immediately. Triggers are not limited to HTTP 429 inside the download loop: a Douyin search classified by `risk_control` as "rate limited" or "anti-bot challenge page" marks the same throttle point, as does a download failure in either category. A "login required" verdict deliberately does **not** mark the point, because slowing down does not help. The Douyin search entry checks this table **before** sending anything: while still in cooldown it repeats the previous verdict on screen (`本次没有再向它发请求`), sends zero requests and does not add another strike — otherwise every extra click would extend the penalty on the same domain, and retrying is the only action available to the user. To really search before the cooldown expires, click "resume now" on the throttled bar.
 - **Global speed limit** `global_speed_limit` (e.g. `2M`) — either this or the per-task `speed_limit`.
 - MKV by default: when the site offers a single mp4 stream the file is only losslessly remuxed, never re-encoded. Downloaded files are verified for integrity to prevent "fake success"; failure reasons are translated into plain language with the original error attached.
 - **Extras** checkboxes: embed cover thumbnail (`thumb`), metadata (`embed_metadata`), chapters (`embed_chapters`). Bilibili videos additionally save danmaku as `.xml` plus an embeddable `.ass`.
 - **Range selection** `download_section`: enter `00:01:00-00:02:30`. Under the hood this uses yt-dlp's `download_ranges` with a forced `*` auto-segment prefix, **so only HLS/m3u8-style segmented streams can be trimmed**; for single-file streams the parameter is ignored and the task log says so.
+- **Estimated size per quality tier**: every tier in the resolved result carries a size estimate derived from that stream's bitrate times duration (`_estimate_tier_sizes()`; the audio-only tier does not double-count the video track). When no stream exists above the requested ceiling, it **falls back to the highest stream actually available**, and the fallback never produces a value larger than `best`; when the video cannot be looked up at all it is not reported as "computed, size 0".
+- **Playlist / collection range picking**: two index boxes (from / to) show live "range start: item N 《title》", "tick this range" checks them in bulk, and nothing is submitted until you press download. Index ranges and per-row ticks coexist (tick 5–9 where one item was already downloaded and the message reads "added 4 tasks").
+- **Custom yt-dlp arguments** `ytdlp_extra_args`: one field in Settings applies globally, one field on the home page applies to that batch (task level overrides global). **This is not a verbatim pass-through** — each item goes through a gate, and anything refused is named one by one with a pointer to where it belongs: `--exec` (runs an arbitrary command after the download), `-f` / `--format` (the format comes from the tier picked on the home page; to pin a specific stream use "format id"), your own cookies (that belongs on the Settings page), external config files, arguments that change failure handling, and presets that implicitly select a format. Accepted arguments are not held hostage by refused ones; the dialog that says "saved, but N arguments did not take effect: …" stays open so you can fix them and save again.
+- **Speed limits by time window** `speed_windows`: one entry per line, `00:00-08:00 -> 2M`; `->` `=>` `→` a bare space `=` `–` `~` and the words "至" / "到" are all accepted, full-width colons are normalised, up to 30 lines. Precedence is **per task > matching window > global**; the "check it" button on the card (`POST /api/config/speed_windows/check`) judges the settings alone and never touches the per-task override, reporting how many windows were parsed, which lines are malformed, and which window the current clock hour falls in.
+- **One output filename sanitiser**: `safe_filename_component()` is the single entry point for Windows-reserved characters and reserved names, plus zero-width and directional control characters (`\u200b-\u200f`, `\u202a-\u202e`). **Multi-suffix names are not truncated** (`app.tar.gz` stays `app.tar.gz`), and **reserved names are checked only after truncation** (truncating can itself produce `CON` / `NUL`, in which case an underscore prefix is added). The Telegram batch path uses the same routine — there is no second regex any more — and when sanitising changed the name the log says so.
+- **Per-room live recording settings**: each monitored room gets six own settings — container (follow the app setting / mkv / mp4 / webm), quality tier, transcode preset (e.g. "转 MP4 (H.264 + AAC)", "转 MP4 并限制 1080p", "抽取音频 MP3"), maximum recording length (`0–1440` minutes, 0 = unlimited), and a monitoring window start / end (crossing midnight works, e.g. 20:00–02:00; filling in only one end has no effect). All six are stored in `live_monitors.json`; illegal values are refused item by item and never persisted. Reaching the room's own length cap ends that recording on its own and pauses the room (it resumes after the stream goes off air), logging "本房间已录满 N 分钟，自动结束录制"; outside the window the room still reports "直播中(不在监控时段 …)" but starts no task at all.
+
+</details>
+
+## Torrents & magnets
+
+Magnet links and local `.torrent` files live on the sidebar's torrents page (磁力 / 种子), where downloading, seeding, tracker injection, categorisation and speed limits are handled together. **This page runs entirely on aria2**: with no usable aria2c on the machine, pressing "start download" says on the spot what is missing and creates no task at all.
+
+<details>
+<summary>Details: the aria2 RPC and auto-start, trackers fetched at runtime and cached, the injection cap, seeding supervision, auto-categorisation and rule testing, what only applies to new tasks, seed-only mode</summary>
+
+Five sections on the page: **add magnets or torrents** / **torrent tasks** / **trackers & speed limits** / **auto-categorisation** / **aria2 & seeding**.
+
+- **Handed to aria2**: `aria2_client.py` speaks JSON-RPC (`aria2_rpc`, empty means `http://127.0.0.1:6800/jsonrpc`, optional `aria2_secret`). When nothing answers the RPC, `aria2_autostart` (on by default) makes the program launch its own aria2c **listening on 127.0.0.1 only** (`aria2_daemon.py`, shut down when the app exits); with `aria2_bin` empty it looks in `tools/`, then PATH, then environment variables. The "check aria2" button reads back whether the RPC is reachable and where aria2c was found.
+- **Adding**: one `magnet:?xt=urn:btih:...` per line; a local torrent as `file:///H:/…/影片.torrent` or a plain drive-letter path, or pick "upload torrent" to choose a `.torrent` (`POST /api/torrent/upload`). Lines that cannot be recognised are not counted and the message states how many were ignored; a magnet missing `xt=urn:btih`, or with a hash that is neither 40 hex characters nor 32 base32 characters, fails naming which line.
+- **Seed only**: when the finished files are already on this machine and you only want to share them, tick this (`torrent_seed_only`) — existing files are not re-downloaded. A magnet link does not yet have a file list at that moment, so seed-only is refused for magnets; give a `.torrent` through "upload torrent" instead.
+- **Choosing files inside**: available once the torrent metadata arrives (a magnet must wait for it; `torrent_meta_timeout` defaults to 180 s and expiring means nobody is seeding right now, which is reported as such). "文件 n/m" changes which parts are fetched (`POST /api/torrent/select`).
+- **Tracker injection**: the list is **fetched at runtime** — `bt_tracker_sources` defaults to the two publicly maintained lists, ngosang/trackerslist and XIU2/TrackersListCollection. No tracker is hard-coded in the source or the release archive; the fetched list is stored only in the local `torrent_state/`. `bt_trackers` (your own announces) is ordered ahead of the fetched ones and only http / https entries are taken. With `bt_tracker_auto_update` on, submitting a new task re-fetches any source missing from the cache; **a failed fetch is never treated as "the list is now empty"** — the previous cache stays in use and submitting a task must not die on that step. `bt_tracker_max` (default 30, 0 = inject none) caps **how many are attached to one task**, not the length of the list — aria2 asks trackers one at a time, so piling them on makes the first round slower. `GET /api/bt/trackers` reads the current state, `POST /api/bt/trackers/refresh` forces a refresh.
+- **Speed limits and first/last pieces**: `bt_dl_limit` / `bt_ul_limit` (`1M` / `512K`, empty = unlimited) apply to newly submitted tasks only, and the seeding phase takes the upload limit too; a task whose row was changed individually reports that row's value. `bt_prioritize_piece` downloads the first and last 1M of every file first, which is what makes watch-while-downloading previews open earlier.
+- **Seeding supervision**: `torrent_seed_ratio` (stop after uploading that multiple of what was downloaded; 0 = do not stop on ratio) and `torrent_seed_time` (stop after that many seconds of seeding; 0 = do not stop on time). With both at 0 a finished task uploads indefinitely and you stop it from the "seeding now" panel (`POST /api/torrent/stop-seed`). Seeding only uploads, it does not occupy download concurrency, and **stopping a seed never deletes downloaded files**. The panel (`GET /api/torrent/seeding`) carries aria2's live numbers — upload rate, peer count, remote seeders, how many trackers are in this torrent — and omits whatever aria2 did not return; it also separates "registered by this program" from "anything else in aria2".
+- **Auto-categorisation**: `bt_auto_rules` maps a torrent's name to a subdirectory under the global download directory, asking rules top-down and taking the first hit (contains / regex), falling through to `bt_auto_fallback` when none matches (empty = just use the default download directory). With no rules configured no directory is invented; a magnet whose filename is not known yet has nothing to match against and is likewise caught by the fallback. The subdirectory is a relative path under the download directory (multi-level is fine), and anything with a drive letter or `..` is pushed back immediately. `POST /api/torrent/rules/test` lets "test a match" try a name or a pasted link in the UI before saving. Rules decide where **later submissions** go: tasks already downloading or already seeding are not relocated, and seed-only submissions keep their own destination.
+- **Things that only apply to new tasks have to be said out loud**: trackers and first/last priority cannot be changed on an existing task — aria2 answers "Cannot change option" for `bt-tracker`, and for `seed-ratio` / `bt-prioritize-piece` / `check-integrity` it answers OK while leaving the value untouched. So in the UI only the per-task down / up limit may be described as taking effect immediately; everything else states "applies to new tasks".
+- **aria2 error codes are translated one by one**: e.g. code 12 explicitly states that one torrent can only be registered once in aria2, so delete it or stop seeding before re-adding.
+- **The byte counts in progress are what aria2 reports for the whole download** (all selected files), not just the main file — for a single-file torrent the two can differ by an order of magnitude.
 
 </details>
 
@@ -217,7 +252,7 @@ Paste → resolve to selectable formats → enqueue. If something this job must 
 Sites that need a login are handled with cookies, either read straight from your own browser or a Netscape-format `cookies.txt` dropped into `cookies/`. Music-platform login cookies are stored per platform and never leave the machine.
 
 <details>
-<summary>Details: browser-read constraints, the YouTube bot check, how Douyin's no-cookie responses are classified, the three-state display and merge rules for the three music-platform cookies</summary>
+<summary>Details: browser-read constraints, the YouTube bot check, how Douyin's no-cookie responses are classified, the three-state display and merge rules for the three music-platform cookies, where the red "login may be broken" flag comes from and why it does not survive a restart</summary>
 
 Two ways, pick either:
 
@@ -229,6 +264,8 @@ Without cookies, YouTube hits the "sign in to confirm you're not a bot" wall (re
 Cookie-less Douyin search returns two shapes in local testing: the search API answers HTTP 200 with `{"status_code":2483,"status_msg":"请先登录，再继续搜索吧"}`, and the search page HTML is a ByteDance JS challenge page (`Set-Cookie: __ac_nonce`, body containing `byted_acrawler` / `__ac_signature`). Neither means "this content does not exist". Such cases are now classified as login-required / anti-bot challenge / rate-limited / API error / genuinely empty, with the reason shown in the aggregate search results area and the basis recorded in the log; download failures use the same classification vocabulary. This is identification and reporting only: the program never executes JavaScript handed down by a site and never forges a signature.
 
 The music side keeps its own per-platform cookies under Settings → "音乐平台登录 Cookie" in three separate fields (NetEase Cloud Music / QQ Music / Kugou). Leaving them empty just means the free tier. The NetEase field offers "get by QR", using NetEase's own login QR (confirm in the mobile app, then press "check scan status" to import the session) — no third-party login service is involved. QQ Music and Kugou have **no** QR flow: their QR endpoints require an anti-bot signature, and forging one would cross the line, so you still copy-paste from browser dev tools. Each field reports tri-state "logged in / missing key fields / not configured" based on the keys that platform actually needs and names the missing ones (e.g. "missing token or userid, this source cannot reach member quality"), so pasting a useless key string no longer shows as configured. These three cookies are merged with the global cookie above into one string for the downloader (each platform picks the keys it recognizes); a cookie pasted into the search box overrides only same-named keys and does not evict the saved login. Cookie values are written only into the local `config.json`; logs record key counts, never values, and `cookies/` plus that file are on the packing exclusion list.
+
+The cookie card also **announces when one platform's login state looks broken**: when a download from that platform is judged to need a login, the backend raises a flag in memory, and that row changes from "configured / not configured" to a red "suspected login issue" — hovering states which download decided it, when, and what to do about it, while a summary line at the top of the card says how many platforms are flagged. The row's "clear flag" button calls `POST /api/platforms/cookies/clear-flag`, and re-importing that platform's cookies clears it automatically. The flag (`_LOGIN_FLAGS`) **lives only until the program exits and is never written to the configuration** — it is a fact about the network right now, not a setting — so a restart or a different egress can bring it back, and "the platform flagged yesterday" will not remind you today.
 
 </details>
 
@@ -315,9 +352,15 @@ Public channels can be listed anonymously; private ones go through your own acco
 RSS, web-page changes, Telegram channels and music playlists are managed on one page; each scan enqueues only entries that are new. Rules can be set per subscription, and blank means follow the global setting.
 
 <details>
-<summary>Details: rule fields and when they apply, how scans are logged, why the playlist cursor is keyed on title+artist+duration, and why new entries are not marked read while a batch is still running</summary>
+<summary>Details: rule fields and when they apply, how scans are logged, why the sync-plan preview touches neither the queue nor the cursor, where entries deleted upstream go, why the playlist cursor is keyed on title+artist+duration, and why new entries are not marked read while a batch is still running</summary>
 
 RSS / web-page / Telegram channel / music playlist sources are all managed on the "subscriptions" page (there is no separate screen any more). Top-left is the "add subscription" card (paste a link, detect the source type, choose how Telegram is read); top-right is the "tracking & scan" card with "scan all now", the "auto-download new items" switch and a `共 N 个 · 已启用 N` counter; the full-width card below is the list itself. Each subscription can carry its own rules: content type (long video / short video / live / audio-podcast), duration range, must-contain and exclude words, date window, quality and naming template, audio-only, and a maximum number of items per run. Blank means follow the global setting. Rules apply only to entries that appear after they are set; the operation log states for every scan how many were downloaded, how many were blocked and why. `sub_first_download_n` controls whether a first scan also fetches the most recent N items (0 = record IDs only).
+
+**A plan before the scan**: `POST /api/subs/preview` answers "what this round intends to do" — how many entries were read, how many are unread, how many would be enqueued under the current rules, and which rule blocked which ones; the log writes those three facts separately. **It is a pure dry run**: nothing is enqueued, the `last_ids` cursor does not move, and nothing is written to disk, so after pressing preview the queue holds exactly as many tasks as before and no entry has been marked read because of it. Previewing or listing the archive of a subscription that does not exist answers 404 on the spot.
+
+**Entries deleted upstream no longer vanish**: the comparison basis in `_feed_sync` became "the batch read this round = next round's baseline", so when an entry disappears from the source it goes to the archive (`POST /api/subs/archived`, clearable with `POST /api/subs/archived/clear`) instead of simply being gone; the archive holds `SUB_ARCHIVE_CAP=100` entries per source and drops the oldest beyond that.
+
+The subscriptions table and the history table used to let their content decide column widths, so long links pushed them past 1500 px inside a ~1100 px container and the "actions" column fell off-screen. Both now use one shared variant (`table-layout: fixed` plus ellipsis on overflowing cells) with column widths declared per table: titles and links truncate, the full value stays in the hover `title`, and at 1440 and 1280 the measurements came back "container width == table width" — no horizontal scrolling. The new sync-plan tables use the same variant. At 1024 horizontal scrolling is still needed (see [Known limitations](#known-limitations)).
 
 Music platform playlist links (NetEase / QQ / Kugou / Migu / Kuwo / Spotify / Apple and similar) are recognized as "music playlist" sources: each scan re-fetches the whole list and downloads only newly appearing tracks. Cursors for these sources key on "title + artist + duration", so the same song listed by another platform is not downloaded twice. Some platforms in "list titles only" fast mode give only a title per row (no artist, no duration); in that case a hash of that row's link is appended to the key so that two different songs sharing a title (an original and a remix) are not merged into one entry. Rows that carry only a title have no audio address, so the program re-resolves them by title against the match sources instead of dumping them into the general download queue. Each round looks at 300 items and the cursor stores 300 (songs must not be permanently missed because the window was too narrow). Entries of this kind always count as "audio/podcast", so ticking only "long video" in the content-type rule blocks the entire playlist every round. Batch music has a single channel in the program: if the previous music batch is still running, this round's new songs are **not marked as read** (marking them would leave nobody to fetch them) and the log says "will be picked up next scan". Title matching may also find nothing at all (no such song in the match sources, or a row that only has a title to go on); the log lists every unfound track in full, but those rows are still marked as read and will not be retried next round — to retry, either make the playlist spell that row differently or change the match sources and press "scan now". These sources have no reliable per-track publish time, so "backfill by date" speaks for the whole playlist when no date window is given, instead of pretending a window applied.
 
@@ -325,15 +368,18 @@ Music platform playlist links (NetEase / QQ / Kugou / Migu / Kuwo / Spotify / Ap
 
 ## Subtitles & AI processing
 
-Site subtitles can be embedded per language or saved as a sidecar `.vtt`; local transcription, glossary checks, bilingual export and the four-stage AI pipeline all live on this path.
+Site subtitles can be embedded per language or saved as a sidecar `.vtt`; local transcription, glossary checks, bilingual export and the four-stage AI pipeline all live on this path. After machine translation the output can additionally be **checked line by line for suspicious results**, and the subtitle itself edited in the sentence-by-sentence proofreading panel.
 
 <details>
-<summary>Details: language-code matching, diarization and timestamp seeking, the SRT / VTT / ASS trio, stage artefacts on disk with single-stage re-runs, the hardsub entry point and output naming</summary>
+<summary>Details: language-code matching, diarization and timestamp seeking, the SRT / VTT / ASS trio, stage artefacts on disk with single-stage re-runs, the ten post-translation checks and the reflective fix pass, the sentence editor's backup and 409 gate, the hardsub entry point and output naming</summary>
 
 - Site-provided subtitles are embedded per language you tick (exact language-code matching), and can additionally be saved as sidecar `.vtt` files.
 - Local transcription: faster-whisper (with speaker diarization, voiceprint-clustering variant); clicking a timestamp in the transcript seeks to it.
-- Glossary / custom dictionary verification of translated terms, smart subtitle line wrapping, bilingual export as **SRT / VTT / ASS**.
+- Glossary / custom dictionary verification of translated terms, smart subtitle line wrapping (max characters per line `subtitle_wrap_width`, default 16; max lines per cue `subtitle_wrap_lines`, default 3), bilingual export as **SRT / VTT / ASS**.
 - **AI pipeline**: subtitles → polish → summarize → translate, four stages, each artifact persisted and individually re-runnable (`/api/ai/pipeline`).
+- **Post-translation checks** `POST /api/subtitle/qc` (switch `subtitle_qc`, on by default): every line is compared against its source for ten kinds of suspicious output — no translation / not translated / still in the source language / suspected omission / suspected padding / term not per glossary / numbers do not match / suspected repetition / over the per-line limit / style tags lost. One call inspects at most `QC_ROWS_CAP=200` lines and **the findings only go to the operation log — the subtitle file is not touched**. The suspicious lines can be handed back to the chat model for one more pass (`subtitle_qc_reflect`, off by default because it spends more tokens, `REFLECT_CAP=80` lines per batch): when lines are merged into a paragraph **only numbered lines are accepted**, and if the numbering cannot be parsed the first-pass translation is kept — better to change nothing than to copy the model's commentary into the subtitles. "Over the per-line limit" and "style tags lost" are not something a reflective pass can fix; they belong to the two tools below.
+- **Re-wrapping by characters per line** `POST /api/subtitle/rewrap`: already-translated subtitles are broken into lines again using those two Settings values, without re-running the translation.
+- **Sentence-by-sentence editor** (file page, "逐句校对"): `GET /api/ai/srt` reads a subtitle (or the media file next to it) and returns each cue's index / start / end / speaker / text plus the file's `mtime_ts`, for both `.srt` and `.vtt` (milliseconds scale by digit count; writing back to `.vtt` keeps the `WEBVTT` header and dot-separated times). Nothing touches the disk until you press "save" (`POST /api/ai/srt/save`), and **the save first writes a `原名.bak-<timestamp>` backup next to the file** (back-to-back saves inside one second never overwrite each other — collisions get `.1 / .2`). Empty text lines are skipped and reported as `dropped`, an end earlier than its start is floored to 40 ms, negative starts clamp to 0; speaker markers survive the write-back, and a selected line can shift forwards / backwards (its end is recomputed from start + duration), merge with its neighbour, or be deleted. **If the subtitle was rewritten by the pipeline or another window after you read it, saving returns 409 and names the file and the moment of that rewrite**, so the UI makes you re-read instead of overwriting freshly generated content — callers that do not send `base_mtime` are not subject to this gate. Shifting a whole track still goes through the existing timeline calibration.
 - **Hardsub burning**: file page, per-video "more → burn subtitles" — pick subtitles and styling and you get `name.hardsub.mp4`; the source file is untouched.
 
 </details>
@@ -398,26 +444,27 @@ Settings → "Components & dependencies": every item shows a green dot (ready) o
 
 ## Resolver plugins & aria2
 
-Drop a `.py` into `plugins/` implementing `match(url)` and `resolve(url, ctx)` and it gets loaded; aria2 is optional and used for segmented CDN direct links.
+Drop a `.py` into `plugins/` implementing `match(url)` and `resolve(url, ctx)` and it gets loaded; aria2 is optional and is what both the segmented CDN direct links and the torrents & magnets page run on.
 
 <details>
 <summary>Details: the plugin interface and reload endpoints, the two example plugins, how aria2 is enabled and the Docker profile</summary>
 
 - **Resolver plugins**: drop a `.py` into `plugins/` implementing `match(url)` and `resolve(url, ctx)` and it is loaded (`/api/plugins` lists them, `/api/plugins/test` trial-resolves, `/api/plugins/reload` hot-reloads). Page links are resolved to real media URLs before enqueueing; the repository includes `example_passthrough.py` and `site_b23_short.py` as references.
-- **aria2 (optional)**: when enabled in Settings, CDN direct links are sharded through aria2 (`aria2_client.py`, status at `/api/aria2/status`). Docker Compose has an `aria2` profile to start the RPC service.
+- **aria2 (optional)**: when enabled in Settings, CDN direct links are sharded through aria2 (`aria2_client.py`, status at `/api/aria2/status`). **It is the whole engine of the torrents & magnets page** — the RPC address, secret, auto-start and seeding supervision live in that page's "aria2 & seeding" section, see [Torrents & magnets](#torrents--magnets); aria2c is not bundled, so you supply it. Docker Compose has an `aria2` profile to start the RPC service.
 
 </details>
 
 ## Notifications
 
-Outbound push through Telegram Bot, WeCom and ServerChan, each with separate finished / failed / subscription switches. Keys are stored only in the local `config.json`, never packaged, never logged.
+Outbound push through Telegram Bot, WeCom and ServerChan, each with separate finished / failed / subscription switches. Keys are stored only in the local `config.json`, never packaged, never logged. On the browser side there are also desktop notifications, and clicking one jumps to the task it is about.
 
 <details>
-<summary>Details: the fields and switch keys each channel needs</summary>
+<summary>Details: the fields and switch keys each channel needs, and what clicking a desktop notification does</summary>
 
 - **Telegram Bot**: Bot Token and Chat ID, with three independent switches — `telegram_notify_done` / `_fail` / `_sub`.
 - **WeCom (企业微信)**: CorpID / Secret / AgentID / touser plus a test send, with the same three tiers `wecom_notify_*`.
 - **ServerChan**: a SendKey pushes on download completion; no separate switches for the other tiers.
+- **Clickable desktop notifications**: the notification shown when a task finishes carries an `onclick` — clicking it switches to the page holding that task (torrent jobs go to the torrents page, everything else to the queue) and flashes that card for 2600 ms. The scroll happens 120 ms after the page switch, because during the page's entry animation a smooth scroll is silently dropped by the browser, so this one is instant. If the task has already been cleared the notification says so and closes itself, rather than leaving a banner that does nothing when clicked.
 - All secrets live only in the local `config.json`; they are never packed and never logged.
 
 </details>
@@ -430,20 +477,41 @@ Outbound push through Telegram Bot, WeCom and ServerChan, each with separate fin
 
 `tests/` contains standalone self-test scripts (e.g. `python tests/musicarchive_test.py`). Each prints PASS/FAIL per assertion and exits 0 only when everything is green. They write only into temporary directories, never touch `config.json`, and never write into the download directory. Install `requirements.txt` first; the diarization suites additionally use the ffmpeg binary in `tools/`. `tests/fixtures/` holds four HTML snapshots of **public** pages — three `t.me/s/` channel pages and one fragment of a Douyin anti-bot challenge page — with no login content and no cookies, so the Telegram crawler and Douyin risk-classification tests can assert offline.
 
+The torrents & magnets chain is covered by `torrent_test.py` and `bt_boost_test.py` (aria2 is replaced by a fake client, so nothing has to be installed on the machine), the sentence-by-sentence editor by `srtedit_test.py`, the MCP bridge by `mcp_test.py`, the cookie login-state flag by `cookielogin_test.py`, and "did the request body go down the right channel" by `routebody_test.py`. When running them in bulk, pass `PYTHONIOENCODING=utf-8`: a child process that inherits a GBK console dies on Chinese output with `UnicodeEncodeError`.
+
+## MCP bridge
+
+`mcp_server.py` maps this machine's HTTP endpoints onto MCP tools so an MCP-capable agent can drive the downloader directly. **There is no trace of it in the UI** — it is a command line: start the app first, then run `python mcp_server.py` and let the MCP client spawn it; `python mcp_server.py --tools` prints the mapping without connecting to anything.
+
+<details>
+<summary>Details: the tool list is taken from openapi, only loopback is allowed, there is no authentication so do not expose it, and what the call log redacts</summary>
+
+- **The list is not hand-written**: the bridge reads `<BASE>/openapi.json` when it starts, so endpoints added or removed are picked up automatically (this version: of 193 routes, the 192 under `/api/*` other than the front page each become one tool). Query, path and body parameters are flattened into one `inputSchema`, required fields come from the openapi document rather than from guesswork, and endpoints whose body is a free `dict` take a whole `payload`. `/api/events` is a live push stream, so the tool takes the first event and returns instead of blocking on it.
+- **Loopback only**: `DEFAULT_BASE` is `http://127.0.0.1:8765`; the port can be changed through an environment variable, but if the host is not `127.0.0.1 / localhost / ::1` the bridge exits immediately — **there is no authentication**, so pointing it at a remote address would expose "change settings, start downloads, delete tasks" unprotected. Loopback addresses bypass the system proxy as well, otherwise talking to your own machine would take a detour and the failure message would be useless.
+- **Errors quote the original**: a failed call returns the status code and a summary of the response body; replying only "the call failed" would be no answer at all.
+- **Log redaction**: `mcp_calls.log` records which tool was called, the shape of the arguments and the outcome. Any parameter whose name contains `cookie`, `token`, `secret`, `password`, `api_hash` or `key` has its value replaced, and response bodies are never written. Even so, the log still contains endpoint paths, parameter names and queue contents — **do not hand it to someone as a harmless debug file**.
+- Its boundaries are the same as [Out of scope by design](#out-of-scope-by-design): the bridge only exposes the endpoints that already exist, and being called by an agent does not add any ability to bypass a login, a payment, DRM or a human check.
+
+</details>
+
 ## Repository layout
 
 ```
 server.py            FastAPI backend (routes, download scheduling, subtitles and AI)
+mcp_server.py        MCP bridge: exposes the endpoints as-is to an agent (stdio, loopback only)
 music_search.py      aggregate music search and playlist matching   telegram_channel.py  t.me/s anonymous crawler
 telegram_mt.py       MTProto session and private-channel batches    voice_tools.py       TTS / Demucs
 ai_pipeline.py       AI pipeline stage artifacts                    diarize_tools.py     voiceprint diarization
 audio_analyze.py     audio analysis and fingerprinting              pkg_update.py        component and dependency self-update
-risk_control.py      classification of risk-control and anti-bot replies   aria2_client.py  optional aria2 RPC client
+risk_control.py      classification of risk-control and anti-bot replies   aria2_client.py  aria2 RPC client (sharded acceleration + torrents & magnets)
+aria2_daemon.py      launches an aria2c listening on 127.0.0.1 only when the RPC does not answer
+bt_trackers.py       fetches tracker lists at runtime and caches them locally (no tracker is hard-coded in the source)
 pack_release.py      portable package build script (with self-checks)
 static/              front end (single-file Vue 3 app)              extension/           browser sniffing extension
 plugins/             URL resolver plugins                           tools/               ffmpeg / ffprobe / yt-dlp / N_m3u8DL-RE
 tests/               offline self-tests and fixtures                 cookies/             cookies.txt
 Downloads/           default download directory
+torrent_state/       uploaded torrents, tracker cache and aria2 session files (records what this machine downloaded — excluded wholesale when packing)
 musicdl_outputs/     musicdl intermediate cache (search pickles, unarchived temp files)
 _preview/            the temporary audio fetched by "preview" (last 20 only)
 ```
@@ -455,11 +523,15 @@ Every intermediate file the tool creates stays in the program folder, never in y
 The backend is a single FastAPI file; the full route list is browsable and testable at `/docs`.
 
 <details>
-<summary>Details: the general endpoints and the music-path endpoints</summary>
+<summary>Details: the general endpoints, the torrents endpoints, the subtitle and troubleshooting endpoints, and the music-path endpoints</summary>
 
-`GET /api/status` `POST /api/analyze` `POST /api/download` `GET /api/tasks` `GET /api/net/info` `GET /api/components` `GET /api/plugins` `GET /api/queues` `GET /api/events` (SSE progress) `POST /api/ui_event` (front-end action telemetry, local only).
+`GET /api/status` `POST /api/analyze` `POST /api/download` `GET /api/tasks` `GET /api/net/info` `GET /api/components` `GET /api/plugins` `GET /api/queues` `GET /api/events` (SSE progress) `POST /api/ui_event` (front-end action telemetry, local only) `GET /openapi.json`.
 
-The music side additionally has: `GET /api/music/status` (source list, default sources, stored strategies, the four settings echoes for naming template / tag embedding / filtering unavailable / including the local library, plus the current quality requirement and the four tier tables), `POST /api/music/search`, `POST /api/music/playlist`, `POST /api/music/probe`, `POST /api/music/download` (de-duplication and the "skip already downloaded" check run first; both accept `quality_spec`; `GET /api/music/download_status` reports batch progress and unmatched lists), `POST /api/music/check_quality` (reads each finished file's own tags against this batch's requirement; only paths inside the download directory are accepted), `POST /api/music/switch_source`, `GET/POST /api/music/favorites` with `/favorites/remove`, `/favorites/download` and `/favorites/mark`, `POST /api/music/local_scan` and `GET /api/music/local_cover`, `GET/POST /api/music/cookies` (the three per-platform logins), and `GET /api/music/netease/qr/generate` / `POST /api/music/netease/qr/poll` (NetEase's own QR login). The full list is in `server.py` under the `@app.` decorators or at `/docs`.
+The torrents side: `POST /api/torrent/upload` (a `.torrent` file), `POST /api/torrent/select` (pick files inside), `GET /api/torrent/seeding`, `POST /api/torrent/stop-seed`, `POST /api/torrent/rules/test` (try an auto-categorisation rule), `GET /api/bt/trackers`, `POST /api/bt/trackers/refresh`, `POST /api/bt/limit` (per-task down / up limits); aria2's own state is still at `/api/aria2/status`.
+
+Subtitles and troubleshooting: `GET /api/ai/srt` and `POST /api/ai/srt/save` (the sentence editor's read and write — backup before writing, 409 when the file changed underneath you), `POST /api/subtitle/qc` (post-translation checks), `POST /api/subtitle/rewrap` (re-wrap by characters per line), `POST /api/config/speed_windows/check` (speed-window health check), `POST /api/subs/preview` (the sync-plan dry run) with `POST /api/subs/archived` / `POST /api/subs/archived/clear` (entries deleted upstream), `POST /api/live/monitors/set` (per-room live settings), `POST /api/platforms/cookies/clear-flag` (clear a login-state red flag), `POST /api/diagnostics/export` (the redacted diagnostics archive).
+
+The music side additionally has: `GET /api/music/status` (source list, default sources, stored strategies, the four settings echoes for naming template / tag embedding / filtering unavailable / including the local library, plus the current quality requirement and the four tier tables), `POST /api/music/search`, `POST /api/music/playlist`, `POST /api/music/probe`, `POST /api/music/download` (de-duplication and the "skip already downloaded" check run first; both accept `quality_spec`; `GET /api/music/download_status` reports batch progress and unmatched lists), `POST /api/music/check_quality` (reads each finished file's own tags against this batch's requirement; only paths inside the download directory are accepted), `POST /api/music/switch_source`, `GET/POST /api/music/favorites` with `/favorites/remove`, `/favorites/download` and `/favorites/mark`, `POST /api/music/local_scan` and `GET /api/music/local_cover`, `GET/POST /api/music/cookies` (the three per-platform logins), and `GET /api/music/netease/qr/generate` / `POST /api/music/netease/qr/poll` (NetEase's own QR login). The full list is in `server.py` under the `@app.` decorators or at `/docs`; `python mcp_server.py --tools` also prints the whole mapping without starting anything (see [MCP bridge](#mcp-bridge)).
 
 </details>
 
@@ -474,7 +546,7 @@ Single-file backend `server.py` plus single-file front end `static/index.html`; 
 2. Read this before editing: the backend is the single file `server.py`, the front end the single file `static/index.html`; `.py` changes need a process restart.
 3. Adding a site resolver: drop a `.py` into `plugins/` implementing `match(url)` and `resolve(url, ctx)`; trial it with `/api/plugins/test`.
 4. Run the self-tests: `python tests/<name>_test.py` prints PASS/FAIL per assertion and exits 0 when green. `tests/fixtures/` contains four HTML snapshots of public pages (no login content, no cookies) so the offline assertions stay offline.
-5. A new dependency must be registered in three places: `requirements.txt`, `PKGS` in `pack_release.py`, and the "Components & dependencies" table (including the `CREDITS` array in the front end; reference projects likewise). A new top-level `.py` module **must** be added to `APP_PY` in `pack_release.py` — omitting it means the packaged app cannot import it.
+5. A new dependency must be registered in three places: `requirements.txt`, `PKGS` in `pack_release.py`, and the "Components & dependencies" table (including the `CREDITS` array in the front end; reference projects likewise). A new top-level `.py` module **must** be added to `APP_PY` in `pack_release.py` — omitting it means the packaged app cannot import it. Adding or removing endpoints does not need a second list maintained: both the MCP bridge and the API documentation take their contents from `/openapi.json` at run time, but a request-body model has to be written in a form openapi can generate (`body: SomeBody` without a default value is treated as a query parameter — it neither receives the JSON nor lets `/openapi.json` be generated).
 6. UI conventions: new controls default to `size="small"`, only the primary CTA uses `large`; the accent colour stays blue, with green and yellow reserved for status; one section per screen equals one card; lists beyond one screen paginate at 50 with jump-to-page; every UI action must write to the operation log. Copy should be formal but plain, refer to actual control names, and error messages must keep every technical fact.
 7. Rebuilding docs and package: after touching `server.py`, `static/index.html`, README or CHANGELOG the archive does not follow automatically — re-run `python pack_release.py --skip-runtime`; the md5 of the documents inside the zip must equal the ones on disk.
 8. Do not commit local state: `.gitignore` is default-deny with an explicit allowlist, so new documentation or directories need their own unignore line. `config.json`, cookies, history, downloads and session files never go in.
@@ -486,7 +558,8 @@ Single-file backend `server.py` plus single-file front end `static/index.html`; 
 
 - Everything stays local: `config.json`, `history.json`, cookies and downloaded content all live inside the working directory; the program uploads nothing.
 - Logs record actions and errors only — never tokens, secrets, api_hash, passwords, cookie values, SendKey or HLS key contents. Saving settings logs only the changed key names and counts.
-- The portable package forcibly excludes `config.json`, `cookies/`, `Downloads/`, `history.json`, `subscriptions.json`, `rss_feeds.json`, `music_favorites.json` (your self-built music list), `local_index/` (music index snapshots, which contain real local paths), `tg_session/`, `browser_sniff_profile/`, and every local cache and log; a leak check before packing aborts the build if any of them slipped in.
+- The "export diagnostics" archive (`POST /api/diagnostics/export`) is meant for **someone else** to read, so redaction happens in the backend: the cookie files themselves, `tg_session/`, downloaded media and the seeding state directory are never included; configuration fields such as `music_platform_cookies`, `musicdl_cookies` and `platform_cookie_content` are stripped wholesale and `meta.json` states how many were hidden; the remaining text passes a second sweep by field name (secrets, tokens, proxy addresses in `user:pass` form); and the `README.txt` inside reminds the recipient to double-check before uploading.
+- The portable archive **excludes all local data by construction**: no `config.json`, no `cookies/`, no `Downloads/`, no `history.json`, `subscriptions.json`, `rss_feeds.json` or `music_favorites.json` (your self-built music list), no `local_index/` (music index snapshots, which contain real local paths), no `tg_session/`, no `torrent_state/` (uploaded torrents, tracker cache and aria2 session files), no `mcp_calls.log` (values are redacted, but endpoint paths and queue contents remain), no `browser_sniff_profile/`, and no other local cache or log. A leak scan before packing aborts the build if any of them slipped in.
 
 ## Known limitations
 
@@ -495,6 +568,14 @@ What cannot be done is stated in the UI as well; the app never pretends to succe
 | Limitation | Symptom | Reason |
 | --- | --- | --- |
 | Range trimming is segmented-stream only | a single mp4 with `download_section` set ignores it, and the task log says so | it rides on yt-dlp's `download_ranges`, which works on HLS segment boundaries |
+| No aria2c in the portable package | on the torrents page, pressing "start download" answers on the spot what is missing and creates no task | `tools/` inside the archive holds only ffmpeg / ffprobe / yt-dlp / N_m3u8DL-RE, and this whole chain runs on aria2's RPC — bring your own aria2c (into `tools/` or PATH, or point at it under "aria2 & seeding") |
+| Trackers and first/last priority affect new tasks only | after changing them you must re-submit; an existing task cannot be moved | aria2's `changeOption` answers "Cannot change option" for `bt-tracker`, and for `seed-ratio` / `bt-prioritize-piece` it answers OK while leaving the value untouched |
+| No psutil in the embedded runtime | ending a live recording does not reap the ffmpeg subprocess yt-dlp spawned for the stream, so the file can keep growing and come back after deletion; the backend only logs a warning | this version added it to `requirements.txt` and to the installable list in "Components & dependencies", but did not re-bake the runtime — install it and the problem goes away |
+| The MCP bridge is loopback-only and unauthenticated | the bridge exits immediately if `MEDIADOWNLOADER_BASE_URL`'s host is not `127.0.0.1 / localhost / ::1` | it exposes the endpoints verbatim, including writes such as changing settings, starting downloads and deleting tasks, so it must not be offered as a service |
+| The login-state red flag lives until the app closes | a restart or a different egress can bring it back, and "flagged yesterday" will not remind you today | `_LOGIN_FLAGS` is never written to disk — it is a fact about the network right now, not a setting |
+| Custom yt-dlp arguments are allowed through a gate | the dangerous items the gate knows (`--exec`, your own cookies, external config, changed failure handling, format selection) are refused by name; **anything not listed is appended verbatim** | yt-dlp's argument surface is wide, and this string is only ever for tasks you download on your own machine |
+| The sentence editor and the post-translation checks are in different places | check results only go to the operation log (within `QC_ROWS_CAP=200` lines); to look line by line you still open the editor, and re-running the pipeline overwrites manual edits | the 409 gate only covers "changed after you read it" — the save-then-rerun order is still a human's responsibility |
+| The two tables still scroll sideways below 1024 px | on a narrow screen the subscriptions and history tables rely on the container's own scrollbar | `table-layout: fixed` column widths have a floor (the time column and the actions column have to fit the buttons); closing this needs a decision about which column can go |
 | YouTube wants cookies | resolution fails or offers only 360p without cookies | the site's "sign in to confirm you're not a bot" wall |
 | Douyin search is empty without cookies | classified as login-required / anti-bot challenge / rate-limited / API error / genuinely empty, with the basis shown | the search API returns 200 with the `status_code:2483` login wall, or serves a JS challenge page; this tool does not execute site JS or forge signatures |
 | Spotify / Apple have no official audio path | "list titles only + match by title elsewhere", or ~10 s third-party conversions that often fail | DRM; which is why neither is a default match source |
@@ -519,6 +600,18 @@ What cannot be done is stated in the UI as well; the app never pretends to succe
 
 **Audio analysis fails with `Numba needs NumPy 2.4 or less. Got NumPy 2.5.`** numba caps numpy, and numba has no row in the components table — either upgrade numba alongside numpy with pip, or leave numpy out of this batch.
 
+**The torrents page answers an error as soon as I press "start download".** That page runs entirely on aria2: with no aria2c installed (it is not in the portable package) or no reachable RPC, it says exactly what is missing and creates no task. After installing aria2c, point at it under "aria2 & seeding" or put it in PATH, and press "check aria2" to confirm the RPC answers; with "auto-start aria2" on (the default) the program launches one listening on 127.0.0.1 only.
+
+**A magnet has sat there a long time with no file list.** The torrent metadata has to arrive before the program can know what is inside; `torrent_meta_timeout` (default 180 s) expiring means nobody is seeding right now — it is not a malformed link.
+
+**A live recording keeps growing after I stopped it, and comes back after deletion.** The embedded runtime in the portable package has no psutil, so the ffmpeg subprocess yt-dlp spawned for the stream is not reaped. Install psutil from "Components & dependencies", or confirm that process yourself.
+
+**Saving in the sentence editor says the subtitle was rewritten.** That is the 409 gate: after you read the file, the pipeline (or another window) changed it, so the write is refused rather than overwriting freshly generated content. Re-read as prompted and edit again; a `原名.bak-<timestamp>` backup is taken in the same directory before every save anyway.
+
+**The MCP bridge does not start / says it cannot get openapi.** It does not serve on its own — `server.py` has to be running first (default `http://127.0.0.1:8765`, change the port through the environment variable). Pointing `MEDIADOWNLOADER_BASE_URL` at a non-loopback address is rejected on purpose: this bridge has no authentication.
+
+**Someone needs to help me debug.** Press "export diagnostics" on the log page: the zip contains the version and runtime environment, status, component table, queue, redacted configuration and recent logs. Cookies, sessions, downloaded media and the seeding state directory are not in it, and `meta.json` lists the exclusions item by item.
+
 **Two startup log lines about SSL library / cryptg not installed.** telethon has fallen back to pure-Python crypto and Telegram operations will be slow. The portable package from v1.2.8 onwards bundles cryptg; from source, just install it.
 
 **Fingerprint lookup reports `invalid API key`.** That field wants the acoustid.org **application** client key, not the user API key shown after you log in.
@@ -536,12 +629,13 @@ These are deliberate omissions, not a backlog:
 - Telegram channels with "restrict saving content" are an explicit no-save signal and are not worked around; login is api_id / api_hash plus phone code and 2FA only — no QR sign-in.
 - The Qobuz / Tidal lossless reference reads metadata only; not a byte of audio is fetched.
 - HLS keys pushed by cat-catch are only the ones you already captured yourself; the program never goes looking for or breaks one.
+- Custom yt-dlp arguments are deliberately not an entry point for executing commands: items the gate recognises as dangerous (`--exec`, which runs an arbitrary command after a download) are refused by name, and the MCP bridge stays on loopback instead of being offered as a service.
 
 ## Acknowledgements
 
 This tool wires together existing public interfaces and open-source downloading components. Primary dependencies: [yt-dlp](https://github.com/yt-dlp/yt-dlp), [N_m3u8DL-RE](https://github.com/nilaoda/N_m3u8DL-RE), [FFmpeg](https://ffmpeg.org), [aria2](https://github.com/aria2/aria2), [musicdl](https://github.com/CharlesPikachu/musicdl), [mutagen](https://github.com/quodlibet/mutagen), [edge-tts](https://github.com/rany2/edge-tts), [deep-translator](https://github.com/nidhaloff/deep-translator), [faster-whisper](https://github.com/SYSTRAN/faster-whisper), [Demucs](https://github.com/facebookresearch/demucs), [Telethon](https://github.com/LonamiWebs/Telethon), [Chromaprint / fpcalc](https://github.com/acoustid/chromaprint), [AcoustID](https://acoustid.org), [MusicBrainz](https://musicbrainz.org), [FastAPI](https://github.com/fastapi/fastapi), [Vue](https://vuejs.org), [Element Plus](https://element-plus.org).
 
-Interfaces and features referenced from: [Ghost-Downloader-3](https://github.com/XiaoYouChR/Ghost-Downloader-3), [voice-pro](https://github.com/abus-aikorea/voice-pro), [AI-Video-Transcriber](https://github.com/wendy7756/AI-Video-Transcriber), [cat-catch](https://github.com/xifangczy/cat-catch) (GPL-3.0; this project implements only the receiving end of its "send data" feature and its regex-config import, against the documented format, with no code copied), [spotDL](https://github.com/spotdl/spotDL) (the scoring-gate idea for same-song detection, no code copied), and Emby / Jellyfin (the directory layout convention behind `{track}` / `{disc}` / `{year}` / `{date}`).
+Interfaces and features referenced from: [Ghost-Downloader-3](https://github.com/XiaoYouChR/Ghost-Downloader-3), [voice-pro](https://github.com/abus-aikorea/voice-pro), [AI-Video-Transcriber](https://github.com/wendy7756/AI-Video-Transcriber), [cat-catch](https://github.com/xifangczy/cat-catch) (GPL-3.0; this project implements only the receiving end of its "send data" feature and its regex-config import, against the documented format, with no code copied), [spotDL](https://github.com/spotdl/spotDL) (the scoring-gate idea for same-song detection, no code copied), [qBittorrent Enhanced Edition](https://github.com/c0re100/qBittorrent-Enhanced-Edition) (GPL-3.0; the torrents page — tracker auto-update, seeding, split speed limits — follows its product shape, no code copied, and its tracker lists are fetched from URLs at runtime rather than hard-coded here), [ngosang/trackerslist](https://github.com/ngosang/trackerslist) and [XIU2/TrackersListCollection](https://github.com/XIU2/TrackersListCollection) (publicly maintained BitTorrent announce lists; this tool stores only their addresses and fetches the content each time, nothing lands in the release archive), and Emby / Jellyfin (the directory layout convention behind `{track}` / `{disc}` / `{year}` / `{date}`).
 
 The complete list, with what each project is used for, is in "Settings → Credits / reference projects", where every name links to its home page.
 

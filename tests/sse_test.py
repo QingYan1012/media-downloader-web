@@ -60,6 +60,10 @@ class FakeTask:
         self.priority = 0
         self.queue_name = "default"
         self.created_at = kw.get("created_at", "2026-01-01T00:00:00")
+        self.res_label = kw.get("res_label", "")
+        self.total_bytes = kw.get("total_bytes", 0)
+        self.done_bytes = kw.get("done_bytes", 0)
+        self.thumbnail = kw.get("thumbnail", "")
 
     def to_dict(self):
         return {
@@ -244,6 +248,21 @@ ck("C14 prog 的耗时按 started_at 现算", S._sse_prog()["rows"]["t1"]["elaps
 q.tasks["t1"].started_at = "不像时间"
 ck("C15 started_at 脏了就当 0，不抛异常", S._sse_prog()["rows"]["t1"]["elapsed_sec"] == 0)
 q.tasks["t1"].started_at = ""
+# 卡片上的清晰度 / 字节数 / 封面：只在有值时进包，前端靠这个就地合并、不能整行覆盖
+q.tasks["t1"].res_label = "1080p · MP4"
+q.tasks["t1"].total_bytes = 4096
+q.tasks["t1"].done_bytes = 2048
+q.tasks["t1"].thumbnail = "https://example.com/cover.jpg"
+pr2 = S._sse_prog()["rows"]["t1"]
+ck("C16 prog 带上卡片要用的清晰度、字节数与封面",
+   pr2["res_label"] == "1080p · MP4" and pr2["total_bytes"] == 4096
+   and pr2["done_bytes"] == 2048 and pr2["thumbnail"].endswith("cover.jpg"), pr2)
+q.tasks["t1"].res_label = ""
+q.tasks["t1"].total_bytes = 0
+q.tasks["t1"].thumbnail = ""
+ck("C17 没量到的那几项不进包，prog 回到四件套",
+   set(S._sse_prog()["rows"]["t1"]) == {"progress", "speed", "eta", "elapsed_sec"},
+   S._sse_prog()["rows"]["t1"])
 
 print("== D. 日志游标 ==")
 S.log_mgr.log("第一行")

@@ -18,3 +18,5 @@ zhconv>=1.4
 # Telegram 私有/受限频道（用户会话）：telethon 是 MTProto 客户端，python-socks 让它能走 SOCKS5 代理
 telethon>=1.45
 python-socks[asyncio]>=2.4
+# 结束直播录制时要按命令行找回 yt-dlp 派出去拉流的 ffmpeg 子进程并收掉（否则成品一直变大、删不掉）
+psutil>=5.9

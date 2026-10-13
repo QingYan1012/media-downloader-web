@@ -5,12 +5,13 @@
     python pack_release.py --skip-runtime # 复用已下载的 runtime 与已装依赖，只重打应用文件
     python pack_release.py --no-zip       # 只生成 dist/ 目录，不压缩
 
-产物：dist/MediaDownloader-<版本>-portable/ 以及同名 .zip
+产物：dist/MediaDownloader-<版本>-portable/ 以及同名 .zip 和 .zip.sha256
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -58,9 +59,12 @@ APP_PY = [
     "telegram_mt.py",
     "ai_pipeline.py",
     "aria2_client.py",
+    "aria2_daemon.py",
+    "bt_trackers.py",
     "audio_analyze.py",
     "diarize_tools.py",
     "voice_tools.py",
+    "mcp_server.py",
 ]
 APP_FILES = ["requirements.txt", "README.md", "README.en.md", "CHANGELOG.md", "LICENSE", "Dockerfile", "docker-compose.yml"]
 APP_DIRS = ["static", "plugins", "extension", "docs/screenshots"]
@@ -74,6 +78,8 @@ EXCLUDE_DIR_NAMES = {
     "local_index",  # 本地音乐索引快照：记的是本机文件的真实路径
     # 登录过账号的会话文件绝对不能进分享包
     "tg_session",
+    # 上传过的种子与 aria2 会话：记的是这台机器下过什么，不能跟着包走
+    "torrent_state",
 }
 EXCLUDE_FILE_RE = re.compile(
     r"(?i)\.(pyc|pyo|log|zip|7z|rar|part|tmp|bak)$|"
@@ -310,7 +316,7 @@ def smoke_test(dst: Path) -> None:
         # 试跑会在包里落下本机配置/缓存，绝不能跟着 zip 出去
         for f in ("config.json", "history.json", "app.log", "library_cache.json",
                   "subscriptions.json", "live_monitors.json", "rss_feeds.json",
-                  "music_favorites.json", "catcatch_rules.json"):
+                  "music_favorites.json", "catcatch_rules.json", "mcp_calls.log"):
             (dst / f).unlink(missing_ok=True)
         for p in dst.glob("app-*.log"):   # 按天归档的运行日志同样属于本机数据
             p.unlink(missing_ok=True)
@@ -609,6 +615,36 @@ def write_launchers(dst: Path, version: str) -> None:
 
 
 # ---------------------------------------------------------------- main
+def build_zip(dst: Path, name: str) -> Path:
+    """压缩成 dist/<name>.zip，并写出同名 .zip.sha256 校验文件。
+
+    校验文件按 GNU sha256sum 的两空格格式写，对方拿到就能 `sha256sum -c` 核；
+    PowerShell 那条 `Get-FileHash -Algorithm SHA256` 算出来的也是同一个值。
+    """
+    zp = DIST / f"{name}.zip"
+    if zp.exists():
+        zp.unlink()
+    print("\n压缩中…")
+    with zipfile.ZipFile(zp, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
+        for f in sorted(dst.rglob("*")):
+            if f.is_file():
+                z.write(f, f.relative_to(DIST))
+    print(f"完成：{zp}  {human(zp.stat().st_size)}")
+
+    digest = hashlib.sha256()
+    with zp.open("rb") as fh:
+        for blk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(blk)
+    hex64 = digest.hexdigest()
+    side = zp.with_name(zp.name + ".sha256")
+    # 按字节写：Windows 上文本模式会把 \n 翻成 \r\n，那样 sha256sum 会把回车读进文件名，
+    # 当场报 "FAILED open or read" —— 校验文件本身就废了。
+    side.write_bytes(f"{hex64}  {zp.name}\n".encode("ascii"))
+    print(f"sha256：{hex64}")
+    print(f"校验文件：{side}  （用 sha256sum -c {side.name} 核）")
+    return zp
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--skip-runtime", action="store_true", help="复用已装好的 runtime")
@@ -648,7 +684,8 @@ def main() -> None:
     smoke_test(dst)
     leaks = [str(p.relative_to(dst)) for p in dst.rglob("*")
              if p.is_file() and (
-                 p.name in ("config.json", "cookies.txt", "history.json", "library_cache.json")
+                 p.name in ("config.json", "cookies.txt", "history.json", "library_cache.json",
+                            "mcp_calls.log")
                  or p.name == "app.log"
                  or (p.name.startswith("app-") and p.name.endswith(".log")))]
     if leaks:
@@ -661,15 +698,7 @@ def main() -> None:
             print(f"   {sub.name:14s} {human(dir_size(sub))}")
 
     if not args.no_zip:
-        zp = DIST / f"{name}.zip"
-        if zp.exists():
-            zp.unlink()
-        print("\n压缩中…")
-        with zipfile.ZipFile(zp, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
-            for f in sorted(dst.rglob("*")):
-                if f.is_file():
-                    z.write(f, f.relative_to(DIST))
-        print(f"完成：{zp}  {human(zp.stat().st_size)}")
+        build_zip(dst, name)
 
 
 if __name__ == "__main__":

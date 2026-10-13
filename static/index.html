@@ -572,6 +572,16 @@
        换行后每行开头还凭空缩进这 12px。抹掉它，行首才和上方标题左对齐。 */
     .row--flush { gap: var(--gap-loose); }
     .row--flush .el-button + .el-button { margin-left: 0; }
+    /* 逐句校对台：一行五件套（序号 / 起 / 止 / 说话人 / 正文 / 两个动作），
+       序号列兼作「选中」开关，所以它要能点、要给光标提示。 */
+    .srt-edit-row { display: flex; align-items: center; gap: var(--gap-loose); padding: 3px 0; }
+    .srt-edit-row__idx { min-width: 26px; text-align: right; color: var(--muted); font-size: 13px; cursor: pointer; }
+    .srt-edit-row__sp { min-width: 34px; text-align: center; }
+    .srt-edit-row--sel .srt-edit-row__idx { color: var(--accent); font-weight: 700; }
+    /* 质检结果行：左边一个「第 N 句」按钮负责跳转，中间是问题类型，右边两句对照文本 */
+    .srt-qc-row { display: flex; align-items: flex-start; gap: var(--gap-loose); padding: 4px 0; }
+    .srt-qc-tags { display: flex; flex-wrap: wrap; gap: var(--gap-tight); min-width: 150px; max-width: 190px; }
+    .srt-qc-text { flex: 1; min-width: 0; font-size: 14px; line-height: 1.5; word-break: break-word; }
     /* 纵向堆叠容器：同一组里的行更紧，组与组之间用 --row-mt */
     .stack {
       display: flex;
@@ -760,6 +770,21 @@
       white-space: normal;
       word-break: break-all;
     }
+    /* 定宽表格：列宽按声明分配，装不下的内容截断成省略号，
+       配合各表声明的 min-width，桌面宽度下不用向右滑动就能看全所有列 */
+    .fmt-table--fit {
+      table-layout: fixed;
+    }
+    .fmt-table--fit th,
+    .fmt-table--fit td {
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .ell {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
     .table-scroll {
       max-width: 100%;
       overflow-x: auto;
@@ -908,6 +933,22 @@
       transition: box-shadow 0.2s;
     }
     .task-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+    /* 点桌面通知跳回队列时，卡片要能在一排任务里被认出来：亮一下边框，2.6 秒后自己退回常态 */
+    .task-card.flash { animation: taskFlash 2.6s ease-out 1; }
+    @keyframes taskFlash {
+      0%, 72% { border-color: var(--accent); background: var(--accent-soft); }
+      100% { border-color: var(--line); background: var(--card); }
+    }
+    /* 卡片左侧的封面缩略图：固定 16:9，不参与挤压标题的省略号 */
+    .task-thumb {
+      width: 72px;
+      height: 41px;
+      object-fit: cover;
+      border-radius: 6px;
+      border: 1px solid var(--line);
+      flex: none;
+      background: var(--surface-2, rgba(0,0,0,0.04));
+    }
     .task-url {
       font-size: var(--fs-ui-sm);
       color: var(--ink);
@@ -921,6 +962,8 @@
       color: var(--muted);
       margin-top: 6px;
     }
+    /* 清晰度与大小是这一条的关键信息，比旁边的速率/路径深一档颜色 */
+    .task-spec { color: var(--ink); }
     .log-line {
       font-family: Consolas, "Courier New", monospace;
       font-size: var(--fs-ui-xs);
@@ -1319,6 +1362,8 @@
     .row > .hint--block, .tool-bar > .hint--block { margin-top: 0; }
     /* el-form-item 内容区是 flex：块级说明必须换行到控件下方，不能挤在按钮右侧折行 */
     .el-form-item__content > div.hint { flex: 1 0 100%; }
+    /* 跟控件同排的行内提示：与开关/输入框之间留一档呼吸间距，实测贴在一起是 0px */
+    .el-form-item__content > span.hint:not(.hint--block) { margin-left: var(--gap); }
     .hint b, .hint strong { font-weight: 400; color: inherit; }
     .section-title b, .section-title strong { font-weight: inherit; }
 
@@ -1612,7 +1657,7 @@
                       type="textarea"
                       size="large"
                       :autosize="{ minRows: 3, maxRows: 12 }"
-                      placeholder="YouTube / B站 / 抖音 / 小红书 等链接，一行一个&#10;https://www.xiaohongshu.com/explore/...&#10;https://v.douyin.com/..."></el-input>
+                      placeholder="YouTube / B站 / 抖音 / 小红书 等链接，一行一个&#10;https://www.xiaohongshu.com/explore/..."></el-input>
                     <div class="tool-bar">
                       <el-button size="small" @click="pasteUrl">粘贴链接</el-button>
                       <el-button type="primary" size="small" :loading="analyzing" @click="analyze"><svg class="btn-ico"><use href="#i-search"></use></svg>解析媒体信息</el-button>
@@ -1622,7 +1667,7 @@
                       <span class="hint hint--block" v-if="urlPasteStat.count">
                         识别到 {{ urlPasteStat.count }} 条<span v-if="urlPasteStat.dup">，其中 {{ urlPasteStat.dup }} 条重复已去除</span>
                       </span>
-                      <span class="hint hint--block" v-else>每行一个链接，支持整段文本粘贴，重复项自动去除。解析仅读取信息，不会开始下载</span>
+                      <span class="hint hint--block" v-else>每行一个网页链接，支持整段文本粘贴，重复项自动去除。「解析媒体信息」只读取网页链接的信息，不开始下载。</span>
                     </div>
                   </div>
                   <div class="tile link-start__side">
@@ -1754,6 +1799,11 @@
                     <div class="hint">不确定可留空。在「信息」页选择某一行下载时会自动填入对应格式 ID</div>
                   </div>
                   <div class="tile">
+                    <div class="tile-label">自定义 yt-dlp 参数</div>
+                    <el-input size="small" v-model="opts.ytdlp_extra_args" placeholder="留空 = 跟随设置；例: --socket-timeout 60 -N 4" clearable></el-input>
+                    <div class="hint">只对本批任务生效，覆盖「设置 → 自定义 yt-dlp 参数」。被拒绝或与界面冲突的项会在加入队列时逐条点名</div>
+                  </div>
+                  <div class="tile">
                     <div class="tile-label">广告片段（SponsorBlock）</div>
                     <div class="chip-row">
                       <div class="chip" :class="{ active: opts.sponsorblock === 'off' }" @click="opts.sponsorblock = 'off'">关闭</div>
@@ -1853,10 +1903,12 @@
                 {{ sseOn ? '实时推送' : '轮询' }}
               </el-tag>
             </div>
-            <div v-if="!tasks.length" class="empty-tip">当前暂无下载任务</div>
-            <div v-for="t in pagers.tasks.paged" :key="t.id" class="task-card" :class="{ selected: selectedIds.includes(t.id) }">
+            <div v-if="!queueTasks.length" class="empty-tip">当前暂无下载任务</div>
+            <div v-for="t in pagers.queueTasks.paged" :key="t.id" :id="'task-' + t.id"
+                 class="task-card" :class="{ selected: selectedIds.includes(t.id), flash: flashTaskId === String(t.id) }">
               <div class="task-url row row--tight">
                 <el-checkbox :model-value="selectedIds.includes(t.id)" @change="(v) => toggleSelect(t.id, v)"></el-checkbox>
+                <img v-if="t.thumbnail && !thumbBroken[t.id]" :src="t.thumbnail" class="task-thumb" referrerpolicy="no-referrer" loading="lazy" alt="封面" @error="thumbBroken[t.id] = 1" />
                 <el-tag v-if="t.pinned" size="small" type="danger" effect="dark">置顶</el-tag>
                 <el-tag size="small" :type="statusType(t.status)">{{ statusLabel(t.status) }}</el-tag>
                 <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
@@ -1874,15 +1926,295 @@
               <div class="task-meta">
                 <span>
                   {{ t.speed || '' }} {{ t.eta ? 'ETA ' + t.eta : '' }}
+                  <span v-if="taskSpec(t)" class="task-spec" :title="taskSpecTitle(t)">{{ taskSpec(t) }}</span>
                   <el-tag v-if="t.retry_count" size="small" type="warning" style="margin-left:6px">重试 {{ t.retry_count }}/{{ t.max_retries || 3 }}</el-tag>
                   <el-tag v-if="t.resume_hint" size="small" type="info" style="margin-left:4px">{{ t.resume_hint }}</el-tag>
                 </span>
                 <span style="max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ t.filepath || t.url }}</span>
               </div>
             </div>
-            <el-pagination v-if="pagers.tasks.show" v-model:current-page="pagers.tasks.page"
-                           :page-size="pagers.tasks.pageSize" :total="pagers.tasks.total"
-                           layout="total, prev, pager, next, jumper" size="small" background class="pager" />
+            <el-pagination v-if="pagers.queueTasks.show" v-model:current-page="pagers.queueTasks.page"
+                           :page-size="pagers.queueTasks.pageSize" :total="pagers.queueTasks.total"
+                           layout="total, prev, pager, next, jumper" size="small" background class="pager"></el-pagination>
+          </div>
+
+          <!-- 磁力 / 种子 -->
+          <div v-show="page === 'bt'">
+            <div class="card row--mb">
+              <div class="section-title">添加磁力链接或种子</div>
+              <div class="link-start">
+                <div class="link-start__main">
+                  <el-input
+                    v-model="btText"
+                    type="textarea"
+                    size="large"
+                    :autosize="{ minRows: 3, maxRows: 10 }"
+                    placeholder="magnet:?xt=urn:btih:... 一行一个&#10;本地种子写路径：file:///H:/下载/影片.torrent 或 H:\下载\影片.torrent"></el-input>
+                  <div class="tool-bar">
+                    <el-button size="small" @click="pasteBt">粘贴</el-button>
+                    <el-button size="small" :loading="torrentUploading" @click="pickTorrentFile">上传种子</el-button>
+                    <input ref="torrentFileInput" type="file" accept=".torrent" style="display:none" @change="onTorrentFile" />
+                    <el-button size="small" @click="btText = ''">清空</el-button>
+                    <span class="hint hint--block">
+                      已识别 {{ btLinkCount }} 条磁力链接或种子<span v-if="btIgnoredCount">，另有 {{ btIgnoredCount }} 行不是这两类或与之重复，未加入</span>
+                      <span v-if="!btLinkCount && !btIgnoredCount">。上传的 .torrent 会写成一行本机路径，点「开始下载」即交给 aria2</span>
+                    </span>
+                  </div>
+                </div>
+                <div class="tile link-start__side">
+                  <div class="stack stack--tight">
+                    <el-button type="primary" size="large" :loading="btStarting" @click="startBtDownload"><svg class="btn-ico"><use href="#i-download"></use></svg>开始下载</el-button>
+                    <el-checkbox v-model="btSeedOnly" size="small">只做种（本机已有成品，不再下一遍）</el-checkbox>
+                    <span class="hint">磁力链接这一刻还没有文件清单，勾了「只做种」会被挡下：请先用「上传种子」给出 .torrent</span>
+                    <span class="hint">磁力链接要先拿到种子元数据才知道里面有哪几个文件，拿到后才能点「文件 n/m」改选要下的部分</span>
+                    <span class="hint">下完后按下方「做种」设置继续上传；不想做种就把做种比率、做种时长都设为 0</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div v-if="seedingRows.length || seedingNote" class="card stack stack--tight row--mb">
+              <div class="row row--tight">
+                <b>正在做种 {{ seedingRows.length }} 项</b>
+                <el-button size="small" plain @click="loadSeeding">刷新</el-button>
+                <el-button size="small" plain type="danger" :disabled="!seedingRows.length" @click="stopAllSeeding">全部停止做种</el-button>
+                <span class="hint">做种只上传，不占用下载并发；停止做种不会删除已下载的文件</span>
+              </div>
+              <div v-for="s in seedingRows" :key="s.gid" class="row row--tight">
+                <span style="flex:1;min-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                      :title="s.title || s.name">{{ s.title || s.name }}</span>
+                <el-tag size="small" :type="s.managed ? 'info' : 'warning'" effect="plain">{{ s.managed ? '本程序' : 'aria2 其他' }}</el-tag>
+                <el-tag v-if="s.in_queue === false" size="small" type="danger" effect="plain"
+                        :title="'aria2 报的任务状态是 ' + (s.aria2_status || '读不到') + '，不在做种队列里'">
+                  {{ s.aria2_status === 'paused' ? '已暂停' : '不在队列' }}
+                </el-tag>
+                <span v-if="seedTotals(s)" class="hint">{{ seedTotals(s) }}</span>
+                <span v-if="seedReadout(s)" class="hint"
+                      :title="'aria2 当场读数：上传速率 / 连接数 / 对方做种人数 / 这份种子里的 tracker 条数；aria2 没回的那项就不显示'">{{ seedReadout(s) }}</span>
+                <el-button size="small" plain @click="stopSeed(s.gid ? { gid: s.gid } : { id: s.task_id })">停止</el-button>
+              </div>
+              <div v-if="seedingNote" class="hint hint--block">{{ seedingNote }}</div>
+            </div>
+
+            <div class="card row--mb">
+              <div class="section-title">种子任务</div>
+              <div class="row row--mb row--tight">
+                <el-checkbox v-model="selectAll" @change="toggleSelectAll">全选</el-checkbox>
+                <el-button size="small" type="danger" plain @click="deleteSelected" :disabled="!selectedIds.length">删除选中</el-button>
+                <el-button size="small" @click="retrySelected" :disabled="!selectedIds.length">重试选中</el-button>
+                <el-select v-model="taskSort" size="small" style="width:110px" @change="loadTasks">
+                  <el-option label="按队列" value="queue"></el-option>
+                  <el-option label="按时间" value="created"></el-option>
+                  <el-option label="按状态" value="status"></el-option>
+                  <el-option label="按标题" value="title"></el-option>
+                </el-select>
+                <el-button size="small" plain @click="loadTasks">刷新</el-button>
+                <el-tag :type="sseOn ? 'success' : 'info'" effect="plain" size="small"
+                        :title="sseOn ? '任务进度由服务端实时推送，轮询已降成兜底' : '没连上推送接口，正在按 1.5 秒轮询刷新'">
+                  {{ sseOn ? '实时推送' : '轮询' }}
+                </el-tag>
+              </div>
+              <div v-if="!btTasks.length" class="empty-tip">当前没有磁力或种子任务，可在上方添加</div>
+              <div v-for="t in pagers.btTasks.paged" :key="t.id" :id="'task-' + t.id"
+                   class="task-card" :class="{ selected: selectedIds.includes(t.id), flash: flashTaskId === String(t.id) }">
+                <div class="task-url row row--tight">
+                  <el-checkbox :model-value="selectedIds.includes(t.id)" @change="(v) => toggleSelect(t.id, v)"></el-checkbox>
+                  <el-tag v-if="t.pinned" size="small" type="danger" effect="dark">置顶</el-tag>
+                  <el-tag size="small" :type="statusType(t.status)">{{ statusLabel(t.status) }}</el-tag>
+                  <el-tag size="small" effect="plain">{{ btSourceLabel(t) }}</el-tag>
+                  <el-tag v-if="t.category" size="small" effect="plain"
+                          :title="'自动分类把它归到「' + t.category + '」，成品存在这一档的子目录里'">分类 {{ t.category }}</el-tag>
+                  <el-tag v-if="t.seeding" size="small" type="success" effect="plain">做种中</el-tag>
+                  <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+                    {{ t.title !== '等待中...' ? t.title : t.url }}
+                  </span>
+                  <el-button v-if="(t.files || []).length > 1" size="small" plain
+                             @click="toggleBtFiles(t)">文件 {{ btPicked(t) }}/{{ t.files.length }}</el-button>
+                  <el-button v-if="t.seeding || ['downloading', 'queued', 'paused', 'stopped', 'later'].includes(t.status)"
+                             size="small" plain @click="toggleBtLimit(t)">限速</el-button>
+                  <el-button v-if="t.seeding" size="small" plain type="danger" @click="stopSeed({ id: t.id })">停止做种</el-button>
+                </div>
+                <el-progress
+                  :percentage="Math.min(100, Math.round(t.progress || 0))"
+                  :status="t.status === 'finished' ? 'success' : (t.status === 'failed' ? 'exception' : undefined)"
+                  :stroke-width="8"></el-progress>
+                <div v-if="t.status === 'failed' && t.error_msg"
+                     style="color:var(--bad);font-size:13px;margin-top:6px;word-break:break-all;line-height:1.5">
+                  {{ friendlyError(t.error_msg) }}
+                </div>
+                <div class="task-meta">
+                  <span>
+                    {{ t.speed || '' }} {{ t.eta ? 'ETA ' + t.eta : '' }}
+                    <span v-if="taskSpec(t)" class="task-spec" :title="taskSpecTitle(t)">{{ taskSpec(t) }}</span>
+                    <el-tag v-if="t.retry_count" size="small" type="warning" style="margin-left:6px">重试 {{ t.retry_count }}/{{ t.max_retries || 3 }}</el-tag>
+                    <el-tag v-if="t.resume_hint" size="small" type="info" style="margin-left:4px">{{ t.resume_hint }}</el-tag>
+                  </span>
+                  <span style="max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ t.filepath || t.url }}</span>
+                </div>
+                <div v-if="btFilesTask === t.id" class="stack stack--tight"
+                     style="margin-top:8px;padding-top:8px;border-top:1px solid var(--line)">
+                  <div class="row row--tight">
+                    <el-button size="small" plain @click="btPickAll(true)">全选</el-button>
+                    <el-button size="small" plain @click="btPickAll(false)">全不选</el-button>
+                    <span class="hint">已选 {{ btPickCount }} / {{ btFileRows.length }} 个 · {{ formatSize(btPickSize) }}</span>
+                    <el-button size="small" type="primary" :loading="btSelecting" @click="applyBtSelect(t)">应用选择</el-button>
+                  </div>
+                  <div style="max-height:260px;overflow:auto">
+                    <div v-for="f in btFileRows" :key="f.index" class="row row--tight">
+                      <el-checkbox v-model="f.selected" style="flex:1;min-width:0;overflow:hidden">
+                        <span :title="f.path">{{ f.name }}</span>
+                      </el-checkbox>
+                      <span class="hint">{{ formatSize(f.size) }}</span>
+                    </div>
+                  </div>
+                  <span class="hint hint--block">改选只影响尚未下完的部分，已经下完的文件不会被删除；任务结束时主成品在已下载的文件里挑（优先视频/音频，其次最大）。</span>
+                </div>
+                <div v-if="btLimitTask === t.id" class="stack stack--tight"
+                     style="margin-top:8px;padding-top:8px;border-top:1px solid var(--line)">
+                  <div class="row row--tight">
+                    <span class="hint">下载</span>
+                    <el-input size="small" v-model="btLimitDl" placeholder="留空不改，0=不限，可写 1M / 512K" clearable style="width:190px"></el-input>
+                    <span class="hint">上传</span>
+                    <el-input size="small" v-model="btLimitUl" placeholder="留空不改，0=不限，可写 1M / 512K" clearable style="width:190px"></el-input>
+                    <el-button size="small" type="primary" :loading="btLimitApplying" @click="applyBtLimit(t)">应用限速</el-button>
+                  </div>
+                  <span class="hint hint--block">
+                    这一路改的是 aria2 里这个任务当前生效的限速，不用重启 aria2，也不用重新提交；点「应用限速」后显示的是从 aria2 读回来的值
+                    （aria2 把限速统一读成字节数，1M 显示为 1048576）。
+                    实测下载中、排队、已暂停、正在做种的任务都改得动；已经下完并且停止做种、或已经出错的任务被 aria2 移出了活动队列，
+                    它会当场回「Cannot change option」，界面会把它在 aria2 里的当前状态一起写出来。
+                    要让限速对以后每个新任务都成立，请改下方「新任务下载限速」「新任务上传限速」并保存设置。
+                  </span>
+                  <span v-if="btLimitResult" class="hint hint--block">{{ btLimitResult }}</span>
+                </div>
+              </div>
+              <el-pagination v-if="pagers.btTasks.show" v-model:current-page="pagers.btTasks.page"
+                             :page-size="pagers.btTasks.pageSize" :total="pagers.btTasks.total"
+                             layout="total, prev, pager, next, jumper" size="small" background class="pager"></el-pagination>
+            </div>
+
+            <div class="card row--mb">
+              <div class="section-title">Tracker 与限速</div>
+              <div class="row row--tight row--mb">
+                <el-button size="small" plain :loading="btTrackerLoading" @click="loadBtTrackers">读取现状</el-button>
+                <el-button size="small" plain :loading="btTrackerRefreshing" @click="refreshBtTrackers">立即获取列表</el-button>
+                <span class="hint" style="flex:1">{{ btTrackerText }}</span>
+              </div>
+              <div v-if="btTrackerNote" class="hint hint--block" style="margin-bottom:8px">{{ btTrackerNote }}</div>
+              <el-form label-position="top" @submit.prevent>
+                <el-form-item label="列表来源地址">
+                  <el-input size="small" v-model="settings.bt_tracker_sources" type="textarea"
+                            :autosize="{ minRows: 2, maxRows: 6 }"
+                            placeholder="一行一个纯文本列表的网址"></el-input>
+                  <span class="hint">默认是 ngosang/trackerslist 与 XIU2/TrackersListCollection 两个公开维护的列表；这里只存网址，列表正文每次现抓，不写进源码也不打进安装包</span>
+                </el-form-item>
+                <el-form-item label="自己填写的 tracker">
+                  <el-input size="small" v-model="settings.bt_trackers" type="textarea"
+                            :autosize="{ minRows: 2, maxRows: 6 }"
+                            placeholder="一行一个 announce 地址，例如 http://tracker.example:1337/announce"></el-input>
+                  <span class="hint">这几条排在抓来的列表前面，只有 http / https 的 announce 地址会被收下，其余的行会直接丢掉</span>
+                </el-form-item>
+                <el-form-item label="自动获取">
+                  <el-switch v-model="settings.bt_tracker_auto_update"></el-switch>
+                  <span class="hint">开着时，提交新任务前若缓存里缺某个来源就补抓一次；关掉则只用已经抓回来存着的那份</span>
+                </el-form-item>
+                <el-form-item label="注入条数上限">
+                  <el-input-number size="small" v-model="settings.bt_tracker_max" :min="0" :max="200" :step="5"></el-input-number>
+                  <span class="hint">一次给任务带多少条 tracker。aria2 是挨个问的，堆太多第一轮反而慢；填 0 表示不注入</span>
+                </el-form-item>
+                <el-form-item label="新任务下载限速">
+                  <el-input size="small" v-model="settings.bt_dl_limit" placeholder="留空=不限，可写 1M / 512K" clearable style="max-width:240px"></el-input>
+                </el-form-item>
+                <el-form-item label="新任务上传限速">
+                  <el-input size="small" v-model="settings.bt_ul_limit" placeholder="留空=不限，可写 1M / 512K" clearable style="max-width:240px"></el-input>
+                  <span class="hint">这两条只加在新提交的任务上，做种阶段同样吃上传限速；已经在下方的「限速」按钮里按任务单独改过的，以那一行的读回值为准</span>
+                </el-form-item>
+                <el-form-item label="首尾优先">
+                  <el-switch v-model="settings.bt_prioritize_piece"></el-switch>
+                  <span class="hint">先下每个文件的首尾各 1M，边下边预览时能更早打开；只影响新任务</span>
+                </el-form-item>
+              </el-form>
+              <div class="row row--tight">
+                <el-button size="small" type="primary" @click="saveSettings()">保存设置</el-button>
+              </div>
+              <div class="hint hint--block" style="margin-top:6px">tracker 与首尾优先只能在新任务提交时带上：已存在的任务改不了，aria2 会当场回「Cannot change option」，所以改完这几项要重新提交任务才生效。</div>
+            </div>
+
+            <div class="card row--mb">
+              <div class="section-title">自动分类</div>
+              <div class="row row--tight row--mb">
+                <el-button size="small" plain @click="addBtRule">新增规则</el-button>
+                <span class="hint">按种子里的名字决定存到全局下载目录下的哪个子目录；规则从上往下问，第一条命中就定下来。</span>
+              </div>
+              <div v-if="!settings.bt_auto_rules.length" class="empty-tip">还没有规则：所有磁力 / 种子都直接存到全局下载目录（在「设置」页配置）</div>
+              <div v-for="(r, i) in settings.bt_auto_rules" :key="i" class="row row--tight" style="margin-bottom:8px">
+                <el-switch v-model="r.enabled" size="small" title="启用这条规则；关掉则跳过它继续问下一条"></el-switch>
+                <el-input size="small" v-model="r.name" placeholder="规则名，如 剧集" style="width:130px"></el-input>
+                <el-select size="small" v-model="r.mode" style="width:110px">
+                  <el-option label="名字包含" value="contains"></el-option>
+                  <el-option label="正则表达式" value="regex"></el-option>
+                </el-select>
+                <el-input size="small" v-model="r.pattern" placeholder="要匹配的关键词或正则" style="flex:1;min-width:150px"></el-input>
+                <el-input size="small" v-model="r.subdir" placeholder="存到子目录，如 剧集/2026" style="flex:1;min-width:150px"></el-input>
+                <el-button size="small" plain :disabled="i === 0" @click="moveBtRule(i, -1)">上移</el-button>
+                <el-button size="small" plain :disabled="i === settings.bt_auto_rules.length - 1" @click="moveBtRule(i, 1)">下移</el-button>
+                <el-button size="small" plain type="danger" @click="delBtRule(i)">删除</el-button>
+              </div>
+              <div class="row row--tight row--mt">
+                <span>都不命中时存到</span>
+                <el-input size="small" v-model="settings.bt_auto_fallback" placeholder="留空 = 仍存默认下载目录" clearable style="width:220px"></el-input>
+                <span class="hint">没写文件名的磁力链接在拿到种子元数据前没有名字可比，也会被这一档接住。</span>
+              </div>
+              <div class="row row--tight row--mt">
+                <el-input size="small" v-model="btRuleTestName" placeholder="试一个种子名字，或贴一条磁力 / 种子链接" style="flex:1;min-width:220px"></el-input>
+                <el-button size="small" plain :loading="btRuleTesting" @click="testBtRule">试匹配</el-button>
+                <el-button size="small" type="primary" @click="saveSettings()">保存设置</el-button>
+              </div>
+              <div v-if="btRuleTested" class="hint hint--block" style="margin-top:6px">{{ btRuleTested }}</div>
+              <div class="hint hint--block" style="margin-top:6px">
+                子目录写的是下载目录下面的相对路径（可以多级），带盘符或 .. 的会被当场顶回去。
+                规则只决定之后新提交的任务存在哪：已经在下载或已经在做种的任务不会搬迁，勾了「只做种」的也不改落点——那份成品本来就在本地。
+              </div>
+            </div>
+
+            <div class="card row--mb">
+              <div class="section-title">aria2 与做种</div>
+              <el-form label-position="top" @submit.prevent>
+                <el-form-item label="aria2 RPC">
+                  <el-input size="small" v-model="settings.aria2_rpc" placeholder="留空则用 http://127.0.0.1:6800/jsonrpc" clearable style="max-width:420px"></el-input>
+                  <span class="hint">分片下载与磁力/种子共用这一地址，只填本机 127.0.0.1 的服务</span>
+                </el-form-item>
+                <el-form-item label="aria2 Secret">
+                  <el-input size="small" v-model="settings.aria2_secret" clearable show-password style="max-width:420px"></el-input>
+                  <span class="hint">仅在 aria2 自身设置了 RPC Secret 时填写</span>
+                </el-form-item>
+                <el-form-item label="aria2c 路径">
+                  <el-input size="small" v-model="settings.aria2_bin" placeholder="留空则自动查找 tools 目录与 PATH" clearable style="max-width:420px"></el-input>
+                </el-form-item>
+                <el-form-item label="自动拉起 aria2">
+                  <el-switch v-model="settings.aria2_autostart"></el-switch>
+                  <span class="hint">RPC 无应答时由本程序启动一个只监听 127.0.0.1 的 aria2c，退出程序时一并关闭</span>
+                </el-form-item>
+                <el-form-item label="做种比率">
+                  <el-input-number size="small" v-model="settings.torrent_seed_ratio" :min="0" :max="20" :step="0.1" :precision="2"></el-input-number>
+                  <span class="hint">上传量达到下载量的该倍数时停止上传，0=不按比率停</span>
+                </el-form-item>
+                <el-form-item label="做种时长（秒）">
+                  <el-input-number size="small" v-model="settings.torrent_seed_time" :min="0" :max="604800" :step="600"></el-input-number>
+                  <span class="hint">做满该秒数停止上传，0=不按时长停</span>
+                </el-form-item>
+                <el-form-item label="种子元数据等待（秒）">
+                  <el-input-number size="small" v-model="settings.torrent_meta_timeout" :min="30" :max="1800" :step="30"></el-input-number>
+                  <span class="hint">超时仍未拿到文件清单即判失败，通常是此刻没有做种者</span>
+                </el-form-item>
+              </el-form>
+              <div class="row row--tight">
+                <el-button size="small" plain :loading="aria2Checking" @click="checkAria2">检测 aria2</el-button>
+                <el-button size="small" type="primary" @click="saveSettings()">保存设置</el-button>
+              </div>
+              <div class="hint hint--block" style="margin-top:6px">{{ aria2Info || '点击「检测 aria2」确认 RPC 是否可连接、aria2c 在哪' }}</div>
+              <div class="hint hint--block">做种比率与做种时长同时为 0 时，任务下载完成后会一直上传，需在上方的「正在做种」面板手动停止。</div>
+            </div>
           </div>
 
           <!-- 信息 -->
@@ -1935,14 +2267,35 @@
                     style="opacity:.55;margin-left:4px"
                   >{{ qp.filesize ? formatSize(qp.filesize) : '≈' + formatSize(qp.filesize_est) }}</span></el-button>
                 </div>
+                <div v-if="tierSizeText" class="hint hint--block" style="margin-top:8px">{{ tierSizeText }}</div>
                 <div class="hint" style="margin-top:8px">选择任一清晰度即按对应 format_id 下载（纯视频轨会自动合并 bestaudio）</div>
               </div>
               <div v-if="mediaInfo.entries && mediaInfo.entries.length" style="margin-top:18px">
                 <div class="section-title">播放列表 / 合集条目（{{ mediaInfo.entries.length }}）</div>
-                <div style="margin-bottom:8px">
+                <div class="row row--flush" style="margin-bottom:8px">
                   <el-button size="small" type="primary" @click="downloadAllEntries"><svg class="btn-ico"><use href="#i-download"></use></svg>全部加入队列</el-button>
+                  <el-button size="small" :disabled="!entrySel.length" @click="downloadSelectedEntries">下载选中 {{ entrySel.length }} 条</el-button>
+                  <el-popover placement="bottom-start" trigger="click" :width="320">
+                    <template #reference>
+                      <el-button size="small">按序号区间勾选</el-button>
+                    </template>
+                    <div class="row row--tight">
+                      <span class="hint">第</span>
+                      <el-input-number size="small" v-model="entryRange.from" :min="1" :max="mediaInfo.entries.length" :step="1" :precision="0" controls-position="right" style="width:104px"></el-input-number>
+                      <span class="hint">到第</span>
+                      <el-input-number size="small" v-model="entryRange.to" :min="1" :max="mediaInfo.entries.length" :step="1" :precision="0" controls-position="right" style="width:104px"></el-input-number>
+                      <span class="hint">条</span>
+                    </div>
+                    <div class="hint hint--block">区间起点：{{ entryAt(entryRange.from) }} · 区间终点：{{ entryAt(entryRange.to) }}</div>
+                    <div class="row row--tight row--mt">
+                      <el-button size="small" type="primary" plain @click="selectEntryRange">勾选这一区间</el-button>
+                      <el-button size="small" @click="clearEntrySel">清空勾选</el-button>
+                    </div>
+                  </el-popover>
+                  <span class="hint">序号按播放列表自身的顺序，与表头的排序无关</span>
                 </div>
-                <el-table :data="mediaInfo.entries" size="small" max-height="280" stripe>
+                <el-table ref="entryTableRef" :data="mediaInfo.entries" size="small" max-height="280" stripe @selection-change="onEntrySelection">
+                  <el-table-column type="selection" width="42"></el-table-column>
                   <el-table-column prop="title" label="标题" min-width="220" show-overflow-tooltip sortable :sort-method="cmp('title')"></el-table-column>
                   <el-table-column prop="duration" label="时长" width="90" sortable :sort-method="cmp('duration')"></el-table-column>
                   <el-table-column prop="id" label="ID" width="120" sortable :sort-method="cmp('id')"></el-table-column>
@@ -2019,10 +2372,18 @@
               <audio v-else-if="playerIsAudio" ref="mediaEl" :src="playerUrl" controls style="width:100%" @timeupdate="onMediaTimeUpdate"></audio>
               <img v-else :src="playerUrl" referrerpolicy="no-referrer" style="max-width:100%;max-height:420px;border-radius:10px" />
               <div v-if="transcript.cues.length" style="margin-top:10px">
-                <div class="hint" style="margin-bottom:4px">
-                  转写逐行显示（{{ transcript.cues.length }} 句 · {{ transcript.srt.split('/').pop() }}）· 点击某行可跳转至对应时间
+                <div class="row row--spread" style="margin-bottom:4px;align-items:center">
+                  <span class="hint" v-if="!srtEdit.on">
+                    转写逐行显示（{{ transcript.cues.length }} 句 · {{ transcript.srt.split('/').pop() }}）· 点击某行可跳转至对应时间
+                  </span>
+                  <span class="hint" v-else>
+                    逐句校对（{{ srtEdit.rows.length }} 句 · {{ srtEdit.srt.split('/').pop() }}）· 改完要按「保存」才会写回字幕文件
+                  </span>
+                  <el-button v-if="!srtEdit.on" size="small" :loading="srtEdit.busy" @click="openSrtEditor">逐句校对</el-button>
+                  <el-button v-else size="small" @click="srtCloseEdit">退出校对</el-button>
                 </div>
-                <div ref="transcriptBox" style="max-height:240px;overflow:auto;border:1px solid var(--el-border-color-lighter);border-radius:8px;padding:4px 8px">
+
+                <div v-if="!srtEdit.on" ref="transcriptBox" style="max-height:240px;overflow:auto;border:1px solid var(--el-border-color-lighter);border-radius:8px;padding:4px 8px">
                   <div v-for="(c,i) in transcript.cues" :key="c.idx" :data-ti="i"
                        style="display:flex;gap:8px;padding:2px 0;cursor:pointer;font-size:14px;line-height:1.6"
                        :style="{color: i===mediaCueIdx ? 'var(--accent)' : 'inherit', fontWeight: i===mediaCueIdx ? 700 : 400}"
@@ -2030,6 +2391,59 @@
                     <span class="hint" style="min-width:52px">{{ fmtClock(c.start) }}</span>
                     <el-tag v-if="c.speaker" size="small" :type="speakerTagType(c.speaker)" style="min-width:34px;text-align:center">{{ c.speaker }}</el-tag>
                     <span style="flex:1">{{ c.text }}</span>
+                  </div>
+                </div>
+
+                <div v-else>
+                  <div class="row row--flush" style="margin-bottom:6px">
+                    <el-button size="small" :disabled="srtEdit.sel < 0" @click="srtShiftSel(-0.5)">选中句前移 0.5 秒</el-button>
+                    <el-button size="small" :disabled="srtEdit.sel < 0" @click="srtShiftSel(0.5)">选中句后移 0.5 秒</el-button>
+                    <el-button size="small" type="primary" :disabled="!srtEdit.dirty" :loading="srtEdit.busy" @click="srtSave">保存</el-button>
+                    <el-button size="small" :disabled="!srtEdit.dirty" @click="srtDiscard">放弃修改</el-button>
+                  </div>
+                  <div class="hint hint--block" style="margin-bottom:6px">
+                    时间单位是秒，行内数字框的上下箭头每次调 0.1 秒，也能直接填。「选中句前移／后移」把那句的起与止一起挪，句长不变；
+                    整条字幕一起平移或缩放请用「时间轴校准」。保存时先在同目录留一份 <code>原名.bak-时间</code> 备份，再覆盖原字幕文件。
+                  </div>
+                  <div class="row row--flush" style="margin-bottom:6px">
+                    <el-button size="small" :loading="srtQc.busy" @click="runSrtQc">字幕质检</el-button>
+                    <el-button size="small" :loading="srtQc.busy" @click="runSrtRewrap">按每行字数重排</el-button>
+                    <span class="hint" v-if="srtQc.message">{{ srtQc.message }}</span>
+                  </div>
+                  <div v-if="srtQc.rows.length" style="margin-bottom:6px">
+                    <div class="hint hint--block">
+                      <template v-if="srtQc.paired">与「{{ srtQc.counter.split('/').pop() }}」逐句对照</template>
+                      <template v-else>没有另一路可对照</template>
+                      · 目标语言 {{ srtQc.lang }} · 每行 ≤{{ srtQc.wrap.width }} 个全角宽、最多 {{ srtQc.wrap.lines }} 行
+                      · 反射重写{{ srtQc.reflect_on ? '已开（机翻时自动改写可疑句）' : '未开（可疑句只列出，不自动改写）' }}
+                    </div>
+                    <div class="hint hint--block" v-if="srtQc.hint">{{ srtQc.hint }}</div>
+                    <div style="max-height:190px;overflow:auto;border:1px solid var(--el-border-color-lighter);border-radius:8px;padding:4px 8px">
+                      <div v-for="q in srtQc.rows" :key="q.i" class="srt-qc-row">
+                        <el-button size="small" :title="'选中第 ' + q.i + ' 句，并把播放跳到这一句的起始时间'" @click="qcJumpTo(q)">第 {{ q.i }} 句</el-button>
+                        <span class="srt-qc-tags">
+                          <el-tag v-for="(t,ti) in q.labels" :key="ti" size="small" type="warning">{{ t }}</el-tag>
+                        </span>
+                        <span class="srt-qc-text">
+                          <template v-if="q.src"><span class="hint">原文：</span>{{ q.src }}<br></template>
+                          <span class="hint">现译：</span>{{ q.dst }}<br>
+                          <span class="hint">{{ q.why.join('；') }}</span>
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                  <div style="max-height:320px;overflow:auto;border:1px solid var(--el-border-color-lighter);border-radius:8px;padding:4px 8px" ref="srtEditBox">
+                    <div v-for="(r,i) in srtEdit.rows" :key="r._k" :data-si="i" class="srt-edit-row" :class="{ 'srt-edit-row--sel': i === srtEdit.sel }">
+                      <span class="srt-edit-row__idx" title="点这一下选中这一句，上方两个「0.5 秒」按钮就作用在它身上" @click="srtEdit.sel = i">{{ i + 1 }}</span>
+                      <el-input-number size="small" v-model="r.start" :min="0" :step="0.1" :precision="3"
+                                       controls-position="right" style="width:118px" @change="srtEdit.dirty = true"></el-input-number>
+                      <el-input-number size="small" v-model="r.end" :min="0" :step="0.1" :precision="3"
+                                       controls-position="right" style="width:118px" @change="srtEdit.dirty = true"></el-input-number>
+                      <span class="srt-edit-row__sp"><el-tag v-if="r.speaker" size="small" :type="speakerTagType(r.speaker)">{{ r.speaker }}</el-tag></span>
+                      <el-input size="small" v-model="r.text" style="flex:1;min-width:150px" @input="srtEdit.dirty = true"></el-input>
+                      <el-button size="small" :disabled="i >= srtEdit.rows.length - 1" @click="srtMerge(i)">合并</el-button>
+                      <el-button size="small" @click="srtDrop(i)">删</el-button>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -2181,7 +2595,7 @@
                 </el-table-column>
               </el-table>
               <el-pagination v-if="pagers.files.show" v-model:current-page="pagers.files.page" :page-size="pagers.files.pageSize"
-                             :total="pagers.files.total" layout="total, prev, pager, next, jumper" size="small" background class="pager" />
+                             :total="pagers.files.total" layout="total, prev, pager, next, jumper" size="small" background class="pager"></el-pagination>
               <div v-if="pagers.files.show" class="hint hint--block">翻页后当前页的勾选会清空，请分页勾选后分别执行批量操作</div>
             </div>
           </div>
@@ -2201,15 +2615,15 @@
             </div>
             <div v-if="!history.length" class="empty-tip">暂无记录</div>
             <div v-else class="hist-table-wrap">
-              <table class="fmt-table">
+              <table class="fmt-table fmt-table--fit" style="min-width:900px">
                 <thead>
                   <tr>
-                    <th class="th-sort" :class="{ 'th-on': histSort.key === 'time' }" style="width:160px" @click="toggleSort(histSort, 'time', HIST_DIR)">时间<span class="sort-ico">{{ sortIcon(histSort, 'time') }}</span></th>
+                    <th class="th-sort" :class="{ 'th-on': histSort.key === 'time' }" style="width:152px" @click="toggleSort(histSort, 'time', HIST_DIR)">时间<span class="sort-ico">{{ sortIcon(histSort, 'time') }}</span></th>
                     <th class="th-sort" :class="{ 'th-on': histSort.key === 'title' }" @click="toggleSort(histSort, 'title', HIST_DIR)">标题<span class="sort-ico">{{ sortIcon(histSort, 'title') }}</span></th>
-                    <th class="th-sort" :class="{ 'th-on': histSort.key === 'status' }" style="width:90px" @click="toggleSort(histSort, 'status', HIST_DIR)">状态<span class="sort-ico">{{ sortIcon(histSort, 'status') }}</span></th>
-                    <th>URL</th>
-                    <th style="width:200px">原因</th>
-                    <th style="width:170px">操作</th>
+                    <th class="th-sort" :class="{ 'th-on': histSort.key === 'status' }" style="width:76px" @click="toggleSort(histSort, 'status', HIST_DIR)">状态<span class="sort-ico">{{ sortIcon(histSort, 'status') }}</span></th>
+                    <th style="width:240px">URL</th>
+                    <th>原因</th>
+                    <th style="width:150px">操作</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -2219,8 +2633,8 @@
                     <td>
                       <el-tag size="small" :type="statusType(row.status)">{{ statusLabel(row.status) }}</el-tag>
                     </td>
-                    <td :title="row.url" style="max-width:280px;overflow:hidden;text-overflow:ellipsis">{{ row.url }}</td>
-                    <td :title="row.error" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;color:var(--bad)">
+                    <td :title="row.url">{{ row.url }}</td>
+                    <td :title="row.error" style="color:var(--bad)">
                       {{ row.error ? friendlyError(row.error) : '—' }}
                     </td>
                     <td style="white-space:nowrap">
@@ -2232,7 +2646,7 @@
               </table>
             </div>
             <el-pagination v-if="pagers.history.show" v-model:current-page="pagers.history.page" :page-size="pagers.history.pageSize"
-                           :total="pagers.history.total" layout="total, prev, pager, next, jumper" size="small" background class="pager" />
+                           :total="pagers.history.total" layout="total, prev, pager, next, jumper" size="small" background class="pager"></el-pagination>
           </div>
 
           <!-- 日志 -->
@@ -2247,6 +2661,8 @@
               <el-input size="small" v-model="logSearch" placeholder="搜索日志..." style="width:200px" clearable @input="loadLogs"></el-input>
               <el-button size="small" type="danger" plain @click="clearLogs">清空</el-button>
               <el-button size="small" plain @click="openLogDir">打开日志文件夹</el-button>
+              <el-button size="small" plain title="把版本、运行状态、设置（密钥与 Cookie 内容不打包）、队列和近期日志打成一个 zip，用于发给别人排查"
+                       @click="exportDiagnostics">导出诊断包</el-button>
               <span class="hint" style="margin-left:auto">本页最多显示最近 200 条；日志写在程序所在文件夹的
                 <code>{{ logLoc.file }}</code>，跨天归档成 app-日期.log，超过 7 天自动删除<template v-if="logLoc.dir">（当前在
                 <code>{{ logLoc.dir }}</code>，已归档 {{ logLoc.archives.length }} 份）</template></span>
@@ -2508,7 +2924,7 @@
                 </el-table-column>
               </el-table>
               <el-pagination v-if="pagers.music.show" v-model:current-page="pagers.music.page" :page-size="pagers.music.pageSize"
-                             :total="pagers.music.total" layout="total, prev, pager, next, jumper" size="small" background class="pager" />
+                             :total="pagers.music.total" layout="total, prev, pager, next, jumper" size="small" background class="pager"></el-pagination>
               <div v-if="pagers.music.show" class="hint hint--block">翻页后当前页的勾选会清空，请分页勾选后分别执行批量操作</div>
             </div>
             <div class="card">
@@ -2557,7 +2973,7 @@
                 </el-table-column>
               </el-table>
               <el-pagination v-if="pagers.musicFav.show" v-model:current-page="pagers.musicFav.page" :page-size="pagers.musicFav.pageSize"
-                             :total="pagers.musicFav.total" layout="total, prev, pager, next, jumper" size="small" background class="pager" />
+                             :total="pagers.musicFav.total" layout="total, prev, pager, next, jumper" size="small" background class="pager"></el-pagination>
             </div>
           </div>
 
@@ -2690,7 +3106,7 @@
                 </el-table-column>
               </el-table>
               <el-pagination v-if="pagers.tg.show" v-model:current-page="pagers.tg.page" :page-size="pagers.tg.pageSize"
-                             :total="pagers.tg.total" layout="total, prev, pager, next, jumper" size="small" background class="pager" />
+                             :total="pagers.tg.total" layout="total, prev, pager, next, jumper" size="small" background class="pager"></el-pagination>
               <div v-if="pagers.tg.show" class="hint hint--block">翻页后当前页的勾选会清空，请分页勾选后分别执行批量操作</div>
             </div>
           </div>
@@ -2759,7 +3175,7 @@
             </div>
             <el-pagination v-if="pagers.search.show" v-model:current-page="pagers.search.page"
                            :page-size="pagers.search.pageSize" :total="pagers.search.total"
-                           layout="total, prev, pager, next, jumper" size="small" background class="pager" />
+                           layout="total, prev, pager, next, jumper" size="small" background class="pager"></el-pagination>
           </div>
 
           <!-- 收藏 / 关注 / 稍后再看 -->
@@ -2810,7 +3226,7 @@
                 </el-table-column>
               </el-table>
               <el-pagination v-if="pagers.fav.show" v-model:current-page="pagers.fav.page" :page-size="pagers.fav.pageSize"
-                             :total="pagers.fav.total" layout="total, prev, pager, next, jumper" size="small" background class="pager" />
+                             :total="pagers.fav.total" layout="total, prev, pager, next, jumper" size="small" background class="pager"></el-pagination>
               <div v-if="pagers.fav.show" class="hint hint--block">翻页后当前页的勾选会清空，请分页勾选后分别执行批量操作</div>
             </div>
           </div>
@@ -2870,18 +3286,18 @@
                 </div>
                 <div v-if="!subs.length" class="empty-tip">暂无订阅 — 请在上方粘贴频道链接、Telegram 频道名、RSS 源地址或音乐歌单链接后开始追踪</div>
                 <div v-else class="hist-table-wrap">
-                  <table class="fmt-table">
+                  <table class="fmt-table fmt-table--fit" style="min-width:940px">
                     <thead>
                       <tr>
-                        <th class="th-sort" :class="{ 'th-on': subSort.key === 'kind' }" style="width:78px" @click="toggleSort(subSort, 'kind', SUB_DIR)">来源<span class="sort-ico">{{ sortIcon(subSort, 'kind') }}</span></th>
+                        <th class="th-sort" :class="{ 'th-on': subSort.key === 'kind' }" style="width:92px" @click="toggleSort(subSort, 'kind', SUB_DIR)">来源<span class="sort-ico">{{ sortIcon(subSort, 'kind') }}</span></th>
                         <th class="th-sort" :class="{ 'th-on': subSort.key === 'title' }" @click="toggleSort(subSort, 'title', SUB_DIR)">标题<span class="sort-ico">{{ sortIcon(subSort, 'title') }}</span></th>
-                        <th class="th-sort" :class="{ 'th-on': subSort.key === 'status' }" style="width:96px" @click="toggleSort(subSort, 'status', SUB_DIR)">状态<span class="sort-ico">{{ sortIcon(subSort, 'status') }}</span></th>
-                        <th class="th-sort" :class="{ 'th-on': subSort.key === 'url' }" style="width:180px" @click="toggleSort(subSort, 'url', SUB_DIR)">链接<span class="sort-ico">{{ sortIcon(subSort, 'url') }}</span></th>
+                        <th class="th-sort" :class="{ 'th-on': subSort.key === 'status' }" style="width:100px" @click="toggleSort(subSort, 'status', SUB_DIR)">状态<span class="sort-ico">{{ sortIcon(subSort, 'status') }}</span></th>
+                        <th class="th-sort" :class="{ 'th-on': subSort.key === 'url' }" style="width:130px" @click="toggleSort(subSort, 'url', SUB_DIR)">链接<span class="sort-ico">{{ sortIcon(subSort, 'url') }}</span></th>
                         <th style="width:56px">启用</th>
-                        <th style="width:78px">自动下载</th>
-                        <th class="th-sort" :class="{ 'th-on': subSort.key === 'last_check' }" style="width:140px" @click="toggleSort(subSort, 'last_check', SUB_DIR)">上次检查<span class="sort-ico">{{ sortIcon(subSort, 'last_check') }}</span></th>
-                        <th class="th-sort" :class="{ 'th-on': subSort.key === 'new_count' }" style="width:64px" title="历史累计检测到的新条目数，不随下载清零" @click="toggleSort(subSort, 'new_count', SUB_DIR)">新增<span class="sort-ico">{{ sortIcon(subSort, 'new_count') }}</span></th>
-                        <th style="width:160px">操作</th>
+                        <th style="width:84px">自动下载</th>
+                        <th class="th-sort" :class="{ 'th-on': subSort.key === 'last_check' }" style="width:152px" @click="toggleSort(subSort, 'last_check', SUB_DIR)">上次检查<span class="sort-ico">{{ sortIcon(subSort, 'last_check') }}</span></th>
+                        <th class="th-sort" :class="{ 'th-on': subSort.key === 'new_count' }" style="width:72px" title="历史累计检测到的新条目数，不随下载清零" @click="toggleSort(subSort, 'new_count', SUB_DIR)">新增<span class="sort-ico">{{ sortIcon(subSort, 'new_count') }}</span></th>
+                        <th style="width:192px">操作</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -2889,17 +3305,19 @@
                         <td>
                           <el-tag size="small" :type="subKindMeta(s.kind).tagType">{{ subKindMeta(s.kind).label }}</el-tag>
                         </td>
-                        <td :title="s.title">
-                          <div>{{ s.title }}</div>
-                          <div v-if="s.last_error" style="font-size:12px;color:var(--bad)">{{ s.last_error }}</div>
+                        <td>
+                          <div class="ell" :title="s.title">{{ s.title }}</div>
+                          <div v-if="s.last_error" class="ell" style="font-size:12px;color:var(--bad)" :title="s.last_error">{{ s.last_error }}</div>
                         </td>
                         <td>
                           <span class="row row--tight" style="flex-wrap:nowrap">
                             <i class="src-dot" :class="'src-dot--' + subStatus(s).tone"></i>
                             <span style="font-size:13px">{{ subStatus(s).text }}</span>
                           </span>
+                          <div v-if="s.archived_count" class="ell" style="font-size:12px;color:var(--muted)"
+                               :title="'上游删掉的条目留档 ' + s.archived_count + ' 条，点本行「同步计划预览」查看'">已删 {{ s.archived_count }} 条</div>
                         </td>
-                        <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis" :title="s.url">{{ s.url }}</td>
+                        <td :title="s.url">{{ s.url }}</td>
                         <td>
                           <el-switch :model-value="s.enabled" @change="(v) => toggleSub(s, v)" size="small"></el-switch>
                         </td>
@@ -2913,6 +3331,11 @@
                             <el-tooltip content="获取最新未读条目" placement="top">
                               <button type="button" class="icon-btn" :disabled="subBusy === s.id" @click="scanOneSub(s)">
                                 <svg :class="{ 'svg-is-spinning': subBusy === s.id }"><use href="#i-refresh"></use></svg>
+                              </button>
+                            </el-tooltip>
+                            <el-tooltip content="同步计划预览（先看清这一轮会做什么，不加入队列）" placement="top">
+                              <button type="button" class="icon-btn" @click="openSubPlan(s)">
+                                <svg><use href="#i-list"></use></svg>
                               </button>
                             </el-tooltip>
                             <el-tooltip :content="s.kind === 'music' ? '整张歌单回填' : '按日期回填历史'" placement="top">
@@ -2937,7 +3360,7 @@
                   </table>
                 </div>
                 <el-pagination v-if="pagers.subs.show" v-model:current-page="pagers.subs.page" :page-size="pagers.subs.pageSize"
-                               :total="pagers.subs.total" layout="total, prev, pager, next, jumper" size="small" background class="pager" />
+                               :total="pagers.subs.total" layout="total, prev, pager, next, jumper" size="small" background class="pager"></el-pagination>
               </div>
             </div>
 
@@ -3062,6 +3485,101 @@
                 条目较多时会被「单次最多入队」截断 —— 再次点击回填可继续获取后续条目。
               </p>
             </div>
+
+            <div v-if="subPlanSub" id="sub-plan-card" class="card">
+              <div class="section-title row row--spread">
+                <span>同步计划预览：{{ subPlanSub.title }}</span>
+                <el-button size="small" plain @click="closeSubPlan">收起</el-button>
+              </div>
+              <div class="row row--tight">
+                <el-button size="small" plain :loading="subPlanLoading" @click="loadSubPlan"><svg class="btn-ico"><use href="#i-refresh"></use></svg>重新计算</el-button>
+                <el-button size="small" type="primary" :loading="subBusy === subPlanSub.id" @click="runSubPlanNow"><svg class="btn-ico"><use href="#i-play"></use></svg>按计划立即同步</el-button>
+                <span class="hint" style="margin:0">规则：{{ (subPlan && subPlan.rules_text) || subPlanSub.rules_text || '默认' }}</span>
+              </div>
+              <p class="hint hint--block">
+                预览会真的把来源读一遍，但<strong>不加入下载队列、不改动「已读过」游标、也不落盘</strong>；
+                下面列出的就是下一次点「获取最新未读」会做的事。
+              </p>
+              <div v-if="subPlan && subPlan.error" class="hint hint--block" style="color:var(--bad)">这一轮没法计算：{{ subPlan.error }}</div>
+              <template v-else-if="subPlanLoading && !subPlan">
+                <div class="empty-tip">正在读取来源并按本条规则演算…</div>
+              </template>
+              <template v-else-if="subPlan">
+                <div class="chip-row">
+                  <span class="hstat">本轮读到 {{ subPlan.read }}</span>
+                  <span class="hstat" :class="{ 'hstat--live': subPlan.new > 0 }">未读 {{ subPlan.new }}</span>
+                  <span class="hstat">已读过 {{ subPlan.seen }}</span>
+                  <span class="hstat">计划入队 {{ subPlan.picked_total }}</span>
+                  <span v-if="subPlan.rejected_total" class="hstat">规则挡掉 {{ subPlan.rejected_total }}</span>
+                  <span v-if="subPlan.over" class="hstat">超限留存 {{ subPlan.over }}</span>
+                  <span v-if="subPlan.archive_total" class="hstat" style="color:var(--warn);border-color:var(--warn)">本轮新归档 {{ subPlan.archive_total }}</span>
+                </div>
+                <div class="hint hint--block" style="margin-top:8px">{{ subPlan.why }}</div>
+                <div v-if="!subPlan.is_first && subPlan.new > 0 && subPlan.picked_total === 0 && subPlan.rejected_total === 0"
+                     class="hint hint--block">这批未读条目里没有任何一条进入下载判断，通常是来源本轮没给出可比对的条目。</div>
+                <div v-if="subPlan.picked.length" class="hist-table-wrap" style="margin-top:10px">
+                  <table class="fmt-table fmt-table--fit">
+                    <thead>
+                      <tr><th>计划下载</th><th style="width:96px">日期</th><th style="width:64px">时长</th></tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="(p, i) in subPlan.picked" :key="'pk' + i">
+                        <td :title="p.url || p.title">{{ p.title }}</td>
+                        <td>{{ p.date || '—' }}</td>
+                        <td>{{ p.duration ? formatDuration(p.duration) : '—' }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  <div v-if="subPlan.picked_total > subPlan.picked.length" class="hint">
+                    仅列出前 {{ subPlan.picked.length }} 条，这一轮实际会入队 {{ subPlan.picked_total }} 条
+                  </div>
+                </div>
+                <div v-if="subPlan.rejected.length" class="hist-table-wrap" style="margin-top:10px">
+                  <table class="fmt-table fmt-table--fit">
+                    <thead>
+                      <tr><th style="width:280px">被规则挡掉</th><th>原因</th></tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="(x, i) in subPlan.rejected" :key="'rj' + i">
+                        <td class="ell">{{ x.title }}</td>
+                        <td>{{ x.why }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  <div v-if="subPlan.rejected_total > subPlan.rejected.length" class="hint">
+                    仅列出前 {{ subPlan.rejected.length }} 条，共 {{ subPlan.rejected_total }} 条被挡
+                  </div>
+                </div>
+              </template>
+              <div v-if="subPlan && subPlan.archive.length" class="hint hint--block" style="margin-top:10px">
+                本轮有 {{ subPlan.archive_total }} 条已从源头消失：比它们更旧的条目还在来源里，中间空出来的这些不是翻页滑出去的。
+                点「按计划立即同步」后会在下方「上游已删除」留档清单里可查。
+              </div>
+              <div v-if="subPlanArch.length" class="hist-table-wrap" style="margin-top:12px">
+                <div class="row row--spread" style="margin-bottom:6px">
+                  <span class="tile-label" style="margin:0">上游已删除（留档 {{ subPlan.archived_count }} 条）</span>
+                  <el-button size="small" plain @click="clearSubArchive()">清空留档</el-button>
+                </div>
+                <table class="fmt-table fmt-table--fit">
+                  <thead>
+                    <tr><th>条目</th><th style="width:140px">最后见到</th><th style="width:140px">记入留档</th><th style="width:84px">操作</th></tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(a, i) in subPlanArch" :key="'ar' + i">
+                      <td class="ell" :title="a.url || a.title">{{ a.title }}</td>
+                      <td>{{ a.last_seen || '—' }}</td>
+                      <td>{{ a.gone_at || '—' }}</td>
+                      <td>
+                        <el-button size="small" plain @click="clearSubArchive(a)">不再留档</el-button>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+                <p class="hint hint--block">
+                  清空留档只是不再展示这批记录，不会改动「已读过」游标：条目日后重新出现在源头，仍按已读处理，不会补下一遍。
+                </p>
+              </div>
+            </div>
           </div>
 
           <!-- 直播录制 -->
@@ -3090,13 +3608,17 @@
                 <el-button size="large" @click="scanLiveMonitors">立即检测开播</el-button>
               </div>
               <div v-if="!liveMonitors.length" class="empty-tip" style="margin-top:12px">暂无监控房间</div>
-              <table v-else class="fmt-table" style="margin-top:12px">
-                <thead><tr><th>链接</th><th>状态</th><th>操作</th></tr></thead>
+              <table v-else class="fmt-table fmt-table--wrap" style="margin-top:12px;min-width:700px">
+                <thead><tr><th>链接</th><th style="width:212px">状态</th><th style="width:252px">操作</th></tr></thead>
                 <tbody>
                   <tr v-for="m in pagers.liveMon.paged" :key="m.id">
-                    <td style="max-width:280px;overflow:hidden;text-overflow:ellipsis">{{ m.url }}</td>
+                    <td>
+                      <div class="ell">{{ m.url }}</div>
+                      <div v-if="liveMonitorCfgText(m)" class="hint" style="margin:2px 0 0">{{ liveMonitorCfgText(m) }}</div>
+                    </td>
                     <td>{{ m.status || '等待开播' }}<span v-if="m.paused" style="color:var(--warn)">（已暂停自动录制）</span></td>
-                    <td style="white-space:nowrap">
+                    <td>
+                      <el-button size="small" plain @click="openLiveMonitorCfg(m)">设置</el-button>
                       <el-button v-if="!m.paused" size="small" plain @click="pauseLiveMonitor(m)">暂停自动录制</el-button>
                       <el-button v-else size="small" plain @click="resumeLiveMonitor(m)">恢复自动录制</el-button>
                       <el-button size="small" plain type="danger" @click="removeLiveMonitor(m)">删除</el-button>
@@ -3106,7 +3628,62 @@
               </table>
               <el-pagination v-if="pagers.liveMon.show" v-model:current-page="pagers.liveMon.page"
                              :page-size="pagers.liveMon.pageSize" :total="pagers.liveMon.total"
-                             layout="total, prev, pager, next, jumper" size="small" background class="pager" />
+                             layout="total, prev, pager, next, jumper" size="small" background class="pager"></el-pagination>
+
+              <el-dialog v-model="liveRoomCfg.visible" title="本房间录制设置" width="470px">
+                <div class="hint hint--block">{{ liveRoomCfg.url }}</div>
+                <p class="hint hint--block">
+                  这里的设置只作用于监控自动开播后的录制，不影响上方「开始录制」按钮；未单独指定的项目沿用设置页的口径。
+                </p>
+                <div class="row row--tight">
+                  <div style="flex:1">
+                    <div class="tile-label">输出容器</div>
+                    <el-select v-model="liveRoomCfg.fmt" size="small" placeholder="跟随软件设置" style="width:100%">
+                      <el-option label="跟随软件设置" value=""></el-option>
+                      <el-option v-for="f in liveRoomFmts" :key="f" :label="f" :value="f"></el-option>
+                    </el-select>
+                  </div>
+                  <div style="flex:1">
+                    <div class="tile-label">画质档位</div>
+                    <el-select v-model="liveRoomCfg.video_quality" size="small" placeholder="跟随软件设置" style="width:100%">
+                      <el-option label="跟随软件设置" value=""></el-option>
+                      <el-option v-for="q in liveRoomQualities" :key="q" :label="q === 'best' ? 'best（最高）' : q" :value="q"></el-option>
+                    </el-select>
+                  </div>
+                </div>
+                <div class="row row--tight row--mt">
+                  <div style="flex:1">
+                    <div class="tile-label">录完自动转码</div>
+                    <el-select v-model="liveRoomCfg.auto_transcode" size="small" placeholder="不转码" style="width:100%">
+                      <el-option label="不转码" value=""></el-option>
+                      <el-option v-for="p in transcodePresets" :key="p.id" :label="p.label" :value="p.id"></el-option>
+                    </el-select>
+                  </div>
+                  <div style="flex:1">
+                    <div class="tile-label">最长录制时长（分钟）</div>
+                    <el-input-number v-model="liveRoomCfg.max_minutes" size="small" :min="0" :max="1440" :step="30"
+                                     :precision="0" controls-position="right" style="width:100%"></el-input-number>
+                  </div>
+                </div>
+                <div class="hint" style="margin-top:6px">0 = 不限时长；录满后自动结束这一场，房间仍继续监控下次开播。转码在录制结束后后台进行，原文件保留。</div>
+                <div class="row row--tight" style="margin-top:14px">
+                  <div style="flex:1">
+                    <div class="tile-label">监控时段（开始）</div>
+                    <el-input v-model="liveRoomCfg.win_start" size="small" placeholder="例如 20:30，留空 = 全天"></el-input>
+                  </div>
+                  <div style="flex:1">
+                    <div class="tile-label">监控时段（结束）</div>
+                    <el-input v-model="liveRoomCfg.win_end" size="small" placeholder="例如 02:00，留空 = 全天"></el-input>
+                  </div>
+                </div>
+                <div class="hint" style="margin-top:6px">两个时间都填了才按时段监控，用 24 小时制；开始晚于结束表示跨零点（22:00 至 02:00）。时段外检测到开播只标记直播中，不入队录制。</div>
+                <template #footer>
+                  <div class="row row--tight" style="justify-content:flex-end">
+                    <el-button size="small" @click="liveRoomCfg.visible = false">取消</el-button>
+                    <el-button size="small" type="primary" :loading="liveRoomCfg.saving" @click="saveLiveMonitorCfg">保存设置</el-button>
+                  </div>
+                </template>
+              </el-dialog>
             </div>
 
             <div class="card">
@@ -3148,7 +3725,7 @@
               </div>
               <el-pagination v-if="pagers.liveTasks.show" v-model:current-page="pagers.liveTasks.page"
                              :page-size="pagers.liveTasks.pageSize" :total="pagers.liveTasks.total"
-                             layout="total, prev, pager, next, jumper" size="small" background class="pager" />
+                             layout="total, prev, pager, next, jumper" size="small" background class="pager"></el-pagination>
             </div>
           </div>
 
@@ -3227,7 +3804,7 @@
                 </tbody>
               </table>
               <el-pagination v-if="pagers.sniff.show" v-model:current-page="pagers.sniff.page" :page-size="pagers.sniff.pageSize"
-                             :total="pagers.sniff.total" layout="total, prev, pager, next, jumper" size="small" background class="pager" />
+                             :total="pagers.sniff.total" layout="total, prev, pager, next, jumper" size="small" background class="pager"></el-pagination>
             </div>
             <div class="card">
               <div class="section-title">接收猫抓（cat-catch）推送</div>
@@ -3351,7 +3928,7 @@
               </table>
               </div>
               <el-pagination v-if="pagers.library.show" v-model:current-page="pagers.library.page" :page-size="pagers.library.pageSize"
-                             :total="pagers.library.total" layout="total, prev, pager, next, jumper" size="small" background class="pager" />
+                             :total="pagers.library.total" layout="total, prev, pager, next, jumper" size="small" background class="pager"></el-pagination>
             </div>
           </div>
 
@@ -3440,6 +4017,33 @@
                     <el-form-item label="全局限速">
                       <el-input size="small" v-model="settings.global_speed_limit" placeholder="例如 2M，作用于全部任务（任务限速优先）" clearable></el-input>
                     </el-form-item>
+                    <el-form-item label="限速时段">
+                      <el-input size="small"
+                        v-model="settings.speed_windows"
+                        type="textarea"
+                        :rows="3"
+                        placeholder="一行一条，格式：开始-结束 -&gt; 限速&#10;00:00-08:00 -&gt; 2M&#10;22:00-02:00 -&gt; 1M&#10;# 开始晚于结束按跨零点计算；井号行是注释"
+                      ></el-input>
+                      <div class="hint hint--block">
+                        按本机时间分档限速，只对解析与下载任务生效。任务开始时取当时所在时段的档位，下载过程中不再变更。<br>
+                        优先级：「限速（可选）」＞命中的时段＞「全局限速」；一处都没填就不限速。<br>
+                        磁力 / 种子页的下载限速与上传限速由 aria2 负责，可随时改，不受这里影响。
+                      </div>
+                      <div class="row row--tight" style="margin-top:6px">
+                        <el-button size="small" plain @click="checkSpeedWindows()">检查格式</el-button>
+                        <span v-if="speedWinStat" class="hint">
+                          · 认出 {{ speedWinStat.count }} 档，{{ speedWinStat.now }}
+                          <template v-if="speedWinStat.current">按「{{ speedWinStat.current_note }}」限速</template>
+                          <template v-else>未命中时段，按全局限速</template>
+                          <template v-if="speedWinStat.errors.length">
+                            ；{{ speedWinStat.errors.length }} 行看不懂：{{ speedWinStat.errors.slice(0, 2).join(' / ') }}</template>
+                        </span>
+                      </div>
+                    </el-form-item>
+                    <el-form-item label="自定义 yt-dlp 参数">
+                      <el-input size="small" v-model="settings.ytdlp_extra_args" placeholder="例如 --socket-timeout 60 -N 4，留空则不附加" clearable></el-input>
+                      <div class="hint hint--block">按 yt-dlp 的命令行写法填写，解析与下载都会带上这些参数。能执行外部命令、改动成品存放位置、或让任务只解析不下载的参数会被拒绝；与界面设置冲突的项（如 -f 指定格式）会点名后忽略，仍以界面所选的档位为准。</div>
+                    </el-form-item>
                     <el-form-item label="同域并发上限">
                       <el-input-number size="small" v-model="settings.max_per_host" :min="1" :max="8"></el-input-number>
                       <span class="hint" style="margin-left:8px">同一 CDN/域名的并发下载数，用于降低 403</span>
@@ -3456,18 +4060,13 @@
                     </el-form-item>
                     <el-form-item label="aria2 后端">
                       <el-switch v-model="settings.aria2_enabled"></el-switch>
-                      <span class="hint" style="margin-left:8px">大文件 HTTP 分片下载（需本机 aria2 RPC）</span>
-                    </el-form-item>
-                    <el-form-item label="aria2 RPC" v-if="settings.aria2_enabled">
-                      <el-input size="small" v-model="settings.aria2_rpc" placeholder="http://127.0.0.1:6800/jsonrpc" clearable></el-input>
-                    </el-form-item>
-                    <el-form-item label="aria2 Secret" v-if="settings.aria2_enabled">
-                      <el-input size="small" v-model="settings.aria2_secret" clearable show-password></el-input>
+                      <span class="hint" style="margin-left:8px">普通链接的大文件分片下载开关；磁力与种子任务始终需要 aria2</span>
                     </el-form-item>
                     <el-form-item label="大文件自动尝试 aria2（MB阈值）">
                       <el-input-number size="small" v-model="settings.aria2_for_large_mb" :min="0" :max="2000"></el-input-number>
                       <span class="hint" style="margin-left:8px">0=关闭；aria2 在线时对 mp4 等自动启用</span>
                     </el-form-item>
+                    <div class="hint hint--block" style="margin-bottom:14px">aria2 的 RPC 地址、Secret、程序路径与自动拉起，以及做种比率、做种时长、种子元数据等待，都移到「磁力 / 种子」页设置。这里的「保存设置」与那一页的保存按钮写入同一份配置。</div>
                     <el-form-item label="HTTP TLS 指纹模拟">
                       <el-switch v-model="settings.http_impersonate"></el-switch>
                       <span class="hint" style="margin-left:8px">curl_cffi 模拟 Chrome 指纹，用于降低 403</span>
@@ -3879,10 +4478,20 @@
                 <div class="card">
                   <div class="section-title">多平台 Cookie</div>
                   <div class="hint" style="margin-bottom:10px">为各平台单独配置 Cookie，下载时按链接自动选用（收藏夹、高画质等场景更稳定）</div>
+                  <div v-if="cookieIssueCount" class="hint hint--block" style="margin-bottom:10px;color:var(--warn)">
+                    本次运行里有 {{ cookieIssueCount }} 个平台的下载被判定为需要登录，下面这些平台标了红字。
+                    重新导入该平台的 Cookie 会自动清掉标记；确认登录态没问题也可以直接按「清除标记」。
+                  </div>
                   <div v-for="p in platformCookies" :key="p.platform" class="tile" style="margin-bottom:10px">
                     <div class="row row--spread row--mb">
                       <b>{{ p.label }}</b>
-                      <el-tag size="small" :type="p.configured ? 'success' : 'info'">{{ p.configured ? '已配置' : '未配置' }}</el-tag>
+                      <el-tag v-if="p.login_issue" size="small" type="danger" effect="plain"
+                              :title="p.login_issue.at + ' 的一次下载被判定为需要登录'">疑似需登录</el-tag>
+                      <el-tag v-else size="small" :type="p.configured ? 'success' : 'info'">{{ p.configured ? '已配置' : '未配置' }}</el-tag>
+                    </div>
+                    <div v-if="p.login_issue" class="hint hint--block" style="margin-bottom:8px;color:var(--warn)">
+                      {{ p.login_issue.at }} 的一次下载被判定为需要登录{{ p.login_issue.host ? '（' + p.login_issue.host + '）' : '' }}：{{
+                        p.login_issue.action || '到「设置 → 多平台 Cookie」配这一平台的 Cookie' }}
                     </div>
                     <div class="chip-row" style="margin-bottom:8px">
                       <div class="chip" :class="{ active: p.source==='none' }" @click="p.source='none'">不使用</div>
@@ -3902,7 +4511,10 @@
                       <el-input v-model="p._text" type="textarea" :rows="2" placeholder="或粘贴 Netscape 格式 Cookie 文本后单击保存文本" size="small"></el-input>
                       <el-button size="small" style="margin-top:6px" @click="savePlatformCookieText(p)">保存文本</el-button>
                     </div>
-                    <el-button size="small" type="primary" plain style="margin-top:8px" @click="savePlatformCookie(p)">保存此平台</el-button>
+                    <div class="row row--flush" style="margin-top:8px">
+                      <el-button size="small" type="primary" plain @click="savePlatformCookie(p)">保存此平台</el-button>
+                      <el-button v-if="p.login_issue" size="small" @click="clearCookieFlag(p)">清除标记</el-button>
+                    </div>
                   </div>
                 </div>
 
@@ -4111,10 +4723,35 @@
                       <el-switch v-model="settings.subtitle_wrap"></el-switch>
                       <span class="hint">每行不超过</span>
                       <el-input-number size="small" v-model="settings.subtitle_wrap_width" :min="8" :max="40" :step="1" style="width:120px"></el-input-number>
-                      <span class="hint">个中文字宽（英文按半宽计）</span>
+                      <span class="hint">个中文字宽（英文按半宽计），每条最多</span>
+                      <el-input-number size="small" v-model="settings.subtitle_wrap_lines" :min="1" :max="4" :step="1" style="width:110px"></el-input-number>
+                      <span class="hint">行</span>
                     </div>
                     <div class="hint">
-                      按显示宽度而非字符数断行：整句在标点或单词边界折行，中文行 ≈{{ settings.subtitle_wrap_width || 16 }} 字、英文行 ≈{{ (settings.subtitle_wrap_width || 16) * 2 }} 字母，最多 3 行。关闭则保留引擎输出的原始单行。
+                      按显示宽度而非字符数断行：整句在标点或单词边界折行，中文行 ≈{{ settings.subtitle_wrap_width || 16 }} 字、英文行 ≈{{ (settings.subtitle_wrap_width || 16) * 2 }} 字母，最多 {{ settings.subtitle_wrap_lines || 3 }} 行。关闭则保留引擎输出的原始单行。
+                      已经译好的字幕可在「逐句校对」里按这两个数值重新断行。
+                    </div>
+                  </el-form-item>
+                  <el-form-item label="字幕翻译质检">
+                    <div class="row">
+                      <el-switch v-model="settings.subtitle_qc"></el-switch>
+                      <span class="hint">译完后逐句对照原文检查</span>
+                    </div>
+                    <div class="hint">
+                      检查空句、与原文一字不差、漏译、译文超长、术语未照表、数字丢失、相邻句复读、超出每行字数、样式标签丢失。
+                      结果只写进运行日志，不改动字幕；逐句跳着改请在文件页用「逐句校对 → 字幕质检」。<br>
+                      句数很多时日志只列前 20 句，总数仍按全部句子统计。
+                    </div>
+                  </el-form-item>
+                  <el-form-item label="可疑句反射重写">
+                    <div class="row">
+                      <el-switch v-model="settings.subtitle_qc_reflect" :disabled="!settings.subtitle_qc"></el-switch>
+                      <span class="hint">把质检点名的句子交回模型改一遍</span>
+                    </div>
+                    <div class="hint">
+                      会把原文、现译和具体问题一起发给翻译引擎重写，只对能靠重译修好的问题生效（漏译、超长、术语、数字、复读）；
+                      超出每行字数交给「按每行字数重排」处理，不重复消耗 token。<br>
+                      需要翻译引擎是 OpenAI / Claude / Gemini 这类对话模型，DeepL 等机器翻译引擎无法反射；单次最多重写 80 句，会产生额外调用费用。
                     </div>
                   </el-form-item>
                   <el-form-item label="机翻产物成套">
@@ -4433,6 +5070,7 @@
         const navs = [
           { key: 'home', label: '下载解析', icon: 'download' },
           { key: 'queue', label: '队列', icon: 'list-ordered' },
+          { key: 'bt', label: '磁力 / 种子', icon: 'magnet' },
           { key: 'info', label: '信息', icon: 'info' },
           { key: 'search', label: '搜索', icon: 'search' },
           { key: 'music', label: '音乐', icon: 'music' },
@@ -4449,7 +5087,7 @@
           { key: 'settings', label: '设置', icon: 'settings' },
         ];
         const NAV_GROUPS = [
-          { title: '下载', keys: ['home', 'queue', 'sniff', 'info'] },
+          { title: '下载', keys: ['home', 'queue', 'bt', 'sniff', 'info'] },
           { title: '获取与处理', keys: ['search', 'music', 'tg', 'live', 'voice'] },
           { title: '媒体库', keys: ['library', 'files', 'favs', 'history'] },
           { title: '自动化', keys: ['subs'] },
@@ -4464,7 +5102,7 @@
               { name: 'N_m3u8DL-RE', url: 'https://github.com/nilaoda/N_m3u8DL-RE', note: 'm3u8 / DASH 流媒体分段下载' },
               { name: 'FFmpeg', url: 'https://ffmpeg.org', note: '合流、转码、字幕内嵌、校验文件可播放性' },
               { name: 'FFmpeg-Builds (BtbN)', url: 'https://github.com/BtbN/FFmpeg-Builds', note: 'Windows 一键更新的构建来源' },
-              { name: 'aria2', url: 'https://github.com/aria2/aria2', note: '可选后端，用于大文件分片加速' },
+              { name: 'aria2', url: 'https://github.com/aria2/aria2', note: '可选后端：大文件分片加速，以及「磁力 / 种子」那一页的下载与做种都交给它（需自备 aria2c）' },
               { name: 'faster-whisper', url: 'https://github.com/SYSTRAN/faster-whisper', note: '本地语音转写，无需联网' },
               { name: 'Demucs', url: 'https://github.com/facebookresearch/demucs', note: '人声 / 伴奏分离' },
               { name: 'edge-tts', url: 'https://github.com/rany2/edge-tts', note: '字幕配音，生成语音' },
@@ -4499,6 +5137,14 @@
               { name: 'go-music-dl', url: 'https://github.com/guohuiyuan/go-music-dl', note: '跨平台按曲名匹配、歌单转链取址的功能思路参考（AGPL 项目，未复制代码）' },
               { name: 'simple_sq_music_plus', url: 'https://github.com/59799517/simple_sq_music_plus', note: '歌单追新与自建收藏清单的功能思路参考（未复制代码）' },
               { name: 'flacdownloader.com', url: 'https://flacdownloader.com', note: 'Qobuz / Tidal 无损参照元数据（曲名、ISRC、是否无损）来源' },
+              { name: 'qBittorrent Enhanced Edition', url: 'https://github.com/c0re100/qBittorrent-Enhanced-Edition', note: 'GPL-3.0；磁力 / 种子的 tracker 自动更新、做种与限速这些功能照着它的产品形态设计，未复制任何代码，tracker 列表也不写死在源码里而是运行时按 URL 抓取' },
+            ]
+          },
+          {
+            title: 'Tracker 列表来源',
+            items: [
+              { name: 'ngosang/trackerslist', url: 'https://github.com/ngosang/trackerslist', note: '公开维护的 BitTorrent announce 列表；本工具只在设置里存它的地址，正文每次现抓，不落进发布包' },
+              { name: 'XIU2/TrackersListCollection', url: 'https://github.com/XIU2/TrackersListCollection', note: '同上，第二个默认来源；抓回来的清单只存本机 torrent_state/ 下' },
             ]
           }
         ];
@@ -4513,9 +5159,9 @@
           if (rest.length) gs.push({ title: '其他', items: rest });
           return gs;
         });
-        const appVersion = 'v1.2.9 · Element Plus';
+        const appVersion = 'v1.3.0 · Element Plus';
         const pageTitle = computed(() => {
-          const m = { home: '下载解析', sniff: '网页嗅探', queue: '下载队列', info: '媒体信息', search: '聚合搜索', music: '音乐搜索', tg: 'Telegram 频道批量', voice: '语音工具', subs: '订阅追踪', favs: '收藏关注', live: '直播录制', library: '资源库', files: '文件浏览', history: '历史记录', log: '运行日志', settings: '设置' };
+          const m = { home: '下载解析', sniff: '网页嗅探', queue: '下载队列', bt: '磁力 / 种子', info: '媒体信息', search: '聚合搜索', music: '音乐搜索', tg: 'Telegram 频道批量', voice: '语音工具', subs: '订阅追踪', favs: '收藏关注', live: '直播录制', library: '资源库', files: '文件浏览', history: '历史记录', log: '运行日志', settings: '设置' };
           return m[page.value] || '';
         });
         const queueStat = computed(() => {
@@ -4527,9 +5173,20 @@
           }
           return { active, failed };
         });
+        // 磁力 / 种子任务自成「磁力 / 种子」页，队列页只看其余任务
+        const btTasks = computed(() => (tasks.value || []).filter(t => t.kind === 'torrent'));
+        const queueTasks = computed(() => (tasks.value || []).filter(t => t.kind !== 'torrent'));
+        // 封面拉不到（防盗链、地址过期）时按任务号记住，不给卡片留一个破图框
+        const thumbBroken = reactive({});
+        // 全选 / 批量操作只作用在当前页看得见的那些任务，不能把另一页的任务悄悄删掉
+        const visibleTasks = computed(() => page.value === 'bt' ? btTasks.value : queueTasks.value);
+        function activeOf(list) {
+          return (list || []).filter(t => t.status !== 'finished' && t.status !== 'failed').length;
+        }
         const subNewTotal = computed(() => (subs.value || []).reduce((a, s) => a + (s.new_count || 0), 0));
         function navBadge(k) {
-          if (k === 'queue') return queueStat.value.active || '';
+          if (k === 'queue') return activeOf(queueTasks.value) || '';
+          if (k === 'bt') return activeOf(btTasks.value) || '';
           if (k === 'subs') return subNewTotal.value || '';
           return '';
         }
@@ -4566,6 +5223,7 @@
           download_later: false,
           use_hls_engine: false,
           force_format: '',
+          ytdlp_extra_args: '',
           is_live: false,
         });
         const videoQualities = ['best', '4K', '1440p', '1080p', '720p', '480p', '360p'];
@@ -4626,6 +5284,10 @@
         const tasks = ref([]);
         const mediaInfo = ref(null);
         const selectedQuality = ref('');
+        // 区间勾选要拿行对象本体去调 el-table，所以留一个表格 ref
+        const entryTableRef = ref(null);
+        const entrySel = ref([]);
+        const entryRange = ref({ from: 1, to: 1 });
         const fileItems = ref([]);
         const filesPath = ref('');
         const filesRoot = ref('');
@@ -4656,6 +5318,8 @@
           ffmpeg_path: '',
           speed_limit: '',
           global_speed_limit: '',
+          speed_windows: '',
+          ytdlp_extra_args: '',
           max_per_host: 2,
           adaptive_throttle: true,
           plugins_enabled: true,
@@ -4663,6 +5327,20 @@
           aria2_rpc: 'http://127.0.0.1:6800/jsonrpc',
           aria2_secret: '',
           aria2_for_large_mb: 50,
+          aria2_bin: '',
+          aria2_autostart: true,
+          torrent_seed_ratio: 1.0,
+          torrent_seed_time: 3600,
+          torrent_meta_timeout: 180,
+          bt_trackers: '',
+          bt_tracker_sources: '',
+          bt_tracker_auto_update: true,
+          bt_tracker_max: 30,
+          bt_dl_limit: '',
+          bt_ul_limit: '',
+          bt_prioritize_piece: false,
+          bt_auto_rules: [],
+          bt_auto_fallback: '',
           http_impersonate: true,
           yt_player_clients: 'default,web_safari,tv,android,ios',
           po_provider_enabled: false,
@@ -4693,6 +5371,9 @@
           subtitle_glossary: '',
           subtitle_wrap: true,
           subtitle_wrap_width: 16,
+          subtitle_wrap_lines: 3,
+          subtitle_qc: true,
+          subtitle_qc_reflect: false,
           subtitle_export_set: 'single',
           deepl_api_key: '',
           deepl_api_url: '',
@@ -4763,6 +5444,11 @@
         const backfillSub = ref(null);
         const backfillRange = ref([]);
         const backfilling = ref(false);
+        // 同步计划预览：干跑一轮的结论 + 上游删除留档清单，都按订阅逐条看
+        const subPlanSub = ref(null);
+        const subPlan = ref(null);
+        const subPlanLoading = ref(false);
+        const subPlanArch = ref([]);
         // 和后端 _sub_kind_of / _looks_like_feed 一个口径：Telegram 优先，再看 RSS 特征
         const RSS_HINTS = ['.rss', '.atom', '.xml', '/feed', '/rss', 'feed://'];
         // 音乐歌单的域名表由后端 /api/subs 下发（PLAYLIST_HOSTS 只有一份，抄两遍必然漂移）
@@ -4820,6 +5506,13 @@
         const liveUrl = ref('');
         const liveMonitorUrl = ref('');
         const liveMonitors = ref([]);
+        // 每房间录制口径：容器取视频可用的三种封装（与后端 _LIVE_FMTS 一致），画质沿用首页档位清单
+        const liveRoomFmts = ['mkv', 'mp4', 'webm'];
+        const liveRoomQualities = videoQualities;
+        const liveRoomCfg = ref({
+          visible: false, saving: false, id: '', url: '',
+          fmt: '', video_quality: '', auto_transcode: '', max_minutes: 0, win_start: '', win_end: '',
+        });
         const sniffUrl = ref('');
         const sniffLoading = ref(false);
         const sniffItems = ref([]);
@@ -4971,8 +5664,14 @@
         const playerIsAudio = ref(false);
         const mediaEl = ref(null);
         const transcriptBox = ref(null);
+        const srtEditBox = ref(null);
         const transcript = ref({ srt: '', cues: [], message: '' });
         const mediaCueIdx = ref(-1);
+        // 逐句校对台：rows 是本地副本，只有「保存」才写盘；mtimeTs 用于挡「读完之后字幕又被改写」
+        const transcriptPath = ref('');
+        const srtEdit = reactive({ on: false, busy: false, rows: [], srt: '', format: 'srt', mtimeTs: 0, sel: -1, dirty: false });
+        // 质检读的是磁盘上的字幕，未保存的行内改动不在检查范围内
+        const srtQc = reactive({ busy: false, rows: [], message: '', hint: '', paired: false, counter: '', lang: '', total: 0, wrap: { width: 16, lines: 3 }, reflect_on: false });
         const pipelineRow = ref(null);
         const pipelineView = ref(null);
         let pipelineTimer = null;
@@ -5122,6 +5821,7 @@
         const searchResults = ref([]);
         const searching = ref(false);
         const platformCookies = ref([]);
+        const cookieIssueCount = computed(() => platformCookies.value.filter(p => p.login_issue).length);
         const syncFileInput = ref(null);
         const liveTasks = computed(() => tasks.value.filter(t => t.is_live || (t.title || '').includes('直播')));
         const liveTasksActive = computed(() => liveTasks.value.filter(t => isLiveRunning(t)));
@@ -5417,14 +6117,19 @@
           '/api/test-cookie': '检测浏览器登录凭证可用性',
           '/api/platforms/cookies': '读取浏览器登录凭证',
           '/api/platforms/cookies/save-text': '粘贴保存登录凭证',
+          '/api/platforms/cookies/clear-flag': '清除平台 Cookie 的登录态标记',
           '/api/files/delete': '删除文件',
           '/api/files/clear-archive': '清空已下载记录',
           '/api/files/zip': '打包下载文件',
+          '/api/diagnostics/export': '导出诊断包',
           '/api/history/clear': '清空下载历史',
           '/api/logs/clear': '清空运行日志',
           '/api/library/scan': '扫描资源库',
           '/api/transcode': '转码文件',
           '/api/subtitle/glossary_check': '检查字幕术语表',
+          '/api/config/speed_windows/check': '检查限速时段格式',
+          '/api/subtitle/qc': '检查字幕翻译质量',
+          '/api/subtitle/rewrap': '重排字幕每行字数',
           '/api/sniff': '嗅探网页媒体',
           '/api/sniff/browser/start': '启动浏览器嗅探',
           '/api/sniff/browser/stop': '停止浏览器嗅探',
@@ -5441,6 +6146,7 @@
           '/api/live/monitors/pause': '暂停直播监控',
           '/api/live/monitors/resume': '恢复直播监控',
           '/api/live/monitors/scan': '扫描直播监控',
+          '/api/live/monitors/set': '修改直播房间录制设置',
           '/api/subs/add': '添加订阅',
           '/api/subs/remove': '删除订阅',
           '/api/subs/toggle': '启用或停用订阅',
@@ -5448,6 +6154,9 @@
           '/api/subs/scan': '扫描全部订阅',
           '/api/subs/scan-one': '扫描单个订阅',
           '/api/subs/backfill': '按日期回填订阅历史',
+          '/api/subs/preview': '预览订阅同步计划',
+          '/api/subs/archived/clear': '清空上游删除归档',
+          '/api/subs/archived': '查看上游删除归档',
           '/api/favorites/download': '批量下载收藏内容',
           '/api/music/search': '搜索音乐',
           '/api/music/download': '下载音乐',
@@ -5469,6 +6178,7 @@
           '/api/ai/realtime': '准实时转写翻译',
           '/api/ai/translate_srt': '翻译字幕',
           '/api/ai/srt_calibrate': '校正字幕',
+          '/api/ai/srt/save': '保存逐句字幕校对',
           '/api/ai/subtitle_export': '导出字幕',
           '/api/ai/hardsub': '烧录硬字幕',
           '/api/ai/hardsub_stop': '停止硬字幕烧录',
@@ -5496,6 +6206,9 @@
           '/api/queue/throttle_reset': '解除站点降速',
           '/api/env/path': '更新 PATH 环境变量',
           '/api/plugins/reload': '重载解析插件',
+          '/api/torrent/upload': '上传种子文件',
+          '/api/torrent/select': '改选种子内文件',
+          '/api/torrent/stop-seed': '停止做种',
           '/api/sync/import': '导入配置备份',
           '/api/update/whisper': '更新 Whisper 模型',
           '/api/update/n_m3u8dl': '更新 N_m3u8DL-RE',
@@ -5924,6 +6637,8 @@
             settings.value.ffmpeg_path = data.ffmpeg_path || '';
             settings.value.speed_limit = data.speed_limit || '';
             settings.value.global_speed_limit = data.global_speed_limit || '';
+            settings.value.speed_windows = data.speed_windows || '';
+            settings.value.ytdlp_extra_args = data.ytdlp_extra_args || '';
             settings.value.max_per_host = data.max_per_host != null ? data.max_per_host : 2;
             settings.value.adaptive_throttle = data.adaptive_throttle !== false;
             settings.value.plugins_enabled = data.plugins_enabled !== false;
@@ -5931,6 +6646,26 @@
             settings.value.aria2_rpc = data.aria2_rpc || 'http://127.0.0.1:6800/jsonrpc';
             settings.value.aria2_secret = data.aria2_secret || '';
             settings.value.aria2_for_large_mb = data.aria2_for_large_mb != null ? data.aria2_for_large_mb : 50;
+            settings.value.aria2_bin = data.aria2_bin || '';
+            settings.value.aria2_autostart = data.aria2_autostart !== false;
+            settings.value.torrent_seed_ratio = data.torrent_seed_ratio != null ? data.torrent_seed_ratio : 1;
+            settings.value.torrent_seed_time = data.torrent_seed_time != null ? data.torrent_seed_time : 3600;
+            settings.value.torrent_meta_timeout = data.torrent_meta_timeout != null ? data.torrent_meta_timeout : 180;
+            settings.value.bt_trackers = data.bt_trackers || '';
+            settings.value.bt_tracker_sources = data.bt_tracker_sources || '';
+            settings.value.bt_tracker_auto_update = data.bt_tracker_auto_update !== false;
+            settings.value.bt_tracker_max = data.bt_tracker_max != null ? data.bt_tracker_max : 30;
+            settings.value.bt_dl_limit = data.bt_dl_limit || '';
+            settings.value.bt_ul_limit = data.bt_ul_limit || '';
+            settings.value.bt_prioritize_piece = !!data.bt_prioritize_piece;
+            settings.value.bt_auto_rules = (Array.isArray(data.bt_auto_rules) ? data.bt_auto_rules : []).map(r => ({
+              name: r.name || '',
+              mode: r.mode === 'regex' ? 'regex' : 'contains',
+              pattern: r.pattern || '',
+              subdir: r.subdir || '',
+              enabled: r.enabled !== false,
+            }));
+            settings.value.bt_auto_fallback = data.bt_auto_fallback || '';
             settings.value.http_impersonate = data.http_impersonate !== false;
             settings.value.yt_player_clients = data.yt_player_clients || 'default,web_safari,tv,android,ios';
             settings.value.po_provider_enabled = !!data.po_provider_enabled;
@@ -5953,6 +6688,9 @@
             settings.value.subtitle_glossary = data.subtitle_glossary || '';
             settings.value.subtitle_wrap = data.subtitle_wrap !== false;
             settings.value.subtitle_wrap_width = data.subtitle_wrap_width || 16;
+            settings.value.subtitle_wrap_lines = Math.min(4, Math.max(1, parseInt(data.subtitle_wrap_lines, 10) || 3));
+            settings.value.subtitle_qc = data.subtitle_qc !== false;
+            settings.value.subtitle_qc_reflect = !!data.subtitle_qc_reflect;
             settings.value.subtitle_export_set = data.subtitle_export_set || 'single';
             checkGlossary(true);
             settings.value.deepl_api_key = data.deepl_api_key || '';
@@ -6196,6 +6934,63 @@
             subScanning.value = false;
           }
         }
+        async function openSubPlan(s) {
+          subPlanSub.value = s;
+          subPlan.value = null;
+          subPlanArch.value = [];
+          const el = document.getElementById('sub-plan-card');
+          if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+          await loadSubPlan();
+        }
+        function closeSubPlan() {
+          subPlanSub.value = null;
+          subPlan.value = null;
+          subPlanArch.value = [];
+        }
+        async function loadSubPlan() {
+          const s = subPlanSub.value;
+          if (!s) return;
+          subPlanLoading.value = true;
+          try {
+            const r = await api('/api/subs/preview', { method: 'POST', body: JSON.stringify({ id: s.id }) });
+            subPlan.value = r.plan || null;
+            const a = await api('/api/subs/archived', { method: 'POST', body: JSON.stringify({ id: s.id }) });
+            subPlanArch.value = (a && a.items) || [];
+            if (subPlan.value && subPlan.value.error) ElementPlus.ElMessage.warning('这一轮没法计算：' + subPlan.value.error);
+          } catch (e) {
+            ElementPlus.ElMessage.error(e.message || '预览失败');
+          } finally {
+            subPlanLoading.value = false;
+          }
+        }
+        async function runSubPlanNow() {
+          const s = subPlanSub.value;
+          if (!s) return;
+          await scanOneSub(s);
+          const cur = subs.value.find((x) => x.id === s.id);
+          if (cur) subPlanSub.value = cur;
+          await loadSubPlan();
+        }
+        async function clearSubArchive(item) {
+          const s = subPlanSub.value;
+          if (!s) return;
+          try {
+            await ElementPlus.ElMessageBox.confirm(item ? '不再留档这一条？' : '清空这条订阅的上游删除留档？',
+              '确认', { type: 'warning' });
+          } catch (_) { return; }
+          try {
+            const r = await api('/api/subs/archived/clear', {
+              method: 'POST',
+              body: JSON.stringify({ id: s.id, entry_id: item ? (item.id || '') : '' }),
+            });
+            ElementPlus.ElMessage.success(r.removed ? `已移除 ${r.removed} 条留档记录（不影响「已读过」游标）`
+              : '没有需要移除的留档记录');
+            await loadSubs();
+            await loadSubPlan();
+          } catch (e) {
+            ElementPlus.ElMessage.error(e.message || '移除失败');
+          }
+        }
 
         const subRuleQualities = ['best', '4K', '1440p', '1080p', '720p', '480p', '360p'];
         const subRuleFormats = ['mkv', 'mp4', 'webm', 'mp3', 'm4a', 'flac'];
@@ -6322,6 +7117,68 @@
           } catch (e) {
             ElementPlus.ElMessage.error(e.message);
           }
+        }
+        function openLiveMonitorCfg(m) {
+          if (!m) return;
+          liveRoomCfg.value = {
+            visible: true,
+            saving: false,
+            id: m.id,
+            url: m.url,
+            fmt: m.fmt || '',
+            video_quality: m.video_quality || '',
+            auto_transcode: m.auto_transcode || '',
+            max_minutes: Number(m.max_minutes || 0),
+            win_start: m.win_start || '',
+            win_end: m.win_end || '',
+          };
+        }
+        async function saveLiveMonitorCfg() {
+          const c = liveRoomCfg.value;
+          c.saving = true;
+          try {
+            const r = await api('/api/live/monitors/set', {
+              method: 'POST',
+              body: JSON.stringify({
+                id: c.id,
+                fmt: c.fmt,
+                video_quality: c.video_quality,
+                auto_transcode: c.auto_transcode,
+                max_minutes: c.max_minutes,
+                win_start: c.win_start,
+                win_end: c.win_end,
+              }),
+            });
+            const notes = (r && r.notes) || [];
+            if (notes.length) {
+              // 合法的那几项后端已经落库，这里只点名没采用的，弹窗留着让人改
+              ElementPlus.ElMessage.warning('已保存，其中 ' + notes.length + ' 项设置没生效：'
+                + notes.slice(0, 3).join('；') + (notes.length > 3 ? ' 等' : ''));
+              await loadLiveMonitors();
+            } else {
+              ElementPlus.ElMessage.success('已保存');
+              c.visible = false;
+              await loadLiveMonitors();
+            }
+          } catch (e) {
+            ElementPlus.ElMessage.error(e.message);
+          } finally {
+            c.saving = false;
+          }
+        }
+        function liveMonitorCfgText(m) {
+          if (!m) return '';
+          const parts = [];
+          if (m.fmt) parts.push('封装 ' + m.fmt);
+          if (m.video_quality) parts.push('画质 ' + m.video_quality);
+          const mm = Number(m.max_minutes || 0);
+          if (mm > 0) parts.push('录满 ' + mm + ' 分钟自动停');
+          if (m.auto_transcode) {
+            const p = (transcodePresets.value || []).find(x => x.id === m.auto_transcode);
+            parts.push('录完转 ' + (p ? p.label : m.auto_transcode));
+          }
+          if (m.win_start && m.win_end) parts.push('只在 ' + m.win_start + '–' + m.win_end + ' 监控');
+          return parts.length ? '本房间：' + parts.join(' · ') : '';
         }
 
         
@@ -7350,6 +8207,10 @@
           playerName.value = row.name || '';
           playerIsVideo.value = ['.mp4', '.webm', '.mkv', '.mov'].includes(e);
           playerIsAudio.value = ['.mp3', '.m4a', '.flac', '.wav', '.aac', '.ogg'].includes(e);
+          // 换一份媒体就退出上一份的校对台，避免拿着旧行编辑却以为在改新文件
+          srtEdit.on = false;
+          srtEdit.dirty = false;
+          srtEdit.sel = -1;
           revealCard('card-file-player');
           loadTranscript(row.path);
         }
@@ -7358,6 +8219,7 @@
         async function loadTranscript(path) {
           transcript.value = { srt: '', cues: [], message: '' };
           mediaCueIdx.value = -1;
+          transcriptPath.value = path || '';
           try {
             const r = await api('/api/ai/transcript?path=' + encodeURIComponent(path));
             const cues = r.cues || [];
@@ -7404,6 +8266,168 @@
               box.scrollTop += (r1.top - r2.top) - r2.height / 2 + r1.height / 2;
             }
           });
+        }
+        async function openSrtEditor() {
+          if (!transcriptPath.value) {
+            ElementPlus.ElMessage.warning('先在文件列表里播放这一项，再打开逐句校对');
+            return false;
+          }
+          srtEdit.busy = true;
+          try {
+            const r = await api('/api/ai/srt?path=' + encodeURIComponent(transcriptPath.value));
+            srtEdit.rows = (r.cues || []).map((c, i) => ({
+              _k: i + 1, start: c.start, end: c.end, speaker: c.speaker || '', text: c.text || '',
+            }));
+            srtEdit.srt = r.srt || '';
+            srtEdit.format = r.format || 'srt';
+            srtEdit.mtimeTs = r.mtime_ts || 0;
+            srtEdit.sel = -1;
+            srtEdit.dirty = false;
+            srtQcReset();
+            srtEdit.on = true;
+            if (!srtEdit.rows.length) ElementPlus.ElMessage.info(r.message || '这份字幕里没有解析出有效句子');
+            return true;
+          } catch (e) {
+            ElementPlus.ElMessage.error(e.message);
+            return false;
+          } finally {
+            srtEdit.busy = false;
+          }
+        }
+        function srtCloseEdit() {
+          if (srtEdit.dirty) {
+            ElementPlus.ElMessage.warning('还有未保存的改动：先按「保存」写回字幕，或按「放弃修改」退回原样');
+            return;
+          }
+          srtEdit.on = false;
+          srtEdit.sel = -1;
+          srtQcReset();
+        }
+        function srtQcReset() {
+          srtQc.rows = [];
+          srtQc.message = '';
+          srtQc.hint = '';
+          srtQc.paired = false;
+          srtQc.counter = '';
+          srtQc.lang = '';
+          srtQc.total = 0;
+          srtQc.reflect_on = false;
+        }
+        async function runSrtQc() {
+          if (!srtEdit.srt) {
+            ElementPlus.ElMessage.warning('先按「逐句校对」打开一份字幕，质检才知道查哪一条');
+            return;
+          }
+          srtQc.busy = true;
+          try {
+            const r = await api('/api/subtitle/qc', { method: 'POST', body: JSON.stringify({ path: srtEdit.srt }) });
+            srtQc.rows = r.rows || [];
+            srtQc.paired = !!r.paired;
+            srtQc.counter = r.counter || '';
+            srtQc.lang = r.lang || '';
+            srtQc.total = r.total || 0;
+            srtQc.wrap = r.wrap || { width: 16, lines: 3 };
+            srtQc.reflect_on = !!r.reflect_on;
+            srtQc.hint = r.hint || '';
+            srtQc.message = r.message || '';
+            if (!srtQc.rows.length) ElementPlus.ElMessage.success(r.message || '没有发现可疑句');
+          } catch (e) {
+            ElementPlus.ElMessage.error(e.message);
+          } finally {
+            srtQc.busy = false;
+          }
+        }
+        function qcJumpTo(q) {
+          const i = (q.i || 1) - 1;
+          if (i < 0 || i >= srtEdit.rows.length) return;
+          srtEdit.sel = i;
+          nextTick(() => {
+            const box = srtEditBox.value;
+            const el = box && box.querySelector(`[data-si="${i}"]`);
+            if (!el) return;
+            box.scrollTop += el.getBoundingClientRect().top - box.getBoundingClientRect().top
+              - box.clientHeight / 2 + el.clientHeight / 2;
+          });
+          const m = mediaEl.value;
+          if (m) {
+            m.currentTime = q.start || 0;
+            if (m.paused) m.play().catch(() => {});
+          }
+        }
+        async function runSrtRewrap() {
+          if (!srtEdit.srt) {
+            ElementPlus.ElMessage.warning('先按「逐句校对」打开一份字幕，重排才知道改哪一条');
+            return;
+          }
+          if (srtEdit.dirty) {
+            ElementPlus.ElMessage.warning('重排改的是磁盘上的字幕：请先按「保存」写回行内改动，或按「放弃修改」退回磁盘版本');
+            return;
+          }
+          srtQc.busy = true;
+          try {
+            const r = await api('/api/subtitle/rewrap', { method: 'POST', body: JSON.stringify({ path: srtEdit.srt }) });
+            ElementPlus.ElMessage.success(r.message || '已按每行字数重排');
+            await openSrtEditor();
+            srtQc.message = r.message || '';
+          } catch (e) {
+            ElementPlus.ElMessage.error(e.message);
+          } finally {
+            srtQc.busy = false;
+          }
+        }
+        async function srtDiscard() {
+          if (await openSrtEditor()) {
+            ElementPlus.ElMessage.info('已放弃未保存的改动，重新读回了磁盘上的字幕');
+          }
+        }
+        function srtShiftSel(step) {
+          const r = srtEdit.rows[srtEdit.sel];
+          if (!r) return;
+          const dur = Math.max(0.04, (r.end || 0) - (r.start || 0));
+          r.start = Math.max(0, +(((r.start || 0) + step).toFixed(3)));
+          r.end = +(r.start + dur).toFixed(3);
+          srtEdit.dirty = true;
+        }
+        function srtMerge(i) {
+          const a = srtEdit.rows[i], b = srtEdit.rows[i + 1];
+          if (!a || !b) return;
+          a.text = (String(a.text || '') + ' ' + String(b.text || '')).trim();
+          if ((b.end || 0) > (a.end || 0)) a.end = b.end;
+          if (!a.speaker && b.speaker) a.speaker = b.speaker;
+          srtEdit.rows.splice(i + 1, 1);
+          if (srtEdit.sel >= srtEdit.rows.length) srtEdit.sel = srtEdit.rows.length - 1;
+          srtEdit.dirty = true;
+        }
+        function srtDrop(i) {
+          srtEdit.rows.splice(i, 1);
+          if (srtEdit.sel >= srtEdit.rows.length) srtEdit.sel = srtEdit.rows.length - 1;
+          srtEdit.dirty = true;
+        }
+        async function srtSave() {
+          if (!srtEdit.rows.length) {
+            ElementPlus.ElMessage.warning('句子已经全部删空，这样保存等于把整份字幕清空。要退回原样请按「放弃修改」');
+            return;
+          }
+          srtEdit.busy = true;
+          try {
+            const r = await api('/api/ai/srt/save', {
+              method: 'POST',
+              uiName: '保存逐句字幕校对',
+              body: JSON.stringify({
+                path: transcriptPath.value,
+                base_mtime: srtEdit.mtimeTs,
+                cues: srtEdit.rows.map(c => ({ start: c.start, end: c.end, speaker: c.speaker, text: c.text })),
+              }),
+            });
+            srtEdit.mtimeTs = r.mtime_ts || 0;
+            srtEdit.dirty = false;
+            ElementPlus.ElMessage.success(r.message + '，改前的内容备份为 ' + String(r.backup || '').split('/').pop());
+            await loadTranscript(transcriptPath.value);
+          } catch (e) {
+            ElementPlus.ElMessage.error(e.message);
+          } finally {
+            srtEdit.busy = false;
+          }
         }
         function zipPath(path, name) {
           logAction(actionName('/api/files/zip'));
@@ -7460,6 +8484,19 @@
             });
             ElementPlus.ElMessage.success('已写入 ' + p.label + ' Cookie 文件');
             p._text = '';
+            await loadPlatformCookies();
+          } catch (e) {
+            ElementPlus.ElMessage.error(e.message);
+          }
+        }
+        async function clearCookieFlag(p) {
+          try {
+            await api('/api/platforms/cookies/clear-flag', {
+              method: 'POST',
+              body: JSON.stringify({ platform: p.platform }),
+            });
+            ElementPlus.ElMessage.success('已清除 ' + p.label
+              + ' 的登录态标记（这个平台再有下载被判定为需要登录时会重新标出）');
             await loadPlatformCookies();
           } catch (e) {
             ElementPlus.ElMessage.error(e.message);
@@ -8549,7 +9586,7 @@
           for (const t of list) {
             const prev = prevTaskStatus.value[t.id];
             if (prev && prev !== 'finished' && t.status === 'finished') {
-              notifyDone(t.title || t.url);
+              notifyDone(t);
             }
             prevTaskStatus.value[t.id] = t.status;
           }
@@ -8558,10 +9595,13 @@
           queuePaused.value = !!paused;
           const ids = new Set(list.map(t => t.id));
           selectedIds.value = selectedIds.value.filter(id => ids.has(id));
-          selectAll.value = list.length > 0 && selectedIds.value.length === list.length;
+          const picked = new Set(selectedIds.value);
+          const scope = visibleTasks.value;
+          selectAll.value = scope.length > 0 && scope.every(t => picked.has(t.id));
         }
 
-        // SSE 的 prog 帧只带 progress/speed/eta/耗时，就地合并，免得整张表重渲染
+        // SSE 的 prog 帧带进度、速率、ETA、清晰度、字节数和封面，就地合并，免得整张表重渲染
+        // 后端只在字段有值时才放进包，所以这里不能整行覆盖，否则会把已知的清晰度/大小擦没
         function applyTaskProg(rows) {
           if (!rows) return;
           for (const t of tasks.value) {
@@ -8575,6 +9615,8 @@
             const sort = taskSort.value || 'queue';
             const data = await api('/api/tasks?sort=' + encodeURIComponent(sort));
             applyTaskList(data.tasks || [], data.running, data.paused);
+            // 做种面板的数据只在「磁力 / 种子」页停留时按 30 秒顺带刷一次，别跟着 1.5 秒轮询敲 aria2
+            if (page.value === 'bt' && Date.now() - lastSeedingAt > 30000) loadSeeding();
           } catch (_) {}
         }
 
@@ -8681,13 +9723,24 @@
         }
 
         // 粘贴板里常见「一行挤好几个链接」或夹着中文说明，所以直接抓 http(s) 子串，不按行切
+        // 磁力链和本地种子没有 http 前缀可抓，只能整行认：行首是 magnet: 或行尾是 .torrent
         function extractUrls(text) {
-          const found = String(text || '').match(/https?:\/\/[^\s"'<>，、；]+/g) || [];
+          const src = String(text || '');
+          const found = src.match(/https?:\/\/[^\s"'<>，、；]+/g) || [];
           const out = [], seen = new Set();
           let dup = 0;
           for (const raw of found) {
             const u = raw.replace(/[)\]}>;,、，。；：:!?"']+$/, '');
             if (!u || seen.has(u)) { dup++; continue; }
+            seen.add(u);
+            out.push(u);
+          }
+          for (const line of src.split(/\r?\n/)) {
+            const l = line.trim();
+            if (!l || l.startsWith('http')) continue;
+            if (!/^magnet:/i.test(l) && !/\.torrent$/i.test(l)) continue;
+            const u = /^magnet:/i.test(l) ? l.split(/\s/)[0] : l;
+            if (seen.has(u)) { dup++; continue; }
             seen.add(u);
             out.push(u);
           }
@@ -8978,6 +10031,338 @@
           }
         }
 
+        // ---------- 磁力 / 种子（aria2）----------
+        const torrentFileInput = ref(null);
+        const torrentUploading = ref(false);
+        const aria2Checking = ref(false);
+        const aria2Info = ref('');
+        const seedingRows = ref([]);
+        const seedingNote = ref('');
+        const btFilesTask = ref('');
+        const btFileRows = ref([]);
+        const btSelecting = ref(false);
+        let lastSeedingAt = 0;
+        const btText = ref('');
+        const btStarting = ref(false);
+        const btSeedOnly = ref(false);
+        // tracker 与限速的读数一律来自后端：界面不自己算，免得显示的和真正交给 aria2 的不是一套
+        const btTrackerText = ref('点「读取现状」看下一个新任务会带上哪几条 tracker');
+        const btTrackerNote = ref('');
+        const btTrackerLoading = ref(false);
+        const btTrackerRefreshing = ref(false);
+        const btLimitTask = ref('');
+        const btLimitDl = ref('');
+        const btLimitUl = ref('');
+        const btLimitApplying = ref(false);
+        const btLimitResult = ref('');
+
+        // 这一页只认磁力链接和本地种子：网页链接留在首页，混进来的行要当场说清为什么没算上
+        const btParsed = computed(() => {
+          const lines = String(btText.value || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+          const urls = [];
+          const seen = new Set();
+          let dup = 0;
+          for (const line of lines) {
+            const u = /^magnet:/i.test(line) ? line.split(/\s/)[0] : line;
+            if (!/^magnet:/i.test(u) && !/\.torrent$/i.test(u)) continue;
+            if (seen.has(u)) { dup++; continue; }
+            seen.add(u);
+            urls.push(u);
+          }
+          return { urls, dup, ignored: lines.length - urls.length - dup };
+        });
+        const btLinkCount = computed(() => btParsed.value.urls.length);
+        const btIgnoredCount = computed(() => btParsed.value.ignored + btParsed.value.dup);
+
+        function btSourceLabel(t) {
+          return String(t.url || '').toLowerCase().startsWith('magnet:') ? '磁力' : '种子';
+        }
+        function btPicked(t) {
+          return (t.files || []).filter(f => f.selected).length;
+        }
+        const btPickCount = computed(() => btFileRows.value.filter(f => f.selected).length);
+        const btPickSize = computed(() => btFileRows.value.filter(f => f.selected).reduce((a, f) => a + (f.size || 0), 0));
+        function btPickAll(v) {
+          btFileRows.value.forEach(f => { f.selected = v; });
+        }
+        function toggleBtFiles(t) {
+          if (btFilesTask.value === t.id) {
+            btFilesTask.value = '';
+            return;
+          }
+          btFilesTask.value = t.id;
+          // 复选状态存在本地副本里：任务列表每 1.5 秒重刷一次，直接改 t.files 会把勾选冲掉
+          btFileRows.value = (t.files || []).map(f => ({ ...f }));
+        }
+        async function applyBtSelect(t) {
+          const indices = btFileRows.value.filter(f => f.selected).map(f => f.index);
+          if (!indices.length) {
+            ElementPlus.ElMessage.warning('至少要勾选一个文件');
+            return;
+          }
+          btSelecting.value = true;
+          try {
+            const r = await api('/api/torrent/select', {
+              method: 'POST', uiName: '改选种子内文件',
+              body: JSON.stringify({ task_id: t.id, indices }),
+            });
+            btFileRows.value = (r.files || []).map(f => ({ ...f }));
+            ElementPlus.ElMessage.success(`已让 aria2 只下这 ${r.count} 个文件`);
+            await loadTasks();
+          } catch (e) {
+            ElementPlus.ElMessage.error(String(e.message || e));
+          } finally {
+            btSelecting.value = false;
+          }
+        }
+        // ---------- 自动分类规则 ----------
+        const btRuleTestName = ref('');
+        const btRuleTesting = ref(false);
+        const btRuleTested = ref('');
+        function addBtRule() {
+          settings.value.bt_auto_rules.push({ name: '', mode: 'contains', pattern: '', subdir: '', enabled: true });
+        }
+        function delBtRule(i) { settings.value.bt_auto_rules.splice(i, 1); }
+        function moveBtRule(i, d) {
+          const a = settings.value.bt_auto_rules, j = i + d;
+          if (j < 0 || j >= a.length) return;
+          const t = a[i]; a[i] = a[j]; a[j] = t;   // 顺序就是优先级，只能靠上下移调
+        }
+        async function testBtRule() {
+          const v = (btRuleTestName.value || '').trim();
+          if (!v) { ElementPlus.ElMessage.warning('先写一个种子名字，或贴一条磁力 / 种子链接'); return; }
+          btRuleTesting.value = true;
+          try {
+            const isRef = /^magnet:/i.test(v) || /\.torrent$/i.test(v) || /^file:\/\//i.test(v);
+            const r = await api('/api/torrent/rules/test', {
+              method: 'POST', uiName: '试自动分类规则',
+              body: JSON.stringify(isRef ? { url: v } : { name: v }),
+            });
+            btRuleTested.value = `${r.message}｜比的是「${r.name || '（此刻还没有名字）'}」，来源：${r.name_from}`;
+          } catch (e) {
+            btRuleTested.value = '试匹配没走通：' + String(e.message || e);
+          } finally {
+            btRuleTesting.value = false;
+          }
+        }
+        // aria2 少回一个键就少说一段：没量到的数不能替它写成 0，「peer 0」会被读成「确实没连上人」。
+        function seedTotals(s) {
+          const p = [];
+          if (s.uploaded !== undefined && s.uploaded !== null) p.push('已传 ' + formatSize(Number(s.uploaded)));
+          if (s.share_ratio !== undefined && s.share_ratio !== null) p.push('比率 ' + Number(s.share_ratio).toFixed(2));
+          if (s.seed_seconds !== undefined && s.seed_seconds !== null) p.push('做种 ' + formatDuration(s.seed_seconds));
+          return p.join(' · ');
+        }
+        function seedReadout(s) {
+          const p = [];
+          if (s.upload_speed) p.push('↑' + formatSize(Number(s.upload_speed)) + '/s');
+          if (s.num_peers !== undefined) p.push('连接 ' + s.num_peers);
+          if (s.num_seeders !== undefined) p.push('做种者 ' + s.num_seeders);
+          if (s.tracker_count !== undefined) p.push('tracker ' + s.tracker_count);
+          return p.join(' · ');
+        }
+        async function loadSeeding() {
+          lastSeedingAt = Date.now();
+          try {
+            const r = await api('/api/torrent/seeding');
+            seedingRows.value = r.items || [];
+            seedingNote.value = r.note || '';
+          } catch (_) {
+            seedingRows.value = [];
+            seedingNote.value = '';
+          }
+        }
+        async function stopSeed(target) {
+          const body = target && target.gid ? { gids: [target.gid] } : { ids: [target.id] };
+          try {
+            const r = await api('/api/torrent/stop-seed', { method: 'POST', uiName: '停止做种', body: JSON.stringify(body) });
+            ElementPlus.ElMessage.success(r.stopped ? `已停止 ${r.stopped} 项做种，已下载的文件不动` : (r.message || '没有点到在做种的任务'));
+            await Promise.all([loadSeeding(), loadTasks()]);
+          } catch (e) {
+            ElementPlus.ElMessage.error(String(e.message || e));
+          }
+        }
+        async function stopAllSeeding() {
+          try {
+            await ElementPlus.ElMessageBox.confirm('停止全部做种？已下载的文件不会删除，之后不再上传。', '确认', { type: 'warning' });
+          } catch (_) { return; }
+          try {
+            const r = await api('/api/torrent/stop-seed', { method: 'POST', uiName: '全部停止做种', body: JSON.stringify({ all: true }) });
+            ElementPlus.ElMessage.success(`已停止 ${r.stopped} 项做种`);
+            await loadSeeding();
+          } catch (e) {
+            ElementPlus.ElMessage.error(String(e.message || e));
+          }
+        }
+        async function checkAria2() {
+          aria2Checking.value = true;
+          try {
+            const r = await api('/api/aria2/status');
+            // 地址回的是真正连的那个（设置里留空时是默认的 6800），光说「可连接」不知道连的到底是谁
+            const addr = String(r.rpc || '').replace(/^https?:\/\//, '').replace(/\/jsonrpc.*$/, '');
+            const bits = [(r.online ? 'RPC 可连接' : 'RPC 无应答') + (addr ? `（${addr}）` : '')];
+            bits.push(r.binary ? 'aria2c：' + String(r.binary).split(/[\\/]/).pop() : '未找到 aria2c');
+            if (r.daemon && r.daemon.owned) bits.push('进程由本程序拉起（PID ' + r.daemon.pid + '）');
+            bits.push(r.autostart ? '自动拉起已开' : '自动拉起已关');
+            if (r.seeding) bits.push(`做种 ${r.seeding} 项`);
+            aria2Info.value = bits.join(' · ');
+          } catch (e) {
+            aria2Info.value = '检测失败：' + String(e.message || e);
+          } finally {
+            aria2Checking.value = false;
+          }
+        }
+        function btTrackerHead(r) {
+          const src = r.sources || [];
+          const okN = src.filter(s => s.ok).length;
+          const bits = [`抓到的来源 ${okN}/${src.length} 个`, `手动 ${r.manual ? r.manual.length : 0} 条`,
+            `下一个新任务带上 ${r.count} 条`, `上限 ${r.max === 0 ? '0（不注入）' : r.max}`];
+          bits.push(r.auto_update ? '自动获取已开' : '自动获取已关');
+          bits.push(r.cache_time ? '缓存于 ' + String(r.cache_time).replace('T', ' ') : '本机还没有缓存');
+          return bits.join(' · ');
+        }
+        function btTrackerProblems(r) {
+          const out = [];
+          if (r.note) out.push(r.note);
+          (r.sources || []).filter(s => !s.ok).forEach(s => {
+            out.push(`${s.label || s.url}：${s.fetched ? (s.error || '这次没抓到') : '还没抓过'}`);
+          });
+          return out.join('；');
+        }
+        async function loadBtTrackers() {
+          btTrackerLoading.value = true;
+          try {
+            const r = await api('/api/bt/trackers');
+            btTrackerText.value = btTrackerHead(r);
+            btTrackerNote.value = btTrackerProblems(r);
+          } catch (e) {
+            btTrackerText.value = '读取失败：' + String(e.message || e);
+            btTrackerNote.value = '';
+          } finally {
+            btTrackerLoading.value = false;
+          }
+        }
+        async function refreshBtTrackers() {
+          btTrackerRefreshing.value = true;
+          try {
+            const r = await api('/api/bt/trackers/refresh', {
+              method: 'POST', uiName: '立即获取 tracker 列表', body: JSON.stringify({}),
+            });
+            (r.failed || []).length
+              ? ElementPlus.ElMessage.warning(r.message + `（${r.failed.length} 个来源没抓到）`)
+              : ElementPlus.ElMessage.success(r.message);
+            await loadBtTrackers();
+          } catch (e) {
+            ElementPlus.ElMessage.error(String(e.message || e));
+          } finally {
+            btTrackerRefreshing.value = false;
+          }
+        }
+        function toggleBtLimit(t) {
+          if (btLimitTask.value === t.id) {
+            btLimitTask.value = '';
+            return;
+          }
+          btLimitTask.value = t.id;
+          btLimitDl.value = '';
+          btLimitUl.value = '';
+          btLimitResult.value = '';
+        }
+        async function applyBtLimit(t) {
+          const dl = String(btLimitDl.value || '').trim();
+          const ul = String(btLimitUl.value || '').trim();
+          if (!dl && !ul) {
+            ElementPlus.ElMessage.warning('下载限速和上传限速至少填一个，填 0 表示取消限速');
+            return;
+          }
+          btLimitApplying.value = true;
+          try {
+            const body = { task_id: t.id };
+            if (dl) body.download = dl;
+            if (ul) body.upload = ul;
+            const r = await api('/api/bt/limit', {
+              method: 'POST', uiName: '改任务限速', body: JSON.stringify(body),
+            });
+            // 后端回的是从 aria2 读回来的值，界面只报这个，不报用户刚敲的那串
+            btLimitResult.value = (r.ok ? '已生效（aria2 读回）：' : '未确认生效：') + r.message;
+            r.ok ? ElementPlus.ElMessage.success(r.message) : ElementPlus.ElMessage.warning(r.message);
+            await loadTasks();
+          } catch (e) {
+            btLimitResult.value = '失败：' + String(e.message || e);
+            ElementPlus.ElMessage.error(String(e.message || e));
+          } finally {
+            btLimitApplying.value = false;
+          }
+        }
+        function pickTorrentFile() {
+          if (torrentFileInput.value) torrentFileInput.value.click();
+        }
+        async function onTorrentFile(ev) {
+          const f = ev.target.files && ev.target.files[0];
+          ev.target.value = '';
+          if (!f) return;
+          if (!/\.torrent$/i.test(f.name)) {
+            ElementPlus.ElMessage.warning('只能选择 .torrent 种子文件');
+            return;
+          }
+          torrentUploading.value = true;
+          try {
+            const fd = new FormData();
+            fd.append('file', f, f.name);
+            const resp = await fetch('/api/torrent/upload', { method: 'POST', body: fd });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(friendlyError(data.detail || resp.statusText));
+            btText.value = (btText.value.trim() ? btText.value.trim() + '\n' : '') + data.url;
+            logAction('上传种子文件');
+            ElementPlus.ElMessage.success(`种子「${data.name}」（${formatSize(data.size)}）已写入输入框，点「开始下载」入队`);
+          } catch (e) {
+            ElementPlus.ElMessage.error(String(e.message || e));
+          } finally {
+            torrentUploading.value = false;
+          }
+        }
+
+        async function pasteBt() {
+          try {
+            const text = await navigator.clipboard.readText();
+            if (text) btText.value = (btText.value ? btText.value + '\n' : '') + text.trim();
+          } catch {
+            ElementPlus.ElMessage.warning('无法读取剪贴板，请手动粘贴');
+          }
+        }
+
+        async function startBtDownload() {
+          const { urls, dup, ignored } = btParsed.value;
+          if (!urls.length) {
+            ElementPlus.ElMessage.warning(ignored + dup
+              ? `输入的 ${ignored + dup} 行里没有磁力链接或本地种子路径`
+              : '请粘贴 magnet: 链接，或点「上传种子」选择本地 .torrent 文件');
+            return;
+          }
+          const seedOnly = btSeedOnly.value;
+          btStarting.value = true;
+          try {
+            const r = await api('/api/download', {
+              method: 'POST',
+              body: JSON.stringify({ urls, ...opts.value, torrent_seed_only: seedOnly }),
+            });
+            btText.value = '';
+            btSeedOnly.value = false;
+            const merged = dup + (r && r.merged ? r.merged : 0);
+            ElementPlus.ElMessage.success(
+              `已交给 aria2 ${r && r.added != null ? r.added : (r.ids || []).length} 个任务`
+              + (seedOnly ? ' · 按「只做种」挂上，已有成品不会被重新下载' : '')
+              + (merged ? ` · 已合并 ${merged} 条重复` : '')
+              + (r && r.skipped ? ` · ${r.skipped} 条不是磁力链接或种子，被忽略` : '')
+            );
+            await Promise.all([loadTasks(), loadSeeding()]);
+          } catch (e) {
+            ElementPlus.ElMessage.error(String(e.message || e));
+          } finally {
+            btStarting.value = false;
+          }
+        }
+
         async function startDownload() {
           const { urls, dup } = extractUrls(urlText.value);
           if (!urls.length) {
@@ -9000,7 +10385,13 @@
             ElementPlus.ElMessage.success(
               `已加入 ${r && r.added != null ? r.added : (r.ids || []).length} 个任务`
               + (merged ? ` · 已合并 ${merged} 条重复` : '')
+              + (r && r.skipped ? ` · ${r.skipped} 条链接无效被忽略` : '')
             );
+            const argNotes = (r && r.arg_notes) || [];
+            if (argNotes.length) {
+              ElementPlus.ElMessage.warning('「自定义 yt-dlp 参数」有 ' + argNotes.length + ' 项没生效：'
+                + argNotes.slice(0, 3).join('；') + (argNotes.length > 3 ? ' 等' : ''));
+            }
             page.value = 'queue';
             await loadTasks();
           } catch (e) {
@@ -9102,14 +10493,49 @@
         async function exportHistory() {
           window.open('/api/history/export', '_blank');
         }
-        function notifyDone(title) {
+        // 桌面通知不能只弹一下就完：点它要回到刚下完的那条卡片，否则用户还得自己在队列里翻
+        const flashTaskId = ref('');
+        let flashTimer = 0;
+        function gotoTask(id, isBt) {
+          const key = isBt ? 'btTasks' : 'queueTasks';
+          const list = isBt ? btTasks.value : queueTasks.value;
+          const idx = list.findIndex(t => String(t.id) === String(id));
+          page.value = isBt ? 'bt' : 'queue';
+          logAction('通知跳转：' + (isBt ? '磁力 / 种子' : '队列'));
+          if (idx < 0) {
+            ElementPlus.ElMessage.warning('这个任务已经不在列表里了，可能已被清掉');
+            return;
+          }
+          pagers[key].page = Math.floor(idx / LIST_PAGE_SIZE) + 1;
+          // 切页时 .content 正在放 translateY 入场动画，这段时间里 smooth 滚动会被浏览器静默丢弃
+          setTimeout(() => {
+            const el = document.getElementById('task-' + id);
+            if (el) el.scrollIntoView({ block: 'start' });
+          }, 120);
+          flashTaskId.value = String(id);
+          clearTimeout(flashTimer);
+          flashTimer = setTimeout(() => { flashTaskId.value = ''; }, 2600);
+        }
+        function notifyDone(task) {
           try {
             if (!('Notification' in window)) return;
-            if (Notification.permission === 'granted') {
-              new Notification('下载完成', { body: title || '任务已完成' });
-            } else if (Notification.permission !== 'denied') {
-              Notification.requestPermission();
+            if (Notification.permission !== 'granted') {
+              if (Notification.permission !== 'denied') Notification.requestPermission();
+              return;
             }
+            const id = String(task.id);
+            const opts = {
+              body: task.title !== '等待中...' ? task.title : task.url,
+              tag: 'dl-done-' + id,
+            };
+            if (task.thumbnail && !thumbBroken[id]) opts.icon = task.thumbnail;
+            const n = new Notification('下载完成', opts);
+            n.onclick = (ev) => {
+              if (ev && ev.preventDefault) ev.preventDefault();
+              try { n.close(); } catch (_) {}
+              try { window.focus(); } catch (_) {}
+              gotoTask(id, task.kind === 'torrent');
+            };
           } catch (_) {}
         }
 
@@ -9124,10 +10550,12 @@
           } else {
             selectedIds.value = selectedIds.value.filter(x => x !== id);
           }
-          selectAll.value = tasks.value.length > 0 && selectedIds.value.length === tasks.value.length;
+          // 只看当前页：磁力任务勾满这一页就该点亮「全选」，不能被另一页的普通任务比下去
+          const picked = new Set(selectedIds.value);
+          selectAll.value = visibleTasks.value.length > 0 && visibleTasks.value.every(t => picked.has(t.id));
         }
         function toggleSelectAll(v) {
-          if (v) selectedIds.value = tasks.value.map(t => t.id);
+          if (v) selectedIds.value = visibleTasks.value.map(t => t.id);
           else selectedIds.value = [];
         }
         async function pauseSelected() {
@@ -9233,6 +10661,9 @@
               body: JSON.stringify({ url }),
             });
             analyzeUrl.value = url;
+            // 换一次解析就是一批新条目，勾选和区间都按新列表重置，别拿上一个列表的序号来勾
+            entrySel.value = [];
+            entryRange.value = { from: 1, to: (mediaInfo.value.entries || []).length || 1 };
             page.value = 'info';
             ElementPlus.ElMessage.success('解析完成');
           } catch (e) {
@@ -9248,7 +10679,12 @@
             ElementPlus.ElMessage.warning('请先在上方输入 URL');
             return;
           }
-          await doAnalyze(urls[0]);
+          const web = urls.find(u => /^https?:/i.test(u));
+          if (!web) {
+            ElementPlus.ElMessage.info('磁力链接与种子不需要解析，直接点「开始下载」即可');
+            return;
+          }
+          await doAnalyze(web);
         }
 
         async function analyzeFromInfoPage() {
@@ -9323,6 +10759,51 @@
             page.value = 'home';
             await startDownload();
             return;
+          }
+          urlText.value = urls.join('\n');
+          opts.value.allow_playlist = false;
+          page.value = 'home';
+          await startDownload();
+        }
+
+        function onEntrySelection(rows) {
+          entrySel.value = rows || [];
+        }
+        // 区间按播放列表自身的顺序取，弹层里先亮出首尾条目名，勾完再点下载不至于错一大片
+        function entryAt(i) {
+          const rows = (mediaInfo.value && mediaInfo.value.entries) || [];
+          if (!rows.length) return '—';
+          let n = Math.floor(Number(i) || 1);
+          n = Math.min(Math.max(n, 1), rows.length);
+          const r = rows[n - 1];
+          const t = String((r && (r.title || r.id)) || '未命名').trim();
+          return '第 ' + n + ' 条《' + (t.length > 20 ? t.slice(0, 20) + '…' : t) + '》';
+        }
+        function selectEntryRange() {
+          const rows = (mediaInfo.value && mediaInfo.value.entries) || [];
+          const tb = entryTableRef.value;
+          if (!rows.length || !tb) return;
+          let a = Math.floor(Number(entryRange.value.from) || 1);
+          let b = Math.floor(Number(entryRange.value.to) || rows.length);
+          if (a > b) { const t = a; a = b; b = t; }
+          a = Math.min(Math.max(a, 1), rows.length);
+          b = Math.min(Math.max(b, 1), rows.length);
+          rows.forEach((r, i) => tb.toggleRowSelection(r, i + 1 >= a && i + 1 <= b));
+          ElementPlus.ElMessage.success('已勾选第 ' + a + '–' + b + ' 条，共 ' + (b - a + 1) + ' 条');
+        }
+        function clearEntrySel() {
+          if (entryTableRef.value) entryTableRef.value.clearSelection();
+        }
+        async function downloadSelectedEntries() {
+          const rows = entrySel.value || [];
+          if (!rows.length) return;
+          const urls = rows.map(e => (e && e.url) || '').filter(u => u.startsWith('http'));
+          if (!urls.length) {
+            ElementPlus.ElMessage.warning('所选条目都没有单条链接，请改用「全部加入队列」整表下载');
+            return;
+          }
+          if (urls.length < rows.length) {
+            ElementPlus.ElMessage.warning('其中 ' + (rows.length - urls.length) + ' 条没有单条链接，已跳过');
           }
           urlText.value = urls.join('\n');
           opts.value.allow_playlist = false;
@@ -9417,6 +10898,68 @@
           while (x >= 1024 && i < u.length - 1) { x /= 1024; i++; }
           return x.toFixed(i ? 1 : 0) + ' ' + u[i];
         }
+        // 卡片上的大小：下载中显「已下 / 总量」，完成或还不知道进度时只显总量；服务端没给总量就整块不显示
+        function taskSize(t) {
+          const total = Number(t && t.total_bytes) || 0;
+          const done = Number(t && t.done_bytes) || 0;
+          if (!total) return '';
+          if (t.status === 'finished' || !done || done >= total) return formatSize(total);
+          return formatSize(done) + ' / ' + formatSize(total);
+        }
+        // 卡片下方那行「清晰度 · 已下/总量」：服务端没给出流信息时整段不显示
+        function taskSpec(t) {
+          return [(t && t.res_label) || '', taskSize(t)].filter(Boolean).join(' · ');
+        }
+        function taskSpecTitle(t) {
+          const bits = [];
+          if (t && t.res_label) bits.push('实际下到的流：' + t.res_label);
+          if (t && Number(t.total_bytes) > 0) bits.push('总量 ' + formatSize(t.total_bytes));
+          return bits.join('，');
+        }
+        function tierRows(info, kind) {
+          return ((info && info.tier_sizes) || []).filter(r => r && r.kind === kind);
+        }
+        // 视频档的实际体积：分流不带声音时，要再叠上当前「音频质量」档位那一份
+        function videoTierBytes(info, tier, audioTier) {
+          const v = tierRows(info, 'video').find(r => r.tier === tier);
+          if (!v) return 0;
+          let b = Number(v.bytes) || 0;
+          if (!v.has_audio) {
+            const rows = tierRows(info, 'audio');
+            const a = rows.find(r => r.tier === audioTier) || rows.find(r => r.tier === 'best');
+            b += Number(a && a.bytes) || 0;
+          }
+          return b;
+        }
+        // 相同体积的相邻档位并成一档：源里没有那一档时，实际下到的就是同一条流，两行数字没意义
+        function tierSizeGroup(tiers, bytesOf) {
+          const out = [];
+          tiers.forEach(t => {
+            const b = bytesOf(t);
+            if (!b) return;
+            const last = out[out.length - 1];
+            if (last && last.b === b) last.ts.push(t);
+            else out.push({ ts: [t], b });
+          });
+          const name = t => (t === 'best' ? '最佳' : t);
+          return out.map(g => g.ts.map(name).join('/') + ' ≈' + formatSize(g.b)).join(' · ');
+        }
+        // 每档画质的预估体积，显示在解析结果的「按清晰度选择」下面
+        const tierSizeText = computed(() => {
+          const info = mediaInfo.value;
+          if (!info || !(info.tier_sizes || []).length) return '';
+          const aq = opts.value.audio_quality || 'best';
+          const bits = [];
+          const vid = tierSizeGroup(videoQualities, t => videoTierBytes(info, t, aq));
+          if (vid) bits.push('视频＋音频：' + vid);
+          const aud = tierSizeGroup(audioQualities, t => {
+            const r = tierRows(info, 'audio').find(x => x.tier === t);
+            return Number(r && r.bytes) || 0;
+          });
+          if (aud) bits.push('只下音频：' + aud);
+          if (!bits.length) return '';
+          return '各档预估体积（音频按「音频质量」当前档位 ' + aq + ' 计）：' + bits.join('；') + '；实际大小以下到的流为准';
+        });
         // 播放量 / 粉丝数：折成中文习惯的万、亿；平台已格式化的字符串原样返回
         function formatCount(v) {
           const n = Number(v);
@@ -9448,6 +10991,36 @@
             await api('/api/logs/clear', { method: 'POST' });
             await loadLogs();
           } catch (_) {}
+        }
+        // 诊断包是发给别人看的：密钥和 Cookie 内容由后端摘掉，前端只负责把文件收下来
+        async function exportDiagnostics() {
+          const done = actionName('/api/diagnostics/export');
+          const tip = ElementPlus.ElMessage({ message: '正在打包诊断信息，请稍候…', duration: 0 });
+          try {
+            const res = await fetch('/api/diagnostics/export', { method: 'POST' });
+            if (!res.ok) {
+              let msg = '';
+              try { msg = (await res.json()).detail; } catch (_) { msg = res.statusText; }
+              throw new Error(friendlyError(msg || ('导出失败（HTTP ' + res.status + '）')));
+            }
+            const blob = await res.blob();
+            if (!blob.size) throw new Error('诊断包是空的，请查看运行日志中的原因');
+            const cd = res.headers.get('content-disposition') || '';
+            const name = (cd.match(/filename="?([^";]+)"?/) || [])[1] || 'diagnostics.zip';
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = name;
+            a.click();
+            URL.revokeObjectURL(url);
+            ElementPlus.ElMessage.success('已导出 ' + name + '（密钥与 Cookie 内容不在包里）');
+            logAction(done);
+          } catch (e) {
+            logAction(done + '（失败）', 'warning');
+            ElementPlus.ElMessage.error(e.message || '导出诊断包失败');
+          } finally {
+            tip.close();
+          }
         }
         // 日志和程序本体在同一个文件夹，报障时点这个按钮直接打开它取文件
         async function openLogDir() {
@@ -9508,15 +11081,48 @@
         }
         watch(() => settings.value.subtitle_glossary, () => checkGlossary(true));
 
+        const speedWinStat = ref(null);
+        let speedWinTimer = null;
+        function checkSpeedWindows(silent) {
+          const text = settings.value.speed_windows || '';
+          if (speedWinTimer) clearTimeout(speedWinTimer);
+          if (!text.trim()) { speedWinStat.value = null; return; }
+          speedWinTimer = setTimeout(async () => {
+            try {
+              const r = await api('/api/config/speed_windows/check', {
+                method: 'POST', body: JSON.stringify({ text }), noLog: !!silent,
+              });
+              speedWinStat.value = r;
+              if (silent) return;
+              if (r.errors && r.errors.length) {
+                ElementPlus.ElMessage.warning(`有 ${r.errors.length} 行看不懂：${r.errors[0]}`);
+              } else {
+                ElementPlus.ElMessage.success(
+                  `认出 ${r.count} 档，${r.now} ${r.current ? '按「' + r.current_note + '」限速' : '未命中时段，按全局限速'}`);
+              }
+            } catch (e) {
+              /* 格式体检失败不影响保存与下载 */
+            }
+          }, 300);
+        }
+        watch(() => settings.value.speed_windows, () => checkSpeedWindows(true));
+
         async function saveSettings(silent) {
           try {
-            await api('/api/config', {
+            const r = await api('/api/config', {
               method: 'POST',
               body: JSON.stringify(settings.value),
             });
             opts.value.download_dir = settings.value.download_dir;
             await loadStatus();
-            if (!silent) ElementPlus.ElMessage.success('已保存');
+            // 「自定义 yt-dlp 参数」里被拒绝或与界面冲突的项：参数串照旧存着，但要把没生效的点名出来
+            const notes = (r && r.ydl_arg_notes) || [];
+            if (notes.length && !silent) {
+              ElementPlus.ElMessage.warning('已保存，其中 ' + notes.length + ' 项参数没生效：'
+                + notes.slice(0, 3).join('；') + (notes.length > 3 ? ' 等' : ''));
+            } else if (!silent) {
+              ElementPlus.ElMessage.success('已保存');
+            }
           } catch (e) {
             if (!silent) ElementPlus.ElMessage.error(e.message);
             throw e;
@@ -9661,7 +11267,8 @@
             void c.offsetWidth; // 不强制回流，同名动画不会重放
             c.classList.add('is-enter');
           }
-          if (p === 'queue' || p === 'live') loadTasks();
+          if (p === 'queue' || p === 'live' || p === 'bt') loadTasks();
+          if (p === 'bt') { loadSeeding(); loadBtTrackers(); }
           if (p === 'live') loadLiveMonitors();
           if (p === 'history') loadHistory();
           if (p === 'log') loadLogs();
@@ -9750,7 +11357,8 @@
 
         /* ---- 超长列表统一分页：每页 50 条，翻页只换切片，排序与筛选始终作用于全量 ---- */
         const pagers = {
-          tasks: usePager(() => tasks.value),
+          queueTasks: usePager(() => queueTasks.value),
+          btTasks: usePager(() => btTasks.value),
           files: usePager(() => filteredFiles.value),
           history: usePager(() => historySorted.value),
           search: usePager(() => searchResults.value),
@@ -9781,7 +11389,7 @@
         });
 
         return {
-          page, navs, navGroups, CREDITS, appVersion, queueStat, subNewTotal, navBadge, navDot, pageTitle, urlText, urlPasteStat, extractUrls, friendlyError, glossaryStat, checkGlossary, exportBilingual, exportBilingualSelected, pipelineRow, pipelineView, showPipeline, closePipeline, refreshPipeline, rerunStage, pipeStatusLabel, pipeStatusType, opts, videoQualities, audioQualities, formats, codecOptions,
+          page, navs, navGroups, CREDITS, appVersion, queueStat, subNewTotal, navBadge, navDot, pageTitle, urlText, urlPasteStat, extractUrls, friendlyError, glossaryStat, checkGlossary, speedWinStat, checkSpeedWindows, exportBilingual, exportBilingualSelected, pipelineRow, pipelineView, showPipeline, closePipeline, refreshPipeline, rerunStage, pipeStatusLabel, pipeStatusType, opts, videoQualities, audioQualities, formats, codecOptions,
           pagers, favSort, onFavSortChange, musicSort, onMusicSortChange, tgSort, onTgSortChange,
           subLangOptions, subLangList, selectAllSubLangs, clearSubLangs, toggleSubLang,
           selectedIds, selectAll, queuePaused, taskSort, sseOn, toggleSelect, toggleSelectAll,
@@ -9792,7 +11400,7 @@
           applyPreset,
           pasteUrl, startDownload, stopAll, retryFailed, retrySelected, editTaskHeaders, reloadPlugins, pluginsInfo, cleanupParts, clearFinished,
           downloadSpecificFormat, openHistoryFile,
-          subs, subUrl, subMode, subIsTg, subAdding, subScanning, subBusy, subKindInfo, subKindMeta, subStatus, setSubAuto, subFirst, subAddCount, subAutoAdd, backfillSub, backfillRange, backfilling, openSubBackfill, closeSubBackfill, runSubBackfill, ruleSub, ruleSaving, ruleForm, ruleSubIsTg, ruleSubIsMusic, subRuleQualities, subRuleFormats, openSubRules, closeSubRules, saveSubRules,
+          subs, subUrl, subMode, subIsTg, subAdding, subScanning, subBusy, subKindInfo, subKindMeta, subStatus, setSubAuto, subFirst, subAddCount, subAutoAdd, backfillSub, backfillRange, backfilling, openSubBackfill, closeSubBackfill, runSubBackfill, subPlanSub, subPlan, subPlanLoading, subPlanArch, openSubPlan, closeSubPlan, loadSubPlan, runSubPlanNow, clearSubArchive, ruleSub, ruleSaving, ruleForm, ruleSubIsTg, ruleSubIsMusic, subRuleQualities, subRuleFormats, openSubRules, closeSubRules, saveSubRules,
           liveUrl, liveTasks, liveTasksActive, liveMonitorUrl, liveMonitors, tgTesting,
           isLiveRunning, fileBasename, openLiveFile, clearFinishedLiveTasks,
           sniffUrl, sniffLoading, sniffItems, sniffSelected, sniffDone, sniffDisplayItems, sniffMergeLoading, canSniffMerge, runSniff, sniffSelectAll, sniffSelectNone, sniffDownloadSelected, sniffDownloadOne, sniffDownloadMerge, copyText, browserSniff, browserSniffPort, browserSniffLoading, startBrowserSniff, stopBrowserSniff, clearBrowserSniff, pollBrowserSniff,
@@ -9810,27 +11418,40 @@
           musicCookieItems, musicCookieText, ncQrLoading, ncQrUrl, ncQrKey, ncQrMsg, ncQrImage,
           loadMusicCookies, saveMusicCookie, clearMusicCookie, startNeteaseQr, pollNeteaseQr,
           mediaEl, transcriptBox, transcript, mediaCueIdx, onMediaTimeUpdate, seekToCue, fmtClock, speakerTagType,
+          srtEdit, openSrtEditor, srtCloseEdit, srtDiscard, srtShiftSel, srtMerge, srtDrop, srtSave,
+          srtEditBox, srtQc, runSrtQc, runSrtRewrap, qcJumpTo,
           searchQuery, searchPlatform, searchContentType, searchSort, setSearchSort,
-          searchTotal, searchTruncated, searchNotes, SEARCH_PLAT_NAMES, searchResults, searching, platformCookies, syncFileInput,
+          searchTotal, searchTruncated, searchNotes, SEARCH_PLAT_NAMES, searchResults, searching, platformCookies, cookieIssueCount, syncFileInput,
           musicKeyword, musicResults, musicSearching, musicSourceErrors, musicNeedsMatch, musicdlVersion, musicdlReady, musicPreset, musicStrategy, saveMusicStrategy, musicSearchType, musicIncludeLocal, musicFilenameTemplate, musicEmbedMeta, musicSkipExisting, musicHideUnavailable, musicBlockReupload, musicIncludeReference, musicQualitySpec, musicQualityOptions, musicQualitySummary, refHint, openRefLink, player, playerEl, playerPlaying, playerTime, playerDur, playerVol, playerMuted, playerSeeking, playerSeekVal, playerStep, playerToggle, playerClose, playerSeek, onPlayerTick, onPlayerMeta, onPlayerEnded, musicLrcLines, musicLrcActive, previewMusicRow, probeMusicRow, switchMusicSource, musicSwitching, scanLocalMusic, musicSources, musicSourceOptions, musicMatchSourceOptions, musicPresetOptions, musicSourceOrdered, musicPlaylistUrl, musicPlaylistMode, saveMusicPlaylistMode, musicCookies, musicSelected, aiPipeline, analyzeAudioFile, aiDemucs, aiTts, installVoicePkgs, loadVoiceStatus, toggleRealtime, installingVoice, voiceStatusText, rtRecording, rtTranslate, rtTargetLang, rtLog, searchMusic, batchSearchDownload, applyMusicPreset, parseMusicPlaylist, onMusicSelection, downloadMusicSelected, downloadMusicRow, showAlreadyHave, musicFavItems, musicFavMissing, musicFavSelected, musicFavReadySel, musicFavSwitching, musicFavDownloading, onMusicFavSelection, addMusicFav, removeMusicFav, clearMusicFav, previewMusicFav, switchMusicFav, downloadMusicFav, loadMusicFavs, installMusicdl,
-          loadSubs, addSub, removeSub, toggleSub, scanOneSub, scanAllSubs, startLiveRecord, pauseLiveTask, resumeLiveTask, endLiveTask, endAllLive, cancelLiveTask, addLiveMonitor, removeLiveMonitor, pauseLiveMonitor, resumeLiveMonitor, scanLiveMonitors, loadLiveMonitors, testTelegram,
+          loadSubs, addSub, removeSub, toggleSub, scanOneSub, scanAllSubs, startLiveRecord, pauseLiveTask, resumeLiveTask, endLiveTask, endAllLive, cancelLiveTask, addLiveMonitor, removeLiveMonitor, pauseLiveMonitor, resumeLiveMonitor, scanLiveMonitors, loadLiveMonitors, liveRoomCfg, liveRoomFmts, liveRoomQualities, openLiveMonitorCfg, saveLiveMonitorCfg, liveMonitorCfgText, testTelegram,
           testWecom, applyRiskPreset, loadRiskPresets, loadFavTab, loadFavFolderItems, loadYtPlaylist, onFavSelChange,
           downloadFavSelected, downloadFavOne, subscribeFavSelected, subscribeFavOne, startBiliQr, pollBiliQr,
           isPlayable, isAudioFile, isMediaFile, isVideoFile, openPicard, mbTagFile, mbEnrichFile, fingerprintFile, guessTagsFile, isSrtFile, aiDemucs, aiTts, installVoicePkgs, loadVoiceStatus, toggleRealtime, installingVoice, voiceStatusText, rtRecording, rtTranslate, rtTargetLang, rtLog, aiTranscribe, aiTranslateSrt, aiCalibrateSrt, onFileSelectionChange, runBatchAi, runSrtCalibrateSelected,
           burnDlg, burnJob, burnStarting, burnSubChoices, burnOutName, burnRunning, burnPercent, burnStatusText, openBurn, closeBurn, startBurn, stopBurn,
           batchMode, batchScope, batchRunning, selectedFiles, syncOffsetSec, syncScale, syncInplace, playFile, zipPath, zipCurrentFolder,
-          doSearch, downloadSearchItem, analyzeSearchItem, subscribeSearchItem, normalizeSearchUrl, loadPlatformCookies, savePlatformCookie, savePlatformCookieText, browsePlatformCookie, exportSync, triggerImportSync, onImportSync,
+          doSearch, downloadSearchItem, analyzeSearchItem, subscribeSearchItem, normalizeSearchUrl, loadPlatformCookies, savePlatformCookie, savePlatformCookieText, clearCookieFlag, browsePlatformCookie, exportSync, triggerImportSync, onImportSync,
           importUrlFile, onUrlFile, urlFileInput, exportHistory,
+          torrentFileInput, torrentUploading, pickTorrentFile, onTorrentFile,
+          btText, btStarting, btLinkCount, btIgnoredCount, pasteBt, startBtDownload,
+          btTasks, queueTasks,
+          aria2Checking, aria2Info, checkAria2,
+          seedingRows, seedingNote, loadSeeding, stopSeed, stopAllSeeding, seedTotals, seedReadout,
+          btRuleTestName, btRuleTesting, btRuleTested, addBtRule, delBtRule, moveBtRule, testBtRule,
+          btFilesTask, btFileRows, btSelecting, btSourceLabel, btPicked, btPickAll,
+          btPickCount, btPickSize, toggleBtFiles, applyBtSelect,
+          btSeedOnly, btTrackerText, btTrackerNote, btTrackerLoading, btTrackerRefreshing,
+          loadBtTrackers, refreshBtTrackers,
+          btLimitTask, btLimitDl, btLimitUl, btLimitApplying, btLimitResult, toggleBtLimit, applyBtLimit,
           analyzing, analyzeUrl, analyze, analyzeFromInfoPage, pasteAnalyzeUrl,
-          downloadFromInfo, downloadEntry, downloadQualityPreset, downloadAllEntries, selectedQuality, copyText, copyFormats,
-          loadFiles, onFileRowClick, openFile, goParentDir, deleteFile, clearArchive, formatSize, formatCount, formatDuration,
+          downloadFromInfo, downloadEntry, downloadQualityPreset, downloadAllEntries, entryTableRef, entrySel, entryRange, onEntrySelection, entryAt, selectEntryRange, clearEntrySel, downloadSelectedEntries, selectedQuality, copyText, copyFormats,
+          loadFiles, onFileRowClick, openFile, goParentDir, deleteFile, clearArchive, formatSize, taskSize, taskSpec, taskSpecTitle, tierSizeText, thumbBroken, flashTaskId, formatCount, formatDuration,
           fileSearch, fileSort, filteredFiles, runFileAction, openDownloadFolder, testCookie, redownload, toggleDark,
           UI_THEMES, setTheme,
           loadStatus, checkEnv, updateYtdlp, updateFfmpeg,
           components, compInfo, updatingComp, latestBusy, verCmp, loadComponents, updateComponent, pathBusy, setEnvPath,
           compAll, compAllBusy, compTargets, compAllSummary, updateAllComponents,
           compUpdates, compCheckBusy, compCheckText, startCompCheck,
-          loadHistory, loadLogs, clearHistory, clearLogs, openLogDir, logLoc, saveSettings, saveAcoustid,
+          loadHistory, loadLogs, clearHistory, clearLogs, openLogDir, exportDiagnostics, logLoc, saveSettings, saveAcoustid,
           mirrorOpts, mirrorProbing, mirrorLabel, mirrorHint, probeMirrors,
           netInfo, netBusy, loadNetInfo, netVerdictText, netOverrideValue, setProxyOverride,
           useSystemProxy, resetNetwork,

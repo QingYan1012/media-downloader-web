@@ -769,10 +769,24 @@ def _norm_template(tpl: str) -> str:
     return re.sub(r"%\((\w+)\)(?:\.\d+[a-zA-Z]{1,2}|[a-zA-Z])?", sub, tpl)
 
 
+_NAME_UNSAFE_RE = re.compile(r'[\\/:*?"<>|\x00-\x1f\x7f\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]')
+_WIN_RESERVED_RE = re.compile(r"^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$", re.I)
+
+
+def _clean_name(s, max_len: int = 150) -> str:
+    """频道给的名字不可信：保留名在老版本 Windows 上建不出文件，零宽/方向控制符会把名字伪装成另一个样子。"""
+    s = _NAME_UNSAFE_RE.sub("_", str(s or "")).strip(" .")
+    s = s[:max_len].strip(" .")
+    # 截断之后才能查：截短本身可能把名字截成 CON/NUL
+    if _WIN_RESERVED_RE.match(s):
+        s = ("_" + s)[:max_len]
+    return s
+
+
 def _safe_name(template: str, msg, media, kind: str, size: int) -> str:
     name = _norm_template((template or "").strip())
     text = (msg.text or "").strip().replace("\n", " ")
-    title = re.sub(r'[\\/:*?"<>|\x00-\x1f]', " ", text)[:60].strip()
+    title = _clean_name(text, 60)
     fname = _media_name(msg, media, kind)
     ext = Path(fname).suffix.lstrip(".") or ("mp4" if kind == TYPE_VIDEO else "bin")
     if name:
@@ -785,7 +799,7 @@ def _safe_name(template: str, msg, media, kind: str, size: int) -> str:
     else:
         date = msg.date.strftime("%Y-%m-%d") if msg.date else ""
         name = f"{date} {title or fname}".strip()
-    name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", name).strip(" .") or f"tg-{msg.id}"
+    name = _clean_name(name) or f"tg-{msg.id}"
     if Path(name).suffix:
         return name[:150]
     return f"{name[:150]}.{ext}"

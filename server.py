@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -25,7 +27,7 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
-from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, parse_qs, quote, unquote, urlencode, urlsplit, urlunsplit
 
 import requests
 from fastapi import UploadFile, File, FastAPI, HTTPException, Request
@@ -43,6 +45,7 @@ if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 import pkg_update  # noqa: E402  同目录模块，必须等上面的 sys.path 引导之后才导得到
 import risk_control  # noqa: E402  同上：站点风控 / 登录墙 / 限流的判定
+import bt_trackers  # noqa: E402  同上：磁力/种子的 tracker 来源清单与运行时抓取
 TOOLS_DIR = APP_DIR / "tools"              # FFmpeg、yt-dlp
 COOKIES_DIR = APP_DIR / "cookies"          # Cookie 文件
 DEFAULT_COOKIE_FILE = COOKIES_DIR / "cookies.txt"
@@ -267,6 +270,10 @@ def normalize_url(url: str) -> str:
     if not u:
         return u
     low = u.lower()
+    # 磁力与本地种子文件的参数就是内容标识本身（xt=urn:btih、tr、dn），
+    # 一旦被当统计参数删掉，同一个种子会排成两条任务，去重也就失效了
+    if low.startswith(("magnet:", "file://")) or low.endswith(".torrent"):
+        return u
     # 抖音：精选页 modal_id / share / aweme_id
     if "douyin.com" in low or "iesdouyin.com" in low:
         for pat in (
@@ -370,6 +377,14 @@ def url_dedup_key(url: str) -> str:
     if m:
         p = _BILI_PART_RE.search(u)
         return f"bili:{m.group(1)}" + (f":p{p.group(1)}" if p and p.group(1) != "1" else "")
+    # 磁力：同一内容换个 tracker / 换个 dn 还是同一个种子，只能按 info hash 认
+    bt = parse_torrent_ref(u)
+    if bt:
+        if bt["kind"] == "magnet":
+            return f"btih:{bt['info_hash']}"
+        ident = torrent_file_identity(bt["path"])
+        # 本地种子能算出 info 段哈希就和磁力共用 btih:，同一个内容不管从哪个入口进来都合成一条
+        return ("btih:" + ident) if len(ident) == 40 else "torrent-file:" + ident
     return u
 
 
@@ -1032,27 +1047,23 @@ def _split_balanced(line: str, max_units: float, k: int) -> List[str]:
 
 
 def wrap_subtitle_text(text: str, max_units: float = 16.0, max_lines: int = 3) -> str:
-    """按显示宽度加权换行：中文记 1、英文记 0.5，每行不超宽，整条最多 max_lines 行。"""
+    """按显示宽度加权换行：中文记 1、英文记 0.5，每行不超宽，整条最多 max_lines 行。
+
+    先把已有的断行接回正文再重排：同一句无论点几次「重排」都断在同一处，不会每次都挪。
+    """
     lines = [ln.strip() for ln in (text or "").split("\n") if ln.strip()]
     if not lines:
         return ""
+    flow = ""
+    for part in lines:
+        wide_join = _char_units(flow[-1]) == 1.0 and _char_units(part[0]) == 1.0 if flow else False
+        flow += ("" if wide_join else " ") + part if flow else part
     if max_lines <= 1:
-        return "\n".join(lines)
-    out: List[str] = []
-    for ln in lines:
-        need = int(-(-text_units(ln) // max_units))
-        if need <= 1:
-            out.append(ln)
-            continue
-        out.extend(_split_balanced(ln, max_units, min(need, max_lines)))
-    if len(out) > max_lines:
-        tail = out[max_lines - 1 :]
-        merged = tail[0]
-        for part in tail[1:]:
-            seam = " " if not (part and _char_units(merged[-1]) == 1.0 and _char_units(part[0]) == 1.0) else ""
-            merged = merged + seam + part
-        out = out[: max_lines - 1] + [merged]
-    return "\n".join(out)
+        return flow
+    need = int(-(-text_units(flow) // max_units))
+    if need <= 1:
+        return flow
+    return "\n".join(_split_balanced(flow, max_units, min(need, max_lines)))
 
 
 def wrap_cues(cues: List[dict], max_units: float = 16.0, max_lines: int = 3) -> List[dict]:
@@ -1211,17 +1222,17 @@ def write_vtt(cues: List[dict]) -> str:
 
 
 def _srt_ts_to_ms(ts: str) -> int:
-    """00:01:02,300 或 00:01:02.300 → 毫秒"""
+    """00:01:02,300 或 00:01:02.300 → 毫秒
+
+    毫秒那一段按**位数**换算，不能按数值大小猜：`00:00:10,040` 是 40 毫秒，
+    若看 int 值是 40 就当两位小数乘 10，会变成 400 毫秒，整条字幕晚 0.36 秒。
+    """
     ts = (ts or "").strip().replace(".", ",")
     m = re.match(r"(\d+):(\d+):(\d+),(\d+)", ts)
     if not m:
         return 0
-    h, mi, s, ms = int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
-    if ms < 10:
-        ms *= 100
-    elif ms < 100:
-        ms *= 10
-    return ((h * 60 + mi) * 60 + s) * 1000 + ms
+    h, mi, s, frac = int(m.group(1)), int(m.group(2)), int(m.group(3)), m.group(4)
+    return ((h * 60 + mi) * 60 + s) * 1000 + int(frac[:3]) * 10 ** max(0, 3 - len(frac))
 
 
 def _ms_to_srt_ts(ms: int) -> str:
@@ -1383,6 +1394,145 @@ def apply_glossary(text: str, pairs: List[Tuple[str, str]]) -> str:
         if n:
             out = candidate
     return out
+
+
+QC_KIND_LABELS = {
+    "empty": "没有译文",
+    "same": "没翻译",
+    "untranslated": "没换成目标语言",
+    "short": "疑似漏译",
+    "long": "疑似加戏",
+    "term": "术语没照表",
+    "number": "数字对不上",
+    "repeat": "疑似复读",
+    "over": "超出每行字数",
+    "tag": "样式标签丢失",
+}
+# 这些类型可以靠模型再看一遍重写；超行是换行的事、标签丢失是格式的事，反射修不了
+QC_REFLECT_KINDS = ("same", "untranslated", "short", "long", "term", "number", "repeat")
+_CJK_TXT_RE = re.compile(r"[　-〿぀-ヿ一-鿿豈-﫿가-힯]")
+_TAG_TXT_RE = re.compile(r"</?[iubIan]\b[^>]*>")
+_NUM_TXT_RE = re.compile(r"\d+(?:[.,]\d+)*")
+
+
+def _qc_norm(s: str) -> str:
+    return re.sub(r"[\W_]+", "", (s or "").lower(), flags=re.UNICODE)
+
+
+def _qc_nums(s: str) -> set:
+    t = re.sub(r"(?<=\d),(?=\d{3}(?:\D|$))", "", s or "")  # 千分位逗号不当小数点
+    return set(_NUM_TXT_RE.findall(t))
+
+
+# 汉字写的数：「一」在中文里太常用，单个数字要字形对上才算，多位数要看有没有一段同样长的汉字数字
+_QC_CN_NUM_RE = re.compile(r"[〇零一二两三四五六七八九十百千万亿]+")
+_QC_CN_ONE = {"0": "〇零", "1": "一", "2": "二两", "3": "三", "4": "四",
+              "5": "五", "6": "六", "7": "七", "8": "八", "9": "九"}
+
+
+def _qc_num_spelled(dst: str, num: str) -> bool:
+    """原文的数字在译文里有没有用汉字写出来。"""
+    d = (num.split(".")[0] or "").lstrip("-")
+    if not d.isdigit():
+        return False
+    if len(d) == 1:
+        return any(c in dst for c in _QC_CN_ONE.get(d, ""))
+    return any(len(run) >= len(d) for run in _QC_CN_NUM_RE.findall(dst))
+
+
+def qc_cue_pairs(
+    orig_texts: List[str],
+    trans_texts: List[str],
+    *,
+    target_lang: str = "zh",
+    glossary: Optional[List[Tuple[str, str]]] = None,
+    max_units: float = 16.0,
+    max_lines: int = 3,
+) -> List[dict]:
+    """机翻字幕对照质检：只报能当场判定的可疑句，回 [{i, kinds, why}]（i 从 1 开始）。
+
+    orig_texts 传空串就是跳过所有需要原文的规则 —— 手上只有译文时也能自查换行与复读。
+    """
+    lang = (target_lang or "zh").strip().lower()
+    cjk_target = lang.startswith(("zh", "ja", "ko", "yue"))
+    rows: List[dict] = []
+    prev_dst = ""
+    for i in range(min(len(orig_texts), len(trans_texts))):
+        src = (orig_texts[i] or "").strip()
+        dst = (trans_texts[i] or "").strip()
+        kinds: List[str] = []
+        why: List[str] = []
+        if not dst:
+            if src:
+                kinds.append("empty")
+                why.append("这一句没有译文")
+        else:
+            if src and re.search(r"[A-Za-z]{4}", src) and _qc_norm(dst) == _qc_norm(src):
+                kinds.append("same")
+                why.append("译文和原文一字不差，等于没翻")
+            lines = [ln.strip() for ln in dst.split("\n") if ln.strip()]
+            worst = max((text_units(ln) for ln in lines), default=0.0)
+            if len(lines) > max_lines or worst > max_units * 1.25:
+                kinds.append("over")
+                why.append(
+                    f"最长一行 {worst:g} 个全角宽、整句 {len(lines)} 行，"
+                    f"超出每行 ≤{max_units:g} / 最多 {max_lines} 行"
+                )
+            if i and dst == prev_dst and text_units(dst) >= 6:
+                kinds.append("repeat")
+                why.append("和上一句的译文完全相同，疑似模型复读")
+            tags = _TAG_TXT_RE.findall(src)
+            if tags and not _TAG_TXT_RE.findall(dst):
+                kinds.append("tag")
+                why.append(f"原文的样式标签 {tags[0]} 在译文里丢了")
+            us, ud = text_units(src), text_units(dst)
+            if src and us >= 8:
+                lo, hi = (0.25, 1.6) if cjk_target else (0.6, 3.0)
+                if ud < us * lo:
+                    kinds.append("short")
+                    why.append(f"译文只有 {ud:g} 个全角宽，原文有 {us:g}，可能整段没译")
+                elif ud > us * hi:
+                    kinds.append("long")
+                    why.append(f"译文 {ud:g} 个全角宽，原文只有 {us:g}，可能加了原文没有的内容")
+            # 一字不差时「没换成目标语言」是同一件事的另一种说法，只留更准的那条
+            if (cjk_target and src and "same" not in kinds
+                    and re.search(r"[A-Za-z]{4}", src) and not _CJK_TXT_RE.search(dst)):
+                kinds.append("untranslated")
+                why.append(f"目标语言是 {_mt_target_name(target_lang)}，这一句里没有出现对应的文字")
+            if src:
+                ns_, nd_ = _qc_nums(src), _qc_nums(dst)
+                lost = [n for n in sorted(ns_ - nd_) if not _qc_num_spelled(dst, n)]
+                if lost:
+                    kinds.append("number")
+                    shown = " / ".join(lost[:3]) + ("…" if len(lost) > 3 else "")
+                    why.append(f"原文里的数字 {shown} 在译文里找不到")
+        for term, want in (glossary or []):
+            if not src or term == want:
+                continue
+            rx = _glossary_term_re(term)
+            if rx.search(src) and want not in dst and not rx.search(dst):
+                kinds.append("term")
+                why.append(f"术语「{term}」表里要求写作「{want}」，这一句两头都没沾")
+        if kinds:
+            rows.append({"i": i + 1, "kinds": kinds, "why": why})
+        prev_dst = dst
+    return rows
+
+
+def qc_stats(rows: List[dict]) -> dict:
+    st: dict = {}
+    for r in rows:
+        for k in set(r.get("kinds") or []):
+            st[k] = st.get(k, 0) + 1
+    return st
+
+
+def qc_stats_text(rows: List[dict]) -> str:
+    st = qc_stats(rows)
+    return " · ".join(
+        f"{QC_KIND_LABELS.get(k, k)} {v}" for k, v in sorted(st.items(), key=lambda x: (-x[1], x[0]))
+    )
+
 
 
 def _translate_batch_deepl(texts: List[str], target: str, source: str = "", log: Callable = print) -> List[str]:
@@ -1586,6 +1736,139 @@ def _translate_batch_gemini(texts: List[str], target: str, source: str = "", log
     return results
 
 
+LLM_REFLECT_KINDS = {
+    "openai": "openai", "gpt": "openai", "openrouter": "openai",
+    "claude": "anthropic", "anthropic": "anthropic",
+    "gemini": "gemini", "google-ai": "gemini",
+}
+REFLECT_BATCH = 25
+REFLECT_CAP = 80
+_REFLECT_NO_RE = re.compile(r"(\d+)\s*[.)、:：]\s*(.*)$")
+
+
+def _parse_reflect_lines(content: str, n: int, fallback: List[str]) -> List[str]:
+    """反射修正只收带序号的行。
+
+    模型改成讲道理、合并成一段时按位置硬套会把说明抄进字幕，宁可整句留着第一遍的译文。
+    """
+    outs: List[str] = []
+    for ln in (content or "").splitlines():
+        m = _REFLECT_NO_RE.match(ln.strip().lstrip("*#>- ").strip())
+        if not m:
+            continue
+        if len(outs) < n:
+            outs.append((m.group(2).strip().strip("*`_").strip() or fallback[len(outs)]))
+    while len(outs) < n:
+        outs.append(fallback[len(outs)] if len(outs) < len(fallback) else "")
+    return outs[:n]
+
+
+def _reflect_blocks(items: List[Tuple[str, str, str]]) -> str:
+    parts = []
+    for j, (src, cur, why) in enumerate(items):
+        parts.append(f"{j + 1}.\nSOURCE: {src}\nCURRENT: {cur}\nPROBLEM: {why}")
+    return "\n".join(parts)
+
+
+def _reflect_system(target: str) -> str:
+    return (
+        "You are a professional subtitle editor reviewing machine translation. "
+        f"The target language is {_mt_target_name(target)}. "
+        "Each block gives a SOURCE line, its CURRENT TRANSLATION and the problem detected. "
+        "Rewrite each translation so it is complete, faithful and reads naturally as a subtitle. "
+        "Output exactly one numbered line per block containing only the corrected translation "
+        "in the target language - no notes, no alternatives, no explanation."
+        + glossary_prompt_block()
+    )
+
+
+def _reflect_batch(
+    provider: str,
+    items: List[Tuple[str, str, str]],
+    target: str,
+    log: Callable = print,
+) -> List[str]:
+    """反射修正：可疑句连原文带现译一起交给对话模型再看一遍，回每句的重译（拿不到就留原译）。"""
+    kind = LLM_REFLECT_KINDS.get((provider or "").strip().lower())
+    if not kind:
+        raise RuntimeError(f"{provider} 不是对话模型，做不了反射修正")
+    outs: List[str] = []
+    prompt_system = _reflect_system(target)
+    for i in range(0, len(items), REFLECT_BATCH):
+        chunk = items[i : i + REFLECT_BATCH]
+        fallback = [c[1] for c in chunk]
+        user = _reflect_blocks(chunk)
+        content = ""
+        if kind == "openai":
+            key = (cfg.data.get("openai_api_key") or "").strip()
+            if not key:
+                raise RuntimeError("未配置 OpenAI API Key（设置 → 字幕翻译）")
+            base = (cfg.data.get("openai_base_url") or "https://api.openai.com/v1").rstrip("/")
+            model = (cfg.data.get("openai_model") or "gpt-4o-mini").strip()
+            r = requests.post(
+                f"{base}/chat/completions",
+                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                json={
+                    "model": model,
+                    "temperature": 0.2,
+                    "messages": [
+                        {"role": "system", "content": prompt_system},
+                        {"role": "user", "content": user},
+                    ],
+                },
+                timeout=180,
+            )
+            if r.status_code >= 400:
+                raise RuntimeError(f"OpenAI HTTP {r.status_code}: {r.text[:300]}")
+            content = (((r.json().get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+        elif kind == "anthropic":
+            key = (cfg.data.get("anthropic_api_key") or "").strip()
+            if not key:
+                raise RuntimeError("未配置 Anthropic API Key（Claude）")
+            model = (cfg.data.get("anthropic_model") or "claude-sonnet-4-20250514").strip()
+            r = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={"x-api-key": key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"},
+                json={
+                    "model": model,
+                    "max_tokens": 4096,
+                    "temperature": 0.2,
+                    "system": prompt_system,
+                    "messages": [{"role": "user", "content": user}],
+                },
+                timeout=180,
+            )
+            if r.status_code >= 400:
+                raise RuntimeError(f"Claude HTTP {r.status_code}: {r.text[:300]}")
+            for p in r.json().get("content") or []:
+                if isinstance(p, dict) and p.get("type") == "text":
+                    content += p.get("text") or ""
+            content = content.strip()
+        else:
+            key = (cfg.data.get("gemini_api_key") or "").strip()
+            if not key:
+                raise RuntimeError("未配置 Gemini API Key")
+            model = (cfg.data.get("gemini_model") or "gemini-2.0-flash").strip()
+            r = requests.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}",
+                headers={"Content-Type": "application/json"},
+                json={
+                    "contents": [{"parts": [{"text": prompt_system + "\n\n" + user}]}],
+                    "generationConfig": {"temperature": 0.2},
+                },
+                timeout=180,
+            )
+            if r.status_code >= 400:
+                raise RuntimeError(f"Gemini HTTP {r.status_code}: {r.text[:300]}")
+            try:
+                content = ((r.json().get("candidates") or [{}])[0]["content"]["parts"][0]["text"]).strip()
+            except Exception:
+                content = ""
+        outs.extend(_parse_reflect_lines(content, len(chunk), fallback))
+        log(f"反射修正已处理 {min(i + REFLECT_BATCH, len(items))}/{len(items)}")
+    return outs
+
+
 def _google_lang_code(code: str) -> str:
     c = (code or "zh").lower()
     return {
@@ -1716,6 +1999,7 @@ def translate_srt_file(
         "free": _dt_fn,
     }
     auto_fb = cfg.data.get("translate_auto_fallback", True)
+    used = provider
     if auto_fb:
         from voice_tools import translate_with_fallback
         translated, used = translate_with_fallback(
@@ -1730,6 +2014,7 @@ def translate_srt_file(
         translated = fn(texts, target_lang, source_lang, log)
 
     timings = [c.get("timing") for c in cues]
+    raw_trans: List[str] = []
     fixed = 0
     for c, t in zip(cues, translated):
         t = t or c["text"]
@@ -1739,19 +2024,71 @@ def translate_srt_file(
                 fixed += 1
                 t = g
         c["text"] = t
+        raw_trans.append(t)
     if glossary and fixed:
         log(f"术语表统一了 {fixed} 条字幕的译名")
 
     max_units = float(cfg.data.get("subtitle_wrap_width") or 16)
     max_units = max(8.0, min(40.0, max_units))
+    max_lines = int(cfg.data.get("subtitle_wrap_lines") or 3)
+    max_lines = max(1, min(4, max_lines))
     do_wrap = bool(cfg.data.get("subtitle_wrap", True))
+
+    def _wrap(raw: List[str]) -> List[dict]:
+        cues2 = [{"timing": tm, "text": tx} for tm, tx in zip(timings, raw)]
+        return wrap_cues(cues2, max_units, max_lines) if do_wrap else cues2
+
+    trans_cues = _wrap(raw_trans)
+    orig_cues = _wrap(texts)
     if do_wrap:
-        trans_cues = wrap_cues(cues, max_units)
-        orig_cues = wrap_cues([{"timing": tm, "text": tx} for tm, tx in zip(timings, texts)], max_units)
-        log(f"字幕换行: 每行 ≤{max_units:g} 个全角宽（中英文按显示宽度加权）")
-    else:
-        trans_cues = [dict(c) for c in cues]
-        orig_cues = [{"timing": tm, "text": tx} for tm, tx in zip(timings, texts)]
+        log(f"字幕换行: 每行 ≤{max_units:g} 个全角宽、最多 {max_lines} 行（中英文按显示宽度加权）")
+
+    qc_rows: List[dict] = []
+    if bool(cfg.data.get("subtitle_qc", True)):
+        qc_rows = qc_cue_pairs(
+            texts, [c["text"] for c in trans_cues], target_lang=target_lang,
+            glossary=glossary, max_units=max_units, max_lines=max_lines,
+        )
+        if qc_rows:
+            log(f"字幕质检: {len(qc_rows)} 句可疑（{qc_stats_text(qc_rows)}）")
+            for r in qc_rows[:20]:
+                log(f"  可疑第 {r['i']} 句: " + "；".join(r["why"]), "warning")
+            if len(qc_rows) > 20:
+                log(f"  其余 {len(qc_rows) - 20} 句同上，逐句校对台里能看全")
+        else:
+            log("字幕质检: 没有发现可疑句")
+
+        fixable = [r for r in qc_rows if set(r["kinds"]) & set(QC_REFLECT_KINDS)]
+        if fixable and bool(cfg.data.get("subtitle_qc_reflect", False)):
+            picked = fixable[:REFLECT_CAP]
+            if len(fixable) > REFLECT_CAP:
+                log(f"可疑 {len(fixable)} 句，本轮只反射修正前 {REFLECT_CAP} 句")
+            try:
+                answers = _reflect_batch(
+                    used, [(texts[r["i"] - 1], raw_trans[r["i"] - 1], "；".join(r["why"])) for r in picked],
+                    target_lang, log,
+                )
+            except Exception as e:
+                answers = []
+                log(f"反射修正没做成（{e}），保留第一遍译文", "warning")
+            applied = 0
+            for r, ans in zip(picked, answers):
+                a = (ans or "").strip()
+                k = r["i"] - 1
+                if a and a != raw_trans[k]:
+                    raw_trans[k] = apply_glossary(a, glossary) if glossary else a
+                    applied += 1
+            if applied:
+                log(f"反射修正重写了 {applied} 句，重新换行并复检")
+                trans_cues = _wrap(raw_trans)
+                re_rows = qc_cue_pairs(
+                    texts, [c["text"] for c in trans_cues], target_lang=target_lang,
+                    glossary=glossary, max_units=max_units, max_lines=max_lines,
+                )
+                log(f"复检: 仍有 {len(re_rows)} 句可疑" + (f"（{qc_stats_text(re_rows)}）" if re_rows else ""))
+                qc_rows = re_rows
+        elif fixable:
+            log("反射修正没开（设置 → 字幕翻译），可疑句只报告不改动")
 
     suffix = target_lang.lower().replace("en-us", "en").replace("zh-cn", "zh").replace("zh-hans", "zh")
     out = p.with_name(p.stem + f".{suffix}.srt")
@@ -1762,8 +2099,9 @@ def translate_srt_file(
 
     export_set = str(cfg.data.get("subtitle_export_set") or "single").strip().lower()
     if export_set in ("bilingual", "all", "full", "双语", "全部"):
-        bi_trans = wrap_cues(cues, max_units, 2) if do_wrap else trans_cues
-        bi_orig = wrap_cues([{"timing": tm, "text": tx} for tm, tx in zip(timings, texts)], max_units, 2) if do_wrap else orig_cues
+        bi_lines = max(1, min(2, max_lines))
+        bi_trans = wrap_cues([{"timing": tm, "text": tx} for tm, tx in zip(timings, raw_trans)], max_units, bi_lines) if do_wrap else trans_cues
+        bi_orig = wrap_cues([{"timing": tm, "text": tx} for tm, tx in zip(timings, texts)], max_units, bi_lines) if do_wrap else orig_cues
         bi = merge_bilingual_cues(bi_trans, bi_orig)
         bi_srt = p.with_name(f"{p.stem}.{suffix}.bi.srt")
         bi_srt.write_text(write_srt(bi), encoding="utf-8")
@@ -1910,6 +2248,59 @@ def download_bilibili_danmaku(url: str, out_dir: str, base_name: str, proxy: str
         return [str(xml_path)]
     log(f"弹幕已保存: {xml_path.name} / {ass_path.name}")
     return [str(xml_path), str(ass_path)]
+
+
+def _stop_live_recorder_children(hints: List[str], log: Callable = None) -> List[str]:
+    """结束直播录制时把 yt-dlp 派出去拉流的 ffmpeg 子进程收掉。
+
+    停止标记只是让 Python 侧别再开新场次：HLS 直播是由 ffmpeg 直接写文件的，它的 stderr
+    是静默的，progress_hook 全程不回调，所以任务已经标成「已结束」、这个子进程还在往成品里
+    写（文件一直变大、也删不掉，下次扫描还会撞上没写完的那一份）。只认「本程序派下的 +
+    命令行里点名了这场成品」的那几个；认不出来就只在本目录恰好只剩一路拉流时收，
+    分不清是谁的宁可不杀，免得误伤另一间房 or 用户自己的 ffmpeg。
+    """
+    killed: List[str] = []
+    try:
+        import psutil
+    except Exception:
+        if log:
+            log("缺 psutil，结束录制时没法核对拉流子进程：成品可能还在变大", "warning")
+        return killed
+    me = os.getpid()
+    cands = []
+    for p in psutil.process_iter(["pid", "ppid", "name", "cmdline"]):
+        try:
+            if int(p.info.get("ppid") or -1) != me:
+                continue
+            nm = str(p.info.get("name") or "").lower()
+            if not (nm.startswith("ffmpeg") or nm.startswith("avconv")):
+                continue
+            cmd = " ".join(p.info.get("cmdline") or [])
+            if "://" not in cmd:
+                # 拉流子进程的输入是 URL；本机转码/剪辑的输入都是本地文件，靠这条分开
+                continue
+            cands.append((p, cmd))
+        except Exception:
+            continue
+    if not cands:
+        return killed
+    targets = [(p, c) for p, c in cands if any(h and h in c for h in (hints or []))]
+    if not targets and len(cands) == 1:
+        targets = list(cands)
+    for p, _ in targets:
+        try:
+            p.terminate()
+            try:
+                p.wait(5)
+            except Exception:
+                p.kill()
+            killed.append(str(p.pid))
+            if log:
+                log(f"已结束这一场的拉流子进程（PID {p.pid}），成品不再继续变大")
+        except Exception as e:
+            if log:
+                log(f"拉流子进程 PID {p.pid} 没能收掉: {e}", "warning")
+    return killed
 
 
 def _find_recent_media_files(out_dir: str, hint: str = "", within_sec: int = 86400) -> List[str]:
@@ -2699,7 +3090,10 @@ class DownloadTask:
     eta: str = ""
     error_msg: str = ""
     filepath: str = ""
-    res_label: str = ""
+    res_label: str = ""         # 卡片上的清晰度/格式标签，下载中由进度回调填入
+    thumbnail: str = ""         # 封面图 URL，同上
+    total_bytes: int = 0        # 本次任务总字节，进度回调填入
+    done_bytes: int = 0         # 已下载字节
     is_live: bool = False
     started_at: str = ""
     chat_file: str = ""
@@ -2710,6 +3104,15 @@ class DownloadTask:
     retry_count: int = 0       # 已重试次数
     max_retries: int = 3       # 最大重试
     resume_hint: str = ""      # 断点提示：续传 / 新任务 / 有.part
+    kind: str = "link"            # link=常规链接；torrent=磁力/种子文件（走 aria2）
+    files: List[dict] = field(default_factory=list)  # 种子内文件清单，拿到元数据后填
+    result_dir: str = ""          # 种子落盘目录（多个文件时用它兜底）
+    category: str = ""            # 自动分类命中的规则名，空=没走规则
+    gid: str = ""                 # aria2 的下载 id：停种、改选文件都要它
+    seeding: bool = False         # 下完后是否还在做种
+    uploaded: int = 0             # 已上传字节
+    share_ratio: float = 0.0      # 上传 / 下载比率
+    seed_seconds: int = 0         # 已做种秒数
 
     def to_dict(self):
         d = asdict(self)
@@ -2774,6 +3177,9 @@ class ConfigManager:
         "subtitle_glossary": "",  # 术语表：一行一条「原文 -> 译文」，# 开头为注释
         "subtitle_wrap": True,  # 成品字幕按显示宽度加权换行（中 1 / 英 0.5）
         "subtitle_wrap_width": 16,  # 每行最多多少个全角宽
+        "subtitle_wrap_lines": 3,  # 每条字幕最多几行
+        "subtitle_qc": True,  # 机翻后对照质检，可疑句写进运行日志
+        "subtitle_qc_reflect": False,  # 可疑句再交对话模型改一遍（要花 token）
         "subtitle_export_set": "single",  # single|bilingual|all 单语 / +双语SRT / +VTT+ASS
         "deepl_api_key": "",
         "deepl_api_url": "",  # 空则按 key 自动 free/pro
@@ -2800,6 +3206,8 @@ class ConfigManager:
         "playlist_end": 0,
         "playlist_items": "",
         "max_retries": 3,
+        # 自定义 yt-dlp 参数：一行命令行式参数，解析与下载都按它走（危险项与冲突项点名后忽略）
+        "ytdlp_extra_args": "",
         "musicdl_cookies": "",
         # 各音乐平台自己的登录 Cookie：{平台: {"cookie": "k=v; ...", "via": "扫码登录", "at": "..."}}
         # 只写进本机 config.json，分享包与日志都不带值
@@ -2885,6 +3293,7 @@ class ConfigManager:
         "max_per_host": 2,
         "adaptive_throttle": True,  # 命中 429 后自动把该站点并发降到 1 并冷却
         "global_speed_limit": "",  # 全局限速，如 2M；空=不限
+        "speed_windows": "",  # 限速时段，一行一条：00:00-08:00 -> 2M
         # 解析插件
         "plugins_enabled": True,
         # aria2 可选后端
@@ -2893,6 +3302,23 @@ class ConfigManager:
         "aria2_secret": "",
         "aria2_split": 8,
         "aria2_for_large_mb": 50,  # 直链超过该 MB 自动尝试 aria2（即使未全局开启）
+        "aria2_bin": "",  # aria2c 的路径，空=自己找（tools/ → PATH → 环境变量）
+        "aria2_autostart": True,  # RPC 没人应答时，由程序拉起一个只监听 127.0.0.1 的 aria2c
+        # 磁力/种子：下载完转做种，传到比率或做满时长就停（两个都设 0 = 一直做种，只能手动停）
+        "torrent_seed_ratio": 1.0,
+        "torrent_seed_time": 3600,
+        "torrent_meta_timeout": 180,  # 等种子元数据的上限，超了就说明这会儿没人在做种
+        # 磁力/种子加料（参照 qBittorrent-Enhanced-Edition）：tracker 只存来源地址，正文运行时抓、只落本机
+        "bt_trackers": "",           # 自己加的 announce 地址，一行一个，排在抓来的前面
+        "bt_tracker_sources": "\n".join(s["url"] for s in bt_trackers.DEFAULT_SOURCES),
+        "bt_tracker_auto_update": True,
+        "bt_tracker_max": 30,        # 一次注入多少条：announce 是串行问的，堆太多首轮会很慢
+        "bt_dl_limit": "",           # 每个种子任务的下载限速，aria2 认 1M / 512K，空=不限
+        "bt_ul_limit": "",           # 每个种子任务的上传限速（做种也吃这条）
+        "bt_prioritize_piece": False,  # 先下每个文件的首尾各 1M，边下边预览用得上
+        # 自动分类（参照 qBittorrent 的分类/自动追加）：按种子里的名字决定存到下载目录下的哪个子目录
+        "bt_auto_rules": [],         # [{name, mode: contains|regex, pattern, subdir, enabled}]，从上往下第一条命中生效
+        "bt_auto_fallback": "",      # 一条规则都没命中时存到这里（空=就用默认下载目录）
         "http_impersonate": True,  # 用 curl_cffi 模拟浏览器 TLS，降低 403
         "po_provider_enabled": False,  # 有 bgutil PO Token 服务时才试需要票的播放器客户端
         "po_provider_url": "http://127.0.0.1:4416",
@@ -3904,8 +4330,19 @@ def download_hls_with_engine(
         return False, ""
 
 
+# Windows 保留名（CON/NUL/COM1…）带扩展名一样禁用；Win11 24H2 起系统放开了，
+# 但便携包用户不一定在 24H2，仍按最老系统的口径收掉
+# 后缀段允许多个点（nul.tar.gz 在老系统同样指向设备），裸字母后缀不算（com1abc 是合法名字）
+_WIN_RESERVED_RE = re.compile(r"^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$", re.I)
+# 零宽与方向控制符：列表里看着是正常名字，实际写盘是另一个名字（可用来伪装 .exe.txt）
+_BIDI_CTRL_RE = re.compile(r"[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff\u2060]")
+
+
 def safe_filename_component(s: str, max_len: int = 60) -> str:
-    """Windows 安全文件名片段：去掉 <>:"/\\|?* 及全角同形字符，限制长度。"""
+    """Windows 安全文件名片段：去掉 <>:"/\\|?* 及全角同形字符，限制长度。
+
+    上游标题里的保留名、方向控制符、首尾点都会让写盘失败或写出误导性名字，所以一并收掉。
+    """
     if not s:
         return "download"
     s = str(s)
@@ -3919,13 +4356,14 @@ def safe_filename_component(s: str, max_len: int = 60) -> str:
         "\n": " ", "\r": " ", "\t": " ", "\x00": "",
     })
     s = s.translate(trans)
-    s = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", s)
+    s = re.sub(r'[<>:"/\\|?*\x00-\x1f\x7f]', "_", s)
+    s = _BIDI_CTRL_RE.sub("", s)
     s = re.sub(r"\s+", " ", s).strip(" .")
-    # 去掉 Windows 保留名
-    if s.upper() in {"CON", "PRN", "AUX", "NUL", "COM1", "LPT1"}:
-        s = f"_{s}"
     if len(s) > max_len:
         s = s[:max_len].rstrip(" .")
+    # 保留名要在截断之后再查：截短本身可能把名字截成 CON/NUL
+    if _WIN_RESERVED_RE.match(s):
+        s = ("_" + s)[:max_len]
     return s or "download"
 
 
@@ -4001,11 +4439,313 @@ def po_token_health(*, force: bool = False, timeout: float = 2.5,
     return dict(_PO_CACHE, cached=False)
 
 
+# ---------- 自定义 yt-dlp 参数 ----------
+# 「设置 → 下载行为」里可以写一行 yt-dlp 命令行参数（下载页还能给单批任务临时换一串），
+# 例如 --socket-timeout 60 -N 4。解析完全跟着本机 yt-dlp 的参数表走：
+# shlex 切词 → 查它注册过的参数决定每个写法吃几个值 → 危险项和与软件冲突的项当场点名 →
+# 剩下的和「空跑一遍 parse_options」的基线做差，才是要并进去的真差异。
+# （命令行默认值有 170 多项，不对差就会把 yt-dlp 的默认当成用户特意要的东西。）
+
+# yt-dlp 内部字段名 -> 不接受的原因。按字段名挡，别名（--external-downloader）和
+# 缩写（--no-check-certi）都逃不掉；值一律不进说明文字，因为 --username/--password
+# 这类是允许写的，凭据不能落日志。
+_YDL_ARG_FORBIDDEN = {
+    "exec_cmd": "会在下载完成后执行任意命令",
+    "exec_before_dl_cmd": "会在下载前后执行任意命令",
+    "netrc_cmd": "会执行任意命令去取凭据",
+    "external_downloader_args": "会向外部程序注入任意参数",
+    "plugin_dirs": "会加载指定目录里的插件，等同执行别人的代码",
+    "update_self": "会改动本机 yt-dlp 本体；更新请到「设置 → 组件与依赖」",
+    "rm_cachedir": "会清空 yt-dlp 的缓存目录",
+    "config_locations": "配置文件由软件统一管理",
+    "batchfile": "不接受 URL 清单文件，链接请在下载页输入",
+    "load_info_filename": "不接受本地 info.json 当作下载来源",
+    "enable_file_urls": "会打开 file:// 协议，有安全风险",
+    "cookiefile": "Cookie 请用「设置 → Cookie 与登录」提供",
+    "cookiesfrombrowser": "Cookie 请用「设置 → Cookie 与登录」提供",
+    "usenetrc": "不读取 .netrc 凭据",
+    "netrc_location": "不读取 .netrc 凭据",
+    "outtmpl": "成品文件名由「设置 → 文件名模板」决定",
+    "paths": "成品存放位置由下载页与设置里的下载目录决定",
+    "simulate": "会让任务只解析不下载",
+    "skip_download": "会让任务只解析不下载",
+    "dumpjson": "属于只打印信息的模式，会跳过下载",
+    "print_json": "属于只打印信息的模式，会跳过下载",
+    "dump_single_json": "属于只打印信息的模式，会跳过下载",
+    "forceprint": "属于只打印信息的模式，会跳过下载",
+    "print_to_file": "会把字段写到磁盘文件",
+    "listformats": "属于只列出信息的模式，会跳过下载",
+    "listformats_table": "属于只列出信息的模式，会跳过下载",
+    "listsubtitles": "属于只列出信息的模式，会跳过下载",
+    "list_thumbnails": "属于只列出信息的模式，会跳过下载",
+    "list_extractors": "只列出支持的平台，不下载",
+    "list_extractor_descriptions": "只列出支持的平台，不下载",
+    "list_impersonate_targets": "只列出可用的浏览器指纹，不下载",
+    "ap_list_mso": "只列出频道商，不下载",
+    "gettitle": "属于只打印信息的模式，会跳过下载",
+    "getid": "属于只打印信息的模式，会跳过下载",
+    "getthumbnail": "属于只打印信息的模式，会跳过下载",
+    "getdescription": "属于只打印信息的模式，会跳过下载",
+    "getduration": "属于只打印信息的模式，会跳过下载",
+    "getfilename": "属于只打印信息的模式，会跳过下载",
+    "getformat": "属于只打印信息的模式，会跳过下载",
+    "geturl": "属于只打印信息的模式，会跳过下载",
+    "print_help": "只打印帮助",
+    "verbose": "详细输出会把请求头（含 Cookie）写进日志",
+    "dump_intermediate_pages": "会把下载到的页面内容写进日志",
+    "write_pages": "会把下载到的页面写成文件",
+    "debug_printtraffic": "会把 HTTP 请求头（含 Cookie）写进日志",
+    "load_pages": "会读取本地页面文件",
+}
+# 软件自己决定的字段：用户写了也点名后忽略，不能让他以为生效了
+_YDL_ARG_CONFLICT = {
+    "format": "格式由首页的清晰度档位决定，指定某条流请用「指定 format_id」",
+    "format_sort": "分流的排序由软件按画质与码率固定",
+    "windowsfilenames": "文件名里的非法字符由软件统一清理",
+    "restrictfilenames": "文件名里的非法字符由软件统一清理",
+    "ignoreerrors": "播放列表里个别条目失败时的处理方式由软件控制",
+}
+# 只能填这几个名字的字段（填路径等于让 yt-dlp 去跑任意程序）
+_YDL_ARG_NAMES = {
+    "external_downloader": ("native", "aria2c", "axel", "curl", "wget", "ffmpeg", "httpie"),
+}
+# 值写成 "-" 是要在终端里逐条问人，后台任务会一直等下去
+_YDL_ARG_NO_DASH = ("match_filter", "breaking_match_filter")
+# 这几个按 dest 分不出来（dest 是 "_" 或 None），只能按命令行写法挡
+_YDL_ARG_FORBIDDEN_FLAG = {
+    "--alias": "别名会展开成一串参数，请把要用的参数直接写全",
+    "-t": "预设方案会连带指定格式，请把要用的参数直接写全",
+    "--preset-alias": "预设方案会连带指定格式，请把要用的参数直接写全",
+    "--version": "只输出版本号",
+}
+# 缓存本机 yt-dlp 的参数表与基线差异；yt-dlp 在程序里更新过之后要重算
+_YDL_ARG_CACHE = {"ver": None, "table": {}, "base": {}}
+
+
+def _ydl_arg_table() -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """({命令行写法: Option}, 空跑一遍得到的默认 ydl_opts)，进程内缓存。"""
+    try:
+        import yt_dlp
+        from yt_dlp.version import __version__ as _v
+    except Exception:
+        return {}, {}
+    if _YDL_ARG_CACHE["ver"] != _v:
+        try:
+            # --ignore-config 让两次调用都不读用户配置文件，做差才干净
+            parsed = yt_dlp.parse_options(["--ignore-config"])
+            table = dict(getattr(parsed.parser, "_short_opt", {}) or {})
+            table.update(dict(getattr(parsed.parser, "_long_opt", {}) or {}))
+            _YDL_ARG_CACHE.update({"ver": _v, "table": table, "base": dict(parsed.ydl_opts or {})})
+        except Exception:
+            _YDL_ARG_CACHE.update({"ver": _v, "table": {}, "base": {}})
+    return _YDL_ARG_CACHE["table"], _YDL_ARG_CACHE["base"]
+
+
+def _split_ydl_args(text: str) -> Tuple[List[str], List[str]]:
+    """把一行参数切成 yt-dlp 认识的 argv，危险项与冲突项挑出来写成说明。
+
+    返回 (保留的参数, 说明)。说明只写参数名，不写参数值。
+    """
+    table, _base = _ydl_arg_table()
+    try:
+        toks = shlex.split(str(text or "").strip(), posix=True)
+    except Exception as e:
+        return [], [f"引号没配对，这一串参数一条都没生效（{type(e).__name__}: {str(e)[:60]}）"]
+    if not table:
+        return [], ["本机导入不了 yt-dlp，没法核对参数，这一串参数一条都没生效"]
+    argv: List[str] = []
+    notes: List[str] = []
+    i = 0
+    while i < len(toks):
+        tok = toks[i]
+        i += 1
+        if not tok.startswith("-") or tok in ("-", "--"):
+            notes.append(f"「{tok[:40]}」不是参数：这里只写 yt-dlp 的参数，链接请在下载页输入")
+            continue
+        flag, sep, inline = tok.partition("=")
+        opt = table.get(flag)
+        if opt is None and flag.startswith("--"):
+            # yt-dlp 认不歧义的缩写，这里也跟着认，否则 --no-check-certi 会被当成不认识的参数
+            cands = sorted({k for k in table if k.startswith(flag)})
+            if len(cands) == 1:
+                flag, opt = cands[0], table[cands[0]]
+            elif len(cands) > 1:
+                notes.append(f"「{tok[:60]}」有多个参数都对得上（{'、'.join(cands[:4])}），请写全，已跳过")
+                continue
+        if opt is None:
+            notes.append(f"「{tok[:60]}」本机 yt-dlp 没有这个参数，已跳过")
+            continue
+        nval = int(getattr(opt, "nargs", 0) or 0)
+        if not nval and getattr(opt, "action", "") in ("store", "append", "callback"):
+            nval = 1
+        vals: List[str] = []
+        if sep:
+            if nval > 1:
+                notes.append(f"「{flag}」需要 {nval} 个值，不能用 --参数=值 的写法，已跳过")
+                continue
+            vals = [inline]
+        else:
+            for _ in range(nval):
+                if i < len(toks):
+                    vals.append(toks[i])
+                    i += 1
+        dest = str(getattr(opt, "dest", "") or "")
+        reason = _YDL_ARG_FORBIDDEN_FLAG.get(flag) or _YDL_ARG_FORBIDDEN.get(dest)
+        if reason:
+            notes.append(f"{flag} 已跳过：{reason}")
+            continue
+        clash = _YDL_ARG_CONFLICT.get(dest)
+        if clash:
+            notes.append(f"{flag} 已跳过：{clash}")
+            continue
+        if dest in _YDL_ARG_NO_DASH and any(str(v).strip() == "-" for v in vals):
+            notes.append(f"{flag} 已跳过：值写成「-」是要在终端里逐条确认，后台任务会一直等")
+            continue
+        wl = _YDL_ARG_NAMES.get(dest)
+        if wl and any(str(v).rsplit(":", 1)[-1].strip().lower() not in wl for v in vals):
+            notes.append(f"{flag} 已跳过：只能填 {'、'.join(wl)} 之一（填程序路径等于让软件去跑任意程序）")
+            continue
+        argv.append(flag)
+        argv.extend(vals)
+    return argv, notes
+
+
+def _ydl_extra_opts(text: str) -> Tuple[Dict[str, Any], List[str]]:
+    """算出「用户这串参数相对 yt-dlp 默认值改了什么」。
+
+    返回 (要并进去的差异, 说明)。参数本身校验不过时差异为空，整串不生效，
+    免得一半生效留下一份看不出根因的成品。
+    """
+    argv, notes = _split_ydl_args(text)
+    if not argv:
+        return {}, notes
+    try:
+        import yt_dlp
+        base = _ydl_arg_table()[1]
+        got = dict(yt_dlp.parse_options(["--ignore-config"] + argv).ydl_opts or {})
+    except SystemExit:
+        return {}, notes + ["这一串里有让 yt-dlp 直接结束的写法，全部没有生效"]
+    except Exception as e:
+        msg = re.sub(r"\s+", " ", str(e)).strip()[:160]
+        return {}, notes + [f"参数校验没通过（{msg}），这一串参数全部没有生效"]
+    delta: Dict[str, Any] = {}
+    for k, v in got.items():
+        # _warnings 是 yt-dlp 内部字段；outtmpl/paths 会被 --embed-thumbnail 这类顺带填上，
+        # 而输出位置始终由软件决定
+        if k.startswith("_") or k in ("outtmpl", "paths"):
+            continue
+        try:
+            if k not in base or base[k] != v:
+                delta[k] = v
+        except Exception:
+            delta[k] = v
+    return delta, notes
+
+
+def _ydl_merge_extra(opts: dict, delta: Dict[str, Any]) -> List[str]:
+    """把差异并进软件已经算好的 ydl_opts：软件没提到的键直接采用，软件也有的键按语义合。"""
+    notes: List[str] = []
+    for k, v in (delta or {}).items():
+        if k == "http_headers" and isinstance(v, dict):
+            # 只覆盖用户写到的那几个头：整个字典换掉会把软件放的 UA / Referer / Cookie 抹平
+            hdrs = dict(opts.get("http_headers") or {})
+            hdrs.update(v)
+            opts["http_headers"] = hdrs
+        elif k == "extractor_args" and isinstance(v, dict):
+            ea = dict(opts.get("extractor_args") or {})
+            for ie, args in v.items():
+                if isinstance(args, dict):
+                    cur = dict(ea.get(ie) or {})
+                    cur.update(args)
+                    ea[ie] = cur
+                else:
+                    ea[ie] = args
+            opts["extractor_args"] = ea
+        elif k == "postprocessors" and isinstance(v, list):
+            pps = list(opts.get("postprocessors") or [])
+            have = {str(p.get("key") or "") for p in pps if isinstance(p, dict)}
+            for p in v:
+                key = str((p or {}).get("key") or "")
+                if key in have:
+                    notes.append(f"{key} 这一步软件已按界面上的勾选做过，用软件的")
+                    continue
+                pps.append(p)
+                have.add(key)
+            opts["postprocessors"] = pps
+        else:
+            opts[k] = v
+    return notes
+
+
+_SPEED_ARROW_RE = re.compile(r"(?:->|=>|→|\s=\s)")
+_SPEED_SPAN_RE = re.compile(r"^(\d{1,2}:\d{2})\s*(?:-|–|~|至|到)\s*(\d{1,2}:\d{2})$")
+
+
+def parse_speed_windows(text: str) -> Tuple[List[Tuple[str, str, str, str]], List[str]]:
+    """把「限速时段」那几行收成 [(起, 止, 限速, 说明)]，并逐行给出识别不了的原因。
+
+    一行一条：00:00-08:00 -> 2M。开始晚于结束就按跨零点算（22:00-02:00 是当晚到凌晨）。
+    分隔符认 -> / => / → / 空格，限速单位认 M / K / 纯字节数，和 aria2 那套一致。
+    """
+    out: List[Tuple[str, str, str, str]] = []
+    errs: List[str] = []
+    for ln, raw in enumerate(str(text or "").splitlines(), 1):
+        line = raw.strip().replace("：", ":")
+        if not line or line.startswith("#") or line.startswith("//"):
+            continue
+        m = _SPEED_ARROW_RE.search(line)
+        if m:
+            span, speed = line[:m.start()].strip(), line[m.end():].strip()
+        else:
+            parts = line.rsplit(None, 1)
+            if len(parts) != 2:
+                errs.append(f"第 {ln} 行「{line[:40]}」：缺限速值，要写成 00:00-08:00 -> 2M")
+                continue
+            span, speed = parts[0], parts[1]
+        got = bt_trackers.norm_speed(speed)
+        if not got:
+            errs.append(f"第 {ln} 行：限速值「{speed[:16]}」看不懂，要写成 1M / 512K / 纯字节数")
+            continue
+        sm = _SPEED_SPAN_RE.match(span)
+        if not sm:
+            errs.append(f"第 {ln} 行：时段「{span[:24]}」要写成 08:00-12:00（24 小时制，跨零点照写）")
+            continue
+        a, b = _hhmm(sm.group(1)), _hhmm(sm.group(2))
+        if not a or not b:
+            errs.append(f"第 {ln} 行：时段「{span[:24]}」里有不存在的钟点（小时 0–23、分钟 0–59）")
+            continue
+        out.append((a, b, got.upper(), f"{a}–{b} 限速 {got.upper()}"))
+    return out, errs
+
+
+def resolve_speed_limit(c: dict, now=None) -> Tuple[str, str]:
+    """这一趟该用哪档限速：任务级 > 命中的时段 > 全局。返回 (限速串, 说明)，空串表示不限速。"""
+    raw_task = str(c.get("speed_limit") or "").strip()
+    if raw_task:
+        got = bt_trackers.norm_speed(raw_task)
+        if got:
+            return got.upper(), "任务级限速"
+        if bt_trackers.to_bytes(raw_task) == 0:
+            return "", "任务级填的是 0，按不限速处理"
+        return "", f"任务级限速「{raw_task[:16]}」写法不对，这一趟没限速"
+    cur = (now or datetime.now()).strftime("%H:%M")
+    for a, b, got, label in parse_speed_windows(c.get("speed_windows") or "")[0]:
+        hit = (a <= cur <= b) if a <= b else (cur >= a or cur <= b)
+        if hit:
+            return got, f"时段{label}"
+    got = bt_trackers.norm_speed(c.get("global_speed_limit"))
+    if got:
+        return got.upper(), "全局限速"
+    return "", ""
+
+
 class DownloaderEngine:
     def __init__(self, log_cb=None, ffmpeg_mgr: FFmpegManager = None):
         self.log = log_cb or (lambda m, level="info": print(m))
         self.ffmpeg = ffmpeg_mgr or FFmpegManager()
         self._stop_flags: Dict[str, bool] = {}
+        # 直播这一场真正落盘的文件名主干：结束录制时要靠它点名找回 yt-dlp 派出去的拉流子进程
+        self._live_stems: Dict[str, str] = {}
         # download() 只返回 (ok, path)，失败原因先按任务暂存在这里，交给队列写进任务卡
         self._err_notes: Dict[str, str] = {}
         self.max_retries = 3
@@ -4206,7 +4946,12 @@ class DownloaderEngine:
             opts["cookiesfrombrowser"] = (ck_val, None, None, None)
         elif ck_kind == "file":
             opts["cookiefile"] = ck_val
+        extra_args = str(cfg.get("ytdlp_extra_args") or "").strip()
         if for_info:
+            # 解析阶段也把参数用上，「解析看到的」和「下载做到的」才是同一套设置；
+            # 说明文字只在下载任务里打，免得每解析一次就刷一遍日志
+            if extra_args:
+                _ydl_merge_extra(opts, _ydl_extra_opts(extra_args)[0])
             return opts
         # 是否下载播放列表（默认否：只下单条）
         opts["noplaylist"] = not bool(cfg.get("allow_playlist", False))
@@ -4230,18 +4975,12 @@ class DownloaderEngine:
             opts["playlist_items"] = items
             opts["noplaylist"] = False
         opts["updatetime"] = False
-        # 限速：任务级优先，否则全局限速（如 2M / 500K）
-        sl = (cfg.get("speed_limit") or cfg.get("global_speed_limit") or "").strip().upper()
+        # 限速：任务级 > 命中的时段 > 全局。ratelimit 是任务建立时定下的，跑到一半不回头改档
+        sl, _sl_note = resolve_speed_limit(cfg)
         if sl:
-            try:
-                if sl.endswith("M"):
-                    opts["ratelimit"] = int(float(sl[:-1]) * 1024 * 1024)
-                elif sl.endswith("K"):
-                    opts["ratelimit"] = int(float(sl[:-1]) * 1024)
-                else:
-                    opts["ratelimit"] = int(float(sl))
-            except Exception:
-                pass
+            nbytes = bt_trackers.to_bytes(sl)
+            if nbytes > 0:
+                opts["ratelimit"] = nbytes
         # 写出描述 / info.json
         if cfg.get("write_description"):
             opts["writedescription"] = True
@@ -4281,6 +5020,15 @@ class DownloaderEngine:
             pps.append({"key": "EmbedThumbnail", "already_have_thumbnail": False})
         if pps:
             opts["postprocessors"] = pps
+        # 自定义参数最后并入：软件没写过的键直接采用，写过的按上面的口径合
+        if extra_args:
+            _delta, _notes = _ydl_extra_opts(extra_args)
+            for _n in _notes + _ydl_merge_extra(opts, _delta):
+                self.log(f"自定义 yt-dlp 参数：{_n}", "warning")
+            if _delta:
+                _ks = sorted(_delta)
+                self.log("自定义 yt-dlp 参数：已并入 " + str(len(_ks)) + " 项（"
+                         + "、".join(_ks[:6]) + ("…" if len(_ks) > 6 else "") + "）")
         return opts
 
     @staticmethod
@@ -4834,14 +5582,26 @@ class DownloaderEngine:
                     info.get("_type") in ("playlist", "multi_video") or bool(info.get("entries"))
                 )
                 if info and not is_pl_info and (info.get("title") or info.get("id")):
-                    safe_title = safe_filename_component(info.get("title") or "video", 60)
+                    raw_title = str(info.get("title") or "video")
+                    safe_title = safe_filename_component(raw_title, 60)
                     safe_id = safe_filename_component(str(info.get("id") or task_id[:8]), 40)
+                    if safe_title != raw_title.strip():
+                        self.log(f"[{task_id[:8]}] 标题里有 Windows 不能用于文件名的字符，"
+                                 f"落盘名已清洗为「{safe_title}」")
                     out_tmpl = str(Path(out_dir) / f"{safe_title} [{safe_id}].%(ext)s")
+                    if is_live:
+                        # 记下真正落盘的文件名主干，结束录制时靠它点名找回拉流子进程
+                        self._live_stems[task_id] = f"{safe_title} [{safe_id}]"
                 else:
                     template = cfg.get("filename_template") or "%(title).60B [%(id)s].%(ext)s"
+                    template = _BIDI_CTRL_RE.sub("", str(template))[:120]
                     template = template.replace("/", "_").replace("\\", "_").replace("\0", "")
                     out_tmpl = str(Path(out_dir) / template)
                 opts = self._ydl_opts(cfg, for_info=False, player_clients=clients, url=url)
+                sl_now, sl_note = resolve_speed_limit(cfg)
+                if opts.get("ratelimit") or sl_note:
+                    self.log(f"[{task_id[:8]}] 限速：{sl_now or '不限速'}（{sl_note}）"
+                             f"· 这一档在任务开始时定下，跑到一半不会改")
                 opts["outtmpl"] = out_tmpl
                 if opts.get("writethumbnail"):
                     # 与 CLI 一致：嵌封面要写缩略图文件，但播放列表级的那张不要
@@ -4957,7 +5717,11 @@ class DownloaderEngine:
                 delay = float(cfg.get("risk_delay_sec") or 0)
                 if delay > 0:
                     time.sleep(min(delay, 30))
-                opts["progress_hooks"] = [lambda d, tid=task_id: self._hook(tid, d, progress_cb)]
+                opts["progress_hooks"] = [
+                    lambda d, tid=task_id, th=(info or {}).get("thumbnail") or "": self._hook(
+                        tid, d, progress_cb, th
+                    )
+                ]
                 if audio_only:
                     # 容器留着 mkv/mp4 时以前会跳过抽音轨：勾了「仅音频」还是原样下回一个视频，
                     # 而且状态是「完成」—— 只有 ffprobe 能看出来。所以这里无论容器都抽。
@@ -5373,26 +6137,62 @@ class DownloaderEngine:
                 return False, ""
         return False, ""
 
-    def _hook(self, task_id, d, progress_cb):
+    def _hook(self, task_id, d, progress_cb, thumbnail=""):
         if self._stop_flags.get(task_id):
             raise Exception("cancelled")
         if not progress_cb:
             return
-        if d.get("status") == "downloading":
-            total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
-            done = d.get("downloaded_bytes") or 0
-            pct = (done / total * 100) if total else 0
-            speed = d.get("_speed_str") or ""
-            eta = d.get("_eta_str") or ""
+        status = d.get("status")
+        if status not in ("downloading", "finished"):
+            return
+        total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+        done = d.get("downloaded_bytes") or 0
+        pct = (done / total * 100) if total else 0
+        if status == "finished":
+            pct = 100.0
+        speed = d.get("_speed_str") or ""
+        eta = d.get("_eta_str") or ""
+        info = d.get("info_dict") or {}
+        meta = {"done_bytes": done, "total_bytes": total}
+        label = self._stream_label(info)
+        if label:
+            meta["res_label"] = label
+        if thumbnail:
+            meta["thumbnail"] = info.get("thumbnail") or thumbnail
+        try:
+            progress_cb(task_id, pct, speed, eta, meta)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _stream_label(info: dict) -> str:
+        """把 yt-dlp 分流的 info_dict 压成卡片上的一行清晰度标签
+
+        合并下载时视频流和音频流会各回调一次，这里只在真视频流上给「1080p」，
+        纯音频流给「M4A 128k」，由队列端决定哪个留得下。
+        """
+        h = int(info.get("height") or 0)
+        if h:
+            parts = [f"{h}p"]
+            dr = str(info.get("dynamic_range") or "").upper()
+            if dr in ("HDR", "HDR10", "HDR10+", "DOLBYVISION"):
+                parts.append(dr)
             try:
-                progress_cb(task_id, pct, speed, eta)
+                fps = float(info.get("fps") or 0)
             except Exception:
-                pass
-        elif d.get("status") == "finished":
-            try:
-                progress_cb(task_id, 100.0, "", "")
-            except Exception:
-                pass
+                fps = 0
+            if fps > 30:
+                parts.append(f"{int(round(fps))}fps")
+            return " ".join(parts)
+        if str(info.get("vcodec") or "none") != "none":
+            return ""
+        ext = str(info.get("ext") or "").upper()
+        try:
+            abr = float(info.get("abr") or 0)
+        except Exception:
+            abr = 0
+        bits = ([ext] if ext else []) + ([f"{int(round(abr))}k"] if abr else [])
+        return " ".join(bits)
 
     def stop(self, task_id=None):
         if task_id:
@@ -5400,6 +6200,12 @@ class DownloaderEngine:
         else:
             for tid in list(self._stop_flags):
                 self._stop_flags[tid] = True
+
+    def live_output_stem(self, task_id=None):
+        """这一场直播真正在写的文件名主干（结束录制时用来点名拉流子进程），没记到就回空"""
+        if not task_id:
+            return ""
+        return self._live_stems.pop(task_id, "") or ""
 
 
 # -------------------- Telegram 通知 --------------------
@@ -5623,6 +6429,9 @@ SUB_QUALITIES = ("best", "4K", "1440p", "1080p", "720p", "480p", "360p")
 SUB_CAP_DEFAULT = 20  # 没设过规则的旧订阅沿用原来的单次 20 条封顶
 SUB_SEEN_CAP = 300   # 追新游标最多记多少条 id
 MUSIC_SUB_WINDOW = 300  # 同 parse_playlist 的取数上限：歌单里的歌不能因为窗口太窄而被永久漏掉
+SUB_FEED_CAP = 200      # 上游窗口对照清单每源记多少条：用来分辨「上游删了」还是「滑出窗口」
+SUB_ARCHIVE_CAP = 100   # 每源留档多少条「上游已删除」的条目
+SUB_TEXT_CAP = 160      # 对照清单 / 归档记录里标题与链接截多长，免得 subscriptions.json 撑爆
 
 
 def _sub_window(kind: str) -> Tuple[int, int]:
@@ -5633,6 +6442,50 @@ def _sub_window(kind: str) -> Tuple[int, int]:
     if kind == "music":
         return MUSIC_SUB_WINDOW, MUSIC_SUB_WINDOW
     return 200, SUB_SEEN_CAP
+
+
+def _feed_sync(feed: List[dict], cur: List[dict], now: str) -> Tuple[List[dict], List[dict], int]:
+    """上一轮的窗口清单 + 这一轮读到的条目 → (新对照清单, 上游已删除, 自然滑出的条数)。
+
+    订阅源都是新的在前、旧的在后：一轮之间从尾部少掉几条只是窗口滑动，从中间空掉一块才是删帖。
+    判据就一条 —— 本轮还有比它更旧的条目在场，它就不可能是滑出去的。
+    整轮一条都没续上（surv 为空，例如换了链接）也按滑出处理：宁可不报，也不因为一次网络抖动
+    把上游还留着的东西说成已删除。
+    """
+    cur_ids = [str((c or {}).get("id") or "") for c in (cur or [])]
+    cur_ids = [x for x in cur_ids if x]
+    present = set(cur_ids)
+    surv = [i for i, r in enumerate(feed or []) if str((r or {}).get("id") or "") in present]
+    oldest = max(surv) if surv else -1
+    deleted: List[dict] = []
+    aged = 0
+    for i, r in enumerate(feed or []):
+        rid = str((r or {}).get("id") or "")
+        if not rid or rid in present:
+            continue
+        if surv and i < oldest:
+            deleted.append({**r, "gone_at": now})
+        else:
+            aged += 1
+    rows: List[dict] = []
+    seen: set = set()
+    for e in cur or []:
+        rid = str((e or {}).get("id") or "")
+        if not rid or rid in seen:
+            continue
+        seen.add(rid)
+        rows.append({
+            "id": rid[:200],
+            "title": str(e.get("title") or rid)[:SUB_TEXT_CAP],
+            "url": str(e.get("url") or e.get("webpage_url") or "")[:SUB_TEXT_CAP],
+            "last_seen": now,
+        })
+    return rows[:SUB_FEED_CAP], deleted, aged
+
+
+def _reject_rows(rejected: List[tuple], cap: int = 30) -> List[dict]:
+    """被规则挡掉的明细（(标题, 原因)）收成 JSON 行，给预览面板列出来。"""
+    return [{"title": t, "why": w} for t, w in rejected[:cap]]
 
 
 def _sub_kw_list(raw) -> List[str]:
@@ -6116,6 +6969,8 @@ class SubscriptionManager:
                     "added_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "new_count": 0,
                     "rules": {},
+                    "feed": [],      # 上一轮窗口里看到的条目（轻量清单），用来分辨删帖与滑出
+                    "archived": [],  # 上游已删除的条目留档
                 }
                 self.subs.insert(0, hit)
         self.save()
@@ -6288,49 +7143,174 @@ class SubscriptionManager:
             with self._lock:
                 self._busy.discard(sid)
 
-    def _scan_one_inner(self, sub: dict, auto_download: bool = True, backfill: dict = None) -> int:
+    def _fetch_sub_entries(self, sub: dict, wide: bool = False) -> Tuple[List[dict], str, str]:
+        """按这条订阅的来源读一次 → (条目, 来源标题, 报错)。报错非空表示这次没读到，不能当成「没有新增」。
+
+        正式扫描和「同步计划预览」共用这一条路，预览看到的才是下一轮真要处理的那批条目；
+        这里只读不写，sub 上的字段一个都不动。
+        """
         url = sub.get("url") or ""
         kind = _sub_kind_of(sub)
-        ref = ("", "") if kind == "rss" else _tg_sub_ref(url, str(sub.get("mode") or ""))
         if kind == "rss":
-            entries, rss_title, err = _rss_sub_entries(url)
-            if err:
-                sub["last_error"] = err
-                self.save()
-                self.log(f"订阅「{sub.get('title') or url}」读不到：{err}", "warning")
-                return 0
-            sub["last_error"] = ""
-            sub["title"] = rss_title or sub.get("title") or url
-        elif kind == "music":
+            return _rss_sub_entries(url)
+        if kind == "music":
             entries, pl_name, err = _music_sub_entries(sub)
-            if err:
-                sub["last_error"] = err
-                self.save()
-                self.log(f"订阅「{sub.get('title') or url}」读不到：{err}", "warning")
-                return 0
-            sub["last_error"] = ""
-            sub["title"] = pl_name or _music_sub_label(url) or sub.get("title") or url
-        elif ref[0]:
-            entries, tg_title, err = self._tg_scan(sub, ref, wide=bool(backfill))
-            if err:
-                sub["last_error"] = err
-                self.save()
-                self.log(f"订阅「{sub.get('title') or url}」读不到：{err}", "warning")
-                return 0
-            sub["last_error"] = ""
-            sub["title"] = tg_title or sub.get("title") or url
-        else:
-            info = self.engine.get_info(url, self.cfg.data)
-            if not info:
-                self.log(f"订阅扫描失败: {url[:60]}", "warning")
-                return 0
-            entries = []
-            if info.get("_type") == "playlist" or info.get("entries"):
-                entries = [e for e in (info.get("entries") or []) if e]
+            return entries, (pl_name or _music_sub_label(url)), err
+        ref = ("", "") if kind == "rss" else _tg_sub_ref(url, str(sub.get("mode") or ""))
+        if ref[0]:
+            return self._tg_scan(sub, ref, wide=wide)
+        info = self.engine.get_info(url, self.cfg.data)
+        if not info:
+            return [], "", "解析不到这个链接的内容（yt-dlp 没有返回信息），可能是链接已失效或需要登录 Cookie"
+        if info.get("_type") == "playlist" or info.get("entries"):
+            return [e for e in (info.get("entries") or []) if e], str(info.get("title") or ""), ""
+        # 单视频也当订阅源（检测更新意义不大，但游标照记）
+        return [info], str(info.get("title") or ""), ""
+
+    def _light(self, sub: dict, entries: List[dict], cap: int = 50) -> List[dict]:
+        """条目收成预览用的轻记录：标题 / 日期 / 时长 / 链接。"""
+        out = []
+        for e in entries[:cap]:
+            out.append({
+                "title": str(e.get("title") or self._entry_id(e) or "（无标题）")[:120],
+                "date": _sub_date(e),
+                "duration": int(_sub_duration(e)),
+                "url": (self._entry_url(e, sub.get("url") or "") or "")[:200],
+            })
+        return out
+
+    def _feed_round(self, sub: dict, rows: List[dict], now: str) -> int:
+        """每轮追新后更新上游窗口对照清单，把本轮从源头消失的条目录进归档 → 返回本轮新归档几条。"""
+        feed, deleted, _aged = _feed_sync(sub.get("feed") or [], rows, now)
+        sub["feed"] = feed
+        if deleted:
+            arch = list(sub.get("archived") or [])
+            arch[:0] = deleted
+            sub["archived"] = arch[:SUB_ARCHIVE_CAP]
+            names = "、".join((d.get("title") or d.get("id") or "")[:40] for d in deleted[:3])
+            self.log(f"订阅「{sub.get('title') or sub.get('url')}」本轮有 {len(deleted)} 条已从源头消失"
+                     f"（上游删除，比它更旧的条目还在），已记入归档：{names}"
+                     + ("等" if len(deleted) > 3 else ""))
+        if sub.get("archived"):
+            back = {str(r.get("id") or "") for r in feed}
+            kept = [a for a in sub["archived"] if str(a.get("id") or "") not in back]
+            if len(kept) != len(sub["archived"]):
+                self.log(f"订阅「{sub.get('title') or sub.get('url')}」有 "
+                         f"{len(sub['archived']) - len(kept)} 条重新出现在源头，已从归档清单退回")
+            sub["archived"] = kept
+        return len(deleted)
+
+    def preview_one(self, sub: dict) -> dict:
+        """干跑一轮追新：读源、按规则筛、算上游删除归档 —— 不入队、不动游标、不落盘。"""
+        sid = str(sub.get("id") or "")
+        kind = _sub_kind_of(sub)
+        r = _norm_sub_rules(sub.get("rules"))
+        plan = {
+            "id": sid, "title": sub.get("title") or sub.get("url") or "", "kind": kind,
+            "url": sub.get("url") or "", "rules_text": _sub_rules_text(r),
+            "last_check": str(sub.get("last_check") or ""),
+            "cursor": len(sub.get("last_ids") or []),
+            "error": "", "busy": False, "read": 0, "new": 0, "seen": 0, "is_first": False,
+            "picked": [], "picked_total": 0, "rejected": [], "rejected_total": 0, "over": 0,
+            "archive": [], "archive_total": 0, "archived_count": len(sub.get("archived") or []),
+            "enqueue": False, "why": "",
+        }
+        with self._lock:
+            if sid in self._busy:
+                plan["busy"] = True
+                plan["error"] = ("这一条正在扫描（定时或手动），这轮先不预览 —— "
+                                 "预览也要把源读一遍，两遍并行会重复取数")
+                return plan
+        entries, _src_title, err = self._fetch_sub_entries(sub)
+        if err:
+            plan["error"] = err
+            return plan
+        win_n, _seen_cap = _sub_window(kind)
+        rows = entries[:win_n]
+        known = set(sub.get("last_ids") or [])
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        plan["read"] = len(rows)
+        plan["seen"] = sum(1 for e in rows if not (self._entry_id(e) and self._entry_id(e) not in known))
+        new_entries = [e for e in rows if self._entry_id(e) and self._entry_id(e) not in known]
+        plan["new"] = len(new_entries)
+        plan["is_first"] = not known
+        _feed, would_del, _aged = _feed_sync(sub.get("feed") or [], rows, now)
+        plan["archive"] = [{"title": d.get("title") or d.get("id") or "",
+                            "url": d.get("url") or "", "last_seen": d.get("last_seen") or ""}
+                           for d in would_del[:20]]
+        plan["archive_total"] = len(would_del)
+        do_dl = bool(sub.get("auto_download", True)) and bool(self.cfg.data.get("sub_auto_download", True))
+
+        if plan["is_first"]:
+            first_n = int(self.cfg.data.get("sub_first_download_n") or 0)
+            if first_n > 0 and do_dl:
+                picked, rejected, over = self._filter_entries(entries, r, hard_cap=first_n)
+                plan["picked"], plan["picked_total"] = self._light(sub, picked), len(picked)
+                plan["rejected"], plan["rejected_total"] = _reject_rows(rejected), len(rejected)
+                plan["over"] = len(over)
+                plan["enqueue"] = bool(picked)
+                plan["why"] = f"首轮：现有 {len(rows)} 条记为已读，并按设置下载最近 {first_n} 条"
             else:
-                # 单视频也作为订阅源（检测更新意义不大，但仍记录）
-                entries = [info]
-            sub["title"] = info.get("title") or sub.get("title") or url
+                plan["why"] = (f"首轮：只把现有 {len(rows)} 条记为已读，不下载"
+                               "（设置页「订阅首次下载条数」为 0；要补下历史请用「按日期回填」）")
+            return plan
+        if not new_entries:
+            plan["why"] = "本轮没有未读条目"
+            if would_del:
+                plan["why"] += f"；会有 {len(would_del)} 条从源头消失并记入归档"
+            return plan
+        if kind == "music" and do_dl and _MUSIC_JOB.get("running"):
+            plan["busy"] = True
+            plan["why"] = (f"上一批音乐下载还没结束：真执行这一轮会整轮跳过，"
+                           f"{len(new_entries)} 首不会记成已读，下一轮再补")
+            return plan
+        picked, rejected, over = self._filter_entries(new_entries, r)
+        plan["picked"], plan["picked_total"] = self._light(sub, picked), len(picked)
+        plan["rejected"], plan["rejected_total"] = _reject_rows(rejected), len(rejected)
+        plan["over"] = len(over)
+        if not do_dl:
+            which = []
+            if not sub.get("auto_download", True):
+                which.append("这条订阅的「自动下载」已关")
+            if not self.cfg.data.get("sub_auto_download", True):
+                which.append("设置页的「订阅新条目自动下载」已关")
+            plan["why"] = f"新增 {len(new_entries)} 条只列出、不入队：" + "、".join(which)
+            return plan
+        if not picked:
+            plan["why"] = f"新增 {len(new_entries)} 条，按规则[{plan['rules_text']}]一条都不该下"
+            return plan
+        plan["enqueue"] = True
+        plan["why"] = (f"新增 {len(new_entries)} 条，按规则[{plan['rules_text']}]入队 {len(picked)} 条"
+                       + (f"，另有 {len(over)} 条超出单次上限留到下次" if over else ""))
+        return plan
+
+    def clear_archived(self, sid: str, entry_id: str = "") -> int:
+        """删掉「上游已删除」的归档记录（单条或整单）。只清账本，不动追新游标 ——
+        条目就算重新出现在源头，也仍按已读处理，不会因为清过归档而重下一遍。"""
+        with self._lock:
+            sub = next((s for s in self.subs if s.get("id") == sid), None)
+            if not sub:
+                raise ValueError("订阅不存在")
+            arch = list(sub.get("archived") or [])
+            kept = [a for a in arch if str(a.get("id") or "") != entry_id] if entry_id else []
+            sub["archived"] = kept
+            removed = len(arch) - len(kept)
+        self.save()
+        return removed
+
+    def _scan_one_inner(self, sub: dict, auto_download: bool = True, backfill: dict = None) -> int:
+        entries, src_title, err = self._fetch_sub_entries(sub, wide=bool(backfill))
+        if err:
+            sub["last_error"] = err
+            self.save()
+            self.log(f"订阅「{sub.get('title') or sub.get('url')}」读不到：{err}", "warning")
+            return 0
+        url = sub.get("url") or ""
+        kind = _sub_kind_of(sub)
+        sub["last_error"] = ""
+        if src_title:
+            sub["title"] = src_title
+        sub["title"] = sub.get("title") or url
 
         r = _norm_sub_rules(sub.get("rules"))
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -6361,6 +7341,9 @@ class SubscriptionManager:
             self.log(f"订阅「{sub.get('title')}」有 {len(new_entries)} 首新歌，"
                      "但上一批音乐下载还没结束 —— 这次不记录新增，等下轮扫描再补", "warning")
             return 0
+
+        # 上游窗口对照：这一轮读到的这批就是下轮的比较基准，中间空掉的那些记成上游删除
+        self._feed_round(sub, entries[:win_n], now)
 
         # 首次订阅：默认只记 ID；sub_first_download_n>0 时下载最近 N 条（同样受规则约束）
         is_first = not known
@@ -6488,6 +7471,457 @@ class SubscriptionManager:
         self._stop = True
 
 
+# -------------------- 磁力 / 种子（一律交给本机 aria2） --------------------
+from aria2_client import BT_KEYS  # tellStatus 一次要读的字段，与客户端保持同一份
+
+_MAGNET_XT_RE = re.compile(r"^urn:btih:([0-9a-fA-F]{40}|[A-Za-z2-7]{32})$")
+_BT_WATCH: Dict[str, dict] = {}          # gid → {task_id, ratio, seconds}
+_BT_WATCH_LOCK = threading.Lock()
+
+
+def parse_torrent_ref(url: str) -> Optional[dict]:
+    """把磁力链接或本地 .torrent 拆成 {kind, info_hash, name, path}；两类都不是就回 None。
+
+    磁力只认 xt=urn:btih（40 位十六进制或 32 位 base32）。别的 xt（ipfs 之类）aria2 也接不了，
+    与其让任务卡在队列里，不如在入队当场说清楚。
+    """
+    u = (url or "").strip()
+    low = u.lower()
+    if low.startswith("http://") or low.startswith("https://"):
+        return None  # 网上的 .torrent 链接交给普通下载，本地这条路只认已经存在的种子文件
+    if low.startswith("magnet:"):
+        try:
+            q = parse_qs(urlsplit(u).query, keep_blank_values=True)
+        except ValueError:
+            return None
+        xt = (q.get("xt") or [""])[0].strip()
+        m = _MAGNET_XT_RE.match(xt)
+        if not m:
+            return None
+        dn = unquote((q.get("dn") or [""])[0]).strip()
+        return {"kind": "magnet", "info_hash": m.group(1).lower(),
+                "name": dn or m.group(1).lower()[:12], "path": "", "has_dn": bool(dn)}
+    if low.startswith("file://"):
+        p = unquote(urlsplit(u).path)
+        p = p[1:] if len(p) > 2 and p[2] == ":" else p
+    elif low.endswith(".torrent"):
+        p = u
+    else:
+        return None
+    if not p.lower().endswith(".torrent"):
+        return None
+    try:
+        ap = str(Path(p).resolve())
+    except OSError:
+        return None
+    return {"kind": "torrent-file", "info_hash": "", "name": Path(ap).stem, "path": ap}
+
+
+def _benc_skip(raw: bytes, i: int) -> int:
+    """跳到 raw[i] 这个 bencode 值的末尾下标。
+
+    必须按长度前缀整体跳过二进制段：pieces 那种字节里满是 d/l/e，靠数字符会算错位置。
+    """
+    c = raw[i:i + 1]
+    if c == b"i":
+        j = raw.index(b"e", i)
+        return j + 1
+    if c in (b"l", b"d"):
+        j = i + 1
+        while True:
+            n = raw[j:j + 1]
+            if n == b"e":
+                return j + 1
+            if not n:
+                raise ValueError("种子内容不完整")
+            j = _benc_skip(raw, j)
+    if c.isdigit():
+        j = i
+        while raw[j:j + 1].isdigit():
+            j += 1
+        if raw[j:j + 1] != b":":
+            raise ValueError("种子格式不对")
+        return j + int(raw[i:j]) + 1
+    raise ValueError("种子格式不对")
+
+
+def torrent_info_hash(data: bytes) -> str:
+    """info 段原始字节的 SHA-1，和磁力链接 xt=urn:btih 用的是同一个算法；解析不出就回空串。
+
+    只认顶层字典里键名正好是 info 的那一段，不去文件里搜 "4:info"——那个串也可能出现在二进制段里。
+    """
+    try:
+        if (data or b"")[:1] != b"d":
+            return ""
+        j = 1
+        while data[j:j + 1] != b"e":
+            ks = j
+            j = _benc_skip(data, j)
+            vs = j
+            j = _benc_skip(data, j)
+            if data[ks:vs] == b"4:info":
+                return hashlib.sha1(data[vs:j]).hexdigest()
+        return ""
+    except Exception:
+        return ""
+
+
+def torrent_bytes_identity(data: bytes) -> str:
+    """种子的身份 = info 段哈希（拿不到时退回整文件哈希）。
+
+    同一个内容换个 tracker、换个文件名，甚至一条走磁力、一条走本地种子，
+    都该合成一条任务；按 .torrent 文件整体哈希就分不出来了。
+    """
+    ih = torrent_info_hash(data or b"")
+    if ih:
+        return ih
+    return hashlib.sha1(data or b"").hexdigest()[:16]
+
+
+def torrent_file_identity(path: str) -> str:
+    try:
+        return torrent_bytes_identity(Path(path).read_bytes())
+    except OSError:
+        return "path:" + str(path)
+
+
+def bt_torrent_name(data: bytes) -> str:
+    """取出 .torrent 里 info 段的名称，取不到回空串。
+
+    自动分类要认的是种子内部的名字，不是本地那个文件名：同一份内容换个 .torrent 文件名还是那个种子，
+    按文件名归类就等于让用户手工改一次名，前后两次落到两个目录里。
+    """
+    try:
+        if (data or b"")[:1] != b"d":
+            return ""
+        j = 1
+        while data[j:j + 1] != b"e":
+            ks = j
+            j = _benc_skip(data, j)
+            vs = j
+            j = _benc_skip(data, j)
+            # 只认顶层键正好叫 info 的那一段：注释里塞一个 "4:info" 不算
+            if data[ks:vs] != b"4:info":
+                continue
+            if data[vs:vs + 1] != b"d":
+                return ""
+            k = vs + 1
+            while data[k:k + 1] != b"e":
+                s = k
+                k = _benc_skip(data, k)
+                t = k
+                k = _benc_skip(data, k)
+                if data[s:t] != b"4:name":
+                    continue
+                raw = data[t:k]
+                head, sep, body = raw.partition(b":")
+                if not sep or not head.isdigit():
+                    return ""
+                return body[:int(head)].decode("utf-8", "replace")
+            return ""
+        return ""
+    except Exception:
+        return ""
+
+
+def torrent_reject_reason(url: str) -> str:
+    """磁力/种子链接为什么收不下（收得下回空串）：报错要能指着链接说出缺哪一段。"""
+    u = (url or "").strip()
+    low = u.lower()
+    if not (low.startswith("magnet:") or low.startswith("file://") or low.endswith(".torrent")):
+        return ""
+    if parse_torrent_ref(u):
+        return ""
+    if low.startswith("magnet:"):
+        if "xt=urn:btih" not in low:
+            return "这条 magnet 里没有 xt=urn:btih 内容标识，定不下要下哪个种子"
+        return "xt=urn:btih 的取值既不是 40 位十六进制也不是 32 位 base32，aria2 认不出来"
+    return "本地种子要指向一个 .torrent 文件（file:// 或直接写路径都行），这条对不上"
+
+
+def _bt_client(cfg: dict):
+    from aria2_client import Aria2Client
+    return Aria2Client(
+        rpc_url=cfg.get("aria2_rpc") or "http://127.0.0.1:6800/jsonrpc",
+        secret=cfg.get("aria2_secret") or "",
+    )
+
+
+def _bt_add_options(cfg: dict, log_fn: Callable = lambda *a, **k: None) -> dict:
+    """把「加料」设置摊成 aria2 添加任务时的选项。
+
+    这些只能在新任务提交时给：实测改不动——aria2.changeOption 对 bt-tracker 当场回
+    「Cannot change option for GID#…」，对 seed-ratio / bt-prioritize-piece / check-integrity
+    甚至是回 OK 但值原样不动。所以界面上只有下载/上传限速能写成「立即生效」，其余都得写明
+    「对新任务生效」。tracker 抓不到就照旧下载，只是少了几个发现节点的入口，别把它变成拦路。
+    """
+    out: Dict[str, str] = {}
+    try:
+        trk, note = bt_trackers.effective(
+            cfg, APP_DIR, getter=lambda u: http_get_bytes(u, timeout=20))
+    except Exception as e:
+        trk, note = [], f"读 tracker 列表失败：{type(e).__name__}: {str(e)[:120]}"
+    if trk:
+        out["bt-tracker"] = ",".join(trk)
+    if note:
+        log_fn(f"tracker：{note}", "warning")
+    dl = bt_trackers.norm_speed(cfg.get("bt_dl_limit"))
+    ul = bt_trackers.norm_speed(cfg.get("bt_ul_limit"))
+    if dl:
+        out["max-download-limit"] = dl
+    if ul:
+        out["max-upload-limit"] = ul
+    if cfg.get("bt_prioritize_piece"):
+        out["bt-prioritize-piece"] = "head,tail"
+    return out
+
+
+_BT_RULE_MODES = ("contains", "regex")
+
+
+def bt_rule_subdir(raw) -> Tuple[str, str]:
+    """把规则里的「存到」收成下载目录下面的相对子目录；收成不了就说明为什么。
+
+    只吃相对路径：规则拿来做批量归类，一条写成绝对路径或带 .. 的规则，只要有人把名字打错，
+    成品就会落到下载目录之外，回头连程序自己都说不清它去了哪儿。
+    """
+    s = str(raw or "").strip()
+    if not s:
+        return "", ""
+    parts = [p for p in re.split(r"[\\/]+", s) if p]
+    if not parts:
+        return "", ""
+    if any(":" in p or p in (".", "..") for p in parts):
+        return "", f"要写成下载目录下面的相对子目录（例如 剧集/2026），不能带盘符或 ..：{s[:60]}"
+    return "/".join(parts), ""
+
+
+def bt_rules_clean(raw) -> Tuple[List[dict], List[str]]:
+    """把界面传来的规则列表收成统一形状，顺手把用不了的挑出来，一条条点名给用户看。"""
+    out: List[dict] = []
+    bad: List[str] = []
+    for i, r in enumerate(raw or [], 1):
+        if not isinstance(r, dict):
+            bad.append(f"第 {i} 条不是规则的形状（每条要写名称、匹配方式、关键词、存到）")
+            continue
+        name = str(r.get("name") or "").strip()[:60] or f"规则 {i}"
+        pattern = str(r.get("pattern") or "")
+        mode = str(r.get("mode") or "contains").strip().lower()
+        if not pattern.strip():
+            bad.append(f"第 {i} 条「{name}」没写要匹配的名字")
+            continue
+        if mode not in _BT_RULE_MODES:
+            bad.append(f"第 {i} 条「{name}」的匹配方式只认「包含」或「正则」，现在收到的是「{mode[:20]}」")
+            continue
+        sub, why = bt_rule_subdir(r.get("subdir"))
+        if why:
+            bad.append(f"第 {i} 条「{name}」的存到哪里不对：{why}")
+            continue
+        if mode == "regex":
+            try:
+                re.compile(pattern)
+            except re.error as e:
+                bad.append(f"第 {i} 条「{name}」的正则没写对：{e}")
+                continue
+        out.append({"name": name, "pattern": pattern, "mode": mode, "subdir": sub,
+                    "enabled": bool(r.get("enabled", True))})
+    return out, bad
+
+
+def bt_rule_match(name: str, rules: List[dict]) -> Tuple[dict, str]:
+    """按上下顺序问一遍，命中第一条就定下来（照 qBittorrent 自动分类的口径：先命中先得）。
+
+    比大小写一律忽略：种子里的名字同一批人一会儿 1080P 一会儿 1080p，
+    分两种写法只会让规则表越写越长。
+    """
+    s = str(name or "")
+    low = s.lower()
+    for r in rules or []:
+        if not isinstance(r, dict) or not r.get("enabled", True):
+            continue
+        pat = str(r.get("pattern") or "")
+        if not pat:
+            continue
+        if str(r.get("mode") or "contains") == "regex":
+            try:
+                if re.search(pat, s, re.IGNORECASE):
+                    return r, f"正则「{pat[:40]}」对上了「{s[:60]}」"
+            except re.error:
+                continue  # 保存时已经挡过一遍；这里再撞上就跳过这条，不能让它把任务卡住
+            continue
+        if pat.lower() in low:
+            return r, f"「{s[:60]}」里含「{pat[:40]}」"
+    return None, ""
+
+
+def bt_rule_name(ref: dict, log_fn: Callable = lambda *a, **k: None) -> Tuple[str, str]:
+    """自动分类这一刻手上能拿到的名字，以及它从哪来（说不清来源就别装作说得清）。"""
+    kind = str((ref or {}).get("kind") or "")
+    if kind == "magnet":
+        if (ref or {}).get("has_dn"):
+            return str(ref.get("name") or ""), "磁力链接里带的 dn"
+        return "", "这条磁力没写 dn，文件名要等种子元数据到手才知道"
+    p = str((ref or {}).get("path") or "")
+    try:
+        nm = bt_torrent_name(Path(p).read_bytes())
+    except (OSError, ValueError) as e:
+        nm = ""
+        log_fn(f"读种子文件里的名称失败：{type(e).__name__}: {str(e)[:100]}", "warning")
+    if nm:
+        return nm, "种子文件内的名称"
+    stem = Path(p).stem if p else str((ref or {}).get("name") or "")
+    return stem, "种子文件名（种子内没读到名称）"
+
+
+def bt_target_dir(ref: dict, cfg: dict, base_dir: str,
+                  log_fn: Callable = lambda *a, **k: None) -> Tuple[str, str, str]:
+    """按自动分类规则决定这个种子存到哪儿，回 (落盘目录, 分类名, 说给用户听的缘故)。
+
+    没配规则就原样回默认目录，一条日志都不多写——不该出现「开着默认设置却莫名其妙多了层目录」。
+    """
+    rules = [r for r in (cfg.get("bt_auto_rules") or []) if isinstance(r, dict)]
+    if not rules:
+        return base_dir, "", ""
+    name, whence = bt_rule_name(ref, log_fn)
+    hit, why = bt_rule_match(name, rules) if name else (None, "")
+    head = f"名字「{name[:60]}」没命中任何规则" if name else f"这条现在还没有可比的名字（{whence}）"
+    if hit:
+        sub = str(hit.get("subdir") or "")
+        if not sub:
+            log_fn(f"自动分类：{why} → 规则「{hit.get('name')}」没填子目录，仍存默认目录")
+            return base_dir, "", f"规则「{hit.get('name')}」没填子目录"
+        target = str(Path(base_dir) / sub)
+        log_fn(f"自动分类：{why} → 规则「{hit.get('name')}」，存到 {target}")
+        return target, str(hit.get("name") or ""), f"命中规则「{hit.get('name')}」（{why}）"
+    fb, bad = bt_rule_subdir(cfg.get("bt_auto_fallback"))
+    if bad:
+        log_fn(f"自动分类的兜底目录用不了：{bad}；{head}，仍存默认目录", "warning")
+    elif fb:
+        target = str(Path(base_dir) / fb)
+        log_fn(f"自动分类：{head} → 按兜底目录存到 {target}")
+        return target, "兜底", f"没命中规则，按兜底目录 {fb}"
+    log_fn(f"自动分类：{head}，仍存默认目录")
+    return base_dir, "", "没命中规则"
+
+
+def bt_ensure(cfg: dict, log_fn) -> Tuple[bool, str]:
+    """RPC 没人应答时，按设置决定「自己拉一个本机 aria2c」还是把缺的东西讲清楚。"""
+    ac = _bt_client(cfg)
+    if ac.ping():
+        return True, ""
+    if not cfg.get("aria2_autostart", True):
+        return False, ("aria2 的 RPC（" + str(cfg.get("aria2_rpc") or "http://127.0.0.1:6800/jsonrpc")
+                       + "）没有应答，而设置里「自动拉起 aria2」是关闭的："
+                         "自己开一个 aria2c，或把这个开关打开后重试")
+    import aria2_daemon
+    binp = aria2_daemon.find_binary(str(cfg.get("aria2_bin") or ""), APP_DIR)
+    return aria2_daemon.ensure_running(
+        rpc_url=str(cfg.get("aria2_rpc") or "http://127.0.0.1:6800/jsonrpc"),
+        binary=binp,
+        download_dir=str(cfg.get("download_dir") or DEFAULT_DOWNLOAD_DIR),
+        app_dir=APP_DIR,
+        ping=ac.ping,
+        log=log_fn,
+    )
+
+
+def _bt_daemon_stop():
+    """退出前收掉自己拉起来的 aria2：先走 RPC 让它把会话文件写完，再兜底终止进程。"""
+    try:
+        import aria2_daemon
+        if not aria2_daemon.owned().get("owned"):
+            return
+        _bt_client(dict(cfg.data)).force_shutdown()
+        time.sleep(1.0)
+        aria2_daemon.shutdown()
+    except Exception:
+        pass
+
+
+def _bt_hsize(v) -> str:
+    """aria2 把字节数当字符串给回来，界面上得是「12.3 MB」这样才看得懂。"""
+    try:
+        b = float(v)
+    except (TypeError, ValueError):
+        return "0 B"
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if b < 1024 or unit == "TB":
+            return f"{b:.0f} {unit}" if unit == "B" else f"{b:.1f} {unit}"
+        b /= 1024.0
+    return "0 B"
+
+
+def bt_pick_primary(paths: List[str]) -> str:
+    """种子里挑「这一个文件」当任务成品：先看媒体后缀，再在同组里挑最大的。
+
+    界面与后续处理（校验、转写、搬运）都按一个主文件走；整包目录另记在 result_dir，
+    两个都给前端，用户既看得到主成品也看得到其余文件。
+    """
+    exist = [p for p in paths if p and Path(p).is_file()]
+    if not exist:
+        return ""
+    media = [p for p in exist if Path(p).suffix.lower() in _MEDIA_EXTS]
+    pool = media or exist
+    try:
+        return max(pool, key=lambda p: Path(p).stat().st_size)
+    except OSError:
+        return pool[0]
+
+
+def bt_error_text(code: str, msg: str) -> str:
+    """把 aria2 的报错夹成人话，但代码和原话一个字不删——用户要能对着代码去搜官方说法。
+
+    代码 13 是实测撞上的那条死路：下载目录里已经有这份内容、却没有 .aria2 续传记录，
+    aria2 为防把成品截断成 0 字节当场取消。这里补的是「接下来按哪个按钮」，不替换它的原话。
+    试过传 check-integrity=true 让它直接认领本地数据：实测连把 piece 开头都改坏了它照样
+    报 completedLength=totalLength，等于把没验过的东西当成品，所以不自动那么干。
+    """
+    head = f"aria2 报错（代码 {code}）：{msg or '未知原因'}"
+    if code == "13":
+        head += ("——两条走法：把下载目录里这份同名的旧内容删掉再重下；"
+                 "或在任务行勾「只做种」，让本地成品直接挂上传，不重新下载")
+    if code == "12":
+        # 实测：同一个 .torrent 提交第二次就撞上它，aria2 里同一个 infohash 只认一条，
+        # 而下完转做种的那条也还算数，所以「列表里看不到」不等于「aria2 已经放手」。
+        head += ("——同一个种子在 aria2 里只能登记一次：先在任务列表或「正在做种」面板里把"
+                 "原来那条删掉或停止做种，再重新提交")
+    return head
+
+
+def bt_file_list(raw: List[dict]) -> List[dict]:
+    """aria2.getFiles 的返回 → 界面要的形状：序号、路径、大小、完成度、是否要下。"""
+    out = []
+    for i, f in enumerate(raw or [], 1):
+        path = str(f.get("path") or "")
+        # 磁力在「还没拿到种子元数据」那段，aria2 会先挂一行 [METADATA] 占位，它不是种子里的文件
+        if not path or Path(path).name.startswith("[METADATA]"):
+            continue
+        try:
+            idx = int(f.get("index") or i)
+        except (TypeError, ValueError):
+            idx = i
+        size = 0
+        try:
+            size = max(int(f.get("length") or 0), int(f.get("size") or 0))
+        except (TypeError, ValueError):
+            size = 0
+        done = 0
+        try:
+            prog = f.get("progress") or (f.get("completedLength") or "")
+            done = int(str(prog).strip() or 0)
+        except (TypeError, ValueError):
+            done = 0
+        out.append({
+            "index": idx,
+            "path": path,
+            "name": Path(path).name,
+            "size": size,
+            "done": done,
+            "selected": str(f.get("selected", "true")).lower() != "false",
+        })
+    return out
+
+
 # -------------------- 队列调度 --------------------
 class TaskQueue:
     def __init__(self, engine: DownloaderEngine, cfg: ConfigManager, log: LogManager, history: HistoryManager):
@@ -6543,6 +7977,9 @@ class TaskQueue:
         if self.cfg.data.get("plugins_enabled", True) and not options.get("skip_plugins"):
             expanded = []
             for u in urls:
+                if parse_torrent_ref(u) or torrent_reject_reason(u):
+                    expanded.append((u, {}, ""))  # 磁力/种子是给 aria2 的，插件那套正则不接手
+                    continue
                 try:
                     resolved = try_resolve_with_plugins(
                         u,
@@ -6783,6 +8220,282 @@ class TaskQueue:
             items.sort(key=lambda t: (t.title or t.url or "").lower())
         return [t.to_dict() for t in items]
 
+    def _torrent_job(self, task: DownloadTask, cfg: dict, out_dir: str, on_progress) -> Tuple[bool, str, str]:
+        """磁力/种子任务的完整一趟：提交给 aria2 → 等元数据 → 报进度 → 完成后转入做种看护。
+
+        返回值沿用引擎那一套 (是否成功, 主成品路径, 提示)。种子的「主成品」是按媒体后缀
+        挑出来的那一个文件，整包目录记在 task.result_dir，其余文件在 task.files 里，
+        这样校验/转写/搬运这些只认单文件的后续步骤能照旧跑。
+        """
+        ref = parse_torrent_ref(task.url)
+        if not ref:
+            return False, "", "这条既不是磁力链接，也不是本地 .torrent 文件"
+        task.kind = "torrent"
+        ok, why = bt_ensure(cfg, self.engine.log)
+        if not ok:
+            return False, "", why
+        seed_only = bool(cfg.get("torrent_seed_only"))
+        if seed_only and (cfg.get("bt_auto_rules") or []):
+            # 只做种不下载新东西，成品就躺在本地原来的位置；再按规则换个落点，
+            # 下面逐个查文件时只会得到一句「下载目录里找不到种子里的 N 个文件」，白白吓人
+            self.log.log("自动分类：这条勾了「只做种」，不改落点（规则只管新下载的内容存到哪）")
+        else:
+            out_dir, task.category, _cat_why = bt_target_dir(ref, cfg, out_dir, self.log.log)
+        ac = _bt_client(cfg)
+        meta_wait = max(30, int(cfg.get("torrent_meta_timeout") or 180))
+        meta_deadline = time.time() + meta_wait
+        # 停种由下面的看护线程按比率/时长决定，所以要让 aria2 自己永远不停种。
+        # 只能给 seed-ratio=0（官方口径：0 就是不看比率、一直种）；这时候再带上 seed-time=0
+        # 反而会让 aria2 立刻收摊——两个条件同时给时，满足任意一个就结束做种。
+        extra = {"seed-ratio": "0"}
+        extra.update(_bt_add_options(cfg, self.log.log))
+        if seed_only and ref["kind"] == "magnet":
+            return False, "", ("「只做种」得先认出手上有哪些文件，磁力链接这一刻还没有种子元数据："
+                               "先把 .torrent 文件传上来再挂只做种")
+        if seed_only:
+            # 本地已经是完整成品，逐片哈希校验只是白等；aria2 的口径是「不做校验直接拿旧文件做种」
+            extra["bt-seed-unverified"] = "true"
+        try:
+            if ref["kind"] == "magnet":
+                gid = ac.add_uri([task.url], out_dir=out_dir, extra_opts=extra)
+            else:
+                tp = Path(ref["path"])
+                if not tp.is_file():
+                    return False, "", f"种子文件不存在：{tp}"
+                gid = ac.add_torrent(str(tp), out_dir, extra_opts=extra)
+        except Exception as e:
+            return False, "", f"提交给 aria2 失败：{e}"
+        task.gid = gid
+        if seed_only:
+            return self._torrent_seed_only(task, ac, cfg, gid, out_dir)
+        if not task.title or task.title == "等待中...":
+            task.title = ref["name"]
+        task.resume_hint = f"aria2 {gid[:10]}"
+        self.log.log(f"{'磁力' if ref['kind'] == 'magnet' else '种子'}任务交给 aria2："
+                     f"{ref['name']}（任务号 {gid[:10]}，存到 {out_dir}）")
+        # 磁力是两段下载：先只下元数据，元数据一到 aria2 就另起一个 gid 下真文件，
+        # 父任务随即报 complete、totalLength 也只有元数据那一两百字节 —— 跟着父任务走会把这当成「下完了」。
+        watch = gid
+        followed = ref["kind"] != "magnet"
+        while True:
+            if self.engine._stop_flags.get(task.id):
+                ac.remove(watch)
+                return False, "", "已停止：aria2 那边的任务同时移除了"
+            try:
+                st = ac.tell_status(watch, BT_KEYS)
+            except Exception as e:
+                return False, "", f"读取 aria2 状态失败：{e}"
+            status = str(st.get("status") or "")
+            total = int(st.get("totalLength") or 0)
+            done = int(st.get("completedLength") or 0)
+            if status in ("error", "removed"):
+                return False, "", bt_error_text(str(st.get("errorCode") or ""),
+                                                st.get("errorMessage") or "")
+            if not followed:
+                kids = [str(x) for x in (st.get("followedBy") or []) if x]
+                if kids:
+                    watch = kids[0]
+                    followed = True
+                    task.gid = watch
+                    task.resume_hint = f"aria2 {watch[:10]}"
+                    self.log.log(f"磁力元数据到手，改跟真文件那一段下载（任务号 {watch[:10]}）")
+                    continue
+            if status in ("error", "removed"):
+                return False, "", bt_error_text(str(st.get("errorCode") or ""),
+                                                st.get("errorMessage") or "")
+            if not total or not followed:
+                if time.time() > meta_deadline:
+                    ac.remove(watch)
+                    return False, "", (f"等了 {meta_wait} 秒还没拿到种子元数据："
+                                       "多半是这会儿没人在做种，或 DHT/Tracker 被网络挡住")
+                on_progress(task.id, 0, "等待种子元数据", "")
+                time.sleep(2)
+                continue
+            if not task.files:
+                try:
+                    task.files = bt_file_list(ac.get_files(watch))
+                    if task.files:
+                        task.result_dir = str(Path(task.files[0]["path"]).parent)
+                except Exception:
+                    pass
+            pct = min(99.0, done * 100.0 / total)
+            on_progress(task.id, pct,
+                        f"{_bt_hsize(st.get('speed'))}/s · {st.get('numPeers') or 0} 个节点", "",
+                        {"done_bytes": int(done or 0), "total_bytes": int(total or 0)})
+            if status == "complete":
+                break
+            # 带做种时 aria2 会一直停在 active：下满了也不报 complete（比率 0 就是永远不停种），
+            # 所以「下载完成」只能自己判——分片补齐就可以收尾，上传交给下面的看护线程。
+            if status == "active" and total and done >= total:
+                break
+            time.sleep(1)
+        try:
+            raw_files = bt_file_list(ac.get_files(watch))
+        except Exception:
+            raw_files = []
+        if raw_files:
+            task.files = raw_files
+        paths = [f["path"] for f in (task.files or []) if f.get("selected") and int(f.get("size") or 0) > 0]
+        primary = bt_pick_primary(paths)
+        if not primary:
+            return False, "", "下载已经满了，但一个文件都没落盘"
+        task.result_dir = str(Path(primary).parent)
+        try:
+            want_ratio = float(cfg.get("torrent_seed_ratio"))
+        except (TypeError, ValueError):
+            want_ratio = 1.0
+        try:
+            want_time = int(float(cfg.get("torrent_seed_time")))
+        except (TypeError, ValueError):
+            want_time = 3600
+        with _BT_WATCH_LOCK:
+            _BT_WATCH[watch] = {"task_id": task.id, "ratio": want_ratio, "seconds": want_time,
+                                "name": Path(primary).name}
+        # 看护线程 15 秒才走一拍，标记先打上，界面立刻能看到这条在做种
+        task.seeding = True
+        self._bt_watch_start()
+        n = len(paths)
+        if not want_ratio and not want_time:
+            note = f"{n} 个文件，一直做种（要停就在「做种中」那行按「停止做种」）"
+        else:
+            note = f"{n} 个文件，已转入做种"
+        return True, primary, note
+
+    def _torrent_seed_only(self, task: DownloadTask, ac, cfg: dict, gid: str,
+                           out_dir: str) -> Tuple[bool, str, str]:
+        """只做种：本地已有这份成品，直接挂上传，不走下载那一趟等待。
+
+        aria2 收下 bt-seed-unverified 的任务后不会告诉我们文件到底齐不齐，所以这里自己按
+        种子清单逐个查：少一个就当场退回并说明缺哪个，别留一个「在做种但其实没东西可传」的任务。
+        """
+        task.resume_hint = f"aria2 {gid[:10]}"
+        try:
+            files = bt_file_list(ac.get_files(gid))
+        except Exception as e:
+            ac.remove(gid)
+            return False, "", f"读种子文件清单失败：{e}"
+        want = [f for f in files if int(f.get("size") or 0) > 0]
+        missing = [str(f["path"]) for f in want
+                   if not (Path(out_dir) / str(f["path"])).is_file()]
+        if missing:
+            ac.remove(gid)
+            head = "、".join(missing[:3])
+            return False, "", (f"下载目录里找不到种子里的 {len(missing)} 个文件（{head}"
+                               + ("…" if len(missing) > 3 else "")
+                               + f"）：只做种得先把成品放到 {out_dir}")
+        if not task.title or task.title == "等待中...":
+            # 用种子里的名字，不是「清单第一个文件」的名字：一份 20 个文件的种子在清单上
+            # 只显示第一个文件名，用户会以为做种的是那一个文件（实测 info.name 就在这条 RPC 里）
+            seed_name = ""
+            try:
+                bt = (ac.tell_status(gid, ["bittorrent"]).get("bittorrent") or {})
+                seed_name = str(((bt.get("info") or {}).get("name")) or "")
+            except Exception:
+                seed_name = ""
+            task.title = seed_name or (Path(str(want[0]["path"])).name if want else gid[:10])
+        task.files = files
+        primary = bt_pick_primary([str(f["path"]) for f in want]) or ""
+        task.result_dir = str(Path(primary).parent) if primary else out_dir
+        try:
+            want_ratio = float(cfg.get("torrent_seed_ratio"))
+        except (TypeError, ValueError):
+            want_ratio = 1.0
+        try:
+            want_time = int(float(cfg.get("torrent_seed_time")))
+        except (TypeError, ValueError):
+            want_time = 3600
+        with _BT_WATCH_LOCK:
+            _BT_WATCH[gid] = {"task_id": task.id, "ratio": want_ratio, "seconds": want_time,
+                              "name": Path(primary).name if primary else task.title}
+        task.seeding = True
+        self._bt_watch_start()
+        self.log.log(f"[只做种] {task.title}：本地 {len(want)} 个文件已交给 aria2 挂做种（{out_dir}）")
+        return True, primary, f"{len(want)} 个文件已挂上做种，没有重新下载"
+
+    def _bt_watch_start(self):
+        """做种看护线程：没有它做种任务会一直赖在 aria2 里占上传。线程空了就自己退出。"""
+        th = getattr(self, "_bt_thread", None)
+        if th is not None and th.is_alive():
+            return
+        self._bt_thread = threading.Thread(target=self._bt_watch_loop, daemon=True)
+        self._bt_thread.start()
+
+    def _bt_watch_loop(self):
+        while True:
+            with _BT_WATCH_LOCK:
+                items = list(_BT_WATCH.items())
+            if not items:
+                return
+            time.sleep(15)
+            ac = _bt_client(dict(self.cfg.data))
+            for gid, w in items:
+                with _BT_WATCH_LOCK:
+                    # 这 15 秒里用户可能已经手动停了做种：登记没了就跳过，别拿旧快照把它标回「做种中」
+                    if gid not in _BT_WATCH:
+                        continue
+                t = self.tasks.get(w.get("task_id") or "")
+                try:
+                    st = ac.tell_status(gid, ["status", "uploadLength", "completedLength", "seedingTime"])
+                except Exception:
+                    # aria2 重启过或任务已不在：本地记录跟着清掉，别留一个永远不停的「做种中」
+                    with _BT_WATCH_LOCK:
+                        _BT_WATCH.pop(gid, None)
+                    if t:
+                        t.seeding = False
+                    continue
+                if not st.get("status"):
+                    # 任务号已经从 aria2 摘掉时它不报错，只回一个空对象：这同样算没在做种了
+                    with _BT_WATCH_LOCK:
+                        _BT_WATCH.pop(gid, None)
+                    if t:
+                        t.seeding = False
+                    continue
+                stt = str(st.get("status") or "")
+                if stt in ("error", "complete", "removed"):
+                    # 实测三种读数各有含义：做种中是 active，按比率/时长停种后是 complete，
+                    # 本地文件不齐是 error。这三种都别再挂「做种中」，更没必要留在看护表里
+                    why = {"error": "aria2 那边这个任务已出错（多半是本地文件不齐或被占用）",
+                           "complete": "aria2 已按做种比率/时长停种",
+                           "removed": "任务已从 aria2 移除"}.get(stt, stt)
+                    with _BT_WATCH_LOCK:
+                        _BT_WATCH.pop(gid, None)
+                    if t:
+                        t.seeding = False
+                        t.resume_hint = f"{why}，不再做种"
+                    self.log.log(f"做种看护：{(t.title if t else w.get('name'))} {why}，已摘掉「做种中」")
+                    continue
+                if stt == "paused":
+                    # 暂停的做种任务 aria2 不列进 tellActive（实测），但它确实还在传不了东西的状态里：
+                    # 登记要留着，「停止做种」才点得掉；标记跟着改成没在做种，别说假话。
+                    # 本程序的暂停/继续只管下载队列，不会去动 aria2，所以这里不承诺按哪个按钮能恢复。
+                    if t:
+                        t.seeding = False
+                        t.resume_hint = "aria2 把这个做种任务停成了 paused，当前不上传；要恢复上传得重新提交这个种子"
+                    continue
+                up = int(st.get("uploadLength") or 0)
+                dl = max(1, int(st.get("completedLength") or 0))
+                ratio = up / dl
+                try:
+                    seed_t = int(float(st.get("seedingTime") or 0))
+                except (TypeError, ValueError):
+                    seed_t = 0
+                if t:
+                    t.uploaded, t.share_ratio, t.seed_seconds, t.seeding = up, ratio, seed_t, True
+                stop = ""
+                if w.get("ratio") and ratio >= float(w["ratio"]):
+                    stop = f"上传比率到 {ratio:.2f}"
+                elif w.get("seconds") and seed_t >= int(w["seconds"]):
+                    stop = f"做种满 {seed_t} 秒"
+                if stop:
+                    ac.remove(gid)
+                    with _BT_WATCH_LOCK:
+                        _BT_WATCH.pop(gid, None)
+                    if t:
+                        t.seeding = False
+                        # 任务卡上还写着「一直做种」的话就是假话：做种结束时一并改掉那行
+                        t.resume_hint = f"做种结束（{stop}），已停止上传"
+                    self.log.log(f"磁力做种结束：{(t.title if t else w.get('name'))}（{stop}），已停止上传")
+
     def _run(self, task: DownloadTask):
         opts = getattr(task, "_opts", {}) or {}
         cfg = dict(self.cfg.data)
@@ -6798,13 +8511,27 @@ class TaskQueue:
             except Exception as e:
                 self.engine.log(f"[{task.id[:8]}] 启动聊天抓取失败: {e}", "warning")
 
-        def on_progress(tid, pct, speed, eta):
+        def on_progress(tid, pct, speed, eta, meta=None):
             t = self.tasks.get(tid)
             if t:
                 if pct is not None and float(pct) >= 0:
                     t.progress = pct
                 t.speed = speed or t.speed
                 t.eta = eta or t.eta
+                md = meta or {}
+                if int(md.get("done_bytes") or 0) > 0:
+                    t.done_bytes = int(md["done_bytes"])
+                if int(md.get("total_bytes") or 0) > 0:
+                    t.total_bytes = int(md["total_bytes"])
+                new_label = str(md.get("res_label") or "")
+                if new_label:
+                    # 合并下载时视频流、音频流各回调一次，别让用户看到标签在「1080p」和「M4A 128k」之间跳
+                    v_new = bool(re.match(r"^\d{3,4}p\b", new_label))
+                    v_cur = bool(re.match(r"^\d{3,4}p\b", t.res_label or ""))
+                    if v_new or not v_cur:
+                        t.res_label = new_label
+                if md.get("thumbnail") and not t.thumbnail:
+                    t.thumbnail = str(md["thumbnail"])
                 # 重试可视化：speed 形如 "retry 1/3" / "429 退避2s 1/3"
                 sp = str(speed or "")
                 if "retry" in sp.lower() or "退避" in sp or "429" in sp:
@@ -6824,11 +8551,13 @@ class TaskQueue:
             "write_description", "write_info_json", "write_sub_files",
             "speed_limit", "filename_template", "prefer_codec",
             "force_format", "download_section", "is_live", "use_hls_engine",
+            "ytdlp_extra_args",
             "direct_cdn", "bilibili_m4s",
             "http_headers", "referer", "cookie", "user_agent", "proxy",
             "hls_key",
             "playlist_start", "playlist_end", "playlist_items",
             "max_retries",
+            "torrent_seed_ratio", "torrent_seed_time", "torrent_seed_only",
         ):
             if opts.get(k) is not None:
                 cfg[k] = opts[k]
@@ -6844,8 +8573,17 @@ class TaskQueue:
             cfg["http_headers"] = hdrs
         from telegram_mt import parse_tgmt
 
-        mt_ref = parse_tgmt(task.url)
-        if mt_ref:
+        bt_ref = parse_torrent_ref(task.url)
+        mt_ref = None if bt_ref else parse_tgmt(task.url)
+        if bt_ref:
+            self.engine._stop_flags[task.id] = False
+            task.status = TaskStatus.DOWNLOADING.value
+            ok, path, bt_msg = self._torrent_job(task, cfg, out_dir, on_progress)
+            if not ok:
+                task.error_msg = bt_msg or "磁力/种子下载失败"
+            elif bt_msg:
+                task.resume_hint = bt_msg
+        elif mt_ref:
             self.engine._stop_flags[task.id] = False
             task.status = TaskStatus.DOWNLOADING.value
             ok, path, mt_msg = tg_session.download_ref(
@@ -6853,7 +8591,10 @@ class TaskQueue:
                 out_dir,
                 audio_only=bool(cfg.get("audio_only")),
                 filename_template=cfg.get("filename_template") or "",
-                progress=lambda pct, done, label: on_progress(task.id, pct, label, ""),
+                progress=lambda pct, done, label, todo=0: on_progress(
+                    task.id, pct, label, "",
+                    {"done_bytes": int(done or 0), "total_bytes": int(todo or 0)},
+                ),
                 stopped=lambda: bool(self.engine._stop_flags.get(task.id)),
                 force=not cfg.get("skip_downloaded", True),
             )
@@ -6996,7 +8737,10 @@ class TaskQueue:
                 self.engine.log(f"[{task.id[:8]}] 直播收尾失败: {e}", "warning")
 
         # 转存/上报之前先确认「文件真的能用」：被反爬拦下时工具会正常退出并留下网页或空壳
-        if ok and path and cfg.get("verify_download", True):
+        # 种子的主成品可能是压缩包或镜像，ffprobe 认不出的东西不该被判成「下载坏了」
+        if ok and path and cfg.get("verify_download", True) and (
+            task.kind != "torrent" or Path(path).suffix.lower() in _MEDIA_EXTS
+        ):
             try:
                 bad = verify_media_file(path)
             except Exception as e:  # 校验自身出问题不能拖累任务
@@ -7020,6 +8764,15 @@ class TaskQueue:
 
         # 若用户中途暂停/停止，不要覆盖为完成/失败
         if task.status not in (TaskStatus.STOPPED.value, TaskStatus.PAUSED.value):
+            # 进度回调的字节只到最后一个分片，合并/转码后的成品往往更大：收尾按真实文件算。
+            # 种子不覆盖：aria2 报的 totalLength 是整个下载，path 只是挑出来的主文件
+            if task.kind != "torrent":
+                try:
+                    if path and Path(path).is_file():
+                        task.total_bytes = int(Path(path).stat().st_size)
+                        task.done_bytes = task.total_bytes
+                except Exception:
+                    pass
             task.status = TaskStatus.FINISHED.value if ok else TaskStatus.FAILED.value
             task.filepath = path or task.filepath or ""
             task.progress = 100.0 if ok else task.progress
@@ -7036,7 +8789,7 @@ class TaskQueue:
                     if extra:
                         raw = f"{raw}｜{extra}"
                 task.error_msg = raw
-            if path:
+            if path and not (task.kind == "torrent" and len(task.files) > 1):
                 task.title = Path(path).name
             self.history.add(
                 {
@@ -7115,6 +8868,18 @@ class TaskQueue:
                 paused_urls.append(t.url or "")
                 # 稍等文件刷盘
                 time.sleep(0.8)
+                # 拉流的 ffmpeg 不会跟着停止标记退出（它全程没有进度回调），不收掉就会一直写下去
+                hints = [h for h in (self.engine.live_output_stem(t.id),
+                                     (t.title or "").strip(),
+                                     Path(t.filepath or "").stem) if h]
+                try:
+                    _stop_live_recorder_children(hints, log=self.log.log)
+                except Exception as e:
+                    try:
+                        self.log.log(f"收拉流子进程失败: {e}", "warning")
+                    except Exception:
+                        pass
+                time.sleep(0.4)
                 try:
                     room = extract_bilibili_live_room_id(t.url) or ""
                     finalized = finalize_part_files(
@@ -7122,6 +8887,12 @@ class TaskQueue:
                     )
                     if not finalized:
                         finalized = _find_recent_media_files(out_dir, hint=room or t.url)
+                    if not finalized:
+                        # 直播成品是按标题命名的，房间号/链接对不上名字（B站标题里通常也没有房间号）。
+                        # 只认收尾这一刻刚刚写完的那一份：窗口里出现两份以上说明分不清是谁的，宁可不写。
+                        recent = _find_recent_media_files(out_dir, hint="", within_sec=90)
+                        if len(recent) == 1:
+                            finalized = recent
                     if finalized:
                         t.filepath = finalized[0]
                         t.title = Path(finalized[0]).name
@@ -7129,8 +8900,9 @@ class TaskQueue:
                     # 也收集我们自己写的 chat 文件
                     for p in Path(out_dir).glob(f"*{t.id[:8]}*.chat.*"):
                         chats.append(str(p))
-                    for p in Path(out_dir).glob(f"*{room}*.ass"):
-                        chats.append(str(p))
+                    if room:   # 房间号为空时通配会变成「**.ass」，Path.glob 会当场抛错
+                        for p in Path(out_dir).glob(f"*{room}*.ass"):
+                            chats.append(str(p))
                     if chats:
                         t.chat_file = chats[-1]
                         self.log.log(f"聊天/弹幕文件: {Path(chats[-1]).name}")
@@ -7233,6 +9005,19 @@ class TaskQueue:
         self.paused = False
         self._pump()
 
+    def bt_release(self, t: DownloadTask):
+        """任务行被删掉时顺带停掉 aria2 那边：留着就成了一个界面上看不见的上传进程。"""
+        gid = (t.gid or "").strip()
+        if not gid:
+            return
+        with _BT_WATCH_LOCK:
+            _BT_WATCH.pop(gid, None)
+        t.seeding = False
+        try:
+            _bt_client(dict(self.cfg.data)).remove(gid)
+        except Exception as e:
+            self.log.log(f"通知 aria2 移除任务失败（{gid[:10]}）：{e}", "warning")
+
     def delete_tasks(self, ids: List[str]):
         idset = set(ids or [])
         self.pending = [tid for tid in self.pending if tid not in idset]
@@ -7245,6 +9030,7 @@ class TaskQueue:
                     self.engine.stop(tid)
                 except Exception:
                     pass
+            self.bt_release(t)
             del self.tasks[tid]
 
     def retry_failed(self):
@@ -7337,12 +9123,16 @@ class AddUrlsBody(BaseModel):
     write_sub_files: Optional[bool] = None  # 不传 = 跟随全局设置：成品旁是否另存 .vtt/.srt
     download_dir: Optional[str] = None
     force_format: Optional[str] = None  # 指定 yt-dlp format_id 或表达式
+    ytdlp_extra_args: Optional[str] = None  # 不传 = 跟随设置里的「自定义 yt-dlp 参数」
     download_section: Optional[str] = None  # 框选片段，如 *00:01:00-00:02:30 或 1:00-2:30
     is_live: bool = False  # 直播录制
     download_later: bool = False  # 稍后下载（入队但不立即开始）
     pinned: bool = False
     priority: int = 0
     use_hls_engine: bool = False  # 嗅探到的 HLS 优先用专用引擎
+    torrent_seed_ratio: Optional[float] = None  # 磁力/种子：传到这个比率就停种，0=不按比率
+    torrent_seed_time: Optional[int] = None     # 磁力/种子：做满这么多秒就停种，0=不按时长
+    torrent_seed_only: bool = False             # 磁力/种子：本地已经有这份文件，只挂做种、不再下一遍
 
 
 class ConfigBody(BaseModel):
@@ -7371,6 +9161,7 @@ class ConfigBody(BaseModel):
     skip_downloaded: Optional[bool] = None
     allow_playlist: Optional[bool] = None
     sponsorblock: Optional[str] = None
+    ytdlp_extra_args: Optional[str] = None  # 自定义 yt-dlp 参数（一行命令行式参数）
     telegram_enabled: Optional[bool] = None
     telegram_bot_token: Optional[str] = None
     telegram_chat_id: Optional[str] = None
@@ -7412,6 +9203,7 @@ class ConfigBody(BaseModel):
     live_stream_pref_default: Optional[str] = None
     live_stream_fallback: Optional[bool] = None
     global_speed_limit: Optional[str] = None
+    speed_windows: Optional[str] = None
     max_per_host: Optional[int] = None
     adaptive_throttle: Optional[bool] = None
     plugins_enabled: Optional[bool] = None
@@ -7420,6 +9212,20 @@ class ConfigBody(BaseModel):
     aria2_secret: Optional[str] = None
     aria2_split: Optional[int] = None
     aria2_for_large_mb: Optional[int] = None
+    aria2_bin: Optional[str] = None
+    aria2_autostart: Optional[bool] = None
+    torrent_seed_ratio: Optional[float] = None
+    torrent_seed_time: Optional[int] = None
+    torrent_meta_timeout: Optional[int] = None
+    bt_trackers: Optional[str] = None
+    bt_tracker_sources: Optional[str] = None
+    bt_tracker_auto_update: Optional[bool] = None
+    bt_tracker_max: Optional[int] = None
+    bt_dl_limit: Optional[str] = None
+    bt_ul_limit: Optional[str] = None
+    bt_prioritize_piece: Optional[bool] = None
+    bt_auto_rules: Optional[list] = None
+    bt_auto_fallback: Optional[str] = None
     http_impersonate: Optional[bool] = None
     po_provider_enabled: Optional[bool] = None
     po_provider_url: Optional[str] = None
@@ -7444,6 +9250,9 @@ class ConfigBody(BaseModel):
     subtitle_glossary: Optional[str] = None
     subtitle_wrap: Optional[bool] = None
     subtitle_wrap_width: Optional[int] = None
+    subtitle_wrap_lines: Optional[int] = None
+    subtitle_qc: Optional[bool] = None
+    subtitle_qc_reflect: Optional[bool] = None
     subtitle_export_set: Optional[str] = None
     deepl_api_key: Optional[str] = None
     deepl_api_url: Optional[str] = None
@@ -7505,6 +9314,11 @@ class SubBackfillBody(BaseModel):
     id: str
     since: str = ""
     until: str = ""
+
+
+class SubArchiveClearBody(BaseModel):
+    id: str
+    entry_id: str = ""
 
 
 class AnalyzeBody(BaseModel):
@@ -7904,6 +9718,130 @@ def api_glossary_check(body: dict):
         if len(parts) != 2 or not parts[0].strip() or not parts[1].strip():
             bad.append(s[:60])
     return {"ok": True, "count": len(pairs), "terms": pairs[:200], "bad": bad[:20]}
+
+
+QC_ROWS_CAP = 200
+
+
+def _qc_budget(body: dict) -> Tuple[float, int]:
+    """每行字数 / 最多行数：请求体优先，越界就按能用的极限收住。"""
+    width = float(body.get("width") or cfg.data.get("subtitle_wrap_width") or 16)
+    width = max(8.0, min(40.0, width))
+    lines = int(body.get("lines") or cfg.data.get("subtitle_wrap_lines") or 3)
+    lines = max(1, min(4, lines))
+    return width, lines
+
+
+@app.post("/api/subtitle/qc")
+def api_subtitle_qc(body: dict):
+    """字幕质检：把这份字幕逐句对照它的另一路（原文 ↔ 译文），列出可疑行给校对台跳转。
+
+    手上这份始终按「译文」处理，行号就是这份文件的句序；另一路只当原文用。
+    """
+    body = body or {}
+    srt, _media = _subtitle_for_edit(body.get("path") or "")
+    other = None
+    if (body.get("with") or "").strip():
+        try:
+            other = resolve_media_path(body["with"].strip())
+        except HTTPException:
+            other = None
+    else:
+        other = find_subtitle_counterpart(srt)
+    if other is not None and (not other.is_file() or other.suffix.lower() not in SUB_EDIT_EXTS):
+        other = None
+
+    target = str(cfg.data.get("subtitle_target_lang") or "zh").strip()
+    width, max_lines = _qc_budget(body)
+    dst = _edit_cues(srt)
+    if not dst:
+        raise HTTPException(400, f"{srt.name} 里没有解析出有效字幕，没法质检")
+
+    src_texts: List[str] = [""] * len(dst)
+    hint = ""
+    if other is not None:
+        src = _edit_cues(other)
+        if not src:
+            hint = f"另一路 {other.name} 没解析出有效字幕，本次只查不依赖对照的问题"
+        else:
+            src_texts = [c["text"] for c in src][: len(dst)]
+            if len(src) < len(dst):
+                hint = (f"两路句数不一致（{srt.name} {len(dst)} 句 / {other.name} {len(src)} 句），"
+                        f"后 {len(dst) - len(src)} 句没有原文可对照")
+            if _lang_suffix_of(other).lower().startswith(target.lower()[:2]) and not _lang_suffix_of(srt).lower().startswith(target.lower()[:2]):
+                hint = (hint + " " if hint else "") + (
+                    f"另一路的文件名带 {target} 后缀，可疑行号是按 {srt.name} 报的；"
+                    "要是这份其实是原文，请改开译文那一份再查")
+    else:
+        hint = "找不到另一路原文，只查空句、换行超限、复读和样式标签丢失这几类不依赖对照的问题"
+
+    glossary = parse_glossary()
+    rows = qc_cue_pairs(
+        src_texts, [c["text"] for c in dst], target_lang=target,
+        glossary=glossary, max_units=width, max_lines=max_lines,
+    )
+    out_rows = []
+    for r in rows[:QC_ROWS_CAP]:
+        c = dst[r["i"] - 1]
+        out_rows.append({
+            "i": r["i"],
+            "start": c["start"],
+            "end": c["end"],
+            "speaker": c.get("speaker") or "",
+            "src": (src_texts[r["i"] - 1] if r["i"] - 1 < len(src_texts) else "")[:300],
+            "dst": (c["text"] or "")[:300],
+            "kinds": r["kinds"],
+            "why": r["why"],
+            "labels": [QC_KIND_LABELS.get(k, k) for k in r["kinds"]],
+        })
+    return {
+        "ok": True,
+        "srt": _ui_path(srt),
+        "counter": _ui_path(other) if other else "",
+        "paired": bool(other),
+        "total": len(dst),
+        "lang": target,
+        "wrap": {"width": width, "lines": max_lines},
+        "reflect_on": bool(cfg.data.get("subtitle_qc_reflect", False)),
+        "stats": qc_stats(rows),
+        "stats_text": qc_stats_text(rows),
+        "rows": out_rows,
+        "truncated": len(rows) > QC_ROWS_CAP,
+        "hint": hint,
+        "message": (f"{len(rows)} 句可疑（{qc_stats_text(rows)}）" if rows
+                    else f"{len(dst)} 句都过了，没发现可疑行"),
+    }
+
+
+@app.post("/api/subtitle/rewrap")
+def api_subtitle_rewrap(body: dict):
+    """按每行字数重排一份字幕：只动换行不改文字，写回前先按校对台的规矩留一份备份。"""
+    body = body or {}
+    srt, _media = _subtitle_for_edit(body.get("path") or "")
+    width, max_lines = _qc_budget(body)
+    raw = srt.read_text(encoding="utf-8", errors="ignore")
+    is_vtt = srt.suffix.lower() == ".vtt"
+    cues = parse_srt(_vtt_to_srt_text(raw) if is_vtt else raw)
+    cues = [c for c in cues if (c.get("text") or "").strip()]
+    if not cues:
+        raise HTTPException(400, f"{srt.name} 里没有解析出有效字幕，未改动")
+    wrapped = wrap_cues(cues, width, max_lines)
+    changed = sum(1 for a, b in zip(cues, wrapped) if (a.get("text") or "") != (b.get("text") or ""))
+    over = sum(1 for c in wrapped if max((text_units(ln) for ln in (c.get("text") or "").split("\n")), default=0.0) > width * 1.25)
+    info = f"每行 ≤{width:g} 个全角宽、最多 {max_lines} 行"
+    if not changed:
+        return {"ok": True, "changed": 0, "total": len(cues), "width": width, "lines": max_lines,
+                "over": over, "message": f"已经符合{info}，没有改动"}
+    backup = _edit_backup_path(srt)
+    shutil.copy2(srt, backup)
+    srt.write_text(write_vtt(wrapped) if is_vtt else write_srt(wrapped), encoding="utf-8")
+    log_mgr.log(f"字幕重排: {srt.name} 改了 {changed} 句（{info}），原文件备份为 {backup.name}")
+    tail = f"，其中 {over} 句没有合适的断点、仍然超行" if over else ""
+    return {
+        "ok": True, "changed": changed, "total": len(cues), "width": width, "lines": max_lines,
+        "over": over, "backup": _ui_path(backup), "srt": _ui_path(srt),
+        "message": f"按{info}重排了 {changed} 句{tail}，原文件备份为 {backup.name}",
+    }
 
 
 @app.post("/api/ai/analyze")
@@ -8362,6 +10300,160 @@ def api_ai_srt_calibrate(body: dict):
         return {"ok": True, "path": out, "message": f"已校准 → {Path(out).name}"}
     except Exception as e:
         raise HTTPException(400, str(e))
+
+
+SUB_EDIT_EXTS = (".srt", ".vtt")
+
+
+def _subtitle_for_edit(path: str) -> Tuple[Path, str]:
+    """校对台入口路径：给字幕文件直接用它，给媒体文件找回它那份字幕。回 (字幕文件, 媒体路径)。"""
+    p = resolve_media_path(path)
+    if p.suffix.lower() in SUB_EDIT_EXTS:
+        return p, ""
+    from ai_pipeline import find_pipeline_srt
+
+    srt = find_pipeline_srt(p)
+    if srt is None:
+        raise HTTPException(400, f"{p.name} 还没有字幕文件，先跑一次转写或字幕流水线")
+    if srt.suffix.lower() not in SUB_EDIT_EXTS:
+        raise HTTPException(400, f"逐句校对只支持 .srt / .vtt，这份是 {srt.name}")
+    return srt, str(p)
+
+
+def _edit_cues(srt: Path) -> List[dict]:
+    """字幕文件 → 逐行可编辑数据。说话人标记在文件里是正文前缀，这里剥成 speaker 字段供界面分色。"""
+    try:
+        raw = srt.read_text(encoding="utf-8", errors="ignore")
+    except OSError as e:
+        raise HTTPException(500, f"读取字幕失败: {e}")
+    if srt.suffix.lower() == ".vtt":
+        raw = _vtt_to_srt_text(raw)
+    cues: List[dict] = []
+    for c in parse_srt(raw):
+        left, _, right = (c.get("timing") or "").partition("-->")
+        text = c.get("text") or ""
+        speaker = ""
+        m = SPEAKER_PREFIX_RE.match(text)
+        if m:
+            speaker = m.group(2)
+            text = text[m.end():]
+        cues.append({
+            "idx": len(cues) + 1,
+            "start": round(_srt_ts_to_ms(left) / 1000.0, 3),
+            "end": round(_srt_ts_to_ms(right) / 1000.0, 3),
+            "speaker": speaker,
+            "text": text.strip(),
+        })
+    return cues
+
+
+def _edit_backup_path(p: Path) -> Path:
+    """同目录备份名 = 原文件名 + .bak-<时间>；同一秒内连续保存时往后加序号，不覆盖上一份备份。"""
+    base = p.name + ".bak-" + datetime.now().strftime("%Y%m%d-%H%M%S")
+    cand = p.with_name(base)
+    i = 1
+    while cand.exists():
+        cand = p.with_name(f"{base}.{i}")
+        i += 1
+    return cand
+
+
+@app.get("/api/ai/srt")
+def api_ai_srt_read(path: str = ""):
+    """逐句校对台：把一份字幕读成可编辑的行（每句起止秒、说话人、正文）。"""
+    if not (path or "").strip():
+        raise HTTPException(400, "缺少 path")
+    srt, media = _subtitle_for_edit(path)
+    cues = _edit_cues(srt)
+    st = srt.stat()
+    return {
+        "ok": True,
+        "srt": _ui_path(srt),
+        "media": _ui_path(Path(media)) if media else "",
+        "format": srt.suffix.lower().lstrip("."),
+        "cues": cues,
+        "mtime_ts": st.st_mtime,
+        "mtime": datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+        "message": "" if cues else "这份字幕里没有解析出有效句子",
+    }
+
+
+@app.post("/api/ai/srt/save")
+def api_ai_srt_save(body: dict):
+    """逐句校对台写回：整表覆盖，覆盖前先把原文件备份成 <原文件名>.bak-<时间>。
+
+    body: path 字幕或媒体文件；cues 编辑后的整表（顺序即句序）；
+          base_mtime 读入时拿到的 mtime_ts，用来挡「读完之后文件又被改写」这一类覆盖。
+    """
+    body = body or {}
+    srt, _media = _subtitle_for_edit(body.get("path") or "")
+    rows = body.get("cues")
+    if not isinstance(rows, list) or not rows:
+        raise HTTPException(400, "没有要写入的字幕行，原文件未改动")
+    if len(rows) > 20000:
+        raise HTTPException(400, f"这次送来 {len(rows)} 行，超出单份字幕上限，已拒绝写入")
+    bm = body.get("base_mtime")
+    if bm not in (None, ""):
+        try:
+            cur = srt.stat().st_mtime
+            if abs(float(bm) - cur) > 0.01:
+                raise HTTPException(
+                    409,
+                    f"这份字幕在你打开之后又被改写过（{srt.name}，改写于 "
+                    f"{datetime.fromtimestamp(cur).strftime('%Y-%m-%d %H:%M:%S')}），本次没有写入。"
+                    "请重新载入后再校对，以免覆盖掉刚生成的内容。",
+                )
+        except ValueError:
+            pass
+
+    cues: List[dict] = []
+    dropped = 0
+    for r in rows:
+        if not isinstance(r, dict):
+            raise HTTPException(400, f"第 {len(cues) + 1} 行不是字幕行，已拒绝写入")
+        try:
+            t0 = int(round(float(r.get("start") or 0) * 1000))
+            t1 = int(round(float(r.get("end") or 0) * 1000))
+        except (TypeError, ValueError):
+            raise HTTPException(
+                400, f"第 {len(cues) + 1} 句的时间不是数字（起={r.get('start')!r} 止={r.get('end')!r}），已拒绝写入"
+            )
+        text = str(r.get("text") or "").strip()
+        sp = str(r.get("speaker") or "").strip()
+        if sp:
+            text = f"[说话人{sp}] {text}".strip()
+        if not text:
+            dropped += 1
+            continue
+        t0 = max(0, t0)
+        if t1 <= t0:
+            t1 = t0 + 40  # 与时间轴校准同一口径：一句至少留 40ms
+        cues.append({"timing": f"{_ms_to_srt_ts(t0)} --> {_ms_to_srt_ts(t1)}", "text": text})
+    if not cues:
+        raise HTTPException(400, "每一句的正文都是空的，本次没有写入，原文件未改动")
+
+    bak = _edit_backup_path(srt)
+    try:
+        shutil.copy2(srt, bak)
+        txt = write_vtt(cues) if srt.suffix.lower() == ".vtt" else write_srt(cues)
+        srt.write_text(txt, encoding="utf-8")
+    except OSError as e:
+        raise HTTPException(500, f"写入字幕失败: {e}（备份名 {bak.name}，原文件可能未改动）")
+
+    log_mgr.log(
+        f"逐句校对字幕：{srt.name} 写入 {len(cues)} 句"
+        + (f"，其中 {dropped} 行正文为空已跳过" if dropped else "")
+        + f"，原文件备份为 {bak.name}"
+    )
+    return {
+        "ok": True,
+        "srt": _ui_path(srt),
+        "backup": _ui_path(bak),
+        "count": len(cues),
+        "dropped": dropped,
+        "mtime_ts": srt.stat().st_mtime,
+        "message": f"已写入 {len(cues)} 句" + (f"，跳过 {dropped} 行空正文" if dropped else ""),
+    }
 
 
 @app.post("/api/ai/translate_srt")
@@ -9284,6 +11376,50 @@ def api_set_config(body: ConfigBody):
     if "concurrent" in data:
         data["concurrent"] = max(1, min(10, int(data["concurrent"])))
         queue.max_concurrent = data["concurrent"]
+    if "torrent_seed_ratio" in data:
+        # 做种参数直接决定 aria2 什么时候停上传：负值会让任务一建好就被判「已达标」而立刻停种
+        data["torrent_seed_ratio"] = max(0.0, min(20.0, float(data["torrent_seed_ratio"])))
+    if "torrent_seed_time" in data:
+        data["torrent_seed_time"] = max(0, min(604800, int(data["torrent_seed_time"])))
+    if "torrent_meta_timeout" in data:
+        data["torrent_meta_timeout"] = max(30, min(1800, int(data["torrent_meta_timeout"])))
+    if "bt_tracker_max" in data:
+        # announce 是串行问的，条数没有上限会把「等元数据」拖到几十秒；0 表示不注入
+        data["bt_tracker_max"] = max(0, min(200, int(data["bt_tracker_max"])))
+    if "bt_auto_rules" in data:
+        # 规则是「一条名字决定一批文件落到哪」的东西：写歪一条就把整批下载带偏，所以当场核对、不默默收下
+        cleaned, bad = bt_rules_clean(data["bt_auto_rules"])
+        if bad:
+            raise HTTPException(400, "自动分类规则存不下：" + "；".join(bad[:5]))
+        if len(cleaned) > 50:
+            raise HTTPException(400, f"自动分类规则最多 50 条，现在有 {len(cleaned)} 条")
+        data["bt_auto_rules"] = cleaned
+    if "bt_auto_fallback" in data:
+        fb, fb_why = bt_rule_subdir(data["bt_auto_fallback"])
+        if fb_why:
+            raise HTTPException(400, "自动分类的「都不命中时存到」存不下：" + fb_why)
+        data["bt_auto_fallback"] = fb
+    for k in ("bt_trackers", "bt_tracker_sources"):
+        if k in data:
+            # 只留文本本身，解析放在用的时候：填了非法行不该让整份设置存不下去
+            data[k] = str(data[k] or "")[:20000]
+    for k in ("bt_dl_limit", "bt_ul_limit"):
+        if k in data:
+            raw = str(data[k] or "").strip().upper()
+            got = bt_trackers.norm_speed(raw)
+            if raw and not got:
+                raise HTTPException(400, f"{k} 要写成 1M / 512K / 纯字节数（空=不限），现在收到的是「{raw[:24]}」")
+            data[k] = got
+    if "speed_windows" in data:
+        # 时段写歪等于悄悄不限速，用户看不出来：当场逐行核对，不默默收下
+        rows, bad = parse_speed_windows(str(data["speed_windows"] or ""))
+        if bad:
+            raise HTTPException(400, "限速时段存不下：" + "；".join(bad[:5]))
+        if len(rows) > 30:
+            raise HTTPException(400, f"限速时段最多 30 行，现在有 {len(rows)} 行")
+        data["speed_windows"] = str(data["speed_windows"] or "")[:4000]
+    if "bt_prioritize_piece" in data:
+        data["bt_prioritize_piece"] = bool(data["bt_prioritize_piece"])
     if "proxy_mode" in data:
         data["proxy_mode"] = (
             data["proxy_mode"] if data["proxy_mode"] in PROXY_MODES else "auto"
@@ -9301,11 +11437,32 @@ def api_set_config(body: ConfigBody):
         data["music_quality_spec"] = norm_quality_spec(data["music_quality_spec"])
     if "ffmpeg_path" in data:
         ffmpeg_mgr.manual_path = (data["ffmpeg_path"] or "").strip()
+    ydl_arg_notes: List[str] = []
+    if "ytdlp_extra_args" in data:
+        # 参数串照旧存下来（被挡掉的项也保留，用户改回原样就不用重打），但要告诉界面哪几项没生效
+        data["ytdlp_extra_args"] = str(data["ytdlp_extra_args"] or "").strip()[:2000]
+        if data["ytdlp_extra_args"]:
+            ydl_arg_notes = _ydl_extra_opts(data["ytdlp_extra_args"])[1]
     cfg.data.update(data)
     cfg.save()
     # 只记变更项数量：配置值里有 Bot Token / Secret / Cookie 等敏感内容，一律不落日志
     log_mgr.log(f"[界面] 保存设置（{len(data)} 项变更）")
-    return {"ok": True, "data": cfg.data}
+    return {"ok": True, "data": cfg.data, "ydl_arg_notes": ydl_arg_notes}
+
+
+@app.post("/api/config/speed_windows/check")
+def api_speed_windows_check(body: dict):
+    """限速时段格式体检：列出认出的档位和逐行报错，并说明此刻会命中哪一档。这一步不写配置。"""
+    raw = (body or {}).get("text")
+    if raw is None:
+        raw = cfg.data.get("speed_windows") or ""
+    raw = str(raw)
+    rows, bad = parse_speed_windows(raw)
+    sl, note = resolve_speed_limit({**cfg.data, "speed_limit": "", "speed_windows": raw})
+    return {"ok": not bad, "count": len(rows),
+            "rows": [{"span": f"{a}-{b}", "speed": s, "label": lab} for a, b, s, lab in rows],
+            "errors": bad[:20], "now": datetime.now().strftime("%H:%M"),
+            "current": sl, "current_note": note}
 
 
 # 设置页「按平台代理」表要列出的音乐源（其余源走默认档，不逐个列）
@@ -9408,7 +11565,8 @@ def download_preflight(urls: List[str], opts: dict) -> Tuple[List[str], List[str
     errs: List[str] = []
     warns: List[str] = []
     mt = [u for u in urls if u.lower().startswith("tgmt://")]
-    plain = [u for u in urls if u not in mt]
+    bt = [u for u in urls if parse_torrent_ref(u)]
+    plain = [u for u in urls if u not in mt and u not in bt]
     if plain and "not found" in str(engine.check_ytdlp() or "").lower():
         errs.append("本机没有可用的 yt-dlp（解析各站点靠它）：到「设置 → 组件与依赖」点 yt-dlp 那行的「安装」，装好再入队")
     if plain and not ffmpeg_mgr.find(ffmpeg_mgr.manual_path):
@@ -9443,6 +11601,15 @@ def download_preflight(urls: List[str], opts: dict) -> Tuple[List[str], List[str
         if importlib.util.find_spec("telethon") is None:
             errs.append("tgmt:// 链接要走 Telegram 账号会话下载，但本机没有 telethon："
                         "到「设置 → 组件与依赖」点 telethon 那行的「安装」再入队")
+    if bt:
+        # 磁力/种子完全靠 aria2：起不来就一定办不成，当场说清缺什么（需要时按设置自己拉一个本机进程）
+        for u in bt:
+            ref = parse_torrent_ref(u) or {}
+            if ref.get("kind") == "torrent-file" and not Path(str(ref.get("path") or "")).is_file():
+                errs.append(f"种子文件不存在：{ref.get('path')}")
+        ok_aria, why = bt_ensure(dict(cfg.data), log_mgr.log)
+        if not ok_aria:
+            errs.append("磁力/种子任务要靠本机 aria2，现在连不上：" + why)
     d = str(opts.get("download_dir") or cfg.data.get("download_dir") or "").strip()
     if d:
         try:
@@ -9460,7 +11627,14 @@ def download_preflight(urls: List[str], opts: dict) -> Tuple[List[str], List[str
 @app.post("/api/download")
 def api_download(body: AddUrlsBody):
     raw = [u.strip() for u in body.urls if u and u.strip()]
-    urls = [u for u in raw if u.startswith("http") or u.lower().startswith("tgmt://")]
+    bt_ok = [u for u in raw if parse_torrent_ref(u)]
+    bt_bad = [u for u in raw
+              if (u.lower().startswith("magnet:") or u.lower().startswith("file://")) and u not in bt_ok]
+    if bt_bad:
+        msgs = "；".join(dict.fromkeys(torrent_reject_reason(u) for u in bt_bad if torrent_reject_reason(u)))
+        log_mgr.log(f"入队前检查未通过（任务没有创建）：{msgs}", "error")
+        raise HTTPException(400, "入队前检查未通过：" + msgs)
+    urls = [u for u in raw if u.startswith("http") or u.lower().startswith("tgmt://") or u in bt_ok]
     skipped = len(raw) - len(urls)
     if not urls:
         raise HTTPException(400, "请提供有效 URL")
@@ -9471,11 +11645,19 @@ def api_download(body: AddUrlsBody):
     if errs:
         log_mgr.log("入队前检查未通过（任务没有创建）：" + "；".join(errs), "error")
         raise HTTPException(400, "入队前检查未通过：" + "；".join(errs))
+    # 自定义 yt-dlp 参数入队前先核对一遍：被挡掉的项当场回给界面，别等任务跑起来才在日志里发现
+    arg_text = str(opts.get("ytdlp_extra_args") or cfg.data.get("ytdlp_extra_args") or "").strip()
+    arg_notes: List[str] = []
+    if arg_text:
+        _arg_delta, arg_notes = _ydl_extra_opts(arg_text)
+        for _n in arg_notes:
+            log_mgr.log("自定义 yt-dlp 参数：" + _n, "warning")
     ids = queue.add_urls(urls, opts)
     merged = max(0, len(urls) - len(ids))
     log_mgr.log(f"加入 {len(ids)} 个任务" + (f"（合并 {merged} 条重复）" if merged else "")
                 + (f"（忽略 {skipped} 条无效链接）" if skipped else ""))
-    return {"ok": True, "ids": ids, "added": len(ids), "merged": merged, "skipped": skipped}
+    return {"ok": True, "ids": ids, "added": len(ids), "merged": merged, "skipped": skipped,
+            "arg_notes": arg_notes}
 
 
 @app.get("/api/tasks")
@@ -9486,6 +11668,13 @@ def api_tasks(sort: str = "queue"):
         "paused": queue.paused,
         "pending": len(queue.pending),
     }
+
+
+class IdsBody(BaseModel):
+    """一组任务号。必须定义在第一个用到它的路由之前：注解是字符串，FastAPI 在装饰那一刻解析，
+    晚定义会把请求体降级成查询参数——必填的当场报「缺参数」，选填的则永远收到 None。"""
+
+    ids: List[str] = []
 
 
 @app.post("/api/tasks/pin")
@@ -9691,10 +11880,6 @@ def api_retry():
     return {"ok": True}
 
 
-class IdsBody(BaseModel):
-    ids: List[str] = []
-
-
 class BrowseBody(BaseModel):
     mode: str = "folder"  # folder | file
     title: str = "选择"
@@ -9764,6 +11949,53 @@ def api_clear_finished():
     queue.clear_finished()
     log_mgr.log(f"[界面] 清除已完成任务（{n} 个）", "warning")
     return {"ok": True}
+
+
+# 档位名与界面「视频画质 / 音频质量」的选项一一对应，上限口径抄自 _resolve_format：
+# 视频取 height<=上限里最高的分流，音频取码率<=上限里最高的分流，估出来的体积才对得上实际下到的流
+_VIDEO_TIERS = (("best", 0), ("4K", 2160), ("1440p", 1440), ("1080p", 1080),
+                ("720p", 720), ("480p", 480), ("360p", 360))
+_AUDIO_TIERS = (("best", 0), ("320k", 320), ("256k", 256), ("192k", 192), ("128k", 128))
+
+
+def _estimate_tier_sizes(formats):
+    """每个画质/音质档位大概要下多少字节，供下载前对比体积。
+
+    字节数取分流自带的 filesize，没有就取解析阶段按码率×时长算好的 filesize_est。
+    音频行不含视频轨，前端按「分流是否自带声音」决定是否叠加。
+    """
+    def _rate(f):
+        try:
+            return float(f.get("tbr") or 0)
+        except Exception:
+            return 0.0
+
+    def _size(f):
+        return int(f.get("filesize") or f.get("filesize_est") or 0)
+
+    videos = [f for f in formats if f.get("is_video") and int(f.get("height") or 0) > 0]
+    # 只有渐进式（视频轨自带声音）的源没有纯音频分流，此时 ba/bestaudio 落到这些流上
+    audios = [f for f in formats if f.get("is_audio")] or [f for f in formats if f.get("has_audio")]
+    rows = []
+    for tier, cap in _VIDEO_TIERS:
+        # 上限之内一条都没有时 yt-dlp 的回退表达式会落到最高档，体积估算也跟着回退，
+        # 这样界面列出来的数字才是真会下的量（并会因为体积相同被前端并成一档）
+        cands = [f for f in videos if not cap or int(f.get("height") or 0) <= cap] or videos
+        if not cands:
+            continue
+        pick = max(cands, key=lambda f: (int(f.get("height") or 0), _rate(f)))
+        n = _size(pick)
+        if n:
+            rows.append({"kind": "video", "tier": tier, "bytes": n,
+                         "has_audio": bool(pick.get("has_audio"))})
+    for tier, cap in _AUDIO_TIERS:
+        cands = [f for f in audios if not cap or (0 < _rate(f) <= cap)] or audios
+        if not cands:
+            continue
+        n = _size(max(cands, key=_rate))
+        if n:
+            rows.append({"kind": "audio", "tier": tier, "bytes": n})
+    return rows
 
 
 @app.post("/api/analyze")
@@ -9923,6 +12155,7 @@ def api_analyze(body: AnalyzeBody):
         "thumbnail": info.get("thumbnail") or "",
         "formats": formats[:120],
         "quality_presets": quality_presets,
+        "tier_sizes": _estimate_tier_sizes(formats),
         "platform": detect_platform(info.get("webpage_url") or body.url),
         "entries": [],
         "description": (info.get("description") or "")[:500],
@@ -10320,11 +12553,302 @@ def api_ui_event(body: UiEventBody):
     return {"ok": True, "level": level}
 
 
+# -------------------- 一键导出诊断包 --------------------
+# 诊断包是发给别人看的：配置里的密钥、Cookie 内容、日志里可能夹带的凭据一律不能跟着走。
+# 哪些算敏感按「键名」判，以后新增的 token / key / secret 字段会自动被收掉；
+# cookie_file、cookie_source 这种只写路径和模式的键保留原值，否则对方看不出登录态是怎么配的。
+_DIAG_SECRET_RE = re.compile(
+    r"token|secret|api_?key|sendkey|send_key|passwd|password|_pass$|_hash$|credential|cookies?"
+    r"|(?:^|[_-])key$|hls_key", re.I
+)
+_DIAG_COOKIE_PLAIN = {
+    "cookie_file", "cookie_source", "cookie_browser", "cookie_exists", "cookies_dir",
+    # 这层存的是每个平台的 Cookie 文件路径和取用方式，藏起来就没法排查登录态了
+    "platform_cookies",
+}
+# 整份都是凭据的容器：里面每个叶子值都藏，不再逐个看键名（那层的键是平台名，不是 secret 名）
+_DIAG_HIDE_ALL = {"music_platform_cookies", "musicdl_cookies", "platform_cookie_content"}
+# 值本身不在敏感名单里、但写法自带凭据的几种
+_DIAG_SHAPES = [
+    # 代理 / 视频直链里的 user:pass@
+    (re.compile(r"(?P<p>://[^/@\s:]+:)[^@\s/]+(?P<at>@)"), lambda m: m.group("p") + "<已隐藏>" + m.group("at")),
+    # Telegram bot token 整串
+    (re.compile(r"bot\d{6,12}:[A-Za-z0-9_-]{20,}", re.I), lambda m: "<已隐藏>"),
+    # 鉴权头，带 Bearer/Basic 前缀的一起吃掉，只留头名
+    (re.compile(
+        r"(?P<k>(?:authorization|x-api-key|cookie|set-cookie|access_token)\s*[:=]\s*(?:bearer|basic|token)?\s*)"
+        r"(?P<v>\S+)", re.I),
+     lambda m: m.group("k") + "<已隐藏>"),
+    # 键值写法：api_key=… / token: … / password=…
+    (re.compile(
+        r"(?P<k>(?:api[_-]?key|secret|token|password|passwd|sendkey|decryption_key|hls_key)\s*[:=]\s*)"
+        r"(?P<v>\S+)", re.I),
+     lambda m: m.group("k") + "<已隐藏>"),
+    # 命令行写法：自定义 yt-dlp 参数串里最容易夹 --password 这种（空格的 = 的都认）
+    (re.compile(
+        r"(?P<k>--(?:password|passwd|api[_-]?key|apikey|token|secret|sendkey|decryption[_-]key|hls[_-]key))"
+        r"(?:[=\s]+)(?P<v>\S+)", re.I),
+     lambda m: m.group("k") + " <已隐藏>"),
+    # URL 查询参数里名字带 token/sig/key/auth 的值（站点签名多半在这里）
+    (re.compile(r"(?P<k>[?&][^&=\s]*(?:token|sig|key|auth|secret|password|expire)[^&=\s]*=)(?P<v>[^&\s]+)", re.I),
+     lambda m: m.group("k") + "<已隐藏>"),
+]
+_DIAG_FILE_CAP = 4_000_000   # 单个日志文件最多读末尾这么多字节
+_DIAG_LOG_LINES = 3000       # 当前日志最多带这么多行
+_DIAG_ARCHIVE_LINES = 800    # 每份归档最多带这么多行
+_DIAG_ARCHIVE_FILES = 3      # 最多带最近 3 份归档
+
+
+def _diag_mask(value) -> str:
+    """藏掉内容但留一个指纹：对方能判断「这里填过东西」「两次导出是同一个值」，看不到值本身。"""
+    return f"<已隐藏 · 指纹 {hashlib.sha256(str(value).encode('utf-8')).hexdigest()[:8]}>"
+
+
+def _diag_scrub_str(text, values: List[str]) -> Tuple[str, int]:
+    s = str(text)
+    n = 0
+    for v in values:
+        if v and v in s:
+            s = s.replace(v, "<已隐藏>")
+            n += 1
+    out = s
+    for pat, rep in _DIAG_SHAPES:
+        out = pat.sub(rep, out)
+    if out != s:
+        n += 1
+    return out, n
+
+
+def _diag_hide_key(key, force: bool = False) -> bool:
+    k = str(key)
+    if force or k in _DIAG_HIDE_ALL:
+        return True
+    return k not in _DIAG_COOKIE_PLAIN and bool(_DIAG_SECRET_RE.search(k))
+
+
+def diag_secret_values(data, force: bool = False) -> List[str]:
+    """把配置里真实存在的敏感值收出来：日志和 URL 里出现原样字符串的，一并替换掉。"""
+    vals: List[str] = []
+    for k, v in (data or {}).items():
+        hide = _diag_hide_key(k, force)
+        if isinstance(v, dict):
+            vals += diag_secret_values(v, hide)
+        elif isinstance(v, list):
+            for it in v:
+                if isinstance(it, dict):
+                    vals += diag_secret_values(it, hide)
+        elif hide and isinstance(v, str):
+            s = v.strip()
+            # 太短的值拿去全文替换会把正常词句吃掉，这种值本来也过不了形状清洗
+            if len(s) >= 8:
+                vals.append(s)
+    return sorted(set(vals), key=len, reverse=True)
+
+
+def diag_redact_config(data, force: bool = False, values: Optional[List[str]] = None) -> Tuple[Any, int]:
+    """配置副本：敏感值换成指纹，其余字符串也按已知密钥和常见写法洗一遍。原值不回写配置。"""
+    vals = values or []
+    out: Any = {}
+    n = 0
+    for k, v in (data or {}).items():
+        key = str(k)
+        hide = _diag_hide_key(k, force)
+        m = 0
+        if isinstance(v, dict):
+            out[key], m = diag_redact_config(v, hide, vals)
+        elif isinstance(v, list):
+            rows = []
+            for it in v:
+                if isinstance(it, dict):
+                    got, mm = diag_redact_config(it, hide, vals)
+                elif hide and isinstance(it, str) and it.strip():
+                    got, mm = _diag_mask(it), 1
+                elif isinstance(it, str):
+                    got, mm = _diag_scrub_str(it, vals)
+                else:
+                    got, mm = it, 0
+                rows.append(got)
+                m += mm
+            out[key] = rows
+        elif hide and isinstance(v, str) and v.strip():
+            out[key], m = _diag_mask(v), 1
+        elif isinstance(v, str):
+            out[key], m = _diag_scrub_str(v, vals)
+        else:
+            out[key] = v
+        n += m
+    return out, n
+
+
+def _diag_scrub_obj(obj, values: List[str]) -> Tuple[Any, int]:
+    """状态 / 组件 / 任务这类读数：结构照原样保留，只清洗里面的字符串"""
+    if isinstance(obj, dict):
+        out = {}
+        n = 0
+        for k, v in obj.items():
+            out[k], m = _diag_scrub_obj(v, values)
+            n += m
+        return out, n
+    if isinstance(obj, list):
+        rows = []
+        n = 0
+        for it in obj:
+            got, m = _diag_scrub_obj(it, values)
+            rows.append(got)
+            n += m
+        return rows, n
+    if isinstance(obj, str):
+        return _diag_scrub_str(obj, values)
+    return obj, 0
+
+
+def _diag_read_tail(path: Path, lines: int) -> List[str]:
+    """日志按行取尾巴：文件可能很大，只读末尾一段，并丢掉截断的半行"""
+    try:
+        size = path.stat().st_size
+        with open(path, "rb") as f:
+            if size > _DIAG_FILE_CAP:
+                f.seek(size - _DIAG_FILE_CAP)
+                f.readline()
+            raw = f.read()
+    except Exception:
+        return []
+    return raw.decode("utf-8", "ignore").splitlines()[-lines:]
+
+
+def _diag_log_rows(lines: List[str], values: List[str]) -> List[str]:
+    """app.log 每行是一条 JSON，只洗 message；不是 JSON 的行原样洗"""
+    out = []
+    for ln in lines:
+        try:
+            e = json.loads(ln)
+        except Exception:
+            e = None
+        if isinstance(e, dict):
+            e["message"], _ = _diag_scrub_str(e.get("message", ""), values)
+            out.append(json.dumps(e, ensure_ascii=False))
+        else:
+            out.append(_diag_scrub_str(ln, values)[0])
+    return out
+
+
+def build_diagnostics_zip() -> Tuple[bytes, dict]:
+    """凑出诊断包：环境读数 + 脱敏配置 + 队列状态 + 近期日志。全程在内存里，不落盘。"""
+    data = dict(cfg.data or {})
+    values = diag_secret_values(data)
+    conf, hidden = diag_redact_config(data, False, values)
+    files: List[str] = []
+    rows = 0
+
+    def add(zf, name, text):
+        nonlocal rows
+        zf.writestr(name, text)
+        files.append(name)
+        rows += 1
+
+    def dump(obj):
+        return json.dumps(obj, ensure_ascii=False, indent=2, default=str)
+
+    def safe(fn):
+        try:
+            return fn()
+        except Exception as e:
+            return {"error": str(e)[:200]}
+
+    st, _ = _diag_scrub_obj(safe(api_status), values)
+    comp, _ = _diag_scrub_obj(safe(lambda: api_components("")), values)
+    tasks, _ = _diag_scrub_obj(safe(lambda: queue.list_tasks("queue")), values)
+    meta = {
+        "生成时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "程序目录": str(APP_DIR),
+        "Python": sys.version.split()[0],
+        "系统平台": sys.platform,
+        "Windows 版本": getattr(sys.getwindowsversion(), "build", "") if os.name == "nt" else "",
+        "界面版本": ((comp.get("bundled") or {}).get("app") if isinstance(comp, dict) else "") or "",
+        "配置里隐藏了敏感值": hidden,
+        "本包不含": [
+            "Cookie 文件本身（只保留路径与来源模式）",
+            "Telegram 会话文件 tg_session*.session",
+            "下载目录里的成品",
+            "磁力 / 种子的做种状态目录",
+        ],
+    }
+    readme = "\n".join([
+        "诊断包说明",
+        "========",
+        "",
+        "这个包用来把排查问题需要的信息一次性交给别人，里面是：",
+        "  meta.json         生成时间、程序目录、Python / 系统版本",
+        "  status.json       组件版本、运行状态、目录与磁盘读数",
+        "  components.json   随包版本 / 当前版本 / pip 环境",
+        "  config.json       当前设置（密钥与 Cookie 内容已隐藏）",
+        "  tasks.json        队列里的任务清单",
+        "  logs/app.log      最近 " + str(_DIAG_LOG_LINES) + " 行运行日志",
+        "  logs/archive/     最近 " + str(_DIAG_ARCHIVE_FILES) + " 份跨天归档，每份最多 "
+        + str(_DIAG_ARCHIVE_LINES) + " 行",
+        "",
+        "敏感内容的处理：",
+        "  1) 配置里的密钥、Token、密码等凭据（键名含 token / key / secret / password / hash / cookies）",
+        "     一律不写明文，换成「<已隐藏 · 指纹 xxxxxxxx>」，凭指纹能判断填没填、两次是否同一个值。",
+        "  2) Cookie 只保留文件路径与来源方式，内容不打包。",
+        "  3) 日志、URL、任务标题里再按原值和常见写法（user:pass@、bot token、鉴权头）洗一遍。",
+        "  4) 本包不下载成品文件，也不含 Telegram 登录会话。",
+        "",
+        "上传前建议自己再翻一眼 config.json 和 logs/，确认没有你额外写进备注的隐私内容。",
+        "",
+    ])
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        add(zf, "README.txt", readme)
+        add(zf, "meta.json", dump(meta))
+        add(zf, "config.json", dump(conf))
+        add(zf, "status.json", dump(st))
+        add(zf, "components.json", dump(comp))
+        add(zf, "tasks.json", dump(tasks))
+        cur = _diag_log_rows(_diag_read_tail(LOG_FILE, _DIAG_LOG_LINES), values)
+        if cur:
+            add(zf, "logs/app.log", "\n".join(cur) + "\n")
+        try:
+            archives = sorted(APP_DIR.glob("app-*.log"), key=lambda p: p.name)
+        except Exception:
+            archives = []
+        for p in archives[-_DIAG_ARCHIVE_FILES:]:
+            got = _diag_log_rows(_diag_read_tail(p, _DIAG_ARCHIVE_LINES), values)
+            if got:
+                add(zf, f"logs/archive/{p.name}", "\n".join(got) + "\n")
+    blob = buf.getvalue()
+    return blob, {"files": len(files), "bytes": len(blob), "hidden": hidden}
+
+
+@app.post("/api/diagnostics/export")
+def api_diagnostics_export():
+    """一键导出诊断包：内存里凑一个 zip 直接回给浏览器，不在本机留文件。"""
+    try:
+        blob, info = build_diagnostics_zip()
+    except Exception as e:
+        raise HTTPException(500, f"诊断包生成失败：{str(e)[:200]}")
+    name = f"diagnostics-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    log_mgr.log(
+        f"[界面] 导出诊断包（{info['files']} 个文件 · {info['bytes']} 字节 · "
+        f"配置里隐藏敏感值 {info['hidden']} 处）"
+    )
+    return StreamingResponse(
+        io.BytesIO(blob),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{name}.zip"'},
+    )
+
+
 # ---------- 订阅 ----------
 def _sub_view(s: dict) -> dict:
     r = _norm_sub_rules(s.get("rules"))
-    return {**s, "kind": _sub_kind_of(s), "auto_download": bool(s.get("auto_download", True)),
-            "rules": r, "rules_text": _sub_rules_text(r)}
+    v = {**s, "kind": _sub_kind_of(s), "auto_download": bool(s.get("auto_download", True)),
+         "rules": r, "rules_text": _sub_rules_text(r)}
+    # 窗口对照清单与归档明细是后端内部账本，整包塞进列表接口只会把响应撑大；界面只要条数
+    v["archived_count"] = len(s.get("archived") or [])
+    v.pop("feed", None)
+    v.pop("archived", None)
+    return v
 
 
 @app.get("/api/subs")
@@ -10416,6 +12940,50 @@ def api_subs_scan_one(body: SubIdBody):
     return {"ok": True, "new": n, "item": _sub_view(sub), "rules_text": _sub_view(sub)["rules_text"]}
 
 
+@app.post("/api/subs/preview")
+def api_subs_preview(body: SubIdBody):
+    """干跑一轮追新：这份计划说明「真点扫描会做什么」，不入队、不动游标、不落盘。"""
+    with sub_mgr._lock:
+        sub = next((s for s in sub_mgr.subs if s.get("id") == body.id), None)
+    if not sub:
+        raise HTTPException(404, "订阅不存在")
+    plan = sub_mgr.preview_one(sub)
+    if plan.get("error"):
+        log_mgr.log(f"订阅预览「{plan.get('title') or body.id}」：{plan['error']}", "warning")
+    else:
+        log_mgr.log(f"订阅预览「{plan.get('title') or body.id}」："
+                    f"读到 {plan.get('read', 0)} 条，未读 {plan.get('new', 0)} 条，"
+                    f"计划入队 {plan.get('picked_total', 0)} 条"
+                    + (f"，上游删除待归档 {plan.get('archive_total', 0)} 条"
+                       if plan.get("archive_total") else ""))
+    return {"ok": True, "plan": plan}
+
+
+@app.post("/api/subs/archived")
+def api_subs_archived(body: SubIdBody):
+    """读某条订阅的「上游已删除」留档清单。"""
+    with sub_mgr._lock:
+        sub = next((s for s in sub_mgr.subs if s.get("id") == body.id), None)
+    if not sub:
+        raise HTTPException(404, "订阅不存在")
+    return {"ok": True, "title": sub.get("title") or sub.get("url") or "",
+            "items": list(sub.get("archived") or [])}
+
+
+@app.post("/api/subs/archived/clear")
+def api_subs_archived_clear(body: SubArchiveClearBody):
+    """清掉留档记录（单条或整单）；不影响追新游标，条目重现在源头也不会被当成新增。"""
+    try:
+        removed = sub_mgr.clear_archived(body.id, body.entry_id)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    item = next((s for s in sub_mgr.list() if s.get("id") == body.id), None)
+    log_mgr.log(f"订阅「{(item or {}).get('title') or body.id}」"
+                + (f"归档清单移除 1 条（{body.entry_id[:24]}）" if body.entry_id
+                   else f"归档清单已清空（{removed} 条）"))
+    return {"ok": True, "removed": removed, "item": _sub_view(item) if item else {}}
+
+
 # ---------- Telegram ----------
 @app.post("/api/telegram/test")
 def api_telegram_test():
@@ -10444,6 +13012,7 @@ class SearchBody(BaseModel):
 @app.get("/api/platforms/cookies")
 def api_platform_cookies():
     pc = cfg.data.get("platform_cookies") or {}
+    flags = _login_flag_snapshot()
     items = []
     for key, label in PLATFORM_LABELS.items():
         if key == "default":
@@ -10462,8 +13031,10 @@ def api_platform_cookies():
             ),
             "file_exists": Path(f).exists() if f else path.exists(),
             "default_path": str(path),
+            "login_issue": flags.get(key),
         })
-    return {"platforms": items, "cookies_dir": str(COOKIES_DIR)}
+    return {"platforms": items, "cookies_dir": str(COOKIES_DIR),
+            "login_issue_count": sum(1 for i in items if i["login_issue"])}
 
 
 @app.post("/api/platforms/cookies")
@@ -10480,6 +13051,8 @@ def api_set_platform_cookie(body: PlatformCookieBody):
     pc[plat] = entry
     cfg.data["platform_cookies"] = pc
     cfg.save()
+    # 动过这一平台的 Cookie 来源，之前那枚「被判定为需要登录」就不再说明当前状态了
+    _login_flag_clear(plat)
     return {"ok": True, "item": entry}
 
 
@@ -10498,6 +13071,7 @@ async def api_upload_platform_cookie(platform: str, content: str = ""):
     pc[plat] = {"source": "file", "file": str(path), "browser": "chrome"}
     cfg.data["platform_cookies"] = pc
     cfg.save()
+    _login_flag_clear(plat)
     return {"ok": True, "path": str(path)}
 
 
@@ -10517,7 +13091,25 @@ def api_save_cookie_text(body: CookieTextBody):
     pc[plat] = {"source": "file", "file": str(path), "browser": "chrome"}
     cfg.data["platform_cookies"] = pc
     cfg.save()
+    _login_flag_clear(plat)
     return {"ok": True, "path": str(path)}
+
+
+class CookieFlagClearBody(BaseModel):
+    platform: str
+
+
+@app.post("/api/platforms/cookies/clear-flag")
+def api_clear_cookie_flag(body: CookieFlagClearBody):
+    """「清除标记」：这条判定只说明本次运行里被挡过一次，用户确认无误后可以直接抹掉。"""
+    plat = (body.platform or "").strip()
+    if plat not in PLATFORM_LABELS:
+        raise HTTPException(400, "未知平台")
+    had = bool(_login_flag_snapshot().get(plat))
+    _login_flag_clear(plat)
+    log_mgr.log(f"清除 {PLATFORM_LABELS.get(plat, plat)} 的 Cookie 登录态标记"
+                + ("（本来就没有标记）" if not had else ""))
+    return {"ok": True, "cleared": had}
 
 
 class MusicCookieBody(BaseModel):
@@ -12302,6 +14894,47 @@ def _save_live_monitors(items: list):
         pass
 
 
+def _patch_live_monitor(mid: str, **fields):
+    """只改一个监控记录的几个字段。开录/收尾/转码分别在不同线程里发生，
+    每次都重新读盘再合并，才不会把别的线程刚写的状态覆盖掉。"""
+    items = _load_live_monitors()
+    hit = False
+    for x in items:
+        if x.get("id") == mid:
+            x.update(fields)
+            hit = True
+    if hit:
+        _save_live_monitors(items)
+    return hit
+
+
+# 每房间能覆盖的录制口径：容器和画质都用首页那套值，界面与这里不能各写一份
+_LIVE_FMTS = ("", "mkv", "mp4", "webm")
+_LIVE_QUALITIES = ("", "best", "4K", "1440p", "1080p", "720p", "480p", "360p")
+_LIVE_MAX_MINUTES = 1440
+
+
+def _hhmm(v) -> str:
+    """时段写成 HH:MM 才算数，其余一律当没填"""
+    mt = re.match(r"^(\d{1,2}):(\d{2})$", str(v or "").strip())
+    if not mt:
+        return ""
+    h, mi = int(mt.group(1)), int(mt.group(2))
+    if h > 23 or mi > 59:
+        return ""
+    return f"{h:02d}:{mi:02d}"
+
+
+def _live_window(m: dict):
+    """定时监控窗：两端都填才算区间（开始晚于结束按跨零点处理），否则全天盯"""
+    a, b = _hhmm(m.get("win_start")), _hhmm(m.get("win_end"))
+    if not a or not b:
+        return True, ""
+    cur = datetime.now().strftime("%H:%M")
+    ok = (a <= cur <= b) if a <= b else (cur >= a or cur <= b)
+    return ok, f"{a}–{b}"
+
+
 @app.get("/api/live/monitors")
 def api_live_monitors():
     return {"monitors": _load_live_monitors()}
@@ -12321,10 +14954,88 @@ def api_live_monitor_add(body: LiveMonitorBody):
         "status": "等待开播",
         "added_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "last_live": False,
+        # 每房间录制口径，空值一律表示「跟随软件设置」
+        "fmt": "",
+        "video_quality": "",
+        "auto_transcode": "",
+        "max_minutes": 0,
+        "win_start": "",
+        "win_end": "",
     }
     items.insert(0, item)
     _save_live_monitors(items)
     return {"ok": True, "item": item}
+
+
+class LiveMonitorSetBody(BaseModel):
+    """一个直播房间的录制设置。字段留空（None）表示这一项不改，传空串表示恢复「跟随软件设置」。"""
+    id: str = ""
+    fmt: Optional[str] = None
+    video_quality: Optional[str] = None
+    auto_transcode: Optional[str] = None
+    max_minutes: Optional[int] = None
+    win_start: Optional[str] = None
+    win_end: Optional[str] = None
+
+
+@app.post("/api/live/monitors/set")
+def api_live_monitor_set(body: LiveMonitorSetBody):
+    """保存每房间的录制设置：输出容器 / 画质 / 录完自动转码 / 最长录制时长 / 定时监控窗"""
+    items = _load_live_monitors()
+    m = next((x for x in items if x.get("id") == body.id), None)
+    if m is None:
+        raise HTTPException(404, "监控不存在")
+    notes: List[str] = []
+    if body.fmt is not None:
+        v = (body.fmt or "").strip().lower()
+        if v in _LIVE_FMTS:
+            m["fmt"] = v
+        else:
+            notes.append("输出容器只能用 跟随软件设置 / mkv / mp4 / webm，所填的这份没采用")
+    if body.video_quality is not None:
+        v = (body.video_quality or "").strip()
+        if v in _LIVE_QUALITIES:
+            m["video_quality"] = v
+        else:
+            notes.append("画质档位不在可选清单里，没采用")
+    if body.auto_transcode is not None:
+        v = (body.auto_transcode or "").strip()
+        if not v:
+            m["auto_transcode"] = ""
+        elif v in TRANSCODE_PRESETS:
+            m["auto_transcode"] = v
+        else:
+            notes.append("转码预设不存在（可用预设见文件页的转码下拉），没采用")
+    if body.max_minutes is not None:
+        try:
+            mm = int(body.max_minutes)
+        except (TypeError, ValueError):
+            mm = -1
+        if mm < 0 or mm > _LIVE_MAX_MINUTES:
+            notes.append(f"最长录制时长要写在 0–{_LIVE_MAX_MINUTES} 分钟之间（0 = 不限时长），没采用")
+        else:
+            m["max_minutes"] = mm
+    for key, name in (("win_start", "监控开始时间"), ("win_end", "监控结束时间")):
+        raw = getattr(body, key)
+        if raw is None:
+            continue
+        s = str(raw).strip()
+        if not s:
+            m[key] = ""
+            continue
+        got = _hhmm(s)
+        if got:
+            m[key] = got
+        else:
+            notes.append(f"{name}要写成 HH:MM（24 小时制，例如 20:30），没采用")
+    if m.get("win_start") and m.get("win_end") and m["win_start"] == m["win_end"]:
+        notes.append("监控时段的开始与结束相同，会全时段都不录制，已清空该时段")
+        m["win_start"] = ""
+        m["win_end"] = ""
+    elif bool(m.get("win_start")) != bool(m.get("win_end")):
+        notes.append("监控时段要同时填开始与结束才生效，目前仍按全天监控")
+    _save_live_monitors(items)
+    return {"ok": True, "item": m, "notes": notes, "monitors": items}
 
 
 @app.post("/api/live/monitors/remove")
@@ -12432,15 +15143,38 @@ def api_live_monitor_scan():
             already = _has_active_live_task_for_url(url)
             paused = bool(m.get("paused"))
             cooling = _live_start_on_cooldown(url, 180.0)
-            if is_live_now and not already and not paused and not cooling:
+            in_win, win_text = _live_window(m)
+            if is_live_now and not already and not paused and not cooling and not in_win:
+                # 正在播但不在设定的监控时段内：只报状态，不开录
+                m["status"] = f"直播中(不在监控时段 {win_text})" if win_text else "直播中"
+                m["last_live"] = True
+            elif is_live_now and not already and not paused and not cooling:
                 # 重启后 last_live 可能仍为 True，但任务已不在，需补开录制
-                queue.add_urls([url], {
+                ids = queue.add_urls([url], {
                     "is_live": True,
                     "skip_downloaded": False,
                     "allow_playlist": False,
-                    "format": cfg.data.get("format", "mkv"),
-                    "video_quality": cfg.data.get("video_quality", "best"),
+                    "format": m.get("fmt") or cfg.data.get("format", "mkv"),
+                    "video_quality": m.get("video_quality") or cfg.data.get("video_quality", "best"),
                 })
+                if ids:
+                    m["rec_task"] = ids[0]
+                    m["rec_started"] = datetime.now().isoformat(timespec="seconds")
+                    m.pop("rec_done", None)
+                    m.pop("rec_transcode", None)
+                    m.pop("rec_out", None)
+                    _room_cfg = []
+                    if m.get("fmt"):
+                        _room_cfg.append("容器 " + str(m["fmt"]))
+                    if m.get("video_quality"):
+                        _room_cfg.append("画质 " + str(m["video_quality"]))
+                    if m.get("max_minutes"):
+                        _room_cfg.append(f"最长 {m['max_minutes']} 分钟")
+                    if m.get("auto_transcode"):
+                        _room_cfg.append("录完转 " + str(
+                            (TRANSCODE_PRESETS.get(m["auto_transcode"]) or {}).get("label", m["auto_transcode"])))
+                    if _room_cfg:
+                        log_mgr.log("本房间录制口径：" + " · ".join(_room_cfg))
                 _mark_live_started(url)
                 m["status"] = "录制中"
                 m["last_live"] = True
@@ -12473,6 +15207,68 @@ def api_live_monitor_scan():
             log_mgr.log(f"直播监控检测失败 {url}: {e}", "warning")
     _save_live_monitors(items)
     return {"ok": True, "started": started, "monitors": items}
+
+
+def _submit_live_transcode(mid: str, src: str, preset_id: str):
+    """录完的自动转码放独立线程跑：一场直播的成品可能有几 GB，不能占用 30 秒一次的扫描。"""
+    def work():
+        ok, out, err = _run_transcode(src, preset_id, False)
+        if ok:
+            log_mgr.log(f"直播录完自动转码完成: {Path(out).name}")
+            _patch_live_monitor(mid, rec_transcode="已完成", rec_out=out)
+        else:
+            log_mgr.log(f"直播录完自动转码失败: {err}", "warning")
+            _patch_live_monitor(mid, rec_transcode="失败", rec_err=(err or "")[-200:])
+    threading.Thread(target=work, daemon=True).start()
+
+
+def _live_active_status(t) -> bool:
+    return t is not None and t.status in (
+        TaskStatus.DOWNLOADING.value, TaskStatus.QUEUED.value, TaskStatus.PAUSED.value)
+
+
+def _live_recording_tick():
+    """每房间设置的执行环节：录满最长时长就收，这一场结束就按设置自动转码。
+    和扫描分开跑，因为「开播」只决定要不要开录，收尾要看的是任务本身的状态。"""
+    for m in _load_live_monitors():
+        tid = m.get("rec_task") or ""
+        if not tid:
+            continue
+        t = queue.tasks.get(tid)
+        mm = int(m.get("max_minutes") or 0)
+        if mm > 0 and _live_active_status(t):
+            used = 0.0
+            try:
+                used = (datetime.now() - datetime.fromisoformat(t.started_at)).total_seconds()
+            except Exception:
+                used = 0.0
+            if used >= mm * 60:
+                try:
+                    queue.end_live_tasks([tid])
+                    log_mgr.log(f"本房间已录满 {mm} 分钟，自动结束录制：{(t.title or t.url)[:60]}")
+                except Exception as e:
+                    log_mgr.log(f"录满自动结束失败: {e}", "warning")
+                # 录满就维持「暂停」：这条直播还没下播时不该立刻又开录下一场，
+                # 否则「最长录制 N 分钟」会变成「每 N 分钟重开一场」。
+                # 扫描到房间下播时会自己解除暂停（见 api_live_monitor_scan 的 else 分支），下一场照常自动录。
+                _patch_live_monitor(m.get("id"), paused=True, status=f"已录满 {mm} 分钟并自动停止")
+                continue
+        if t is not None and not _live_active_status(t) and not m.get("rec_done"):
+            fields = {"rec_done": True, "rec_status": t.status, "rec_task": ""}
+            fp = (t.filepath or "").strip()
+            got_file = bool(fp) and (
+                t.status in (TaskStatus.FINISHED.value, TaskStatus.STOPPED.value))
+            if got_file:
+                fields["rec_file"] = fp
+                p = (m.get("auto_transcode") or "").strip()
+                if p and p in TRANSCODE_PRESETS:
+                    fields["rec_transcode"] = "转码中"
+                    _submit_live_transcode(m.get("id"), fp, p)
+                else:
+                    fields["rec_transcode"] = ""
+            else:
+                fields["rec_transcode"] = ""
+            _patch_live_monitor(m.get("id"), **fields)
 
 
 # -------------------- 直播监控定时扫描 --------------------
@@ -13339,6 +16135,52 @@ def pick_risk_reason(reasons: List[dict]) -> dict:
     return reasons[-1]
 
 
+# 「这一平台的登录态刚被站点当场挡过」的标记，只保留到程序关闭。
+# 留的是平台、时间、域名与判定话术：Cookie 内容是本机私有凭据、链接里带视频 id，两者都不进这里。
+# 刻意不去读 Netscape 文件里的 expires —— 站点普遍不给登录凭据真实有效期（会话 Cookie 常是 0），
+# 按它报「快过期」只会是噪声；而「下载当场被判定为需要登录」是已经发生的事实。
+_LOGIN_FLAGS: Dict[str, Dict[str, str]] = {}
+_LOGIN_FLAGS_LOCK = threading.Lock()
+
+
+def _login_flag_mark(url: str, r: Dict, task_id: str = "") -> Dict:
+    """记下「这个平台刚被判定为需要登录」；同平台重复挡只刷新那一条，不叠加。"""
+    plat = detect_platform(url) if url else ""
+    if not plat or plat == "default":
+        return {}
+    try:
+        host = urlsplit(url).netloc.lower()
+    except Exception:
+        host = ""
+    with _LOGIN_FLAGS_LOCK:
+        fresh = plat not in _LOGIN_FLAGS
+        item = {
+            "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "kind": str(r.get("kind") or ""),
+            "brief": str(r.get("brief") or r.get("human") or ""),
+            "action": str(r.get("action") or ""),
+            "host": host,
+            "task_id": (task_id or "")[:8],
+        }
+        _LOGIN_FLAGS[plat] = item
+    # 一批任务里同一个站能连挡几十次，只在头一次说一句话
+    if fresh:
+        log_mgr.log(f"Cookie 登录态标记：{PLATFORM_LABELS.get(plat, plat)} 有下载被判定为需要登录"
+                    + (f"（{host}）" if host else "")
+                    + "，重新导入这一平台的 Cookie 即可清除；本标记只保留到程序关闭", "warning")
+    return dict(item)
+
+
+def _login_flag_clear(platform: str) -> None:
+    with _LOGIN_FLAGS_LOCK:
+        _LOGIN_FLAGS.pop(str(platform or ""), None)
+
+
+def _login_flag_snapshot() -> Dict[str, Dict[str, str]]:
+    with _LOGIN_FLAGS_LOCK:
+        return {k: dict(v) for k, v in _LOGIN_FLAGS.items()}
+
+
 def risk_note_for_failure(raw: str, url: str = "", task_id: str = "") -> str:
     """把下载失败的原始报错翻成「挡在哪一步、现在该做什么」。
 
@@ -13349,6 +16191,8 @@ def risk_note_for_failure(raw: str, url: str = "", task_id: str = "") -> str:
     r = risk_control.classify_failure_text(raw)
     if r.get("kind") in ("", risk_control.UNKNOWN):
         return ""
+    if r.get("kind") == risk_control.LOGIN_REQUIRED:
+        _login_flag_mark(url, r, task_id)
     note = f"原因：{r.get('brief') or r['human']}" + (f"；{r['action']}" if r.get("action") else "")
     # 429 在下载循环里已经打过一次降速标记，这里别再叠加 strike；补的是它没看见的那几类
     if r.get("throttle") and "429" not in raw and url and cfg.data.get("adaptive_throttle", True):
@@ -13621,6 +16465,14 @@ def start_live_monitor_scheduler():
                 if items:
                     # 有监控时才扫，避免空转日志
                     api_live_monitor_scan()
+                    try:
+                        # 录满自动收 + 录完自动转码，都跟着这一轮跑
+                        _live_recording_tick()
+                    except Exception as e:
+                        try:
+                            log_mgr.log(f"直播录制收尾检查异常: {e}", "warning")
+                        except Exception:
+                            pass
             except Exception as e:
                 try:
                     log_mgr.log(f"直播监控定时扫描异常: {e}", "warning")
@@ -15406,15 +18258,16 @@ class TranscodeBody(BaseModel):
     delete_source: bool = False
 
 
-@app.post("/api/transcode")
-def api_transcode(body: TranscodeBody):
-    src = Path(body.path)
+def _run_transcode(src_path: str, preset_id: str, delete_source: bool = False):
+    """按预设转码一个文件，返回 (是否成功, 成品路径, 错误文字)。
+    界面按钮和直播录完的自动转码都走这里，免得两条路的口径不一样。"""
+    src = Path(src_path)
     if not src.is_file():
-        raise HTTPException(400, "文件不存在")
-    preset = TRANSCODE_PRESETS.get(body.preset) or TRANSCODE_PRESETS["mp4"]
+        return False, "", "文件不存在: " + str(src)
+    preset = TRANSCODE_PRESETS.get(preset_id) or TRANSCODE_PRESETS["mp4"]
     ff = ffmpeg_mgr.find()
     if not ff:
-        raise HTTPException(400, "未找到 FFmpeg")
+        return False, "", "未找到 FFmpeg"
     out = src.with_suffix(preset["ext"])
     if out.resolve() == src.resolve():
         out = src.with_name(src.stem + "_out" + preset["ext"])
@@ -15427,7 +18280,8 @@ def api_transcode(body: TranscodeBody):
         )
         if r.returncode != 0 or not out.is_file():
             err = (r.stderr or r.stdout or "")[-500:]
-            if body.preset == "flv_to_mp4":
+            if preset_id == "flv_to_mp4":
+                # copy 失败说明流本身不合规格，退回重编码再试一次
                 cmd2 = [
                     ff, "-y", "-i", str(src),
                     "-c:v", "libx264", "-preset", "fast", "-crf", "23",
@@ -15439,20 +18293,32 @@ def api_transcode(body: TranscodeBody):
                     creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
                 )
                 if r2.returncode != 0 or not out.is_file():
-                    raise HTTPException(500, "转码失败: " + (r2.stderr or "")[-300:])
+                    return False, "", "转码失败: " + (r2.stderr or "")[-300:]
             else:
-                raise HTTPException(500, "转码失败: " + err)
-        if body.delete_source and out.is_file() and src.resolve() != out.resolve():
+                return False, "", "转码失败: " + err
+        if delete_source and out.is_file() and src.resolve() != out.resolve():
             try:
                 src.unlink()
             except Exception:
                 pass
-        log_mgr.log("转码完成: " + out.name)
-        return {"ok": True, "path": str(out), "name": out.name}
-    except HTTPException:
-        raise
+        return True, str(out), ""
     except Exception as e:
-        raise HTTPException(500, str(e))
+        return False, "", str(e)
+
+
+@app.post("/api/transcode")
+def api_transcode(body: TranscodeBody):
+    if not Path(body.path).is_file():
+        raise HTTPException(400, "文件不存在")
+    ok, out, err = _run_transcode(body.path, body.preset, body.delete_source)
+    if not ok:
+        if err == "文件不存在":
+            raise HTTPException(400, err)
+        if err.startswith("未找到"):
+            raise HTTPException(400, err)
+        raise HTTPException(500, err)
+    log_mgr.log("转码完成: " + Path(out).name)
+    return {"ok": True, "path": out, "name": Path(out).name}
 
 
 
@@ -15473,18 +18339,412 @@ def api_plugins_test(body: dict):
 
 @app.get("/api/aria2/status")
 def api_aria2_status():
-    if not cfg.data.get("aria2_enabled"):
-        return {"ok": True, "enabled": False, "online": False}
+    """直链加速和磁力/种子都问这里：RPC 通不通、aria2c 在哪、是不是程序自己拉起来的。"""
+    rpc = cfg.data.get("aria2_rpc") or "http://127.0.0.1:6800/jsonrpc"
+    out = {"ok": True, "enabled": bool(cfg.data.get("aria2_enabled")),
+           "online": False, "rpc": rpc}
     try:
-        from aria2_client import Aria2Client
-        ac = Aria2Client(
-            rpc_url=cfg.data.get("aria2_rpc") or "http://127.0.0.1:6800/jsonrpc",
-            secret=cfg.data.get("aria2_secret") or "",
-        )
-        online = ac.ping()
-        return {"ok": True, "enabled": True, "online": online, "rpc": cfg.data.get("aria2_rpc")}
+        out["online"] = bool(_bt_client(dict(cfg.data)).ping())
     except Exception as e:
-        return {"ok": True, "enabled": True, "online": False, "error": str(e)}
+        out["error"] = str(e)
+    try:
+        import aria2_daemon
+        out["binary"] = aria2_daemon.find_binary(str(cfg.data.get("aria2_bin") or ""), APP_DIR)
+        out["daemon"] = aria2_daemon.owned()
+    except Exception as e:
+        out["binary_error"] = str(e)
+    out["autostart"] = bool(cfg.data.get("aria2_autostart", True))
+    with _BT_WATCH_LOCK:
+        out["seeding"] = len(_BT_WATCH)
+    return out
+
+
+class TorrentSelectBody(BaseModel):
+    task_id: str
+    indices: List[int]  # aria2 的文件序号，从 1 起
+
+
+class TorrentStopBody(BaseModel):
+    ids: List[str] = []   # 任务 ID
+    gids: List[str] = []  # aria2 任务号：程序没管过的那些（重启前就在做种）只有这个
+    all: bool = False     # 界面按「全部停止做种」时才传 true
+
+
+def _torrent_store_dir() -> Path:
+    # 上传的种子与 aria2 会话同属本机数据，放在整目录排除打包的 torrent_state 下
+    d = Path(APP_DIR) / "torrent_state" / "uploads"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+@app.post("/api/torrent/upload")
+async def api_torrent_upload(file: UploadFile = File(...)):
+    """收一个本地 .torrent：存下来并回一条能直接入队的 file:// 链接。
+
+    文件名按内容哈希，同一个种子重复上传会落回同一个路径，去重那条逻辑才认得出是同一份内容。
+    """
+    name = Path(str(file.filename or "")).name
+    if not name.lower().endswith(".torrent"):
+        raise HTTPException(400, "只接受 .torrent 种子文件")
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "种子文件是空的")
+    if len(data) > 10 * 1024 * 1024:
+        raise HTTPException(400, f"种子文件 {len(data) // 1024} KB，超过 10 MB 上限，不太像正常种子")
+    if not data.startswith(b"d8:"):
+        raise HTTPException(400, "这个文件的开头不是种子格式（bencode），可能改了后缀名")
+    ident = torrent_bytes_identity(data)
+    safe = safe_filename_component(name[:-8], 60)
+    store = _torrent_store_dir()
+    dest = store / f"{safe}.torrent"
+    # 同名但内容不同的两个种子不能互相覆盖，否则先前那条任务的种子就被换了
+    if dest.exists() and torrent_file_identity(str(dest)) != ident:
+        dest = store / f"{safe}-{ident[:6]}.torrent"
+    try:
+        dest.write_bytes(data)
+    except OSError as e:
+        raise HTTPException(500, f"种子存不下来：{type(e).__name__}: {str(e)[:120]}")
+    url = dest.as_uri()
+    log_mgr.log(f"[界面] 收到种子文件 {name} → {dest.name}")
+    return {"ok": True, "url": url, "path": str(dest), "name": dest.stem, "size": len(data)}
+
+
+@app.post("/api/torrent/select")
+def api_torrent_select(body: TorrentSelectBody):
+    """改选种子里要下的文件：序号从 1 起，全不选就拒绝（aria2 会当成「全都要」）。"""
+    t = queue.tasks.get(body.task_id or "")
+    if not t or not t.gid:
+        raise HTTPException(404, "这个任务还没有交给 aria2（还没拿到种子元数据），改不了文件选择")
+    idx = sorted({int(i) for i in (body.indices or []) if int(i) > 0})
+    if not idx:
+        raise HTTPException(400, "至少要选一个文件")
+    if t.status not in (TaskStatus.QUEUED.value, TaskStatus.DOWNLOADING.value, TaskStatus.PAUSED.value):
+        raise HTTPException(400, f"任务已经是「{t.status}」，这时候改选文件没有意义")
+    ac = _bt_client(dict(cfg.data))
+    # aria2 认的是 select-file="1,3"（序号列表本身）；写成 select-file=true + index=… 会被当场拒绝
+    ok = ac.change_option(t.gid, {"select-file": ",".join(str(i) for i in idx)})
+    if not ok:
+        raise HTTPException(500, "aria2 没有接受这次改选（RPC 无应答或任务已不在）")
+    try:
+        t.files = bt_file_list(ac.get_files(t.gid))
+        # aria2 改选要下一秒才反映到 getFiles 的 selected 上，紧跟着读会看到旧值；
+        # 这次改选已经被 aria2 接受，清单就按点名的那几个写，界面别回一个反的
+        want = set(idx)
+        for f in t.files:
+            f["selected"] = f["index"] in want
+    except Exception as e:
+        log_mgr.log(f"改选后读文件清单失败：{e}", "warning")
+    log_mgr.log(f"[界面] 任务 {t.id[:8]} 改选 {len(idx)} 个文件")
+    return {"ok": True, "files": t.files, "count": len(idx)}
+
+
+@app.get("/api/torrent/seeding")
+def api_torrent_seeding():
+    """正在做种的清单。以 aria2 的记录为准：列表里删掉任务行会连上传一起停，「清除已完成」不会。
+
+    名字取种子里的 info.name（实测做种中的任务 tellStatus 就带 bittorrent），
+    速率、peer 数、tracker 数一律当场问 aria2——本程序管的和不是本程序起的那一栏口径要一样。
+    """
+    with _BT_WATCH_LOCK:
+        items = list(_BT_WATCH.items())
+    live = {}
+    note = ""
+    ac = _bt_client(dict(cfg.data))
+    try:
+        for st in ac.tell_active(["gid", "status", "totalLength", "completedLength", "uploadLength",
+                                  "uploadSpeed", "seedingTime", "numSeeders", "numPeers", "bittorrent"]):
+            gid = str(st.get("gid") or "")
+            if gid:
+                live[gid] = st
+    except Exception as e:
+        note = f"读 aria2 活动任务失败：{e}"
+
+    def _row_fields(st: dict) -> dict:
+        """把 aria2 的一条任务读数摊成界面要的字段。
+
+        只写这次真读到的：aria2 少了哪个键就留空，别拿 0 顶上去——0 会被界面当成「没 peer」。
+        """
+        bt = st.get("bittorrent") or {}
+        got = {"torrent_name": str(((bt.get("info") or {}).get("name")) or ""),
+               "aria2_status": str(st.get("status") or "")}
+        if bt.get("announceList") is not None:
+            got["tracker_count"] = len(bt["announceList"])
+        if st.get("completedLength") is not None:
+            up = int(st.get("uploadLength") or 0)
+            dl = max(1, int(st.get("completedLength") or 0))
+            got.update({"uploaded": up, "share_ratio": round(up / dl, 3)})
+        for key, name in (("uploadSpeed", "upload_speed"), ("numPeers", "num_peers"),
+                          ("numSeeders", "num_seeders")):
+            if st.get(key) is not None:
+                got[name] = str(st.get(key))
+        if st.get("seedingTime") is not None:
+            try:
+                got["seed_seconds"] = int(float(st.get("seedingTime") or 0))
+            except (TypeError, ValueError):
+                pass
+        return got
+
+    out = []
+    for gid, w in items:
+        t = queue.tasks.get(w.get("task_id") or "")
+        row = {"gid": gid, "task_id": w.get("task_id") or "", "name": w.get("name") or "",
+               "managed": True, "seed_ratio_want": w.get("ratio"), "seed_time_want": w.get("seconds")}
+        if t:
+            row.update({"title": t.title, "uploaded": t.uploaded, "share_ratio": round(t.share_ratio, 3),
+                        "seed_seconds": t.seed_seconds, "status": t.status})
+        st = live.get(gid)
+        if st:
+            got = _row_fields(st)
+            row.update({k: v for k, v in got.items() if k != "torrent_name"})
+            if got["torrent_name"]:
+                row["name"] = got["torrent_name"]   # 种子给的名字比「挑出来的那个文件」更能代表整份内容
+            row["in_queue"] = True
+        else:
+            # 不在活动队列不等于没了：被暂停的做种任务 aria2 就是不列进 tellActive（实测）。
+            # 补一次 tellStatus 才分得清是暂停、已结束还是出错；读不到就留空，不写 0 假装量过
+            row.update({"in_queue": False})
+            try:
+                st2 = ac.tell_status(gid, ["status", "totalLength", "completedLength", "uploadLength",
+                                           "seedingTime", "uploadSpeed", "numSeeders", "numPeers",
+                                           "bittorrent"])
+            except Exception:
+                st2 = {}
+            if st2.get("status"):
+                got = _row_fields(st2)
+                row.update({k: v for k, v in got.items() if k != "torrent_name"})
+                if got["torrent_name"]:
+                    row["name"] = got["torrent_name"]
+        out.append(row)
+    # 也列出 aria2 里我们没管过的做种任务（比如程序重启前就挂在 aria2 上的），否则界面看不见就停不掉
+    known = {str(r["gid"]) for r in out}
+    for gid, st in live.items():
+        if gid in known or not st.get("bittorrent"):
+            continue
+        row = {"gid": gid, "task_id": "", "managed": False, "in_queue": True}
+        row.update(_row_fields(st))
+        name = row.get("torrent_name") or ""
+        if not name:
+            try:
+                fl = bt_file_list(ac.get_files(gid))
+                name = Path(str(fl[0].get("path") or "")).name if fl else ""
+            except Exception:
+                name = ""
+        row["name"] = name or str((st.get("bittorrent") or {}).get("infoHash") or gid)[:16]
+        row["title"] = row["name"] if name else "（不是这个程序起的做种）"
+        out.append(row)
+    return {"ok": True, "items": out, "count": len(out), "note": note}
+
+
+def _task_by_gid(gid: str) -> Optional[DownloadTask]:
+    for t in queue.tasks.values():
+        if t.gid and t.gid == gid:
+            return t
+    return None
+
+
+@app.post("/api/torrent/stop-seed")
+def api_torrent_stop_seed(body: TorrentStopBody):
+    """停做种（已经下好的文件不动）。范围靠 ids（任务）或 gids（aria2 任务号）点名，all=true 才全停。"""
+    ids = {i for i in (body.ids or []) if i}
+    gids = {g for g in (body.gids or []) if g}
+    with _BT_WATCH_LOCK:
+        picked = set(gids)
+        for gid, w in _BT_WATCH.items():
+            if body.all or w.get("task_id") in ids:
+                picked.add(gid)
+    if body.all:
+        # 看护表只记这个程序管过的；aria2 里还挂着别的一些（比如上次运行留下的、或元数据下完后另起一段的）
+        # 「全部停止做种」如果只管登记表里的，界面列得出来却停不掉
+        try:
+            ac0 = _bt_client(dict(cfg.data))
+            for st in ac0.tell_active(["gid", "status", "totalLength", "completedLength", "bittorrent"]):
+                gid = str(st.get("gid") or "")
+                total = int(st.get("totalLength") or 0)
+                done = int(st.get("completedLength") or 0)
+                if gid and st.get("bittorrent") and total and done >= total:
+                    picked.add(gid)
+        except Exception as e:
+            log_mgr.log(f"停做种前列 aria2 活动任务失败：{e}", "warning")
+    if not picked:
+        return {"ok": True, "stopped": 0, "message": "没有点到在做种的任务"}
+    ac = _bt_client(dict(cfg.data))
+    n = 0
+    for gid in sorted(picked):
+        try:
+            ac.remove(gid)
+        except Exception as e:
+            log_mgr.log(f"停止做种失败（{gid[:10]}）：{e}", "warning")
+            continue
+        with _BT_WATCH_LOCK:
+            w = _BT_WATCH.pop(gid, None) or {}
+        t = queue.tasks.get(w.get("task_id") or "") or _task_by_gid(gid)
+        if t:
+            t.seeding = False
+            # 停完还挂着「一直做种（要停就在…）」就成了假话，这行跟着改口
+            t.resume_hint = "做种已手动停止，已下载的文件不动"
+        n += 1
+        log_mgr.log(f"[界面] 手动停止做种：{(t.title if t else w.get('name')) or gid[:10]}")
+    return {"ok": True, "stopped": n, "message": f"已停止 {n} 个做种任务"}
+
+
+class BtLimitBody(BaseModel):
+    task_id: str = ""
+    gid: str = ""
+    download: Optional[str] = None   # 写成 1M / 512K；"0" 或空字符串 = 取消限速
+    upload: Optional[str] = None
+
+
+def _bt_speed_arg(field: str, raw) -> str:
+    """把界面传来的限速收成 aria2 认的写法；"0" 是「取消限速」，别的形状不对就当场顶回去。"""
+    s = str(raw or "").strip().upper()
+    if s in ("", "0"):
+        return "0"
+    got = bt_trackers.norm_speed(s)
+    if not got:
+        raise HTTPException(400, f"{field} 要写成 1M / 512K / 纯字节数（0=不限），现在收到的是「{s[:24]}」")
+    return got
+
+
+@app.get("/api/bt/trackers")
+def api_bt_trackers():
+    """现在会注入给新任务的 tracker：来源抓到多少、手动填了哪几条、最终生效几条。这一步不联网。"""
+    c = dict(cfg.data)
+    st = bt_trackers.status(c, APP_DIR)
+    got, note = bt_trackers.effective(c, APP_DIR)  # 不给 getter：只吃已缓存的，读接口不能顺手联网
+    return {"ok": True, "sources": st["sources"], "cache_time": st["cache_time"],
+            "manual": st["manual"], "effective": got, "count": len(got), "note": note,
+            "max": int(c.get("bt_tracker_max") or 0),
+            "auto_update": bool(c.get("bt_tracker_auto_update", True))}
+
+
+@app.post("/api/bt/trackers/refresh")
+def api_bt_trackers_refresh():
+    """立刻去抓一遍来源。哪个来源没抓到就点名说哪个，不能回一个空列表当作「更新完成」。"""
+    c = dict(cfg.data)
+    urls = bt_trackers.sources_to_urls(c.get("bt_tracker_sources") or "")
+    if not urls:
+        raise HTTPException(400, "来源地址是空的：先在设置里填一行一个的列表网址")
+    data = bt_trackers.refresh(APP_DIR, urls, lambda u: http_get_bytes(u, timeout=20))
+    srcs = data.get("sources") or {}
+    bad = [(u, (v or {}).get("error") or "") for u, v in srcs.items() if not (v or {}).get("ok")]
+    got, note = bt_trackers.effective(c, APP_DIR)
+    log_mgr.log(f"[界面] 更新 tracker 列表：来源抓到 {len(urls) - len(bad)}/{len(urls)} 个，"
+                f"现在一共 {len(got)} 条" + (f"（{note}）" if note else ""))
+    return {"ok": not bad, "count": len(got), "sources": len(urls),
+            "failed": [{"url": u, "error": e} for u, e in bad], "note": note,
+            "time": data.get("time") or "",
+            "message": (f"抓到 {len(got)} 条 tracker，下一个新任务就会带上" if got
+                        else "一条都没抓到：看看来源地址能否访问，或先手动填几条")}
+
+
+@app.post("/api/bt/limit")
+def api_bt_limit(body: BtLimitBody):
+    """改某个任务的上传/下载限速。
+
+    aria2 这两条是真能免重启改的（实测下载中和正在做种的都改得动，改完 getOption 就是新值），
+    但它的回话不能信：同一套 API 对改不动的键照样回 OK。所以这里改完必须读回，界面上写的是读回来的值。
+    """
+    t = queue.tasks.get(body.task_id or "")
+    gid = (t.gid if t and t.gid else (body.gid or "")).strip()
+    if not gid:
+        raise HTTPException(404, "这个任务还没有交给 aria2（没有任务号），改不了限速")
+    opts = {}
+    if body.download is not None:
+        opts["max-download-limit"] = _bt_speed_arg("下载限速", body.download)
+    if body.upload is not None:
+        opts["max-upload-limit"] = _bt_speed_arg("上传限速", body.upload)
+    if not opts:
+        raise HTTPException(400, "要改哪一路？下载限速或上传限速至少给一个（0=不限）")
+    ac = _bt_client(dict(cfg.data))
+    ok, why = ac.change_option_detail(gid, opts)
+    if not ok:
+        # 实测两种拒绝分得开：还在 aria2 但已离开下载队列（complete/error/removed）回
+        # 「Cannot change option for GID#…」，任务号整个没了才回「GID … is not found」。
+        # 光甩原文用户看不出为什么改不动，所以先读回 aria2 那边的状态再说话。
+        st = ""
+        try:
+            st = str((ac.tell_status(gid, ["status"]) or {}).get("status") or "")
+        except Exception:
+            pass
+        if "not found" in (why or "").lower():
+            extra = "这个任务号已经不在 aria2 里了（程序或 aria2 重启过、任务被删掉）"
+        elif st:
+            extra = (f"它在 aria2 里现在是「{st}」，已经移出活动队列——"
+                     "实测只有还在下载、排队、暂停或正在做种的任务能改限速")
+        else:
+            extra = "aria2 读不到这个任务的状态"
+        raise HTTPException(500, f"aria2 没有接受这次改限速：{extra}。原话：{why}")
+    back = ac.get_option(gid)
+    actual = {k: str(back.get(k, "")) for k in opts}
+    # aria2 读回来的限速一律是字节数（发 1M 回 1048576），所以要比字节而不是比字符串
+    if any(k not in back or bt_trackers.to_bytes(actual[k]) != bt_trackers.to_bytes(v)
+           for k, v in opts.items()):
+        # 回了 OK 却没改值：这种情况只能报实际值，不能对用户说改好了
+        return {"ok": False, "gid": gid, "wanted": opts, "actual": actual,
+                "message": "aria2 回了 OK，但读回来的值和要改的不一样："
+                           + "、".join(f"{k} 现在是 {actual[k] or '读不到'}" for k in opts)}
+    if t:
+        t.resume_hint = ((t.resume_hint or "") + "｜限速 下%s 上%s" % (
+            opts.get("max-download-limit") or "不变", opts.get("max-upload-limit") or "不变"))[:120]
+    log_mgr.log(f"[界面] 任务 {gid[:10]} 限速改为："
+                + "、".join(f"{k}={v}" for k, v in opts.items()))
+    return {"ok": True, "gid": gid, "actual": actual,
+            "message": "限速已生效（下 %s / 上 %s）" % (
+                opts.get("max-download-limit") or "不变", opts.get("max-upload-limit") or "不变")}
+
+
+
+class BtRuleTestBody(BaseModel):
+    """试跑自动分类：给名字或给一条磁力/种子链接，两者都有时按链接算。"""
+    name: str = ""
+    url: str = ""
+
+
+@app.post("/api/torrent/rules/test")
+def api_torrent_rules_test(body: BtRuleTestBody):
+    """照现在存着的规则试一遍「会命中哪条、存到哪个目录」。不建任务、不改设置。
+
+    自动分类是批量生效的：一条规则写歪，之后所有撞上它的种子都落到别处，事后翻目录才发现就晚了。
+    所以这里给界面一个当场验证的入口，并且把「用的是哪个名字、名字从哪来」一并回出去——
+    磁力在元数据到手前根本没有名字可比，这点必须让用户看见，而不是给个空结果让人猜。
+    """
+    c = dict(cfg.data)
+    rules = c.get("bt_auto_rules") or []
+    base = str(c.get("download_dir") or DEFAULT_DOWNLOAD_DIR)
+    url = str(body.url or "").strip()
+    nm = str(body.name or "").strip()
+    if url:
+        ref = parse_torrent_ref(url)
+        if not ref:
+            raise HTTPException(400, "这条链接既不是磁力（magnet:）也不是本机 .torrent，规则试不了")
+        name, whence = bt_rule_name(ref, log_mgr.log)
+    elif nm:
+        name, whence = nm, "界面现填的名字"
+    else:
+        raise HTTPException(400, "要试什么？写一个种子名字，或贴一条磁力 / 种子链接")
+    if not rules:
+        return {"ok": True, "matched": None, "name": name, "name_from": whence, "dir": base,
+                "message": "还没配规则：任何种子都先存到默认下载目录"}
+    hit, why = bt_rule_match(name, rules) if name else (None, "")
+    if hit:
+        sub = str(hit.get("subdir") or "")
+        target = str(Path(base) / sub) if sub else base
+        return {"ok": True, "matched": hit, "why": why, "name": name, "name_from": whence,
+                "dir": target,
+                "message": (f"会存到 {target}" if sub
+                            else f"{why}，但这条规则没填子目录 → 仍存默认目录 {base}")}
+    fb, _fb_bad = bt_rule_subdir(c.get("bt_auto_fallback"))
+    if not name:
+        tail = f"兜到 {Path(base) / fb}" if fb else "仍存默认目录"
+        return {"ok": True, "matched": None, "name": "", "name_from": whence,
+                "dir": str(Path(base) / fb) if fb else base,
+                "message": f"这条现在还没有可比的名字（{whence}），{tail}"}
+    if fb:
+        return {"ok": True, "matched": None, "name": name, "name_from": whence,
+                "dir": str(Path(base) / fb),
+                "message": f"一条规则都没命中 → 按兜底目录存到 {Path(base) / fb}"}
+    return {"ok": True, "matched": None, "name": name, "name_from": whence, "dir": base,
+            "message": "一条规则都没命中，也没配兜底目录 → 存默认目录"}
 
 
 @app.get("/api/queues")
@@ -15589,12 +18849,21 @@ def _sse_prog() -> dict:
     rows = {}
     for t in queue.tasks.values():
         if t.status in SSE_PROG_STATUSES:
-            rows[t.id] = {
+            row = {
                 "progress": t.progress,
                 "speed": t.speed,
                 "eta": t.eta,
                 "elapsed_sec": _sse_elapsed(t),
             }
+            # 卡片上的清晰度/大小/封面只在这些字段有值时才进包，避免推送签名无谓变化
+            if t.res_label:
+                row["res_label"] = t.res_label
+            if t.total_bytes:
+                row["total_bytes"] = t.total_bytes
+                row["done_bytes"] = t.done_bytes
+            if t.thumbnail:
+                row["thumbnail"] = t.thumbnail
+            rows[t.id] = row
     return {"rows": rows, "running": queue.running, "pending": len(queue.pending)}
 
 
@@ -15769,7 +19038,10 @@ def main():
     print("  多媒体下载器 Web 版 (Element Plus)")
     print(f"  打开浏览器访问: http://{host}:{port}")
     print("=" * 50)
-    uvicorn.run(app, host=host, port=port, log_level="warning")
+    try:
+        uvicorn.run(app, host=host, port=port, log_level="warning")
+    finally:
+        _bt_daemon_stop()
 
 
 if __name__ == "__main__":

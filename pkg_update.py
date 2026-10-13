@@ -71,6 +71,7 @@ PIP_PACKAGES: List[dict] = [
     {"name": "telethon", "label": "telethon（Telegram 私有/受限频道会话）"},
     {"name": "python-socks", "label": "python-socks（telethon 走 SOCKS5 代理要装）"},
     {"name": "cryptg", "label": "cryptg（telethon 加密加速，不装会退回纯 Python、Telegram 操作明显变慢）"},
+    {"name": "psutil", "label": "psutil（结束直播录制时收掉拉流的 ffmpeg 子进程，不装则成品可能一直变大、删不掉）"},
     {"name": "numpy", "label": "numpy（音频分析 / 说话人分离）"},
     {"name": "librosa", "label": "librosa（音频分析：节拍 / 响度 / 调性，会带 numba，体积较大）"},
     {"name": "faster-whisper", "label": "faster-whisper（本地转写，体积大）"},
