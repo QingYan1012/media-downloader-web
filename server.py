@@ -3672,6 +3672,8 @@ class ConfigManager:
         "dark_mode": False,
         # 2027 年度色主题：blue / orange / pink / green / clay
         "ui_theme": "blue",
+        # 界面语言：auto / zh / en，默认跟随浏览器
+        "ui_language": "auto",
         # 留空则优先使用 tools/ 下的 ffmpeg
         "ffmpeg_path": "",
         "retry_on_429": True,
@@ -3882,6 +3884,9 @@ def platform_cookie_path(platform: str) -> Path:
 # inherit=不干预（跟随系统，认不出归属的站用它，免得把能下的东西判死）。
 PROXY_MODES = ("auto", "always", "none")
 UI_THEMES = ("blue", "orange", "pink", "green", "clay")
+# 界面语言只有前端认得：后端话术（报错正文、运行日志、订阅规则摘要）始终是中文，
+# 这一项存的只是「界面按哪份词表渲染」，auto = 由浏览器 navigator.language 决定。
+UI_LANGUAGES = ("auto", "zh", "en")
 PROXY_DIRECT = "direct"  # 传给只收代理字符串的下游（music_search）的"强制直连"哨兵
 
 # 国内直连通常不通、必须走代理的站点
@@ -11539,6 +11544,7 @@ class ConfigBody(BaseModel):
     write_sub_files: Optional[bool] = None
     dark_mode: Optional[bool] = None
     ui_theme: Optional[str] = None
+    ui_language: Optional[str] = None
     skip_downloaded: Optional[bool] = None
     allow_playlist: Optional[bool] = None
     sponsorblock: Optional[str] = None
@@ -13982,6 +13988,8 @@ def _apply_config(data: dict, request: Request = None) -> dict:
         )
     if "ui_theme" in data:
         data["ui_theme"] = data["ui_theme"] if data["ui_theme"] in UI_THEMES else "blue"
+    if "ui_language" in data:
+        data["ui_language"] = data["ui_language"] if data["ui_language"] in UI_LANGUAGES else "auto"
     if "proxy_by_platform" in data:
         data["proxy_by_platform"] = {
             str(k): v for k, v in (data["proxy_by_platform"] or {}).items() if isinstance(v, bool)

@@ -73,7 +73,7 @@
 ## 进一步阅读
 
 - **[详细功能介绍](docs/详细功能介绍.md)** —— 页面总览、每项能力的口径与细节、目录结构、常用 API、贡献方式，以及[已知限制](docs/详细功能介绍.md#已知限制)与[常见问题](docs/详细功能介绍.md#常见问题)。
-- [English README](README.en.md) · [Detailed feature guide（英文完整版）](docs/detailed-features.en.md) · [CHANGELOG.md](CHANGELOG.md)
+- [English README](README.en.md) · [Detailed feature guide（英文完整版）](docs/detailed-features.en.md) · [Release notes 英文摘要](CHANGELOG.en.md) · [CHANGELOG.md](CHANGELOG.md)
 - 便携包解压后的 `使用说明.txt` 是最短的那一版：怎么启动、端口被占用怎么办、缺组件去哪一行点「安装」。
 
 ## 许可
@@ -86,4 +86,4 @@ GNU GPL-3.0-only，全文见同目录的 `LICENSE`。衍生或包含本程序源
 
 ---
 
-版本更新记录见 [CHANGELOG.md](CHANGELOG.md)。英文文档见 [README.en.md](README.en.md)。
+版本更新记录见 [CHANGELOG.md](CHANGELOG.md)（英文摘要见 [CHANGELOG.en.md](CHANGELOG.en.md)）。英文文档见 [README.en.md](README.en.md)。

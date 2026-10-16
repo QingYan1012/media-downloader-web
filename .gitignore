@@ -8,6 +8,7 @@
 !/README.md
 !/README.en.md
 !/CHANGELOG.md
+!/CHANGELOG.en.md
 !/Dockerfile
 !/docker-compose.yml
 !/requirements.txt

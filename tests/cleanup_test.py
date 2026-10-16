@@ -154,7 +154,7 @@ try:
     # 空分支匹配任意字符串 —— 排除表当场反变成「全排除」，包里的 static/ 变空目录，界面整个不见了，
     # 而上面那种字面量计数一条条全绿。这一轮真就是这么出过一次包，靠解压核对才发现。
     import pack_release as PK
-    _must_in = ("index.html", "server.py", "README.md", "README.en.md", "CHANGELOG.md",
+    _must_in = ("index.html", "server.py", "README.md", "README.en.md", "CHANGELOG.md", "CHANGELOG.en.md",
                 "详细功能介绍.md", "music_search.py", "favicon.svg")
     ck("A10 随包文件一个都不许被排除表判掉（判掉就等于包里没界面）",
        not [n for n in _must_in if PK.EXCLUDE_FILE_RE.search(n)],

@@ -67,7 +67,7 @@ APP_PY = [
     "voice_tools.py",
     "mcp_server.py",
 ]
-APP_FILES = ["requirements.txt", "README.md", "README.en.md", "CHANGELOG.md", "LICENSE", "Dockerfile", "docker-compose.yml", ".dockerignore",
+APP_FILES = ["requirements.txt", "README.md", "README.en.md", "CHANGELOG.md", "CHANGELOG.en.md", "LICENSE", "Dockerfile", "docker-compose.yml", ".dockerignore",
              # README 只留「怎么开始 + 有什么」，细节在这两份里；不跟着进包，包里的 README 就指着不存在的文件
              "docs/详细功能介绍.md", "docs/detailed-features.en.md"]
 APP_DIRS = ["static", "plugins", "extension", "docs/screenshots"]
@@ -644,6 +644,31 @@ Mac / Linux 下这个按钮不会改注册表，只会给你一行 export 命令
 【隐私】
 本包不含任何账号信息：没有 config.json、没有 Cookie、没有下载历史，
 首次启动会生成一份干净的默认配置。你之前在本机的配置不会被带出去。
+
+【English quick start】
+The rest of this file is Chinese; the full English documentation is in README.en.md and
+docs/detailed-features.en.md inside this folder.
+
+1. Unzip the whole folder to any location whose path has no Chinese characters and no spaces
+   (keep it out of C:\\Program Files), then double-click 启动.bat. The browser opens
+   http://127.0.0.1:8765 after a few seconds. The black window IS the program: closing it stops it.
+2. Nothing to install. Python and every dependency are inside runtime\\, which also carries its own
+   pip, so updates happen inside the app and never need a new archive.
+3. Port already taken? Create a file named 改端口启动.bat next to 启动.bat with two lines:
+       set MEDIADOWNLOADER_PORT=8899
+       启动.bat
+   then open http://127.0.0.1:8899
+4. Cookies. Most sites work without any. YouTube will challenge anonymous traffic ("sign in to
+   confirm you're not a bot") and may then hand out only low resolutions — that is YouTube's limit,
+   not this program failing. Add cookies under 设置 → Cookie → 「从浏览器读取」 (Chrome must be fully
+   quit; Edge and Firefox need not be), or drop a Netscape-format cookies.txt into cookies\\.
+5. If the header's top-right shows AUTO / 中 / EN, that switch changes the interface language
+   (AUTO follows your browser). Backend error text and the runtime log stay Chinese either way.
+6. Components update in-app: 设置 → 「组件与依赖」. Green dot = ready, red dot = not installed; the
+   button on the same row installs or refreshes it. The local Whisper model is red on purpose —
+   several GB are not shipped in an archive.
+7. This archive carries no account data: no config.json, no cookies, no download history. The first
+   launch writes a clean default configuration.
 """
 
 

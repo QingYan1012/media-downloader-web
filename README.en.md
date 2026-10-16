@@ -75,7 +75,7 @@ The full account, including the packaging exclusion list, is in [detailed featur
 ## Further reading
 
 - **[Detailed feature guide](docs/detailed-features.en.md)** — the 17 pages, the rules behind every capability, repository layout, common API endpoints, contributing, [known limitations](docs/detailed-features.en.md#known-limitations) and the [FAQ](docs/detailed-features.en.md#faq).
-- [中文主文档 README.md](README.md) · [CHANGELOG.md](CHANGELOG.md)
+- [中文主文档 README.md](README.md) · [Release notes (English digest)](CHANGELOG.en.md) · [CHANGELOG.md](CHANGELOG.md) (full record, Chinese)
 - `使用说明.txt` inside the portable archive is the shortest version of all: how to launch, what to do when the port is busy, and which row to click when a component is missing.
 
 ## License
@@ -88,4 +88,4 @@ This program is only a local graphical front end that strings together existing 
 
 ---
 
-Release notes are in [CHANGELOG.md](CHANGELOG.md) (Chinese). The primary, most complete documentation is [README.md](README.md).
+Release notes have an [English digest](CHANGELOG.en.md); the full, authoritative record is [CHANGELOG.md](CHANGELOG.md) (Chinese). The primary, most complete documentation is [README.md](README.md).

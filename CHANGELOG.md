@@ -970,6 +970,41 @@ v1.4.0 发出去之后接着三句要求：「跑一下音乐结果表确认排�
 
 ---
 
+## 界面多语言的第一批：外壳、一份英文发布记录、包内一段英文速览
+
+要求是「界面支持多语言，readme 也支持多语言」。口径先定死三条：**只翻前端界面文字，后端话术一个字不翻**；zh / en 两种，**默认跟随浏览器**；**先骨架，再按模块分批**把各页正文翻下去。
+
+### 界面这一批
+
+- **词表单独一份** `static/i18n.js`：zh 与 en 两套键完全相同的表，占位符写 `{n}`，`t()` 的退回链是 en → zh → 原键。
+- **顶栏多一组 `AUTO / 中 / EN`** 小按钮，与主题点并排。偏好写进后端配置 `ui_language`，走 #32 那条「只交改动项」的自动保存；`localStorage` 只当镜像，为的是重载之后第一帧就不跳语言。后端里这个键只占 4 行（DEFAULTS、`ConfigBody` 字段、`_apply_config` 钳位的 if 与赋值），另加一行 `UI_LANGUAGES = ("auto", "zh", "en")`；它落在 DEFAULTS ∩ ConfigBody 且不在禁恢复名单里，所以「恢复默认」自动带上它，不用另写代码。
+- **Element Plus 的内建文字跟着换**：`.use(ElementPlus, {locale})` 只在创建那一次读，改成 `<el-config-provider :locale>`；那个 computed 必须把语言当**参数**收进去（`elementLocale(uiLang.value)`）才会失效重算 —— 在函数体里读 `I18N.lang` 那个非响应式的值，永远等不到重跑。en 的词包没加载上就退回 zh-cn，绝不把 locale 传成 `undefined`。
+- **helper 叫 `tr` 不叫 `t`**：模板里有 7 处 `v-for="t in …"`（两处主题色板、`status.throttle`、三个分页器、`tgTypeOptions`），叫 `t` 会被它们就地顶掉。
+- 侧栏 17 项、5 个分组标题、页面标题与品牌名从此只有词表这一份真相（原先硬写在 `navs` 的 `label` 与 `NAV_GROUPS` 的 `title` 里）。
+- **没翻的部分写进注释**：后端返回的报错正文、运行日志、订阅规则摘要都是落盘记录，也是几千条断言的对象；`friendlyError` 那 22 条分支要等它点名的界面路径（「设置 → 网络与并发」这类）先翻完再动，半成品对照只会让报错与界面各说一种语言。
+
+### 自检
+
+新增 `tests/i18n_test.py`：75 项、离线、不起服务。A 词表（两套键集合相等、值非空、`{n}` 成对、不含 `${` 与 HTML、首尾无空格）；B 模板键（出现的 `tr('…')` 全在表里，`nav.` 17 条、`navGroup.` 五个加分组兜底的 `other`、`page.<key>` 一条不缺，也不许多出没人用的键）；C 接线（脚本顺序、`boot()` 在 `createApp` 之前、en 词包在位、provider 一开一合、`epLocale` 是 computed、明暗两套 CSS、`loadSettings` 把配置值与 localStorage 对齐）；D 后端那四处与「恢复默认收得到它」；E 打包（`static` 在 `APP_DIRS`、`i18n.js` 进包、LF 行尾，再用 AST 确认这套件自己不外联不起进程）；F 边界（`friendlyError` 仍 22 条分支且不含 `tr(`、后端原话那段提前 return 还在、`logAction` 仍写中文、zh 值都含中日韩、没有一条 zh==en）；G 用 node 实跑词表，30 处观察断言 29 项。
+
+### 浏览器真读数
+
+沙箱实例（`MEDIADOWNLOADER_STATE_DIR` + `bind(0)` 挑的空端口，绝不在 8765 上试），V1~V24 全过：点 EN → 磁盘上的 `config.json` 里出现 `"ui_language": "en"` → 清掉 localStorage 重载仍是英文；POST zh 重载回到中文且「中」高亮；auto + 浏览器 en-US → 英文且 AUTO 高亮。日期表头变成 `Sun Mon …` 是 provider 真生效的证据，不是看代码推出来的。布局没被那层包装挤歪：侧栏 212、主区左 212、两栏等高、语言行与主题点对齐。控制台无报错；这一趟没往项目根的 `app.log` 写任何东西（跑前 23131 → 跑后 23131 字节）。
+
+### readme 这一批
+
+先量再说：`README.md` / `README.en.md` 是 89 / 91 行的一对，`docs/详细功能介绍.md` / `docs/detailed-features.en.md` 是 792 / 791 行的一对，都标到 v1.4.0 —— **本来就已经双语**。真正缺英文的是三处，这轮都补了：
+
+- **`CHANGELOG.en.md`（新增）**：英文摘要，不假装是逐句对照。里面点名的每个标识符都回到代码里核过一遍才落下（`X265_TIMEOUT_MULT = 3.0`、`NOTIFY_RETRY_DELAYS = (30, 120, 600, 1800, 3600)`、`AUTH_PBKDF2_ROUNDS = 240_000` 与 `os.urandom(16)` 的盐、`QC_TL_CJK_CPS = 9.0` / `QC_TL_LATIN_CPS = 14.0`、`max(10.0, min(90.0, media_seconds * 0.08))`、`_cc_key_str` 的 `md5(f"{uuid}-{key}")[:16]`、`self.pending = held + skipped + self.pending`、48 位机器令牌来自 `secrets.token_hex(24)`、口令存储格式 `pbkdf2_sha256$轮数$盐$派生键`）。两条口径写进文件开头：**源日志里的 `server.py` 行号是当时那一轮的，代码早已移动，摘要只留名字不留行号**；**发布物的读数不抄日志里某一时刻的值**，这轮直接核 API 当下的 —— `v1.4.0` 资产 229,823,103 字节，与 `dist/` 里那只同名同字节、与同名 `.zip.sha256` 的 digest 一致，也就是说上面「Release 资产还是上一版」那句已经过期，留作历史；真正与包内不一致的只有文档本身（含本文件与那份英文摘要）。
+- **包内 `使用说明.txt` 末尾加一段 English quick start**（`pack_release.py` 里 `README_SHARE` 那个字符串）：七条 —— 解压、双击 `启动.bat`、端口被占怎么办、Cookie 怎么加、界面语言那个开关、组件在程序里更新、包里不带任何人的账号数据。开头写明「其余是中文，完整英文说明看 README.en.md」。只改字符串，**重打包才落到包里**，这一轮包没动。
+- **Release 正文尾部加一段 English**：PATCH 只动正文，改前改后两个资产的 `name` / `size` / `digest` 一个没变（zip 仍是 229,823,103 B / `sha256:4ea6a8ec…`，sidecar 未动），正文 2478 → 5192 字。
+
+顺带两处一致性：`CHANGELOG.en.md` 进 `APP_FILES`（README 里指向它的链接不能进包成死链），`cleanup_test.py` 的 A10「随包文件一个都不许被排除表判掉」名单里补上它；动手前先拿排除正则实跑一遍 —— `CHANGELOG.en.md kept`，且 `EXCLUDE_FILE_RE.search("")` 仍是 `False`（#44 那一课的写法：判语义不判字面量）。`python -m py_compile server.py pack_release.py` 通过，`cleanup_test.py` 159 条全绿。
+
+本轮没出包：`appVersion` 仍是 `v1.4.0`，`dist/` 那只与 Release 资产都不动；标签按「先不动」留在原处。各页正文的翻译排在后面几批。
+
+---
+
 ## v1.3.2 · 2026-10-13（已出包）
 
 对着 [joeseesun/qiaomu-download](https://github.com/joeseesun/qiaomu-download) 那份平台清单盘了一遍 ours，盘出两条真的缺口，本轮做掉；第三条（B1 TikTok 归错档）是我看错了，代码一个字没改，判正的读数写在下面。B4（公开优先的 Cookie 策略）与 B5（Spotify 单曲入口 + 匹配置信度）按要求先排着，和 issue #206 那张「有但没做」的清单一起过。**已出包**：`appVersion` 升到 `v1.3.2 · Element Plus`（版本真源只有界面那一处），两份 README 的徽章与包名同处改口，产物见下方「发布物」。

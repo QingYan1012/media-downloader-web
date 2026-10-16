@@ -506,6 +506,31 @@
     body.dark .theme-dot { border-color: rgba(148, 163, 184, .3); }
     body.dark .theme-dot.active { box-shadow: 0 0 0 2px var(--d-raised), 0 0 0 4px var(--ac-dark); }
     body.dark .theme-dot.active::after { background: var(--d-void); }
+    /* 顶栏语言切换：AUTO / 中 / EN 三个小字钮，选中口径与色板一致（只改界面文字，不动后端话术） */
+    .lang-dots {
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      flex-shrink: 0;
+      padding: 2px;
+      border: 1px solid var(--glass-edge);
+      border-radius: 999px;
+    }
+    .lang-btn {
+      height: 18px;
+      padding: 0 7px;
+      border: 0;
+      border-radius: 999px;
+      background: transparent;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 18px;
+      cursor: pointer;
+      transition: background .16s var(--ease), color .16s var(--ease);
+    }
+    .lang-btn:hover { color: var(--ink); }
+    .lang-btn.active { background: var(--ac); color: #fff; }
+    body.dark .lang-btn.active { background: var(--ac-dark); color: var(--d-void); }
     /* chip 里的迷你色标：只取色，不带描环与对勾 */
     .theme-dot--inline {
       width: 12px;
@@ -1670,6 +1695,10 @@
   </svg>
 
   <div id="app">
+    <!-- 语言切换要让 Element Plus 自己的内建文字（分页「共 n 条」、下拉「无匹配数据」、日期控件等）也跟着变：
+         .use(ElementPlus, {locale}) 只在创建应用时读一次，改不动。这里用 el-config-provider 把整棵子树包住，
+         它自己不渲染元素（只 provide 一份 locale），所以不影响 #app 的 height:100% 与 .layout 布局。 -->
+    <el-config-provider :locale="epLocale">
     <!-- 登录门：只有「非本机来的连接」才会被挡在这里；本机 127.0.0.1 与带机器令牌的调用永不经过这一层 -->
     <div v-if="authGate.needed" class="auth-gate">
       <div class="auth-gate__box">
@@ -1699,13 +1728,13 @@
         <div class="sidebar-logo">
           <img class="logo-svg" src="/static/logo_icon.svg" alt="logo" width="36" height="36" />
           <div class="brand">
-            <span class="brand-name">多媒体下载器</span>
+            <span class="brand-name">{{ tr('brand') }}</span>
             <span class="brand-sub">Media Stream</span>
           </div>
         </div>
         <div class="nav-scroll">
-          <template v-for="g in navGroups" :key="g.title">
-            <div class="nav-group">{{ g.title }}</div>
+          <template v-for="g in navGroups" :key="g.id">
+            <div class="nav-group">{{ tr('navGroup.' + g.id) }}</div>
             <div
               v-for="item in g.items"
               :key="item.key"
@@ -1713,7 +1742,7 @@
               :class="{ active: page === item.key }"
               @click="page = item.key"
             >
-              <i :data-lucide="item.icon" class="nav-lucide"></i><span>{{ item.label }}</span>
+              <i :data-lucide="item.icon" class="nav-lucide"></i><span>{{ tr('nav.' + item.key) }}</span>
               <span v-if="navBadge(item.key)" class="nav-badge">{{ navBadge(item.key) }}</span>
               <span v-if="navDot(item.key)" class="nav-dot" :title="navDot(item.key)"></span>
             </div>
@@ -1727,18 +1756,24 @@
         <div class="header">
           <span class="header-title">{{ pageTitle }}</span>
           <div class="header-tools">
-            <span class="hstat" :class="{ 'hstat--live': queueStat.active }" title="队列中未完成的任务数">
-              进行中 {{ queueStat.active }}
+            <span class="hstat" :class="{ 'hstat--live': queueStat.active }" :title="tr('header.activeTip')">
+              {{ tr('header.active', { n: queueStat.active }) }}
             </span>
-            <span v-if="queueStat.failed" class="hstat" title="本轮失败任务数">失败 {{ queueStat.failed }}</span>
-            <span v-if="subNewTotal" class="hstat" title="订阅已检测到但尚未下载的新条目数">订阅新增 {{ subNewTotal }}</span>
-            <div class="theme-dots" role="group" aria-label="主题色">
+            <span v-if="queueStat.failed" class="hstat" :title="tr('header.failedTip')">{{ tr('header.failed', { n: queueStat.failed }) }}</span>
+            <span v-if="subNewTotal" class="hstat" :title="tr('header.subNewTip')">{{ tr('header.subNew', { n: subNewTotal }) }}</span>
+            <div class="lang-dots" role="group" :aria-label="tr('header.langGroup')" :title="tr('header.langTip')">
+              <el-tooltip v-for="lg in UI_LANGS" :key="lg.key" :content="lg.name[uiLang]" placement="bottom">
+                <button type="button" class="lang-btn" :class="{ active: (settings.ui_language || 'auto') === lg.key }"
+                        :aria-label="lg.name[uiLang]" @click="setLang(lg.key)">{{ lg.label }}</button>
+              </el-tooltip>
+            </div>
+            <div class="theme-dots" role="group" :aria-label="tr('header.themeGroup')">
               <el-tooltip v-for="t in UI_THEMES" :key="t.key" :content="t.name + ' · ' + t.en" placement="bottom">
                 <button type="button" class="theme-dot" :class="{ active: (settings.ui_theme || 'blue') === t.key }"
                         :data-td="t.key" :aria-label="t.name" @click="setTheme(t.key)"></button>
               </el-tooltip>
             </div>
-            <el-tooltip :content="settings.dark_mode ? '切换为浅色' : '切换为深色'" placement="bottom">
+            <el-tooltip :content="settings.dark_mode ? tr('header.toLight') : tr('header.toDark')" placement="bottom">
               <button type="button" class="icon-btn" @click="toggleDark">
                 <svg><use :href="settings.dark_mode ? '#i-sun' : '#i-moon'"></use></svg>
               </button>
@@ -5803,42 +5838,53 @@
         </div>
       </div>
     </div>
+    </el-config-provider>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/vue@3.5.12/dist/vue.global.prod.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/element-plus@2.8.8/dist/index.full.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/element-plus@2.8.8/dist/locale/zh-cn.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/element-plus@2.8.8/dist/locale/en.min.js"></script>
+  <script src="/static/i18n.js"></script>
   <script>
+    /* 建应用之前先按上次生效的语言镜像定一次：刷新后第一帧就是对的，不会闪一下另一种语言 */
+    if (window.MD_I18N) window.MD_I18N.boot();
     const { createApp, ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } = Vue;
 
     createApp({
       setup() {
         const page = ref('home');
+        /* 界面语言：uiLang 是响应式的当前语言（zh/en），tr() 在渲染里读它，切语言时模板自己重算。
+           词表与回落规则在 static/i18n.js；这里只负责「读哪一份」，后端话术不进词表。
+           名字用 tr 不用 t：模板里有 7 处 v-for="t in ..."（任务卡、色板等），叫 t 会在那些子树里被遮蔽。 */
+        const uiLang = ref((window.MD_I18N && window.MD_I18N.lang) || 'zh');
+        const tr = (key, vars) => (window.MD_I18N ? window.MD_I18N.t(key, vars, uiLang.value) : key);
+        /* 侧栏条目：名字不在这里写死，由 t('nav.' + key) 从词表取，避免「数据里一份、词表里一份」两处漂移 */
         const navs = [
-          { key: 'home', label: '下载解析', icon: 'download' },
-          { key: 'queue', label: '队列', icon: 'list-ordered' },
-          { key: 'bt', label: '磁力 / 种子', icon: 'magnet' },
-          { key: 'info', label: '信息', icon: 'info' },
-          { key: 'search', label: '搜索', icon: 'search' },
-          { key: 'music', label: '音乐', icon: 'music' },
-          { key: 'tg', label: 'TG 频道', icon: 'send' },
-          { key: 'voice', label: '语音', icon: 'mic' },
-          { key: 'favs', label: '收藏', icon: 'star' },
-          { key: 'live', label: '直播', icon: 'radio' },
-          { key: 'library', label: '资源库', icon: 'library' },
-          { key: 'files', label: '文件', icon: 'folder' },
-          { key: 'history', label: '历史', icon: 'history' },
-          { key: 'log', label: '日志', icon: 'scroll-text' },
-          { key: 'sniff', label: '嗅探', icon: 'radar' },
-          { key: 'subs', label: '订阅', icon: 'bell' },
-          { key: 'settings', label: '设置', icon: 'settings' },
+          { key: 'home', icon: 'download' },
+          { key: 'queue', icon: 'list-ordered' },
+          { key: 'bt', icon: 'magnet' },
+          { key: 'info', icon: 'info' },
+          { key: 'search', icon: 'search' },
+          { key: 'music', icon: 'music' },
+          { key: 'tg', icon: 'send' },
+          { key: 'voice', icon: 'mic' },
+          { key: 'favs', icon: 'star' },
+          { key: 'live', icon: 'radio' },
+          { key: 'library', icon: 'library' },
+          { key: 'files', icon: 'folder' },
+          { key: 'history', icon: 'history' },
+          { key: 'log', icon: 'scroll-text' },
+          { key: 'sniff', icon: 'radar' },
+          { key: 'subs', icon: 'bell' },
+          { key: 'settings', icon: 'settings' },
         ];
         const NAV_GROUPS = [
-          { title: '下载', keys: ['home', 'queue', 'bt', 'sniff', 'info'] },
-          { title: '获取与处理', keys: ['search', 'music', 'tg', 'live', 'voice'] },
-          { title: '媒体库', keys: ['library', 'files', 'favs', 'history'] },
-          { title: '自动化', keys: ['subs'] },
-          { title: '系统', keys: ['log', 'settings'] },
+          { id: 'download', keys: ['home', 'queue', 'bt', 'sniff', 'info'] },
+          { id: 'fetch', keys: ['search', 'music', 'tg', 'live', 'voice'] },
+          { id: 'library', keys: ['library', 'files', 'favs', 'history'] },
+          { id: 'auto', keys: ['subs'] },
+          { id: 'system', keys: ['log', 'settings'] },
         ];
         /* 鸣谢名单：新增依赖或参考项目时在这里补一行（url 留空则只显示名字） */
         const CREDITS = [
@@ -5899,17 +5945,18 @@
           const byKey = new Map(navs.map((n) => [n.key, n]));
           const used = new Set();
           const gs = NAV_GROUPS.map((g) => ({
-            title: g.title,
+            id: g.id,
             items: g.keys.filter((k) => byKey.has(k)).map((k) => { used.add(k); return byKey.get(k); }),
           })).filter((g) => g.items.length);
           const rest = navs.filter((n) => !used.has(n.key));
-          if (rest.length) gs.push({ title: '其他', items: rest });
+          if (rest.length) gs.push({ id: 'other', items: rest });
           return gs;
         });
         const appVersion = 'v1.4.0 · Element Plus';
         const pageTitle = computed(() => {
-          const m = { home: '下载解析', sniff: '网页嗅探', queue: '下载队列', bt: '磁力 / 种子', info: '媒体信息', search: '聚合搜索', music: '音乐搜索', tg: 'Telegram 频道批量', voice: '语音工具', subs: '订阅追踪', favs: '收藏关注', live: '直播录制', library: '资源库', files: '文件浏览', history: '历史记录', log: '运行日志', settings: '设置' };
-          return m[page.value] || '';
+          const k = 'page.' + page.value;
+          const s = tr(k);
+          return s === k ? '' : s;   // 没这个词就留空，别在标题位上印一个键名
         });
         const queueStat = computed(() => {
           const list = tasks.value || [];
@@ -6159,6 +6206,7 @@
           write_sub_files: true,
           dark_mode: false,
           ui_theme: 'blue',
+          ui_language: 'auto',
           telegram_enabled: false,
           telegram_bot_token: '',
           telegram_chat_id: '',
@@ -7719,6 +7767,7 @@
             settings.value.risk_cooldown_429 = data.risk_cooldown_429 || 60;
             settings.value.risk_user_agent = data.risk_user_agent || '';
             settings.value.ui_theme = data.ui_theme || 'blue';
+            settings.value.ui_language = ['zh', 'en'].includes(data.ui_language) ? data.ui_language : 'auto';
             settings.value.web_auth_enabled = !!data.web_auth_enabled;
             settings.value.web_auth_session_hours = Math.max(1, Math.min(720, Number(data.web_auth_session_hours) || 12));
             settings.value.web_auth_remember_days = Math.max(1, Math.min(365, Number(data.web_auth_remember_days) || 30));
@@ -7726,6 +7775,7 @@
             settings.value.web_auth_lock_minutes = Math.max(1, Math.min(1440, Number(data.web_auth_lock_minutes) || 15));
             applyDark(settings.value.dark_mode);
             applyTheme(settings.value.ui_theme);
+            applyLang(settings.value.ui_language);
             markSaved();   // 这份是刚从后端读回来的，diff 要从这里起算，不带上打开页面之前的旧改动
           } catch (_) {}
         }
@@ -7753,6 +7803,21 @@
           applyTheme(name);
           const t = UI_THEMES.find(x => x.key === name);
           logAction('切换主题为「' + ((t && t.name) || name) + '」');
+        }
+        /* 界面语言：钮上的三个选项来自 i18n.js 的 langs（同一份数据，免得这里再抄一遍名字）。
+           切换只改界面文字；后端返回的报错正文、运行日志、订阅规则摘要仍是中文，那是落盘的记录。 */
+        const UI_LANGS = (window.MD_I18N && window.MD_I18N.langs) || [{ key: 'auto', label: 'AUTO', name: { zh: '自动', en: 'Auto' } }];
+        const epLocale = computed(() => (window.MD_I18N ? window.MD_I18N.elementLocale(uiLang.value) : window.ElementPlusLocaleZhCn));
+        function applyLang(pref) {
+          if (!window.MD_I18N) return;
+          uiLang.value = window.MD_I18N.apply(pref);
+        }
+        function setLang(key) {
+          const pref = UI_LANGS.some(x => x.key === key) ? key : 'auto';
+          settings.value.ui_language = pref;
+          applyLang(pref);
+          const l = UI_LANGS.find(x => x.key === pref);
+          logAction('切换界面语言为「' + ((l && l.name.zh) || pref) + '」');
         }
         async function openDownloadFolder() {
           try {
@@ -13177,7 +13242,7 @@ const CFG_LABELS = {
         });
 
         return {
-          page, navs, navGroups, CREDITS, appVersion, queueStat, subNewTotal, navBadge, navDot, pageTitle, urlText, urlPasteStat, extractUrls, friendlyError, glossaryStat, checkGlossary, speedWinStat, checkSpeedWindows, queueWindow, windowHeld, queueRows, runWinStat, checkRunWindows, exportBilingual, exportBilingualSelected, pipelineRow, pipelineView, showPipeline, closePipeline, refreshPipeline, rerunStage, pipeStatusLabel, pipeStatusType, opts, videoQualities, audioQualities, formats, codecOptions,
+          page, navs, navGroups, CREDITS, appVersion, tr, uiLang, UI_LANGS, epLocale, setLang, queueStat, subNewTotal, navBadge, navDot, pageTitle, urlText, urlPasteStat, extractUrls, friendlyError, glossaryStat, checkGlossary, speedWinStat, checkSpeedWindows, queueWindow, windowHeld, queueRows, runWinStat, checkRunWindows, exportBilingual, exportBilingualSelected, pipelineRow, pipelineView, showPipeline, closePipeline, refreshPipeline, rerunStage, pipeStatusLabel, pipeStatusType, opts, videoQualities, audioQualities, formats, codecOptions,
           pagers, favSort, onFavSortChange, musicSort, onMusicSortChange, tgSort, onTgSortChange,
           subLangOptions, subLangList, selectAllSubLangs, clearSubLangs, toggleSubLang,
           selectedIds, selectAll, queuePaused, taskSort, sseOn, toggleSelect, toggleSelectAll,
@@ -13255,7 +13320,7 @@ const CFG_LABELS = {
           statusType, statusLabel,
         };
       },
-    }).use(ElementPlus, { locale: window.ElementPlusLocaleZhCn }).mount('#app');
+    }).use(ElementPlus, { locale: window.MD_I18N ? window.MD_I18N.elementLocale() : window.ElementPlusLocaleZhCn }).mount('#app');
 
     /* 动态光源：光标停在卡片哪一侧，高光与投影就往反方向倒。
        只给当前 hover 的那张卡片写变量，并用 rAF 合帧，避免 pointermove 逐事件重算样式。 */
