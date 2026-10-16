@@ -1786,7 +1786,7 @@
           <div v-show="page === 'home'">
             <div class="bento">
               <div class="card span-6">
-                <div class="card-title">媒体链接</div>
+                <div class="card-title">{{ tr('home.mediaLinks') }}</div>
                 <div class="link-start">
                   <div class="link-start__main">
                     <el-input
@@ -1794,27 +1794,27 @@
                       type="textarea"
                       size="large"
                       :autosize="{ minRows: 3, maxRows: 12 }"
-                      placeholder="YouTube / B站 / 抖音 / 小红书 等链接，一行一个&#10;https://www.xiaohongshu.com/explore/..."></el-input>
+                      :placeholder="tr('home.urlPh')"></el-input>
                     <div class="tool-bar">
-                      <el-button size="small" @click="pasteUrl">粘贴链接</el-button>
-                      <el-button type="primary" size="small" :loading="analyzing" @click="analyze"><svg class="btn-ico"><use href="#i-search"></use></svg>解析媒体信息</el-button>
-                      <el-button size="small" @click="importUrlFile">导入 txt</el-button>
+                      <el-button size="small" @click="pasteUrl">{{ tr('home.paste') }}</el-button>
+                      <el-button type="primary" size="small" :loading="analyzing" @click="analyze"><svg class="btn-ico"><use href="#i-search"></use></svg>{{ tr('home.analyze') }}</el-button>
+                      <el-button size="small" @click="importUrlFile">{{ tr('home.importTxt') }}</el-button>
                       <input ref="urlFileInput" type="file" accept=".txt,.text,.csv" style="display:none" @change="onUrlFile" />
-                      <el-button size="small" @click="urlText = ''">清空</el-button>
+                      <el-button size="small" @click="urlText = ''">{{ tr('home.clear') }}</el-button>
                       <span class="hint hint--block" v-if="urlPasteStat.count">
-                        识别到 {{ urlPasteStat.count }} 条<span v-if="urlPasteStat.dup">，其中 {{ urlPasteStat.dup }} 条重复已去除</span>
+                        {{ tr('home.pasteCount', { n: urlPasteStat.count }) }}<span v-if="urlPasteStat.dup">{{ tr('home.pasteDup', { n: urlPasteStat.dup }) }}</span>
                       </span>
-                      <span class="hint hint--block" v-else>每行一个网页链接，支持整段文本粘贴，重复项自动去除。「解析媒体信息」只读取网页链接的信息，不开始下载。</span>
+                      <span class="hint hint--block" v-else>{{ tr('home.urlHint') }}</span>
                     </div>
                   </div>
                   <div class="tile link-start__side">
                     <div class="stack stack--tight">
-                      <el-button type="primary" size="large" :loading="submitting" @click="startDownload"><svg class="btn-ico"><use href="#i-download"></use></svg>开始下载</el-button>
+                      <el-button type="primary" size="large" :loading="submitting" @click="startDownload"><svg class="btn-ico"><use href="#i-download"></use></svg>{{ tr('home.startDl') }}</el-button>
                       <div class="row row--tight">
-                        <el-button type="danger" plain size="small" @click="stopAll">全部停止</el-button>
-                        <el-checkbox v-model="opts.download_later">仅排队，稍后下载</el-checkbox>
+                        <el-button type="danger" plain size="small" @click="stopAll">{{ tr('home.stopAll') }}</el-button>
+                        <el-checkbox v-model="opts.download_later">{{ tr('home.queueOnly') }}</el-checkbox>
                       </div>
-                      <span class="hint">勾选「仅排队」后只加入队列，可在「队列」页暂停、继续或删除</span>
+                      <span class="hint">{{ tr('home.queueOnlyHint') }}</span>
                     </div>
                   </div>
                 </div>
@@ -1823,14 +1823,14 @@
 
             <div v-if="clipPending" class="bento">
               <div class="card span-6">
-                <div class="section-title">剪贴板里发现 1 条链接</div>
+                <div class="section-title">{{ tr('home.clipFound') }}</div>
                 <div class="clip-link">{{ clipPending.link }}</div>
                 <div class="row row--tight row--mt">
-                  <el-button size="small" type="primary" @click="clipAdd">加入</el-button>
-                  <el-button size="small" plain @click="clipIgnore">忽略</el-button>
+                  <el-button size="small" type="primary" @click="clipAdd">{{ tr('home.clipAdd') }}</el-button>
+                  <el-button size="small" plain @click="clipIgnore">{{ tr('home.clipIgnore') }}</el-button>
                   <span class="hint">
-                    {{ clipPending.kind === 'magnet' ? '磁力链接' : '网页链接' }} · 刚复制到剪贴板。
-                    「加入」只是把这一条填进上面的链接框，程序不会自己解析、也不会自己开始下载。
+                    {{ tr(clipPending.kind === 'magnet' ? 'home.magnet' : 'home.weblink') }} · {{ tr('home.clipJustCopied') }}
+                    {{ tr('home.clipAddHint') }}
                   </span>
                 </div>
               </div>
@@ -1838,142 +1838,142 @@
 
             <div class="bento">
               <div class="card span-4">
-                <div class="card-title">输出偏好</div>
+                <div class="card-title">{{ tr('home.outPrefs') }}</div>
                 <div class="tile-grid">
                   <div class="tile">
-                    <div class="tile-label">视频画质</div>
+                    <div class="tile-label">{{ tr('home.videoQ') }}</div>
                     <div class="chip-row">
                       <div v-for="q in videoQualities" :key="q" class="chip" :class="{ active: opts.video_quality === q }" @click="opts.video_quality = q">{{ q }}</div>
                     </div>
                   </div>
                   <div class="tile">
-                    <div class="tile-label">音频质量</div>
+                    <div class="tile-label">{{ tr('home.audioQ') }}</div>
                     <div class="chip-row">
                       <div v-for="q in audioQualities" :key="q" class="chip" :class="{ active: opts.audio_quality === q }" @click="opts.audio_quality = q">{{ q }}</div>
                     </div>
                   </div>
                   <div class="tile">
-                    <div class="tile-label">格式</div>
+                    <div class="tile-label">{{ tr('home.format') }}</div>
                     <div class="chip-row">
                       <div v-for="f in formats" :key="f" class="chip" :class="{ active: opts.format === f }" @click="opts.format = f">{{ f }}</div>
                     </div>
                   </div>
                   <div class="tile">
-                    <div class="tile-label">偏好编码</div>
+                    <div class="tile-label">{{ tr('home.codec') }}</div>
                     <div class="chip-row">
                       <div v-for="c in codecOptions" :key="c.value" class="chip" :class="{ active: opts.prefer_codec === c.value }" @click="opts.prefer_codec = c.value">{{ c.label }}</div>
                     </div>
                   </div>
                   <div class="tile span-all">
-                    <div class="tile-label">保存目录</div>
+                    <div class="tile-label">{{ tr('home.saveDir') }}</div>
                     <div class="path-row">
-                      <el-input size="small" v-model="opts.download_dir" placeholder="默认：项目/Downloads"></el-input>
-                      <el-button size="small" @click="browsePath('folder', 'opts.download_dir')">浏览</el-button>
+                      <el-input size="small" v-model="opts.download_dir" :placeholder="tr('home.dirPh')"></el-input>
+                      <el-button size="small" @click="browsePath('folder', 'opts.download_dir')">{{ tr('home.browse') }}</el-button>
                     </div>
                   </div>
                 </div>
               </div>
               <div class="card span-2">
-                <div class="card-title">快捷预设</div>
+                <div class="card-title">{{ tr('home.presets') }}</div>
                 <div class="chip-col">
-                  <div class="chip" @click="applyPreset('best')">最佳画质</div>
-                  <div class="chip" @click="applyPreset('1080')">1080p 平衡</div>
-                  <div class="chip" @click="applyPreset('small')">省流小体积</div>
-                  <div class="chip" @click="applyPreset('audio')">仅音频 MP3</div>
-                  <div class="chip" @click="applyPreset('archive')">归档 MKV</div>
+                  <div class="chip" @click="applyPreset('best')">{{ tr('home.presetBest') }}</div>
+                  <div class="chip" @click="applyPreset('1080')">{{ tr('home.preset1080') }}</div>
+                  <div class="chip" @click="applyPreset('small')">{{ tr('home.presetSmall') }}</div>
+                  <div class="chip" @click="applyPreset('audio')">{{ tr('home.presetAudio') }}</div>
+                  <div class="chip" @click="applyPreset('archive')">{{ tr('home.presetArchive') }}</div>
                 </div>
-                <div class="hint">一键把「输出偏好」与「附加内容」设为常用组合</div>
+                <div class="hint">{{ tr('home.presetHint') }}</div>
               </div>
             </div>
 
             <div class="bento">
               <div class="card span-4">
-                <div class="card-title">附加内容</div>
+                <div class="card-title">{{ tr('home.extra') }}</div>
                 <div class="tile-grid">
                   <div class="tile">
-                    <div class="tile-label">字幕与文字</div>
+                    <div class="tile-label">{{ tr('home.subAndText') }}</div>
                     <div class="stack">
-                      <el-checkbox v-model="opts.embed_sub">嵌入字幕</el-checkbox>
-                      <el-checkbox v-model="opts.write_sub_files">另存独立字幕文件</el-checkbox>
-                      <el-checkbox v-model="opts.local_ai_transcribe">本地 AI 转写</el-checkbox>
-                      <el-checkbox v-model="opts.local_ai_translate">本地 AI 翻译</el-checkbox>
+                      <el-checkbox v-model="opts.embed_sub">{{ tr('home.embedSub') }}</el-checkbox>
+                      <el-checkbox v-model="opts.write_sub_files">{{ tr('home.writeSubFiles') }}</el-checkbox>
+                      <el-checkbox v-model="opts.local_ai_transcribe">{{ tr('home.aiTranscribe') }}</el-checkbox>
+                      <el-checkbox v-model="opts.local_ai_translate">{{ tr('home.aiTranslate') }}</el-checkbox>
                     </div>
-                    <div class="hint">本地转写与翻译需先在设置中安装 Whisper</div>
+                    <div class="hint">{{ tr('home.whisperHint') }}</div>
                   </div>
                   <div class="tile">
-                    <div class="tile-label">嵌入媒体文件</div>
+                    <div class="tile-label">{{ tr('home.embedMedia') }}</div>
                     <div class="stack">
-                      <el-checkbox v-model="opts.embed_thumb">封面缩略图</el-checkbox>
-                      <el-checkbox v-model="opts.embed_meta">标题、作者等元数据</el-checkbox>
-                      <el-checkbox v-model="opts.embed_chapters">章节标记</el-checkbox>
-                      <el-checkbox v-model="opts.download_danmaku">B站弹幕</el-checkbox>
+                      <el-checkbox v-model="opts.embed_thumb">{{ tr('home.embedThumb') }}</el-checkbox>
+                      <el-checkbox v-model="opts.embed_meta">{{ tr('home.embedMeta') }}</el-checkbox>
+                      <el-checkbox v-model="opts.embed_chapters">{{ tr('home.embedChapters') }}</el-checkbox>
+                      <el-checkbox v-model="opts.download_danmaku">{{ tr('home.danmaku') }}</el-checkbox>
                     </div>
                   </div>
                   <div class="tile">
-                    <div class="tile-label">下载行为</div>
+                    <div class="tile-label">{{ tr('home.dlBehavior') }}</div>
                     <div class="stack">
-                      <el-checkbox v-model="opts.audio_only">仅下载音频</el-checkbox>
-                      <el-checkbox v-model="opts.skip_downloaded">跳过已下载</el-checkbox>
-                      <el-checkbox v-model="opts.verify_download">下载后校验完整性</el-checkbox>
+                      <el-checkbox v-model="opts.audio_only">{{ tr('home.audioOnly') }}</el-checkbox>
+                      <el-checkbox v-model="opts.skip_downloaded">{{ tr('home.skipDownloaded') }}</el-checkbox>
+                      <el-checkbox v-model="opts.verify_download">{{ tr('home.verifyDownload') }}</el-checkbox>
                     </div>
-                    <div class="hint">校验可识别未报错但实际不可用的文件：内容为网页、体积为 0、播放中途中断</div>
+                    <div class="hint">{{ tr('home.verifyHint') }}</div>
                   </div>
                   <div class="tile">
-                    <div class="tile-label">播放列表与引擎</div>
+                    <div class="tile-label">{{ tr('home.playlistEngine') }}</div>
                     <div class="stack">
                       <div>
-                        <el-checkbox v-model="opts.allow_playlist">下载合集 / 播放列表</el-checkbox>
+                        <el-checkbox v-model="opts.allow_playlist">{{ tr('home.allowPlaylist') }}</el-checkbox>
                         <span v-show="opts.allow_playlist" class="row row--tight" style="margin-top:4px">
-                          <span class="hint" style="margin:0">从</span>
+                          <span class="hint" style="margin:0">{{ tr('home.from') }}</span>
                           <el-input-number v-model="opts.playlist_start" :min="0" :max="9999" size="small" controls-position="right" style="width:90px"></el-input-number>
-                          <span class="hint" style="margin:0">到</span>
+                          <span class="hint" style="margin:0">{{ tr('home.to') }}</span>
                           <el-input-number v-model="opts.playlist_end" :min="0" :max="9999" size="small" controls-position="right" style="width:90px"></el-input-number>
-                          <el-input v-model="opts.playlist_items" placeholder="或直接指定条目序号，如 1,3,5-8" size="small" style="width:200px" clearable></el-input>
+                          <el-input v-model="opts.playlist_items" :placeholder="tr('home.itemsPh')" size="small" style="width:200px" clearable></el-input>
                         </span>
                       </div>
-                      <el-checkbox v-model="opts.is_live">该链接为直播，录制全程</el-checkbox>
-                      <el-checkbox v-model="opts.use_hls_engine">使用 HLS 专用引擎</el-checkbox>
+                      <el-checkbox v-model="opts.is_live">{{ tr('home.isLive') }}</el-checkbox>
+                      <el-checkbox v-model="opts.use_hls_engine">{{ tr('home.hlsEngine') }}</el-checkbox>
                     </div>
                   </div>
                 </div>
               </div>
               <div class="card span-2">
-                <div class="card-title">精细控制</div>
+                <div class="card-title">{{ tr('home.fineControl') }}</div>
                 <div class="stack">
                   <div class="tile">
-                    <div class="tile-label">下载区间</div>
-                    <el-input size="small" v-model="opts.download_section" placeholder="例: 00:01:00-00:02:30" clearable></el-input>
-                    <div class="hint">填写时间段则仅下载该区间，留空下载完整内容（需要 FFmpeg）</div>
+                    <div class="tile-label">{{ tr('home.section') }}</div>
+                    <el-input size="small" v-model="opts.download_section" :placeholder="tr('home.sectionPh')" clearable></el-input>
+                    <div class="hint">{{ tr('home.sectionHint') }}</div>
                   </div>
                   <div class="tile">
-                    <div class="tile-label">指定格式 ID</div>
-                    <el-input size="small" v-model="opts.force_format" placeholder="例: 137+251 或 bv*+ba/b" clearable></el-input>
-                    <div class="hint">不确定可留空。在「信息」页选择某一行下载时会自动填入对应格式 ID</div>
+                    <div class="tile-label">{{ tr('home.forceFmtId') }}</div>
+                    <el-input size="small" v-model="opts.force_format" :placeholder="tr('home.fmtPh')" clearable></el-input>
+                    <div class="hint">{{ tr('home.forceFmtHint') }}</div>
                   </div>
                   <div class="tile">
-                    <div class="tile-label">自定义 yt-dlp 参数</div>
-                    <el-input size="small" v-model="opts.ytdlp_extra_args" placeholder="留空 = 跟随设置；例: --socket-timeout 60 -N 4" clearable></el-input>
-                    <div class="hint">只对本批任务生效，覆盖「设置 → 自定义 yt-dlp 参数」。被拒绝或与界面冲突的项会在加入队列时逐条点名</div>
+                    <div class="tile-label">{{ tr('home.ydlArgs') }}</div>
+                    <el-input size="small" v-model="opts.ytdlp_extra_args" :placeholder="tr('home.ydlPh')" clearable></el-input>
+                    <div class="hint">{{ tr('home.ydlArgsHint') }}</div>
                   </div>
                   <div class="tile">
-                    <div class="tile-label">广告片段（SponsorBlock）</div>
+                    <div class="tile-label">{{ tr('home.sponsorblock') }}</div>
                     <div class="chip-row">
-                      <div class="chip" :class="{ active: opts.sponsorblock === 'off' }" @click="opts.sponsorblock = 'off'">关闭</div>
-                      <div class="chip" :class="{ active: opts.sponsorblock === 'remove' }" @click="opts.sponsorblock = 'remove'">裁剪</div>
-                      <div class="chip" :class="{ active: opts.sponsorblock === 'mark' }" @click="opts.sponsorblock = 'mark'">仅标记</div>
+                      <div class="chip" :class="{ active: opts.sponsorblock === 'off' }" @click="opts.sponsorblock = 'off'">{{ tr('home.sbOff') }}</div>
+                      <div class="chip" :class="{ active: opts.sponsorblock === 'remove' }" @click="opts.sponsorblock = 'remove'">{{ tr('home.sbRemove') }}</div>
+                      <div class="chip" :class="{ active: opts.sponsorblock === 'mark' }" @click="opts.sponsorblock = 'mark'">{{ tr('home.sbMark') }}</div>
                     </div>
                   </div>
                   <div class="tile">
-                    <div class="tile-label">期望校验值（可选）</div>
+                    <div class="tile-label">{{ tr('home.expectHash') }}</div>
                     <el-input size="small" v-model="opts.expect_hash"
-                             placeholder="粘 MD5 / SHA-1 / SHA-256 摘要，留空 = 不核对" clearable></el-input>
+                             :placeholder="tr('home.hashPh')" clearable></el-input>
                     <div class="chip-row" style="margin-top:6px">
-                      <div class="chip" :class="{ active: opts.hash_algo === 'auto' }" @click="opts.hash_algo = 'auto'">算法自动</div>
+                      <div class="chip" :class="{ active: opts.hash_algo === 'auto' }" @click="opts.hash_algo = 'auto'">{{ tr('home.hashAuto') }}</div>
                       <div class="chip" :class="{ active: opts.hash_algo === 'md5' }" @click="opts.hash_algo = 'md5'">MD5</div>
                       <div class="chip" :class="{ active: opts.hash_algo === 'sha1' }" @click="opts.hash_algo = 'sha1'">SHA-1</div>
                       <div class="chip" :class="{ active: opts.hash_algo === 'sha256' }" @click="opts.hash_algo = 'sha256'">SHA-256</div>
                     </div>
-                    <div class="hint">下载完成后对成品算一次摘要与这一串比对：一致就只在运行日志留一句，对不上才在卡片上写一行（提醒，不删文件）。位数能认算法（32=MD5、40=SHA-1、64=SHA-256），点明算法是为了把复制漏字符这种事在入队时就拦下来。可比的是磁力/种子与被识别成 CDN 直链那种<b>原样落盘</b>的成品；解析下载那一路下完还要转封装、嵌封面字幕，成品字节被本机重写过一遍，和发布方给的原文件摘要本来就不同（卡片上那句会说明是哪一种）。</div>
+                    <div class="hint">{{ tr('home.hashHintA') }}<b>{{ tr('home.hashHintBold') }}</b>{{ tr('home.hashHintB') }}</div>
                   </div>
                 </div>
               </div>
@@ -1981,7 +1981,7 @@
 
             <div class="bento">
               <div v-show="opts.embed_sub || opts.write_sub_files" class="card span-4">
-                <div class="card-title">字幕语言（可多选）</div>
+                <div class="card-title">{{ tr('home.subLangs') }}</div>
                 <div class="chip-row">
                   <div
                     v-for="item in subLangOptions"
@@ -1992,20 +1992,20 @@
                   >{{ item.label }}</div>
                 </div>
                 <div class="row row--mt row--tight">
-                  <el-button size="small" @click="selectAllSubLangs">全选</el-button>
-                  <el-button size="small" @click="clearSubLangs">清空</el-button>
-                  <span class="hint hint--block">仅勾选「另存独立字幕文件」时在视频旁生成 .vtt；两者同时勾选则既内嵌一条字幕轨，也另存一份文件</span>
+                  <el-button size="small" @click="selectAllSubLangs">{{ tr('home.selectAll') }}</el-button>
+                  <el-button size="small" @click="clearSubLangs">{{ tr('home.clear') }}</el-button>
+                  <span class="hint hint--block">{{ tr('home.subLangHint') }}</span>
                 </div>
               </div>
               <div class="card" :class="opts.embed_sub || opts.write_sub_files ? 'span-2' : 'span-6'">
-                <div class="card-title">运行状态</div>
+                <div class="card-title">{{ tr('home.runtime') }}</div>
                 <div class="stat-list">
                   <div class="stat-row"><span>FFmpeg</span><b>{{ status.ffmpeg }}</b></div>
                   <div class="stat-row"><span>yt-dlp</span><b>{{ status.ytdlp }}</b></div>
-                  <div class="stat-row"><span>N_m3u8DL</span><b>{{ status.n_m3u8dl || '未安装' }}</b></div>
-                  <div class="stat-row"><span>Whisper</span><b>{{ status.whisper || '未安装' }}</b></div>
-                  <div class="stat-row"><span>进行中</span><b>{{ status.running }}</b></div>
-                  <div v-if="status.disk_free_gb >= 0" class="stat-row"><span>磁盘剩余</span><b>{{ status.disk_free_gb }} GB</b></div>
+                  <div class="stat-row"><span>N_m3u8DL</span><b>{{ status.n_m3u8dl || tr('home.notInstalled') }}</b></div>
+                  <div class="stat-row"><span>Whisper</span><b>{{ status.whisper || tr('home.notInstalled') }}</b></div>
+                  <div class="stat-row"><span>{{ tr('home.runningLabel') }}</span><b>{{ status.running }}</b></div>
+                  <div v-if="status.disk_free_gb >= 0" class="stat-row"><span>{{ tr('home.diskFree') }}</span><b>{{ status.disk_free_gb }} GB</b></div>
                   <div v-if="status.cookie_source && status.cookie_source !== 'none'" class="stat-row"><span>Cookie</span><b>{{ status.cookie_source }}</b></div>
                 </div>
               </div>
@@ -2962,7 +2962,7 @@
                 class="log-line"
                 :class="'log-' + e.level"
               >
-                [{{ e.time }}] [{{ e.level.toUpperCase() }}] {{ e.message }}
+                [{{ e.time }}] [{{ e.level.toUpperCase() }}] {{ logText(e) }}
               </div>
             </div>
           </div>
@@ -6025,42 +6025,43 @@
         const videoQualities = ['best', '4K', '1440p', '1080p', '720p', '480p', '360p'];
         const audioQualities = ['best', '320k', '256k', '192k', '128k'];
         const formats = ['mkv', 'mp4', 'webm', 'mp3', 'm4a', 'flac'];
-        const codecOptions = [
-          { label: '自动', value: 'auto' },
+        const codecOptions = computed(() => [   // 按语言现算：写死一次的话切语言时钮上的字不动
+          { label: tr('opt.auto'), value: 'auto' },
           { label: 'H.264', value: 'avc' },
           { label: 'VP9', value: 'vp9' },
           { label: 'AV1', value: 'av1' },
-        ];
+        ]);
         const selectedIds = ref([]);
         const selectAll = ref(false);
         const queuePaused = ref(false);
         const taskSort = ref('queue');
 
         // 字幕多选：任意组合，不限定双语
-        const subLangOptions = [
-          { label: '简体中文 (zh-Hans)', value: 'zh-Hans' },
-          { label: '简体中文 (zh-CN)', value: 'zh-CN' },
-          { label: '中文 (zh)', value: 'zh' },
-          { label: '繁体中文 (zh-Hant)', value: 'zh-Hant' },
-          { label: '繁体中文 (zh-TW)', value: 'zh-TW' },
-          { label: '英语 (en)', value: 'en' },
-          { label: '日语 (ja)', value: 'ja' },
-          { label: '韩语 (ko)', value: 'ko' },
-          { label: '法语 (fr)', value: 'fr' },
-          { label: '德语 (de)', value: 'de' },
-          { label: '西班牙语 (es)', value: 'es' },
-          { label: '俄语 (ru)', value: 'ru' },
-          { label: '葡萄牙语 (pt)', value: 'pt' },
-          { label: '意大利语 (it)', value: 'it' },
-          { label: '越南语 (vi)', value: 'vi' },
-          { label: '泰语 (th)', value: 'th' },
-          { label: '印尼语 (id)', value: 'id' },
-          { label: '阿拉伯语 (ar)', value: 'ar' },
-          { label: '印地语 (hi)', value: 'hi' },
-        ];
+        // 语言名走词表（lang.<code>），括号里的代码原样留着：切英文界面时这一串跟着变
+        const subLangOptions = computed(() => [
+          { label: tr('lang.zh-Hans') + ' (zh-Hans)', value: 'zh-Hans' },
+          { label: tr('lang.zh-CN') + ' (zh-CN)', value: 'zh-CN' },
+          { label: tr('lang.zh') + ' (zh)', value: 'zh' },
+          { label: tr('lang.zh-Hant') + ' (zh-Hant)', value: 'zh-Hant' },
+          { label: tr('lang.zh-TW') + ' (zh-TW)', value: 'zh-TW' },
+          { label: tr('lang.en') + ' (en)', value: 'en' },
+          { label: tr('lang.ja') + ' (ja)', value: 'ja' },
+          { label: tr('lang.ko') + ' (ko)', value: 'ko' },
+          { label: tr('lang.fr') + ' (fr)', value: 'fr' },
+          { label: tr('lang.de') + ' (de)', value: 'de' },
+          { label: tr('lang.es') + ' (es)', value: 'es' },
+          { label: tr('lang.ru') + ' (ru)', value: 'ru' },
+          { label: tr('lang.pt') + ' (pt)', value: 'pt' },
+          { label: tr('lang.it') + ' (it)', value: 'it' },
+          { label: tr('lang.vi') + ' (vi)', value: 'vi' },
+          { label: tr('lang.th') + ' (th)', value: 'th' },
+          { label: tr('lang.id') + ' (id)', value: 'id' },
+          { label: tr('lang.ar') + ' (ar)', value: 'ar' },
+          { label: tr('lang.hi') + ' (hi)', value: 'hi' },
+        ]);
         const subLangList = ref(['zh-Hans', 'zh-CN', 'zh', 'zh-Hant', 'zh-TW']);
         function selectAllSubLangs() {
-          subLangList.value = subLangOptions.map(i => i.value);
+          subLangList.value = subLangOptions.value.map(i => i.value);
         }
         function clearSubLangs() {
           subLangList.value = [];
@@ -6923,16 +6924,27 @@
         /* ---- 操作留痕：用户在界面上点了什么，日志页要能看到一条人话记录 ---- */
         const UI_EVENT_PATH = '/api/ui_event';
         const SENSITIVE_RE = /token|secret|password|cookie|api_hash|sendkey/i;
-        function logAction(text, level) {
+        /* 第一个参数既可以是那句话本身，也可以是词表里的键（ui.lang_en 这种）。
+           给的是键时：落盘的 message 仍按 zh 拼出来（与改前那句一字不差），同时带上 k/kv，
+           英文界面在日志页按 k 现拼一句显示 —— 日志文件本身不因语言而变。 */
+        function logAction(textOrKey, level, kv) {
           try {
-            const t = String(text || '').replace(/[\r\n]+/g, ' ').trim();
+            const hasK = !!(window.MD_I18N && MD_I18N.has(textOrKey));
+            const params = hasK && kv && typeof kv === 'object' ? kv : null;
+            const zh = hasK ? MD_I18N.t(textOrKey, params, 'zh') : String(textOrKey || '');
+            const t = String(zh).replace(/[\r\n]+/g, ' ').trim();
             if (!t) return;
+            // 藏原文就得连键一起藏：只藏 message 的话，英文界面会照 kv 把那句话再拼出来
+            const leaky = [t, hasK ? MD_I18N.t(textOrKey, params, 'en') : '', ...Object.values(params || {})]
+              .some((s) => SENSITIVE_RE.test(String(s)));
             fetch(UI_EVENT_PATH, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
-                text: SENSITIVE_RE.test(t) ? '[已隐藏敏感参数]' : t,
+                text: leaky ? '[已隐藏敏感参数]' : t,
                 level: level === 'warning' ? 'warning' : 'info',
+                k: leaky ? '' : (hasK ? String(textOrKey) : ''),
+                kv: leaky ? null : params,
               }),
             }).catch(() => {});
           } catch (_) {}
@@ -7622,7 +7634,7 @@
             opts.value.audio_only = !!data.audio_only;
             const raw = data.subtitle_langs || 'zh-Hans,zh-CN,zh,zh-Hant,zh-TW';
             opts.value.subtitle_langs = raw;
-            const known = new Set(subLangOptions.map(i => i.value));
+            const known = new Set(subLangOptions.value.map(i => i.value));
             subLangList.value = raw.split(',').map(s => s.trim()).filter(s => s && known.has(s));
             if (!subLangList.value.length) {
               subLangList.value = ['zh-Hans', 'zh-CN', 'zh', 'zh-Hant', 'zh-TW'];
@@ -7805,7 +7817,8 @@
           logAction('切换主题为「' + ((t && t.name) || name) + '」');
         }
         /* 界面语言：钮上的三个选项来自 i18n.js 的 langs（同一份数据，免得这里再抄一遍名字）。
-           切换只改界面文字；后端返回的报错正文、运行日志、订阅规则摘要仍是中文，那是落盘的记录。 */
+           切语言改的是界面文字；后端返回的报错正文仍是中文，运行日志按条目分：带消息键的跟着切，
+           没带键的、以及切语言之前已经落盘的那些，显示的是当时写下的原话。 */
         const UI_LANGS = (window.MD_I18N && window.MD_I18N.langs) || [{ key: 'auto', label: 'AUTO', name: { zh: '自动', en: 'Auto' } }];
         const epLocale = computed(() => (window.MD_I18N ? window.MD_I18N.elementLocale(uiLang.value) : window.ElementPlusLocaleZhCn));
         function applyLang(pref) {
@@ -7816,8 +7829,9 @@
           const pref = UI_LANGS.some(x => x.key === key) ? key : 'auto';
           settings.value.ui_language = pref;
           applyLang(pref);
-          const l = UI_LANGS.find(x => x.key === pref);
-          logAction('切换界面语言为「' + ((l && l.name.zh) || pref) + '」');
+          logAction('ui.lang_' + pref);
+          // 停在日志页时切语言：列表里的行会跟着重拼，但搜索是在取回那一步按当时语言筛的，重新取一次
+          if (page.value === 'log') loadLogs();
         }
         async function openDownloadFolder() {
           try {
@@ -10926,10 +10940,8 @@
 
         function applySseLogs(items) {
           if (page.value !== 'log') return;
-          const lv = logLevel.value, kw = (logSearch.value || '').toLowerCase();
-          const keep = (items || []).filter(
-            (e) => (lv === 'all' || !lv || e.level === lv) && (!kw || String(e.message || '').toLowerCase().includes(kw))
-          );
+          const lv = logLevel.value, kw = logSearch.value;
+          const keep = (items || []).filter((e) => logMatches(e, lv, kw));
           if (keep.length) logs.value = logs.value.concat(keep).slice(-200);
         }
 
@@ -10977,11 +10989,34 @@
           } catch (_) {}
         }
 
+        /* 一条日志显示成什么：中文界面永远是后端落盘的那句原话；英文界面只有当条目带消息键、
+           且这个词在词表里时才现拼一句，其余（旧条目、没收录的、后端没带键写的）仍显示原话。
+           搜索也按这句匹配，不然英文界面下搜「component」会落到中文原话上，一条也搜不到。 */
+        function logText(e) {
+          const msg = String((e && e.message) || '');
+          if (!e || !e.k || uiLang.value !== 'en') return msg;
+          if (!window.MD_I18N || !MD_I18N.has(e.k)) return msg;
+          return String(MD_I18N.t(e.k, e.kv || null, 'en'));
+        }
+        function logMatches(e, level, kw) {
+          if (level && level !== 'all' && e.level !== level) return false;
+          if (!kw) return true;
+          const k = String(kw).toLowerCase();
+          return String(e.message || '').toLowerCase().includes(k) || logText(e).toLowerCase().includes(k);
+        }
+
         async function loadLogs() {
           try {
-            const params = new URLSearchParams({ level: logLevel.value, search: logSearch.value });
+            const params = new URLSearchParams({
+              level: logLevel.value,
+              // 英文界面下这句可能拼成别的字，服务端按落盘原文匹配会漏，改成拿渲染结果在本地筛
+              search: uiLang.value === 'en' ? '' : logSearch.value,
+            });
             const data = await api('/api/logs?' + params);
-            logs.value = data.logs || [];
+            const raw = data.logs || [];
+            logs.value = uiLang.value === 'en' && logSearch.value
+              ? raw.filter((e) => logMatches(e, logLevel.value, logSearch.value))
+              : raw;
             logLoc.value = { dir: data.dir || '', file: data.file || 'app.log',
                              archives: data.archives || [] };
           } catch (_) {}
@@ -11020,7 +11055,7 @@
             opts.value.embed_thumb = true;
             opts.value.write_info_json = true;
           }
-          ElementPlus.ElMessage.success('已应用预设');
+          ElementPlus.ElMessage.success(tr('home.tPresetApplied'));
         }
 
         // 粘贴板里常见「一行挤好几个链接」或夹着中文说明，所以直接抓 http(s) 子串，不按行切
@@ -11057,7 +11092,7 @@
             const text = await navigator.clipboard.readText();
             if (text) urlText.value = (urlText.value ? urlText.value + '\n' : '') + text.trim();
           } catch {
-            ElementPlus.ElMessage.warning('无法读取剪贴板，请手动粘贴');
+            ElementPlus.ElMessage.warning(tr('home.tReadClipboard'));
           }
         }
 
@@ -11084,7 +11119,7 @@
           urlText.value = (urlText.value ? urlText.value.replace(/\s+$/, '') + '\n' : '') + link;
           clipPending.value = null;
           api('/api/clipboard/clear', { method: 'POST', body: '{}' }).catch(() => {});
-          ElementPlus.ElMessage.info('已填进链接框：要不要解析、要不要下载，还是你按');
+          ElementPlus.ElMessage.info(tr('home.tClipFilled'));
         }
         function clipIgnore() {
           clipPending.value = null;
@@ -11745,11 +11780,11 @@
         async function startDownload() {
           const { urls, dup } = extractUrls(urlText.value);
           if (!urls.length) {
-            ElementPlus.ElMessage.warning('请输入至少一个有效 URL');
+            ElementPlus.ElMessage.warning(tr('home.tUrlRequired'));
             return;
           }
           if ((opts.value.embed_sub || opts.value.write_sub_files) && !subLangList.value.length) {
-            ElementPlus.ElMessage.warning('请至少选择一种字幕语言，或取消勾选「嵌入字幕 / 写出外挂字幕文件」');
+            ElementPlus.ElMessage.warning(tr('home.tNoSubLang'));
             return;
           }
           syncSubLangsToOpts();
@@ -11762,14 +11797,18 @@
             urlText.value = '';
             const merged = dup + (r && r.merged ? r.merged : 0);
             ElementPlus.ElMessage.success(
-              `已加入 ${r && r.added != null ? r.added : (r.ids || []).length} 个任务`
-              + (merged ? ` · 已合并 ${merged} 条重复` : '')
-              + (r && r.skipped ? ` · ${r.skipped} 条链接无效被忽略` : '')
+              tr('home.tAdded', { n: r && r.added != null ? r.added : (r.ids || []).length })
+              + (merged ? ' · ' + tr('home.tMerged', { n: merged }) : '')
+              + (r && r.skipped ? ' · ' + tr('home.tSkippedInvalid', { n: r.skipped }) : '')
             );
             const argNotes = (r && r.arg_notes) || [];
             if (argNotes.length) {
-              ElementPlus.ElMessage.warning('「自定义 yt-dlp 参数」有 ' + argNotes.length + ' 项没生效：'
-                + argNotes.slice(0, 3).join('；') + (argNotes.length > 3 ? ' 等' : ''));
+              // 后面那一串是后端逐条点名的原话（这一批不翻），拼接顺序与改前一致
+              ElementPlus.ElMessage.warning(tr('home.tArgsNotApplied', {
+                n: argNotes.length,
+                list: argNotes.slice(0, 3).join(tr('home.tListSep'))
+                  + (argNotes.length > 3 ? ' ' + tr('home.tEtc') : ''),
+              }));
             }
             page.value = 'queue';
             await loadTasks();
@@ -11782,7 +11821,7 @@
 
         async function stopAll() {
           await api('/api/stop', { method: 'POST' });
-          ElementPlus.ElMessage.info('已停止');
+          ElementPlus.ElMessage.info(tr('home.tStopped'));
           await loadTasks();
         }
 
@@ -11859,12 +11898,13 @@
             const text = String(reader.result || '');
             const { urls: lines, dup } = extractUrls(text);
             if (!lines.length) {
-              ElementPlus.ElMessage.warning('文件中未找到有效链接');
+              ElementPlus.ElMessage.warning(tr('home.tNoLinksInFile'));
               return;
             }
             const cur = urlText.value.trim();
             urlText.value = cur ? (cur + '\n' + lines.join('\n')) : lines.join('\n');
-            ElementPlus.ElMessage.success(`已导入 ${lines.length} 条链接` + (dup ? ` · 跳过 ${dup} 条重复` : ''));
+            ElementPlus.ElMessage.success(tr('home.tImported', { n: lines.length })
+              + (dup ? ' · ' + tr('home.tImportDup', { n: dup }) : ''));
           };
           reader.readAsText(f);
           ev.target.value = '';
@@ -12013,7 +12053,7 @@
           try {
             const data = await api('/api/browse', {
               method: 'POST',
-              body: JSON.stringify({ mode, title: mode === 'file' ? '选择文件' : '选择文件夹' }),
+              body: JSON.stringify({ mode, title: mode === 'file' ? tr('home.tBrowseFile') : tr('home.tBrowseDir') }),
             });
             if (data.path) {
               const [root, key] = target.split('.');
@@ -12021,7 +12061,7 @@
               else if (root === 'settings') settings.value[key] = data.path;
             }
           } catch (e) {
-            ElementPlus.ElMessage.error('浏览失败: ' + e.message);
+            ElementPlus.ElMessage.error(tr('home.tBrowseFailed', { msg: e.message }));
           }
         }
 
@@ -12030,7 +12070,7 @@
 
         async function doAnalyze(url) {
           if (!url || !url.startsWith('http')) {
-            ElementPlus.ElMessage.warning('请输入有效 URL');
+            ElementPlus.ElMessage.warning(tr('home.tValidUrlNeeded'));
             return;
           }
           analyzing.value = true;
@@ -12046,9 +12086,9 @@
             selectedQuality.value = '';
             entryRange.value = { from: 1, to: (mediaInfo.value.entries || []).length || 1 };
             page.value = 'info';
-            ElementPlus.ElMessage.success('解析完成');
+            ElementPlus.ElMessage.success(tr('home.tParseDone'));
           } catch (e) {
-            ElementPlus.ElMessage.error('解析失败: ' + e.message);
+            ElementPlus.ElMessage.error(tr('home.tParseFailed', { msg: e.message }));
           } finally {
             analyzing.value = false;
           }
@@ -12057,12 +12097,12 @@
         async function analyze() {
           const { urls } = extractUrls(urlText.value);
           if (!urls.length) {
-            ElementPlus.ElMessage.warning('请先在上方输入 URL');
+            ElementPlus.ElMessage.warning(tr('home.tTypeUrlFirst'));
             return;
           }
           const web = urls.find(u => /^https?:/i.test(u));
           if (!web) {
-            ElementPlus.ElMessage.info('磁力链接与种子不需要解析，直接点「开始下载」即可');
+            ElementPlus.ElMessage.info(tr('home.tMagnetNoParse'));
             return;
           }
           await doAnalyze(web);
@@ -12078,7 +12118,7 @@
             const v = cleanPasted(text, 'url');
             if (v) analyzeUrl.value = v;
           } catch (_) {
-            ElementPlus.ElMessage.warning('无法读取剪贴板');
+            ElementPlus.ElMessage.warning(tr('home.tReadClipboardShort'));
           }
         }
 
@@ -12106,7 +12146,7 @@
             opts.value.format = f.ext;
           }
           urlText.value = mediaInfo.value.webpage_url;
-          ElementPlus.ElMessage.success(`将使用格式 ${fmt}`);
+          ElementPlus.ElMessage.success(tr('home.tUseFormat', { fmt }));
           page.value = 'home';
           await startDownload();
           // 用完清空，避免影响后续普通下载
@@ -12129,7 +12169,8 @@
           // 一旦指定了码率上限，改走后端 _resolve_format 的表达式，它才认 abr 过滤（仅音频同理）
           opts.value.force_format = audioQ === 'best' ? (qp.format_expr || qp.format_id || 'bv*+ba/b') : '';
           urlText.value = mediaInfo.value.webpage_url;
-          ElementPlus.ElMessage.success('已选择：' + (qp.label || '') + (audioQ === 'best' ? '' : ' · 音频 ' + audioQ));
+          ElementPlus.ElMessage.success(tr('home.tChosen', { label: qp.label || '' })
+            + (audioQ === 'best' ? '' : ' · ' + tr('home.tChosenAudio', { q: audioQ })));
           page.value = 'home';
           await startDownload();
           opts.value.force_format = '';
@@ -13312,7 +13353,7 @@ const CFG_LABELS = {
           auth, authGate, authForm, authBusy, authTokenShown,
           loadAuthStatus, doLogin, saveAuthKnobs, applyAuthPassword,
           copyMachineToken, rotateMachineToken, unlockIp, unlockAll,
-          loadHistory, loadLogs, clearHistory, clearLogs, openLogDir, exportDiagnostics, logLoc, saveSettings, saveAcoustid,
+          loadHistory, loadLogs, logText, clearHistory, clearLogs, openLogDir, exportDiagnostics, logLoc, saveSettings, saveAcoustid,
           autoSaveNote, cfgDefs, defRows, defBrief, defBusy, cfgLabel, loadConfigDefaults, resetKeys, resetAllDefaults,
           mirrorOpts, mirrorProbing, mirrorLabel, mirrorHint, probeMirrors,
           netInfo, netBusy, loadNetInfo, netVerdictText, netOverrideValue, setProxyOverride,

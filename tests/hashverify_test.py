@@ -24,6 +24,8 @@ import server as S  # noqa: E402
 
 SRC = Path(S.__file__).read_text(encoding="utf-8")
 HTML = (APP / "static" / "index.html").read_text(encoding="utf-8")
+# 界面文字的唯一真源搬到了词表（#53 多语言）：这两条原本在模板里写死，现在在 i18n.js 的 zh 那一份里
+I18N_ZH = (APP / "static" / "i18n.js").read_text(encoding="utf-8").split("\n    en: {")[0]
 FAILED = []
 TOTAL = 0
 TMP = Path(tempfile.mkdtemp(prefix="md_hashverify_"))
@@ -302,11 +304,12 @@ ck("G4 四个入队口都靠 ...opts.value 带出去（少一个就是那条路�
 ck("G5 一致时给一句悬浮提示，不亮橙色的行", "t.hash_state === 'ok'" in HTML and "校验值一致" in HTML)
 ck("G6 unknown 也在悬浮里说清（不是「对上了」也不是「没核对」）", "hash_state === 'unknown'" in HTML)
 ck("G7 输入框的提示文案把「原样落盘才可比」这条界线写在界面上，不只写在文档里",
-   "原样落盘" in HTML and "留空 = 不核对" in HTML)
+   "原样落盘" in I18N_ZH and "留空 = 不核对" in I18N_ZH
+   and "{{ tr('home.hashHintA') }}" in HTML and "tr('home.hashPh')" in HTML)
 ck("G8 算法档位只给能选的四家（sha512 走「算法自动」按长度认）",
    all(("opts.hash_algo === '" + a + "'") in HTML for a in ("auto", "md5", "sha1", "sha256")))
 ck("G9 界面那句把话说成有条件的（直链原样落盘可比，解析下载才谈重写），不是一刀切",
-   "可比的是磁力/种子与被识别成 CDN 直链" in HTML and "（卡片上那句会说明是哪一种）" in HTML)
+   "可比的是磁力/种子与被识别成 CDN 直链" in I18N_ZH and "（卡片上那句会说明是哪一种）" in I18N_ZH)
 
 print(f"\nTOTAL {TOTAL} FAILED: {', '.join(FAILED) if FAILED else 'none'}")
 sys.exit(1 if FAILED else 0)

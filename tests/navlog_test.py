@@ -43,7 +43,7 @@ class FakeLog:
     def __init__(self):
         self.rows = []
 
-    def log(self, msg, level="info"):
+    def log(self, msg, level="info", k="", kv=None):   # k/kv 是 #53 给日志加的可选消息键，这里不收
         self.rows.append((level, str(msg)))
 
     def texts(self):
@@ -151,7 +151,9 @@ ck("B8 埋点只认非 GET", "String(init.method || 'GET').toUpperCase() !== 'GE
 ck("B9 /api/ui_event 自己不再进埋点（否则无限递归）",
    "String(path).indexOf(UI_EVENT_PATH) !== 0" in HTML)
 ck("B10 轮询用的写接口可以点名不记", "const noLog = options.noLog === true;" in HTML)
-ck("B11 发出去之前仍过一遍敏感词", "SENSITIVE_RE.test(t) ? '[已隐藏敏感参数]'" in HTML)
+ck("B11 发出去之前仍过一遍敏感词（#53 之后过的是 zh、en 与 kv 三份，藏起来时键也一起藏）",
+   ".some((s) => SENSITIVE_RE.test(String(s)))" in HTML
+   and "text: leaky ? '[已隐藏敏感参数]' : t," in HTML)
 
 # 这三条是这次留下的界线：由外部触发的一次性动作，不是「翻页面」
 ck("B12 点系统通知跳过来仍记一行", "logAction('通知跳转：'" in HTML)

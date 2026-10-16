@@ -52,7 +52,8 @@ def ck(name, cond, extra=""):
 
 
 def quiet_log():
-    S.log_mgr.log = lambda m, level="info": LOGS.append((str(m), level))
+    # k/kv 是 #53 给 LogManager.log 加的可选消息键，替身得跟着收
+    S.log_mgr.log = lambda m, level="info", k="", kv=None: LOGS.append((str(m), level))
 
 
 def notify_capture(kind, title, text):

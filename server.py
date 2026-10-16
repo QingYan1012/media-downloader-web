@@ -4152,7 +4152,12 @@ class LogManager:
             pass
         self._day = today
 
-    def log(self, message: str, level: str = "info"):
+    def log(self, message: str, level: str = "info", k: str = "", kv: dict | None = None):
+        """message 永远是人读得下去的那句话（中文），落盘、进 SSE、被自检断言的都是它。
+
+        k/kv 是可选的一组「键 + 参数」：英文界面按它现拼一句，没带键的条目和旧条目一律显示 message。
+        这样「界面切英文」不会去改动已经落盘的记录，也不改任何一句中文原话。
+        """
         with self._lock:
             self._seq += 1
             entry = {
@@ -4161,6 +4166,9 @@ class LogManager:
                 "level": level,
                 "message": message,
             }
+            if k:
+                entry["k"] = k
+                entry["kv"] = dict(kv or {})
             self.entries.append(entry)
             if len(self.entries) > self.max_entries:
                 self.entries = self.entries[-self.max_entries :]
@@ -14012,7 +14020,7 @@ def _apply_config(data: dict, request: Request = None) -> dict:
     if any(k in data for k in COOKIE_LAYER_KEYS):
         drop_all_cookie_prefs()
     # 只记变更项数量：配置值里有 Bot Token / Secret / Cookie 等敏感内容，一律不落日志
-    log_mgr.log(f"[界面] 保存设置（{len(data)} 项变更）")
+    log_mgr.log(f"[界面] 保存设置（{len(data)} 项变更）", k="log.settings_saved", kv={"n": len(data)})
     if "run_window" in data or "queue_windows" in data:
         # 改完窗立刻重新泵一次：刚被定时窗压住的排队任务该马上放出去，不该等下一条事件
         queue._pump()
@@ -15495,6 +15503,29 @@ def api_logs_clear():
 class UiEventBody(BaseModel):
     text: str = ""
     level: str = "info"
+    k: str = ""
+    kv: dict | None = None
+
+
+_LOG_KEY_RE = re.compile(r"^[a-z][a-z0-9]*(?:\.[a-z0-9_]+){1,4}$")
+
+
+def _clean_log_kv(kv: object) -> dict:
+    """埋点参数是浏览器发来的，进日志前先收口：只留少量标量，字符串截断。
+    八条的上限数的是「收下来的」，不是「交来的」——否则乱键白占名额，正经参数反被挤掉。"""
+    if not isinstance(kv, dict):
+        return {}
+    out: dict = {}
+    for key, val in kv.items():
+        if len(out) >= 8:
+            break
+        if not isinstance(key, str) or not re.fullmatch(r"[a-zA-Z][\w]{0,20}", key):
+            continue
+        if isinstance(val, bool) or isinstance(val, (int, float)):
+            out[key] = val
+        elif isinstance(val, str):
+            out[key] = " ".join(val.split())[:80]
+    return out
 
 
 @app.post("/api/ui_event")
@@ -15504,7 +15535,10 @@ def api_ui_event(body: UiEventBody):
     if not text:
         return {"ok": False}
     level = body.level if body.level in ("info", "warning") else "info"
-    log_mgr.log(f"[界面] {text}", level)
+    k = str(body.k or "")[:80]
+    if k and not _LOG_KEY_RE.fullmatch(k):
+        k = ""    # 键形不对就丢掉，只留那句人话，别把任意字符串塞成「键」
+    log_mgr.log(f"[界面] {text}", level, k=k, kv=_clean_log_kv(body.kv) if k else None)
     return {"ok": True, "level": level}
 
 

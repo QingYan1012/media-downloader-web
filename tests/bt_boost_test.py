@@ -41,7 +41,7 @@ class FakeLog:
     def __init__(self):
         self.rows = []
 
-    def log(self, msg, level="info"):
+    def log(self, msg, level="info", k="", kv=None):   # k/kv 是 #53 给日志加的可选消息键，这里不收
         self.rows.append((level, str(msg)))
         return True
 
