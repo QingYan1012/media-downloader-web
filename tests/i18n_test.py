@@ -374,7 +374,7 @@ def strip_comments(src: str) -> str:
     return re.sub(r"<!--.*?-->", "", src, flags=re.S)
 
 
-PAGES_DONE = ["home", "queue", "bt", "files"]   # ← 每翻完一页把页名加进来；登记了却没翻干净会被 I3 判红
+PAGES_DONE = ["home", "queue", "bt", "files", "subs"]   # ← 每翻完一页把页名加进来；登记了却没翻干净会被 I3 判红
 ck("I2 PAGES_DONE 都是真有的页", all(page_block(k) for k in PAGES_DONE),
    str([k for k in PAGES_DONE if not page_block(k)]))
 for _pg in PAGES_DONE:
@@ -410,6 +410,13 @@ PAGE_HANDLERS = {
               "openSrtEditor", "qcDropNoise", "rerunStage", "runBatchAi",
               "runSrtCalibrateSelected", "runSrtQc", "runSrtRewrap", "srtCloseEdit",
               "srtDiscard", "srtSave", "startBurn", "stopBurn", "zipPath"],
+    # 订阅页：一张表 + 规则 / 回填 / 同步计划预览三张卡。subStatus 也登记（那一列的四个状态词
+    # 是脚本里给的）。两个 one-liner（closeSubBackfill / closeSubRules）没登记：
+    # js_fn() 是从下一行开始找到第一个单独成行的 }，一行的函数会把后面整个函数体一起抠进来，
+    # 登记它俩等于把 runSubBackfill / saveSubRules 数第二遍。
+    "subs": ["addSub", "removeSub", "toggleSub", "setSubAuto", "scanOneSub", "openSubBackfill",
+             "runSubBackfill", "scanAllSubs", "openSubPlan", "closeSubPlan", "loadSubPlan",
+             "runSubPlanNow", "clearSubArchive", "openSubRules", "saveSubRules", "subStatus"],
 }
 # 允许留中文的处理器：这些行比的是后端发来的数据（预设名、占位标题），翻成英文这行判断就失效。
 # 「允许留下」不等于「不用管」——残留的行数和那几句都钉死，改了名字或悄悄多出一行都判红
@@ -442,7 +449,14 @@ ck("I5b 每个允许留中文的处理器都登记在某一页里（漏登记就
 # 埋点那一句（uiName / logAction 的动作名）是发给后端进运行日志的记录，排在 ACTION_NAMES 那一批再收。
 # I5 不算它，但每一页有几条要钉住：悄悄多出一条埋点，或者那一批改完忘了删这里的名额，都会判红
 MAIDIAN = re.compile(r"""uiName: '|logAction\('|logSort\('""")
-MAIDIAN_EXPECT = {"home": 0, "queue": 0, "bt": 7, "files": 4}
+MAIDIAN_EXPECT = {"home": 0, "queue": 0, "bt": 7, "files": 4, "subs": 0}
+# 来源类型那一列的名字与提示：键不是写在 tr(' …') 里而是存在表里（labelKey / hintKey），
+# 上面那遍字面扫抓不到它们，所以单独比一遍 —— 少哪一份英文界面就印键名
+kind_meta = block(HTML, "const SUB_KIND_META = {", "};")
+kind_keys = re.findall(r"(?:labelKey|hintKey): '([^']*)'", kind_meta)
+ck("I9 来源类型表里的键两份词表都有，且四类来源的提示一个都没漏",
+   len(kind_keys) >= 6 and not [k for k in kind_keys if k not in DICT["zh"] or k not in DICT["en"]],
+   f"{len(kind_keys)} 个键，缺：{[k for k in kind_keys if k not in DICT['zh'] or k not in DICT['en']]}")
 for _pg, _fns in PAGE_HANDLERS.items():
     _md = 0
     for _fn in _fns:

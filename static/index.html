@@ -3524,45 +3524,45 @@
           <div v-show="page === 'subs'">
             <div class="bento">
               <div class="card span-4">
-                <div class="card-title">添加订阅（每行一个，支持整段粘贴：频道 / 播放列表 / UP 主主页 / Telegram 频道 / RSS 源 / 音乐歌单）</div>
+                <div class="card-title">{{ tr('subs.addTitle') }}</div>
                 <el-input v-model="subUrl" type="textarea" :autosize="{ minRows: 2, maxRows: 10 }"
-                          placeholder="https://www.youtube.com/@某频道 或 播放列表链接&#10;Telegram 频道：@名字 / t.me/s/名字 / t.me/c/内部id&#10;RSS 源：https://example.com/feed.xml&#10;音乐歌单：网易云 / QQ 音乐 / 酷狗 / Spotify 的歌单链接"></el-input>
+                          :placeholder="tr('subs.addPh')"></el-input>
                 <div class="row row--mt row--tight">
                   <el-tag size="small" :type="subKindInfo(subFirst).tagType">{{ subKindInfo(subFirst).label }}</el-tag>
-                  <span v-if="subAddCount > 1" class="hstat">本次 {{ subAddCount }} 条</span>
+                  <span v-if="subAddCount > 1" class="hstat">{{ tr('subs.addCount', { n: subAddCount }) }}</span>
                   <span class="hint" style="margin:0">{{ subKindInfo(subFirst).hint }}</span>
                 </div>
                 <div v-if="subIsTg" class="row row--mt">
-                  <span class="hint">读取方式</span>
-                  <el-select v-model="subMode" size="small" style="width:170px">
-                    <el-option label="自动（公开频道匿名读取）" value=""></el-option>
-                    <el-option label="使用账号会话" value="mt"></el-option>
+                  <span class="hint">{{ tr('subs.readMode') }}</span>
+                  <el-select v-model="subMode" size="small" style="width:236px">
+                    <el-option :label="tr('subs.modeAuto')" value=""></el-option>
+                    <el-option :label="tr('subs.modeMt')" value="mt"></el-option>
                   </el-select>
-                  <span class="hint">公开频道的文件 / 音频帖，匿名页仅提供文件名，需选「使用账号会话」才能下载；私有频道同样只能通过会话读取。</span>
+                  <span class="hint">{{ tr('subs.tgModeHint') }}</span>
                 </div>
                 <div class="row row--mt">
                   <el-button size="large" type="primary" :loading="subAdding" @click="addSub">
-                    <svg class="btn-ico"><use href="#i-plus"></use></svg>{{ subAdding ? '添加中…' : '添加订阅' }}
+                    <svg class="btn-ico"><use href="#i-plus"></use></svg>{{ subAdding ? tr('subs.adding') : tr('subs.btnAdd') }}
                   </el-button>
-                  <el-button size="large" plain @click="subUrl = ''">清空</el-button>
+                  <el-button size="large" plain @click="subUrl = ''">{{ tr('common.clear') }}</el-button>
                 </div>
               </div>
               <div class="card span-2">
-                <div class="card-title">追新与扫描</div>
+                <div class="card-title">{{ tr('subs.scanTitle') }}</div>
                 <div class="stack stack--tight">
                   <el-button size="large" :loading="subScanning" @click="scanAllSubs">
-                    {{ subScanning ? '扫描中…' : '立即扫描全部' }}
+                    {{ subScanning ? tr('subs.scanning') : tr('subs.btnScanAll') }}
                   </el-button>
-                  <el-checkbox v-model="subAutoAdd" size="small">新条目自动下载</el-checkbox>
+                  <el-checkbox v-model="subAutoAdd" size="small">{{ tr('subs.autoAdd') }}</el-checkbox>
                   <div class="chip-row">
-                    <span class="hstat">共 {{ subs.length }} 个</span>
-                    <span class="hstat">已启用 {{ subs.filter(s => s.enabled).length }}</span>
-                    <span v-if="subNewTotal" class="hstat hstat--live" title="历史累计检测到的新条目数，不随下载清零">累计新增 {{ subNewTotal }}</span>
-                    <span v-if="subs.filter(s => s.last_error).length" class="hstat" style="color:var(--bad);border-color:var(--bad)">读取失败 {{ subs.filter(s => s.last_error).length }}</span>
+                    <span class="hstat">{{ tr('subs.countTotal', { n: subs.length }) }}</span>
+                    <span class="hstat">{{ tr('subs.countEnabled', { n: subs.filter(s => s.enabled).length }) }}</span>
+                    <span v-if="subNewTotal" class="hstat hstat--live" :title="tr('subs.newTotalTip')">{{ tr('subs.newTotal', { n: subNewTotal }) }}</span>
+                    <span v-if="subs.filter(s => s.last_error).length" class="hstat" style="color:var(--bad);border-color:var(--bad)">{{ tr('subs.readFailCount', { n: subs.filter(s => s.last_error).length }) }}</span>
                   </div>
                   <p class="hint hint--block">
-                    添加时仅记录已有条目、不下载任何内容；之后每轮仅处理<strong>最新未读</strong>（本地游标，已处理过的不再下载）。
-                    如需补下某段历史，请使用列表中的「按日期回填」。支持导出/导入备份。
+                    {{ tr('subs.addHintA') }}<strong>{{ tr('subs.addHintStrong') }}</strong>{{ tr('subs.addHintB') }}
+                    {{ tr('subs.backfillPointer') }}
                   </p>
                 </div>
               </div>
@@ -3570,23 +3570,23 @@
             <div class="bento">
               <div class="card span-6">
                 <div class="card-title row row--spread">
-                  <span>订阅源</span>
-                  <span class="hint" style="margin:0">每行「规则」里的设置只影响之后新出现的条目</span>
+                  <span>{{ tr('subs.feedTitle') }}</span>
+                  <span class="hint" style="margin:0">{{ tr('subs.rulesNote') }}</span>
                 </div>
-                <div v-if="!subs.length" class="empty-tip">暂无订阅 — 请在上方粘贴频道链接、Telegram 频道名、RSS 源地址或音乐歌单链接后开始追踪</div>
+                <div v-if="!subs.length" class="empty-tip">{{ tr('subs.emptyFeed') }}</div>
                 <div v-else class="hist-table-wrap">
                   <table class="fmt-table fmt-table--fit" style="min-width:940px">
                     <thead>
                       <tr>
-                        <th class="th-sort" :class="{ 'th-on': subSort.key === 'kind' }" style="width:92px" @click="toggleSort(subSort, 'kind', SUB_DIR)">来源<span class="sort-ico">{{ sortIcon(subSort, 'kind') }}</span></th>
-                        <th class="th-sort" :class="{ 'th-on': subSort.key === 'title' }" @click="toggleSort(subSort, 'title', SUB_DIR)">标题<span class="sort-ico">{{ sortIcon(subSort, 'title') }}</span></th>
-                        <th class="th-sort" :class="{ 'th-on': subSort.key === 'status' }" style="width:100px" @click="toggleSort(subSort, 'status', SUB_DIR)">状态<span class="sort-ico">{{ sortIcon(subSort, 'status') }}</span></th>
-                        <th class="th-sort" :class="{ 'th-on': subSort.key === 'url' }" style="width:130px" @click="toggleSort(subSort, 'url', SUB_DIR)">链接<span class="sort-ico">{{ sortIcon(subSort, 'url') }}</span></th>
-                        <th style="width:56px">启用</th>
-                        <th style="width:84px">自动下载</th>
-                        <th class="th-sort" :class="{ 'th-on': subSort.key === 'last_check' }" style="width:152px" @click="toggleSort(subSort, 'last_check', SUB_DIR)">上次检查<span class="sort-ico">{{ sortIcon(subSort, 'last_check') }}</span></th>
-                        <th class="th-sort" :class="{ 'th-on': subSort.key === 'new_count' }" style="width:72px" title="历史累计检测到的新条目数，不随下载清零" @click="toggleSort(subSort, 'new_count', SUB_DIR)">新增<span class="sort-ico">{{ sortIcon(subSort, 'new_count') }}</span></th>
-                        <th style="width:192px">操作</th>
+                        <th class="th-sort" :class="{ 'th-on': subSort.key === 'kind' }" style="width:132px" @click="toggleSort(subSort, 'kind', SUB_DIR)">{{ tr('subs.colKind') }}<span class="sort-ico">{{ sortIcon(subSort, 'kind') }}</span></th>
+                        <th class="th-sort" :class="{ 'th-on': subSort.key === 'title' }" @click="toggleSort(subSort, 'title', SUB_DIR)">{{ tr('subs.colTitle') }}<span class="sort-ico">{{ sortIcon(subSort, 'title') }}</span></th>
+                        <th class="th-sort" :class="{ 'th-on': subSort.key === 'status' }" style="width:128px" @click="toggleSort(subSort, 'status', SUB_DIR)">{{ tr('subs.colStatus') }}<span class="sort-ico">{{ sortIcon(subSort, 'status') }}</span></th>
+                        <th class="th-sort" :class="{ 'th-on': subSort.key === 'url' }" style="width:130px" @click="toggleSort(subSort, 'url', SUB_DIR)">{{ tr('subs.colUrl') }}<span class="sort-ico">{{ sortIcon(subSort, 'url') }}</span></th>
+                        <th style="width:64px">{{ tr('subs.colEnabled') }}</th>
+                        <th style="width:96px">{{ tr('subs.colAuto') }}</th>
+                        <th class="th-sort" :class="{ 'th-on': subSort.key === 'last_check' }" style="width:152px" @click="toggleSort(subSort, 'last_check', SUB_DIR)">{{ tr('subs.colLastCheck') }}<span class="sort-ico">{{ sortIcon(subSort, 'last_check') }}</span></th>
+                        <th class="th-sort" :class="{ 'th-on': subSort.key === 'new_count' }" style="width:84px" :title="tr('subs.newTotalTip')" @click="toggleSort(subSort, 'new_count', SUB_DIR)">{{ tr('subs.colNew') }}<span class="sort-ico">{{ sortIcon(subSort, 'new_count') }}</span></th>
+                        <th style="width:192px">{{ tr('common.colOps') }}</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -3604,7 +3604,7 @@
                             <span style="font-size:13px">{{ subStatus(s).text }}</span>
                           </span>
                           <div v-if="s.archived_count" class="ell" style="font-size:12px;color:var(--muted)"
-                               :title="'上游删掉的条目留档 ' + s.archived_count + ' 条，点本行「同步计划预览」查看'">已删 {{ s.archived_count }} 条</div>
+                               :title="tr('subs.archTip', { n: s.archived_count })">{{ tr('subs.archivedCount', { n: s.archived_count }) }}</div>
                         </td>
                         <td :title="s.url">{{ s.url }}</td>
                         <td>
@@ -3617,27 +3617,27 @@
                         <td :style="s.new_count ? 'color:var(--accent);font-weight:600' : ''">{{ s.new_count || 0 }}</td>
                         <td style="white-space:nowrap">
                           <span class="row row--tight" style="flex-wrap:nowrap">
-                            <el-tooltip content="获取最新未读条目" placement="top">
+                            <el-tooltip :content="tr('subs.tipScan')" placement="top">
                               <button type="button" class="icon-btn" :disabled="subBusy === s.id" @click="scanOneSub(s)">
                                 <svg :class="{ 'svg-is-spinning': subBusy === s.id }"><use href="#i-refresh"></use></svg>
                               </button>
                             </el-tooltip>
-                            <el-tooltip content="同步计划预览（先看清这一轮会做什么，不加入队列）" placement="top">
+                            <el-tooltip :content="tr('subs.tipPlan')" placement="top">
                               <button type="button" class="icon-btn" @click="openSubPlan(s)">
                                 <svg><use href="#i-list"></use></svg>
                               </button>
                             </el-tooltip>
-                            <el-tooltip :content="s.kind === 'music' ? '整张歌单回填' : '按日期回填历史'" placement="top">
+                            <el-tooltip :content="s.kind === 'music' ? tr('subs.tipBackfillMusic') : tr('subs.tipBackfillDate')" placement="top">
                               <button type="button" class="icon-btn" @click="openSubBackfill(s)">
                                 <svg><use href="#i-calendar"></use></svg>
                               </button>
                             </el-tooltip>
-                            <el-tooltip :content="s.kind === 'music' ? '订阅规则' : '规则与目录'" placement="top">
+                            <el-tooltip :content="s.kind === 'music' ? tr('subs.tipRulesMusic') : tr('subs.tipRules')" placement="top">
                               <button type="button" class="icon-btn" @click="openSubRules(s)">
                                 <svg><use href="#i-sliders"></use></svg>
                               </button>
                             </el-tooltip>
-                            <el-tooltip content="删除订阅" placement="top">
+                            <el-tooltip :content="tr('subs.tipDelete')" placement="top">
                               <button type="button" class="icon-btn icon-btn--danger" @click="removeSub(s)">
                                 <svg><use href="#i-trash"></use></svg>
                               </button>
@@ -3655,161 +3655,160 @@
 
             <div v-if="ruleSub" class="card">
               <div class="section-title row row--spread">
-                <span>订阅规则：{{ ruleSub.title }}</span>
-                <el-button size="small" plain @click="closeSubRules">收起</el-button>
+                <span>{{ tr('subs.rulesTitle', { t: ruleSub.title }) }}</span>
+                <el-button size="small" plain @click="closeSubRules">{{ tr('subs.collapse') }}</el-button>
               </div>
-              <el-form label-width="112px" size="small" style="max-width:860px">
-                <el-form-item label="自动下载">
+              <el-form label-width="128px" size="small" style="max-width:900px">
+                <el-form-item :label="tr('subs.formAuto')">
                   <el-switch v-model="ruleForm.auto_download"></el-switch>
-                  <span class="hint" style="margin-left:10px">关闭后仍可执行「获取最新未读」查看新增条数，只是不入队；如需手动下载，请在任务页粘贴链接</span>
+                  <span class="hint" style="margin-left:10px">{{ tr('subs.autoOffHint') }}</span>
                 </el-form-item>
-                <el-form-item v-if="!ruleSubIsMusic" label="内容类型">
+                <el-form-item v-if="!ruleSubIsMusic" :label="tr('subs.formTypes')">
                   <el-checkbox-group v-model="ruleForm.types">
-                    <el-checkbox label="video">长视频</el-checkbox>
-                    <el-checkbox label="short">短视频</el-checkbox>
-                    <el-checkbox label="live">直播</el-checkbox>
-                    <el-checkbox label="audio">音频/播客</el-checkbox>
-                    <el-checkbox label="photo">图片（Telegram）</el-checkbox>
-                    <el-checkbox label="file">文件/文档（Telegram）</el-checkbox>
+                    <el-checkbox label="video">{{ tr('subs.typeVideo') }}</el-checkbox>
+                    <el-checkbox label="short">{{ tr('subs.typeShort') }}</el-checkbox>
+                    <el-checkbox label="live">{{ tr('subs.typeLive') }}</el-checkbox>
+                    <el-checkbox label="audio">{{ tr('subs.typeAudio') }}</el-checkbox>
+                    <el-checkbox label="photo">{{ tr('subs.typePhoto') }}</el-checkbox>
+                    <el-checkbox label="file">{{ tr('subs.typeFile') }}</el-checkbox>
                   </el-checkbox-group>
-                  <span class="hint" style="margin-left:10px">全部不勾选 = 不限类型；图片与文件两类仅 Telegram 频道存在</span>
+                  <span class="hint" style="margin-left:10px">{{ tr('subs.typesHint') }}</span>
                 </el-form-item>
-                <el-form-item v-if="ruleSubIsTg" label="读取方式">
-                  <el-select v-model="ruleForm.mode" size="small" style="width:170px">
-                    <el-option label="自动（公开频道匿名读取）" value=""></el-option>
-                    <el-option label="使用账号会话" value="mt"></el-option>
+                <el-form-item v-if="ruleSubIsTg" :label="tr('subs.readMode')">
+                  <el-select v-model="ruleForm.mode" size="small" style="width:236px">
+                    <el-option :label="tr('subs.modeAuto')" value=""></el-option>
+                    <el-option :label="tr('subs.modeMt')" value="mt"></el-option>
                   </el-select>
-                  <span class="hint" style="margin-left:10px">切换为会话后，历史会被视为另一批条目重新处理一次 —— 匿名页无法下载的文件帖需依赖该方式</span>
+                  <span class="hint" style="margin-left:10px">{{ tr('subs.mtSwitchHint') }}</span>
                 </el-form-item>
-                <el-form-item label="标题含">
-                  <el-input size="small" v-model="ruleForm.only_kw" placeholder="多个词以逗号分隔，命中任意一个即纳入；留空 = 不校验标题" clearable style="width:520px"></el-input>
+                <el-form-item :label="tr('subs.formOnlyKw')">
+                  <el-input size="small" v-model="ruleForm.only_kw" :placeholder="tr('subs.onlyKwPh')" clearable style="width:520px"></el-input>
                 </el-form-item>
-                <el-form-item label="标题排除">
-                  <el-input size="small" v-model="ruleForm.skip_kw" placeholder="命中任意一个则不下载，例如：预告,会员前置" clearable style="width:520px"></el-input>
+                <el-form-item :label="tr('subs.formSkipKw')">
+                  <el-input size="small" v-model="ruleForm.skip_kw" :placeholder="tr('subs.skipKwPh')" clearable style="width:520px"></el-input>
                 </el-form-item>
-                <el-form-item label="时长（分钟）">
-                  <el-input-number size="small" v-model="ruleForm.min_min" :min="0" :max="1440" :step="5"></el-input-number> 至
+                <el-form-item :label="tr('subs.formDuration')">
+                  <el-input-number size="small" v-model="ruleForm.min_min" :min="0" :max="1440" :step="5"></el-input-number> {{ tr('subs.dateTo') }}
                   <el-input-number size="small" v-model="ruleForm.max_min" :min="0" :max="1440" :step="5" style="margin-left:8px"></el-input-number>
-                  <span class="hint" style="margin-left:10px">0 = 不限；未提供时长的条目不会因时长被排除</span>
+                  <span class="hint" style="margin-left:10px">{{ tr('subs.durationHint') }}</span>
                 </el-form-item>
-                <el-form-item v-if="!ruleSubIsMusic" label="日期区间">
+                <el-form-item v-if="!ruleSubIsMusic" :label="tr('subs.formRange')">
                   <el-date-picker v-model="ruleForm.range" type="daterange" size="small" unlink-panels
-                                  range-separator="至" start-placeholder="起始" end-placeholder="结束"
+                                  :range-separator="tr('subs.dateTo')" :start-placeholder="tr('subs.dateStart')" :end-placeholder="tr('subs.dateEnd')"
                                   value-format="YYYY-MM-DD" :shortcuts="dateShortcuts" clearable
-                                  style="width:230px"></el-date-picker>
-                  <span class="hint" style="margin-left:10px">仅下载该日期区间内发布的条目；留空 = 不限日期。Telegram 频道会把区间直接传给爬虫，无需翻遍全部历史。</span>
+                                  style="width:260px"></el-date-picker>
+                  <span class="hint" style="margin-left:10px">{{ tr('subs.rangeHint') }}</span>
                 </el-form-item>
-                <el-form-item v-if="!ruleSubIsMusic" label="仅音频">
+                <el-form-item v-if="!ruleSubIsMusic" :label="tr('subs.formAudioOnly')">
                   <el-switch v-model="ruleForm.audio_only"></el-switch>
-                  <span class="hint" style="margin-left:10px">勾选 = 仅下载音频轨，不含画面（配合「封装 mp3/m4a」存为音频文件）</span>
+                  <span class="hint" style="margin-left:10px">{{ tr('subs.audioOnlyHint') }}</span>
                 </el-form-item>
-                <el-form-item v-if="!ruleSubIsMusic" label="画质 / 封装">
-                  <el-select size="small" v-model="ruleForm.video_quality" style="width:130px">
-                    <el-option label="跟随全局" value="follow"></el-option>
+                <el-form-item v-if="!ruleSubIsMusic" :label="tr('subs.formQuality')">
+                  <el-select size="small" v-model="ruleForm.video_quality" style="width:150px">
+                    <el-option :label="tr('subs.followGlobal')" value="follow"></el-option>
                     <el-option v-for="q in subRuleQualities" :key="q" :label="q" :value="q"></el-option>
                   </el-select>
-                  <el-select size="small" v-model="ruleForm.format" style="width:120px;margin-left:8px">
-                    <el-option label="跟随全局" value="follow"></el-option>
+                  <el-select size="small" v-model="ruleForm.format" style="width:130px;margin-left:8px">
+                    <el-option :label="tr('subs.followGlobal')" value="follow"></el-option>
                     <el-option v-for="f in subRuleFormats" :key="f" :label="f" :value="f"></el-option>
                   </el-select>
                 </el-form-item>
-                <el-form-item v-if="!ruleSubIsMusic" label="下载后转写">
-                  <el-select size="small" v-model="ruleForm.run_ai" style="width:150px">
-                    <el-option label="跟随全局" value="follow"></el-option>
-                    <el-option label="总是转写" value="on"></el-option>
-                    <el-option label="不转写" value="off"></el-option>
+                <el-form-item v-if="!ruleSubIsMusic" :label="tr('subs.formRunAi')">
+                  <el-select size="small" v-model="ruleForm.run_ai" style="width:180px">
+                    <el-option :label="tr('subs.followGlobal')" value="follow"></el-option>
+                    <el-option :label="tr('subs.aiAlways')" value="on"></el-option>
+                    <el-option :label="tr('subs.aiNever')" value="off"></el-option>
                   </el-select>
-                  <span class="hint" style="margin-left:10px">「总是转写」需已安装 Whisper（设置 → 组件与依赖）</span>
+                  <span class="hint" style="margin-left:10px">{{ tr('subs.aiHint') }}</span>
                 </el-form-item>
-                <el-form-item v-if="!ruleSubIsMusic" label="保存到目录">
-                  <el-input size="small" v-model="ruleForm.download_dir" placeholder="留空 = 跟随全局下载目录；例如 D:\Media\播客" clearable style="width:520px"></el-input>
-                  <span class="hint" style="margin-left:10px">该订阅下载的内容单独存放，不与其他源混合存放</span>
+                <el-form-item v-if="!ruleSubIsMusic" :label="tr('subs.formDir')">
+                  <el-input size="small" v-model="ruleForm.download_dir" :placeholder="tr('subs.dirPh')" clearable style="width:520px"></el-input>
+                  <span class="hint" style="margin-left:10px">{{ tr('subs.dirHint') }}</span>
                 </el-form-item>
-                <el-form-item v-if="!ruleSubIsMusic" label="命名模板">
-                  <el-input size="small" v-model="ruleForm.filename_template" placeholder="留空 = 跟随全局；例如 %(uploader)s - %(title).40B.%(ext)s" clearable style="width:520px"></el-input>
+                <el-form-item v-if="!ruleSubIsMusic" :label="tr('subs.formTpl')">
+                  <el-input size="small" v-model="ruleForm.filename_template" :placeholder="tr('subs.tplPh')" clearable style="width:520px"></el-input>
                 </el-form-item>
                 <el-form-item v-if="ruleSubIsMusic" label=" ">
                   <span class="hint" style="margin:0">
-                    音乐歌单只按上面的条件筛歌；成品的存放目录与命名沿用「音乐搜索」页的设置，
-                    每首歌的音质由该页勾选的匹配源决定，这里不提供画质 / 封装 / 转写选项。
+                    {{ tr('subs.musicRuleHintA') }}
+                    {{ tr('subs.musicRuleHintB') }}
                   </span>
                 </el-form-item>
-                <el-form-item label="单次最多入队">
+                <el-form-item :label="tr('subs.formMax')">
                   <el-input-number size="small" v-model="ruleForm.max_per_scan" :min="0" :max="50" :step="5"></el-input-number>
-                  <el-button size="small" style="margin-left:10px" @click="ruleForm.max_per_scan = 1">仅下载最新一{{ ruleSubIsMusic ? '首' : '条' }}</el-button>
-                  <span class="hint">{{ ruleSubIsMusic ? '首' : '条' }}，0 = 不限。超出部分不会被丢弃，下次扫描继续处理</span>
+                  <el-button size="small" style="margin-left:10px" @click="ruleForm.max_per_scan = 1">{{ ruleSubIsMusic ? tr('subs.btnLatestOneSong') : tr('subs.btnLatestOneItem') }}</el-button>
+                  <span class="hint">{{ ruleSubIsMusic ? tr('subs.maxHintSong') : tr('subs.maxHintItem') }}</span>
                 </el-form-item>
               </el-form>
               <div class="row">
-                <el-button size="small" type="primary" :loading="ruleSaving" @click="saveSubRules"><svg class="btn-ico"><use href="#i-save"></use></svg>保存规则</el-button>
-                <el-button size="small" @click="closeSubRules">取消</el-button>
+                <el-button size="small" type="primary" :loading="ruleSaving" @click="saveSubRules"><svg class="btn-ico"><use href="#i-save"></use></svg>{{ tr('subs.btnSave') }}</el-button>
+                <el-button size="small" @click="closeSubRules">{{ tr('common.cancel') }}</el-button>
               </div>
               <p class="hint hint--block">
-                规则仅影响「之后新出现的条目」；已记录为已读的旧条目不会补下，修改时长或关键词同样如此 ——
-                如需补下某段历史，请使用列表中的「按日期回填」。
+                {{ tr('subs.ruleHintA') }}
+                {{ tr('subs.ruleHintB') }}
               </p>
             </div>
 
             <div v-if="backfillSub" class="card">
               <div class="section-title row row--spread">
-                <span>{{ backfillSub.kind === 'music' ? '整张歌单回填' : '按日期回填历史' }}：{{ backfillSub.title }}</span>
-                <el-button size="small" plain @click="closeSubBackfill">收起</el-button>
+                <span>{{ backfillSub.kind === 'music' ? tr('subs.backfillTitleMusic', { t: backfillSub.title }) : tr('subs.backfillTitleDate', { t: backfillSub.title }) }}</span>
+                <el-button size="small" plain @click="closeSubBackfill">{{ tr('subs.collapse') }}</el-button>
               </div>
               <div class="row row--tight">
                 <el-date-picker v-if="backfillSub.kind !== 'music'" v-model="backfillRange" type="daterange" size="small" unlink-panels
-                                range-separator="至" start-placeholder="起始" end-placeholder="结束"
+                                :range-separator="tr('subs.dateTo')" :start-placeholder="tr('subs.dateStart')" :end-placeholder="tr('subs.dateEnd')"
                                 value-format="YYYY-MM-DD" :shortcuts="dateShortcuts" clearable
-                                style="width:230px"></el-date-picker>
-                <el-button size="small" type="primary" :loading="backfilling" @click="runSubBackfill"><svg class="btn-ico"><use href="#i-list"></use></svg>开始回填</el-button>
-                <span class="hint" style="margin:0">当前规则：{{ backfillSub.rules_text || '默认' }}</span>
+                                style="width:260px"></el-date-picker>
+                <el-button size="small" type="primary" :loading="backfilling" @click="runSubBackfill"><svg class="btn-ico"><use href="#i-list"></use></svg>{{ tr('subs.btnBackfill') }}</el-button>
+                <span class="hint" style="margin:0">{{ tr('subs.curRule', { r: backfillSub.rules_text || tr('subs.defaultRule') }) }}</span>
               </div>
               <p class="hint hint--block">
                 <template v-if="backfillSub.kind === 'music'">
-                  回填不参考「已读过」游标：整张歌单按上述规则重新过一遍，下载目录里已有的歌会自动跳过，只补下缺的那些；只有这一轮入选的曲目记为已读，被规则挡掉的仍留给下次。
+                  {{ tr('subs.bfHintMusic') }}
                 </template>
                 <template v-else>
-                  回填不参考「已读过」游标：该日期区间内的条目按上述规则重新处理一次后再入队，仅确实被选中的条目计为已读，窗口外的条目仍留给后续追新。点击回填即表示明确要下载，该条目即使已关闭「自动下载」也会入队（该开关仅作用于追新）。
-                  <span v-if="backfillSub.kind === 'tg'">Telegram 频道会按该区间读取历史，无需读遍整个频道。</span>
+                  {{ tr('subs.bfHintOther') }}
+                  <span v-if="backfillSub.kind === 'tg'">{{ tr('subs.bfHintTg') }}</span>
                 </template>
-                条目较多时会被「单次最多入队」截断 —— 再次点击回填可继续获取后续条目。
+                {{ tr('subs.bfHintTrunc') }}
               </p>
             </div>
 
             <div v-if="subPlanSub" id="sub-plan-card" class="card">
               <div class="section-title row row--spread">
-                <span>同步计划预览：{{ subPlanSub.title }}</span>
-                <el-button size="small" plain @click="closeSubPlan">收起</el-button>
+                <span>{{ tr('subs.planTitle', { t: subPlanSub.title }) }}</span>
+                <el-button size="small" plain @click="closeSubPlan">{{ tr('subs.collapse') }}</el-button>
               </div>
               <div class="row row--tight">
-                <el-button size="small" plain :loading="subPlanLoading" @click="loadSubPlan"><svg class="btn-ico"><use href="#i-refresh"></use></svg>重新计算</el-button>
-                <el-button size="small" type="primary" :loading="subBusy === subPlanSub.id" @click="runSubPlanNow"><svg class="btn-ico"><use href="#i-play"></use></svg>按计划立即同步</el-button>
-                <span class="hint" style="margin:0">规则：{{ (subPlan && subPlan.rules_text) || subPlanSub.rules_text || '默认' }}</span>
+                <el-button size="small" plain :loading="subPlanLoading" @click="loadSubPlan"><svg class="btn-ico"><use href="#i-refresh"></use></svg>{{ tr('subs.btnRecompute') }}</el-button>
+                <el-button size="small" type="primary" :loading="subBusy === subPlanSub.id" @click="runSubPlanNow"><svg class="btn-ico"><use href="#i-play"></use></svg>{{ tr('subs.btnPlanNow') }}</el-button>
+                <span class="hint" style="margin:0">{{ tr('subs.planRule', { r: (subPlan && subPlan.rules_text) || subPlanSub.rules_text || tr('subs.defaultRule') }) }}</span>
               </div>
               <p class="hint hint--block">
-                预览会真的把来源读一遍，但<strong>不加入下载队列、不改动「已读过」游标、也不落盘</strong>；
-                下面列出的就是下一次点「获取最新未读」会做的事。
+                {{ tr('subs.planHintA') }}<strong>{{ tr('subs.planHintStrong') }}</strong>{{ tr('subs.planHintB') }}
               </p>
-              <div v-if="subPlan && subPlan.error" class="hint hint--block" style="color:var(--bad)">这一轮没法计算：{{ subPlan.error }}</div>
+              <div v-if="subPlan && subPlan.error" class="hint hint--block" style="color:var(--bad)">{{ tr('subs.planError', { e: subPlan.error }) }}</div>
               <template v-else-if="subPlanLoading && !subPlan">
-                <div class="empty-tip">正在读取来源并按本条规则演算…</div>
+                <div class="empty-tip">{{ tr('subs.planLoading') }}</div>
               </template>
               <template v-else-if="subPlan">
                 <div class="chip-row">
-                  <span class="hstat">本轮读到 {{ subPlan.read }}</span>
-                  <span class="hstat" :class="{ 'hstat--live': subPlan.new > 0 }">未读 {{ subPlan.new }}</span>
-                  <span class="hstat">已读过 {{ subPlan.seen }}</span>
-                  <span class="hstat">计划入队 {{ subPlan.picked_total }}</span>
-                  <span v-if="subPlan.rejected_total" class="hstat">规则挡掉 {{ subPlan.rejected_total }}</span>
-                  <span v-if="subPlan.over" class="hstat">超限留存 {{ subPlan.over }}</span>
-                  <span v-if="subPlan.archive_total" class="hstat" style="color:var(--warn);border-color:var(--warn)">本轮新归档 {{ subPlan.archive_total }}</span>
+                  <span class="hstat">{{ tr('subs.planRead', { n: subPlan.read }) }}</span>
+                  <span class="hstat" :class="{ 'hstat--live': subPlan.new > 0 }">{{ tr('subs.planNew', { n: subPlan.new }) }}</span>
+                  <span class="hstat">{{ tr('subs.planSeen', { n: subPlan.seen }) }}</span>
+                  <span class="hstat">{{ tr('subs.planPicked', { n: subPlan.picked_total }) }}</span>
+                  <span v-if="subPlan.rejected_total" class="hstat">{{ tr('subs.planRejected', { n: subPlan.rejected_total }) }}</span>
+                  <span v-if="subPlan.over" class="hstat">{{ tr('subs.planOver', { n: subPlan.over }) }}</span>
+                  <span v-if="subPlan.archive_total" class="hstat" style="color:var(--warn);border-color:var(--warn)">{{ tr('subs.planArchNew', { n: subPlan.archive_total }) }}</span>
                 </div>
                 <div class="hint hint--block" style="margin-top:8px">{{ subPlan.why }}</div>
                 <div v-if="!subPlan.is_first && subPlan.new > 0 && subPlan.picked_total === 0 && subPlan.rejected_total === 0"
-                     class="hint hint--block">这批未读条目里没有任何一条进入下载判断，通常是来源本轮没给出可比对的条目。</div>
+                     class="hint hint--block">{{ tr('subs.planNoJudge') }}</div>
                 <div v-if="subPlan.picked.length" class="hist-table-wrap" style="margin-top:10px">
                   <table class="fmt-table fmt-table--fit">
                     <thead>
-                      <tr><th>计划下载</th><th style="width:96px">日期</th><th style="width:64px">时长</th></tr>
+                      <tr><th>{{ tr('subs.thPicked') }}</th><th style="width:110px">{{ tr('subs.thDate') }}</th><th style="width:84px">{{ tr('subs.thDur') }}</th></tr>
                     </thead>
                     <tbody>
                       <tr v-for="(p, i) in subPlan.picked" :key="'pk' + i">
@@ -3820,13 +3819,13 @@
                     </tbody>
                   </table>
                   <div v-if="subPlan.picked_total > subPlan.picked.length" class="hint">
-                    仅列出前 {{ subPlan.picked.length }} 条，这一轮实际会入队 {{ subPlan.picked_total }} 条
+                    {{ tr('subs.pickedTrunc', { a: subPlan.picked.length, b: subPlan.picked_total }) }}
                   </div>
                 </div>
                 <div v-if="subPlan.rejected.length" class="hist-table-wrap" style="margin-top:10px">
                   <table class="fmt-table fmt-table--fit">
                     <thead>
-                      <tr><th style="width:280px">被规则挡掉</th><th>原因</th></tr>
+                      <tr><th style="width:280px">{{ tr('subs.thRejected') }}</th><th>{{ tr('subs.thWhy') }}</th></tr>
                     </thead>
                     <tbody>
                       <tr v-for="(x, i) in subPlan.rejected" :key="'rj' + i">
@@ -3836,22 +3835,22 @@
                     </tbody>
                   </table>
                   <div v-if="subPlan.rejected_total > subPlan.rejected.length" class="hint">
-                    仅列出前 {{ subPlan.rejected.length }} 条，共 {{ subPlan.rejected_total }} 条被挡
+                    {{ tr('subs.rejectedTrunc', { a: subPlan.rejected.length, b: subPlan.rejected_total }) }}
                   </div>
                 </div>
               </template>
               <div v-if="subPlan && subPlan.archive.length" class="hint hint--block" style="margin-top:10px">
-                本轮有 {{ subPlan.archive_total }} 条已从源头消失：比它们更旧的条目还在来源里，中间空出来的这些不是翻页滑出去的。
-                点「按计划立即同步」后会在下方「上游已删除」留档清单里可查。
+                {{ tr('subs.archGoneNoteA', { n: subPlan.archive_total }) }}
+                {{ tr('subs.archGoneNoteB') }}
               </div>
               <div v-if="subPlanArch.length" class="hist-table-wrap" style="margin-top:12px">
                 <div class="row row--spread" style="margin-bottom:6px">
-                  <span class="tile-label" style="margin:0">上游已删除（留档 {{ subPlan.archived_count }} 条）</span>
-                  <el-button size="small" plain @click="clearSubArchive()">清空留档</el-button>
+                  <span class="tile-label" style="margin:0">{{ tr('subs.archHeader', { n: subPlan.archived_count }) }}</span>
+                  <el-button size="small" plain @click="clearSubArchive()">{{ tr('subs.btnClearArch') }}</el-button>
                 </div>
                 <table class="fmt-table fmt-table--fit">
                   <thead>
-                    <tr><th>条目</th><th style="width:140px">最后见到</th><th style="width:140px">记入留档</th><th style="width:84px">操作</th></tr>
+                    <tr><th>{{ tr('subs.thEntry') }}</th><th style="width:150px">{{ tr('subs.thLastSeen') }}</th><th style="width:150px">{{ tr('subs.thGoneAt') }}</th><th style="width:120px">{{ tr('common.colOps') }}</th></tr>
                   </thead>
                   <tbody>
                     <tr v-for="(a, i) in subPlanArch" :key="'ar' + i">
@@ -3859,13 +3858,13 @@
                       <td>{{ a.last_seen || '—' }}</td>
                       <td>{{ a.gone_at || '—' }}</td>
                       <td>
-                        <el-button size="small" plain @click="clearSubArchive(a)">不再留档</el-button>
+                        <el-button size="small" plain @click="clearSubArchive(a)">{{ tr('subs.btnDropArch') }}</el-button>
                       </td>
                     </tr>
                   </tbody>
                 </table>
                 <p class="hint hint--block">
-                  清空留档只是不再展示这批记录，不会改动「已读过」游标：条目日后重新出现在源头，仍按已读处理，不会补下一遍。
+                  {{ tr('subs.archNote') }}
                 </p>
               </div>
             </div>
@@ -6293,18 +6292,23 @@
           return '';
         }
         const SUB_KIND_META = {
-          tg: { label: 'Telegram', tagType: 'warning', hint: '公开频道可匿名读取历史；文件 / 音频帖和私有频道需使用账号会话。' },
-          rss: { label: 'RSS', tagType: 'success', hint: '按订阅源里的条目链接或 enclosure 下载；播客音频按音频处理。' },
-          music: { label: '音乐歌单', tagType: '', hint: '网易云 / QQ 音乐 / 酷狗 / Spotify 等平台的歌单链接：每轮只下歌单里新增的歌，命名与音质沿用音乐搜索页的设置。' },
-          '': { label: '视频源', tagType: 'info', hint: 'YouTube / B站 / 抖音等，走 yt-dlp 解析频道、播放列表或单视频。' },
+          /* Telegram / RSS 这两个名字两种语言里都这么写，就不进词表了（词表不许收不含中文的条目）；
+             其余两个是中文词，labelKey 走词表。提示一律走 hintKey。 */
+          tg: { label: 'Telegram', tagType: 'warning', hintKey: 'subs.kindTgHint' },
+          rss: { label: 'RSS', tagType: 'success', hintKey: 'subs.kindRssHint' },
+          music: { labelKey: 'subs.kindMusicLabel', tagType: '', hintKey: 'subs.kindMusicHint' },
+          '': { labelKey: 'subs.kindVideoLabel', tagType: 'info', hintKey: 'subs.kindVideoHint' },
         };
-        const subKindMeta = (k) => SUB_KIND_META[k || ''] || SUB_KIND_META[''];
+        const subKindMeta = (k) => {
+          const m = SUB_KIND_META[k || ''] || SUB_KIND_META[''];
+          return { tagType: m.tagType, label: m.labelKey ? tr(m.labelKey) : m.label, hint: tr(m.hintKey) };
+        };
         const subKindInfo = (u) => subKindMeta(subKindOfUrl(u));
         function subStatus(s) {
-          if (subBusy.value === s.id) return { tone: 'busy', text: '检查中' };
-          if (s.last_error) return { tone: 'bad', text: '读取失败' };
-          if (!s.last_check) return { tone: '', text: '未扫描' };
-          return { tone: 'ok', text: '已最新' };
+          if (subBusy.value === s.id) return { tone: 'busy', text: tr('subs.stBusy') };
+          if (s.last_error) return { tone: 'bad', text: tr('subs.stFailed') };
+          if (!s.last_check) return { tone: '', text: tr('subs.stNever') };
+          return { tone: 'ok', text: tr('subs.stLatest') };
         }
         // 一行一个源；也容忍一行里塞多个（按空格/逗号/分号切开）
         function subLines(text) {
@@ -7864,7 +7868,7 @@
         async function addSub() {
           const list = subLines(subUrl.value);
           if (!list.length) {
-            ElementPlus.ElMessage.warning('需 http 链接（含 RSS 源完整地址），或 Telegram 频道（@名称 / t.me/名称 / t.me/c/内部 id）');
+            ElementPlus.ElMessage.warning(tr('subs.tNeedHttp'));
             return;
           }
           subAdding.value = true;
@@ -7883,7 +7887,7 @@
               ok++;
               seen += (r && r.init_count) || 0;
             } catch (e) {
-              bad.push(`${u.replace(/^https?:\/\//, '').slice(0, 40)}：${e.message || '加不进去'}`);
+              bad.push(`${u.replace(/^https?:\/\//, '').slice(0, 40)}：${e.message || tr('subs.tCannotAdd')}`);
             }
           }
           subUrl.value = bad.join('\n');
@@ -7891,20 +7895,20 @@
             await loadSubs();
           } catch (_) {}
           subAdding.value = false;
-          const tail = bad.length ? `，${bad.length} 条失败（原因已保留在输入框中）` : '';
+          const tail = bad.length ? tr('subs.tAddTail', { n: bad.length }) : '';
           if (ok && !bad.length) {
             ElementPlus.ElMessage.success(seen
-              ? `已添加 ${ok} 条，已保留原有 ${seen} 条记录（未下载任何内容）；此后每轮仅处理最新未读`
-              : `已添加 ${ok} 条订阅`);
+              ? tr('subs.tAddedSeen', { a: ok, b: seen })
+              : tr('subs.tAdded', { n: ok }));
           } else if (ok) {
-            ElementPlus.ElMessage.warning(`已添加 ${ok} 条${tail}`);
+            ElementPlus.ElMessage.warning(tr('subs.tAddedPart', { n: ok }) + tail);
           } else {
-            ElementPlus.ElMessage.error(bad[0] || '添加失败');
+            ElementPlus.ElMessage.error(bad[0] || tr('subs.tAddFail'));
           }
         }
         async function removeSub(s) {
           try {
-            await ElementPlus.ElMessageBox.confirm('删除该订阅？', '确认', { type: 'warning' });
+            await ElementPlus.ElMessageBox.confirm(tr('subs.tDeleteQ'), tr('common.confirm'), { type: 'warning' });
             await api('/api/subs/remove', { method: 'POST', body: JSON.stringify({ id: s.id }) });
             await loadSubs();
           } catch (_) {}
@@ -7919,9 +7923,9 @@
               method: 'POST', body: JSON.stringify({ id: s.id, rules: s.rules || {}, auto_download: !!v }),
             });
             s.auto_download = !!v;
-            ElementPlus.ElMessage.success(v ? `「${s.title}」新增条目将自动下载` : `「${s.title}」仅列出新增，不再加入队列`);
+            ElementPlus.ElMessage.success(v ? tr('subs.tAutoOn', { t: s.title }) : tr('subs.tAutoOff', { t: s.title }));
           } catch (e) {
-            ElementPlus.ElMessage.error(e.message || '修改失败');
+            ElementPlus.ElMessage.error(e.message || tr('subs.tModFailed'));
           }
         }
         async function scanOneSub(s) {
@@ -7929,8 +7933,8 @@
           try {
             const r = await api('/api/subs/scan-one', { method: 'POST', body: JSON.stringify({ id: s.id }) });
             const err = (r.item && r.item.last_error) || '';
-            if (err) ElementPlus.ElMessage.warning('读取失败：' + err);
-            else ElementPlus.ElMessage.success(`最新未读 ${r.new || 0} 条 · 按规则[${r.rules_text || '默认'}]`);
+            if (err) ElementPlus.ElMessage.warning(tr('subs.tReadFail', { m: err }));
+            else ElementPlus.ElMessage.success(tr('subs.tScanOne', { n: r.new || 0, r: r.rules_text || tr('subs.defaultRule') }));
             await loadSubs();
             await loadTasks();
           } catch (e) {
@@ -7952,7 +7956,7 @@
           // 音乐歌单不标每首歌的收录日期：这类订阅的回填＝补下整张歌单里目录中还没有的歌
           const noDate = s.kind === 'music';
           if (!noDate && (!rg[0] || !rg[1])) {
-            ElementPlus.ElMessage.warning('回填需填写完整的起止日期，否则与直接扫描无差异');
+            ElementPlus.ElMessage.warning(tr('subs.tBackfillNeedRange'));
             return;
           }
           backfilling.value = true;
@@ -7963,14 +7967,14 @@
             await loadSubs();
             await loadTasks();
             backfillSub.value = subs.value.find((x) => x.id === s.id) || backfillSub.value;
-            if (r.last_error) ElementPlus.ElMessage.warning('读取失败：' + r.last_error);
+            if (r.last_error) ElementPlus.ElMessage.warning(tr('subs.tReadFail', { m: r.last_error }));
             else if (noDate) {
               ElementPlus.ElMessage[r.new ? 'success' : 'info'](r.new
-                ? `按规则[${r.rules_text || '默认'}]从歌单里选了 ${r.new} 首，下载目录里已有的会自动跳过，进度见音乐页与运行日志`
-                : '这张歌单没有符合规则的曲目，具体原因见运行日志');
+                ? tr('subs.tBackfillMusic', { r: r.rules_text || tr('subs.defaultRule'), n: r.new })
+                : tr('subs.tBackfillMusicEmpty'));
             }
-            else if (!r.new) ElementPlus.ElMessage.info(`${rg[0]} ~ ${rg[1]} 内无可下载条目 — 请查看规则或运行日志中的原因`);
-            else ElementPlus.ElMessage.success(`窗口内命中 ${r.new} 条，已按规则[${r.rules_text || '默认'}]加入队列；若仍有截断，可再次点击回填`);
+            else if (!r.new) ElementPlus.ElMessage.info(tr('subs.tBackfillEmpty', { a: rg[0], b: rg[1] }));
+            else ElementPlus.ElMessage.success(tr('subs.tBackfillDone', { n: r.new, r: r.rules_text || tr('subs.defaultRule') }));
           } catch (e) {
             ElementPlus.ElMessage.error(e.message);
           } finally {
@@ -7981,7 +7985,7 @@
           subScanning.value = true;
           try {
             const r = await api('/api/subs/scan', { method: 'POST', body: '{}' });
-            ElementPlus.ElMessage.success(`检查 ${r.checked} 源，新增 ${r.new}`);
+            ElementPlus.ElMessage.success(tr('subs.tScanAll', { a: r.checked, b: r.new }));
             await loadSubs();
             await loadTasks();
           } catch (e) {
@@ -8012,9 +8016,9 @@
             subPlan.value = r.plan || null;
             const a = await api('/api/subs/archived', { method: 'POST', body: JSON.stringify({ id: s.id }) });
             subPlanArch.value = (a && a.items) || [];
-            if (subPlan.value && subPlan.value.error) ElementPlus.ElMessage.warning('这一轮没法计算：' + subPlan.value.error);
+            if (subPlan.value && subPlan.value.error) ElementPlus.ElMessage.warning(tr('subs.planError', { e: subPlan.value.error }));
           } catch (e) {
-            ElementPlus.ElMessage.error(e.message || '预览失败');
+            ElementPlus.ElMessage.error(e.message || tr('subs.tPreviewFailed'));
           } finally {
             subPlanLoading.value = false;
           }
@@ -8031,20 +8035,20 @@
           const s = subPlanSub.value;
           if (!s) return;
           try {
-            await ElementPlus.ElMessageBox.confirm(item ? '不再留档这一条？' : '清空这条订阅的上游删除留档？',
-              '确认', { type: 'warning' });
+            await ElementPlus.ElMessageBox.confirm(item ? tr('subs.tArchOneQ') : tr('subs.tArchClearQ'),
+              tr('common.confirm'), { type: 'warning' });
           } catch (_) { return; }
           try {
             const r = await api('/api/subs/archived/clear', {
               method: 'POST',
               body: JSON.stringify({ id: s.id, entry_id: item ? (item.id || '') : '' }),
             });
-            ElementPlus.ElMessage.success(r.removed ? `已移除 ${r.removed} 条留档记录（不影响「已读过」游标）`
-              : '没有需要移除的留档记录');
+            ElementPlus.ElMessage.success(r.removed ? tr('subs.tArchRemoved', { n: r.removed })
+              : tr('subs.tArchNone'));
             await loadSubs();
             await loadSubPlan();
           } catch (e) {
-            ElementPlus.ElMessage.error(e.message || '移除失败');
+            ElementPlus.ElMessage.error(e.message || tr('subs.tArchFail'));
           }
         }
 
@@ -8088,12 +8092,12 @@
           if (!s) return;
           const f = ruleForm.value;
           if (f.min_min && f.max_min && f.max_min < f.min_min) {
-            ElementPlus.ElMessage.warning('时长上限需大于下限');
+            ElementPlus.ElMessage.warning(tr('subs.tDurationOrder'));
             return;
           }
           const tpl = (f.filename_template || '').trim();
           if (tpl && !tpl.includes('%(ext)s')) {
-            ElementPlus.ElMessage.warning('命名模板结尾需保留 %(ext)s，否则下载的文件缺少扩展名');
+            ElementPlus.ElMessage.warning(tr('subs.tTplNeedExt'));
             return;
           }
           const rules = {
@@ -8118,7 +8122,7 @@
               method: 'POST',
               body: JSON.stringify({ id: s.id, rules, mode: f.mode || '', auto_download: !!f.auto_download }),
             });
-            ElementPlus.ElMessage.success('规则已保存：' + (r.rules_text || ''));
+            ElementPlus.ElMessage.success(tr('subs.tRulesSaved', { r: r.rules_text || '' }));
             await loadSubs();
             ruleSub.value = subs.value.find((x) => x.id === s.id) || null;
           } catch (e) {
@@ -11159,12 +11163,14 @@
         // 它们的内容在解析时才归一（extractUrls / btParsed），粘进来的原文要留在框里给用户对着看。
 
         // ---------- Telegram 公开频道批量 ----------
-        const dateShortcuts = [
-          { text: '最近 7 天', value: () => { const e = new Date(), s = new Date(); s.setDate(s.getDate() - 6); return [s, e]; } },
-          { text: '最近 30 天', value: () => { const e = new Date(), s = new Date(); s.setDate(s.getDate() - 29); return [s, e]; } },
-          { text: '本月', value: () => { const e = new Date(); return [new Date(e.getFullYear(), e.getMonth(), 1), e]; } },
-          { text: '上月', value: () => { const e = new Date(); return [new Date(e.getFullYear(), e.getMonth() - 1, 1), new Date(e.getFullYear(), e.getMonth(), 0)]; } },
-        ];
+        // 日期快捷项：订阅页与 Telegram 页两个选择器共用。写成 computed 是因为切语言要立刻重算，
+        // 数组常量只在 setup 时求值一次，切完语言那些快捷项还会是上一种语言。
+        const dateShortcuts = computed(() => [
+          { text: tr('common.last7d'), value: () => { const e = new Date(), s = new Date(); s.setDate(s.getDate() - 6); return [s, e]; } },
+          { text: tr('common.last30d'), value: () => { const e = new Date(), s = new Date(); s.setDate(s.getDate() - 29); return [s, e]; } },
+          { text: tr('common.thisMonth'), value: () => { const e = new Date(); return [new Date(e.getFullYear(), e.getMonth(), 1), e]; } },
+          { text: tr('common.lastMonth'), value: () => { const e = new Date(); return [new Date(e.getFullYear(), e.getMonth() - 1, 1), new Date(e.getFullYear(), e.getMonth(), 0)]; } },
+        ]);
         const tgChannel = ref('');
         const tgTypes = ref(['video']);
         const tgLimit = ref(60);
