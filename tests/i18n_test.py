@@ -362,7 +362,7 @@ def strip_comments(src: str) -> str:
     return re.sub(r"<!--.*?-->", "", src, flags=re.S)
 
 
-PAGES_DONE = ["home", "queue", "bt"]   # ← 每翻完一页把页名加进来；登记了却没翻干净会被 I3 判红
+PAGES_DONE = ["home", "queue", "bt", "files"]   # ← 每翻完一页把页名加进来；登记了却没翻干净会被 I3 判红
 ck("I2 PAGES_DONE 都是真有的页", all(page_block(k) for k in PAGES_DONE),
    str([k for k in PAGES_DONE if not page_block(k)]))
 for _pg in PAGES_DONE:
@@ -390,6 +390,14 @@ PAGE_HANDLERS = {
            "stopSeed", "stopAllSeeding", "checkAria2", "installAria2", "btTrackerHead",
            "btTrackerProblems", "loadBtTrackers", "refreshBtTrackers", "applyBtLimit",
            "onTorrentFile", "pasteBt", "startBtDownload"],
+    # 文件页：目录浏览、在线播放的逐句校对与字幕质检、烧录、流水线、批量字幕。
+    # burnStatusText 也翻过，但它是 computed、js_fn() 只抠得到 function，所以没登记在这里；
+    # 它那一行「进行中」由下面的脚本区残留计数兜着，改回中文会红。
+    "files": ["clearArchive", "deleteFile", "exportBilingualSelected", "goParentDir",
+              "loadFiles", "onFileRowClick", "onFileSortChange", "openDownloadFolder",
+              "openSrtEditor", "qcDropNoise", "rerunStage", "runBatchAi",
+              "runSrtCalibrateSelected", "runSrtQc", "runSrtRewrap", "srtCloseEdit",
+              "srtDiscard", "srtSave", "startBurn", "stopBurn", "zipPath"],
 }
 # 允许留中文的处理器：这些行比的是后端发来的数据（预设名、占位标题），翻成英文这行判断就失效。
 # 「允许留下」不等于「不用管」——残留的行数和那几句都钉死，改了名字或悄悄多出一行都判红
@@ -421,8 +429,8 @@ ck("I5b 每个允许留中文的处理器都登记在某一页里（漏登记就
    all(f in _registered for f in RESIDUE), str([f for f in RESIDUE if f not in _registered]))
 # 埋点那一句（uiName / logAction 的动作名）是发给后端进运行日志的记录，排在 ACTION_NAMES 那一批再收。
 # I5 不算它，但每一页有几条要钉住：悄悄多出一条埋点，或者那一批改完忘了删这里的名额，都会判红
-MAIDIAN = re.compile(r"""uiName: '|logAction\('""")
-MAIDIAN_EXPECT = {"home": 0, "queue": 0, "bt": 7}
+MAIDIAN = re.compile(r"""uiName: '|logAction\('|logSort\('""")
+MAIDIAN_EXPECT = {"home": 0, "queue": 0, "bt": 7, "files": 4}
 for _pg, _fns in PAGE_HANDLERS.items():
     _md = 0
     for _fn in _fns:

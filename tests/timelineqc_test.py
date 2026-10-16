@@ -361,22 +361,34 @@ try:
 
     # ---------------- J 界面（静态断言：这一块必须在没有可疑句时也渲染）
     html = (Path(__file__).resolve().parent.parent / "static" / "index.html").read_text(encoding="utf-8")
-    ck("J1 界面上有「时间轴三维」这一块", "时间轴三维" in html, "")
+    # 界面文案搬到 static/i18n.js 的词表里了：模板只留键名，所以每条都两头查 ——
+    # 键在这个模板里被用到，而且那句中文原话仍然在词表里（缺任一条，界面就印键名或印回中文）
+    lex = (Path(__file__).resolve().parent.parent / "static" / "i18n.js").read_text(encoding="utf-8")
+
+    def ui(key: str, phrase: str = "") -> bool:
+        # 键名后面那个单引号要一起当锚：带占位符的调用写成 tr('k', {n: ...})，
+        # 只认 tr('k') 会把这一类全判成没用到；带了引号又不会误配 tr('kk')
+        return "tr('%s'" % key in html and (not phrase or phrase in lex)
+
+    ck("J1 界面上有「时间轴三维」这一块", ui("files.tlTitle", "时间轴三维"), "")
     ck("J2 这一块只看 timeline 在不在，不看可疑行数（没可疑句也要显示三维）",
        'v-if="srtQc.timeline"' in html and html.index('v-if="srtQc.timeline"') > html.index("srtQc.rows.length"), "")
-    ck("J3 缺媒体时的原话写进界面：是缺输入，不是质检没开", "是缺输入，不是质检没开" in html, "")
-    ck("J4 三维各自有「这一项没算」的兜底", html.count("这一项没算") >= 2, str(html.count("这一项没算")))
+    ck("J3 缺媒体时的原话写进界面：是缺输入，不是质检没开", ui("files.tlNoMedia", "是缺输入，不是质检没开"), "")
+    ck("J4 三维各自有「这一项没算」的兜底",
+       html.count("tr('files.notComputed')") >= 2 and "这一项没算" in lex, str(html.count("tr('files.notComputed')")))
     ck("J5 片尾那项按 available 条件渲染，缺媒体时不显示 0 秒", 'srtQc.timeline.gaps.tail.available' in html
-       and "片尾那一段没分出来" in html, "")
-    ck("J6 名单截断要在界面上说清楚「其余 N 句没列在这里」", html.count("没列在这里") >= 2, str(html.count("没列在这里")))
-    ck("J7 删名单的按钮走 qcDropNoise，且先弹确认", "qcDropNoise" in html and "按名单删句" in html, "")
-    ck("J8 删完只改界面上的行、不写盘（提示里带「还没写盘」）", "还没写盘" in html, "")
+       and ui("files.tailUnknown", "片尾那一段没分出来"), "")
+    ck("J6 名单截断要在界面上说清楚「其余 N 句没列在这里」",
+       html.count("tr('files.gapsRest'") + html.count("tr('files.speedRest'") >= 2 and "没列在这里" in lex, "")
+    ck("J7 删名单的按钮走 qcDropNoise，且先弹确认", "qcDropNoise" in html and ui("files.tDropNoiseTitle", "按名单删句"), "")
+    ck("J8 删完只改界面上的行、不写盘（提示里带「还没写盘」）", ui("files.tNoiseDropped", "还没写盘"), "")
     ck("J9 空档与读速两处都挂 qcJumpTo，且跳转支持空档用的 before 句序",
        "q.i || q.before" in html and html.count('@click="qcJumpTo(q)"') >= 2, str(html.count('@click="qcJumpTo(q)"')))
-    ck("J9b 片头空档在界面上说成「第一条之前」而不是「第 1 句之前」", "第一条之前" in html and "片头" in html, "")
-    ck("J9c 最大的那段是片头时，界面那行不说「第 1 句之前」", "第一条字幕之前" in html, "")
+    ck("J9b 片头空档在界面上说成「第一条之前」而不是「第 1 句之前」",
+       ui("files.beforeFirstShort", "第一条之前") and ui("files.gapHead", "片头"), "")
+    ck("J9c 最大的那段是片头时，界面那行不说「第 1 句之前」", ui("files.beforeFirst", "第一条字幕之前"), "")
     ck("J10 退出校对或重跑质检会清掉上一份的时间轴结果", "srtQc.timeline = null" in html and "srtQc.media = ''" in html, "")
-    ck("J11 语气词与复读都写明只列名单不代删", "只列名单、没有替你删" in html, "")
+    ck("J11 语气词与复读都写明只列名单不代删", ui("files.noiseNote", "只列名单、没有替你删"), "")
 finally:
     S.cfg, S.log_mgr, S._ffprobe_bin, S._ffprobe_info = _REAL
     shutil.rmtree(TMP, ignore_errors=True)

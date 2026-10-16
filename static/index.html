@@ -2556,20 +2556,20 @@
           <!-- 文件浏览（参考 MediaSync） -->
           <div v-show="page === 'files'">
             <div class="row-actions" style="margin-bottom:12px;align-items:center;flex-wrap:wrap">
-              <el-button size="small" @click="loadFiles('')">根目录</el-button>
-              <el-button size="small" @click="goParentDir" :disabled="!filesPath">上级目录</el-button>
-              <el-button size="small" @click="loadFiles(filesPath)">刷新</el-button>
-              <el-button size="small" @click="openDownloadFolder">打开目录</el-button>
-              <el-button size="small" @click="zipCurrentFolder" :disabled="!filesPath && !filesRoot">打包当前目录</el-button>
-              <el-button size="small" type="danger" plain @click="clearArchive">清空「已下载」记录</el-button>
-              <el-input size="small" v-model="fileSearch" placeholder="搜索文件名..." clearable style="width:180px"></el-input>
-              <span class="hint">点击表头可排序</span>
+              <el-button size="small" @click="loadFiles('')">{{ tr('files.root') }}</el-button>
+              <el-button size="small" @click="goParentDir" :disabled="!filesPath">{{ tr('files.parent') }}</el-button>
+              <el-button size="small" @click="loadFiles(filesPath)">{{ tr('common.refresh') }}</el-button>
+              <el-button size="small" @click="openDownloadFolder">{{ tr('files.openDir') }}</el-button>
+              <el-button size="small" @click="zipCurrentFolder" :disabled="!filesPath && !filesRoot">{{ tr('files.zipHere') }}</el-button>
+              <el-button size="small" type="danger" plain @click="clearArchive">{{ tr('files.clearArchive') }}</el-button>
+              <el-input size="small" v-model="fileSearch" :placeholder="tr('files.searchPh')" clearable style="width:180px"></el-input>
+              <span class="hint">{{ tr('files.sortHint') }}</span>
               <span style="font-size:14px;color:var(--muted);margin-left:8px">{{ filesRoot }} / {{ filesPath || '' }}</span>
             </div>
             <div v-if="playerUrl" class="card" id="card-file-player">
               <div class="section-title row row--spread">
-                <span>在线播放：{{ playerName }}</span>
-                <el-button size="small" @click="playerUrl=''">关闭</el-button>
+                <span>{{ tr('files.playing', { n: playerName }) }}</span>
+                <el-button size="small" @click="playerUrl=''">{{ tr('common.close') }}</el-button>
               </div>
               <video v-if="playerIsVideo" ref="mediaEl" :src="playerUrl" controls style="width:100%;max-height:420px;background:#000;border-radius:10px" @timeupdate="onMediaTimeUpdate"></video>
               <audio v-else-if="playerIsAudio" ref="mediaEl" :src="playerUrl" controls style="width:100%" @timeupdate="onMediaTimeUpdate"></audio>
@@ -2577,13 +2577,13 @@
               <div v-if="transcript.cues.length" style="margin-top:10px">
                 <div class="row row--spread" style="margin-bottom:4px;align-items:center">
                   <span class="hint" v-if="!srtEdit.on">
-                    转写逐行显示（{{ transcript.cues.length }} 句 · {{ transcript.srt.split('/').pop() }}）· 点击某行可跳转至对应时间
+                    {{ tr('files.transcriptHint', { n: transcript.cues.length, f: transcript.srt.split('/').pop() }) }}
                   </span>
                   <span class="hint" v-else>
-                    逐句校对（{{ srtEdit.rows.length }} 句 · {{ srtEdit.srt.split('/').pop() }}）· 改完要按「保存」才会写回字幕文件
+                    {{ tr('files.proofHint', { n: srtEdit.rows.length, f: srtEdit.srt.split('/').pop() }) }}
                   </span>
-                  <el-button v-if="!srtEdit.on" size="small" :loading="srtEdit.busy" @click="openSrtEditor">逐句校对</el-button>
-                  <el-button v-else size="small" @click="srtCloseEdit">退出校对</el-button>
+                  <el-button v-if="!srtEdit.on" size="small" :loading="srtEdit.busy" @click="openSrtEditor">{{ tr('files.btnProof') }}</el-button>
+                  <el-button v-else size="small" @click="srtCloseEdit">{{ tr('files.btnProofExit') }}</el-button>
                 </div>
 
                 <div v-if="!srtEdit.on" ref="transcriptBox" style="max-height:240px;overflow:auto;border:1px solid var(--el-border-color-lighter);border-radius:8px;padding:4px 8px">
@@ -2599,37 +2599,36 @@
 
                 <div v-else>
                   <div class="row row--flush" style="margin-bottom:6px">
-                    <el-button size="small" :disabled="srtEdit.sel < 0" @click="srtShiftSel(-0.5)">选中句前移 0.5 秒</el-button>
-                    <el-button size="small" :disabled="srtEdit.sel < 0" @click="srtShiftSel(0.5)">选中句后移 0.5 秒</el-button>
-                    <el-button size="small" type="primary" :disabled="!srtEdit.dirty" :loading="srtEdit.busy" @click="srtSave">保存</el-button>
-                    <el-button size="small" :disabled="!srtEdit.dirty" @click="srtDiscard">放弃修改</el-button>
+                    <el-button size="small" :disabled="srtEdit.sel < 0" @click="srtShiftSel(-0.5)">{{ tr('files.btnShiftBack') }}</el-button>
+                    <el-button size="small" :disabled="srtEdit.sel < 0" @click="srtShiftSel(0.5)">{{ tr('files.btnShiftFwd') }}</el-button>
+                    <el-button size="small" type="primary" :disabled="!srtEdit.dirty" :loading="srtEdit.busy" @click="srtSave">{{ tr('files.btnSrtSave') }}</el-button>
+                    <el-button size="small" :disabled="!srtEdit.dirty" @click="srtDiscard">{{ tr('files.btnSrtDiscard') }}</el-button>
                   </div>
                   <div class="hint hint--block" style="margin-bottom:6px">
-                    时间单位是秒，行内数字框的上下箭头每次调 0.1 秒，也能直接填。「选中句前移／后移」把那句的起与止一起挪，句长不变；
-                    整条字幕一起平移或缩放请用「时间轴校准」。保存时先在同目录留一份 <code>原名.bak-时间</code> 备份，再覆盖原字幕文件。
+                    {{ tr('files.proofHintA') }} <code>{{ tr('files.bakCode') }}</code> {{ tr('files.proofHintB') }}
                   </div>
                   <div class="row row--flush" style="margin-bottom:6px">
-                    <el-button size="small" :loading="srtQc.busy" @click="runSrtQc">字幕质检</el-button>
-                    <el-button size="small" :loading="srtQc.busy" @click="runSrtRewrap">按每行字数重排</el-button>
+                    <el-button size="small" :loading="srtQc.busy" @click="runSrtQc">{{ tr('files.btnQc') }}</el-button>
+                    <el-button size="small" :loading="srtQc.busy" @click="runSrtRewrap">{{ tr('files.btnRewrap') }}</el-button>
                     <span class="hint" v-if="srtQc.message">{{ srtQc.message }}</span>
                   </div>
                   <div v-if="srtQc.rows.length" style="margin-bottom:6px">
                     <div class="hint hint--block">
-                      <template v-if="srtQc.paired">与「{{ srtQc.counter.split('/').pop() }}」逐句对照</template>
-                      <template v-else>没有另一路可对照</template>
-                      · 目标语言 {{ srtQc.lang }} · 每行 ≤{{ srtQc.wrap.width }} 个全角宽、最多 {{ srtQc.wrap.lines }} 行
-                      · 反射重写{{ srtQc.reflect_on ? '已开（机翻时自动改写可疑句）' : '未开（可疑句只列出，不自动改写）' }}
+                      <template v-if="srtQc.paired">{{ tr('files.qcPaired', { f: srtQc.counter.split('/').pop() }) }}</template>
+                      <template v-else>{{ tr('files.qcNoPair') }}</template>
+                      {{ tr('files.qcTarget', { lang: srtQc.lang, width: srtQc.wrap.width, lines: srtQc.wrap.lines }) }}
+                      · {{ srtQc.reflect_on ? tr('files.qcReflectOn') : tr('files.qcReflectOff') }}
                     </div>
                     <div class="hint hint--block" v-if="srtQc.hint">{{ srtQc.hint }}</div>
                     <div style="max-height:190px;overflow:auto;border:1px solid var(--el-border-color-lighter);border-radius:8px;padding:4px 8px">
                       <div v-for="q in srtQc.rows" :key="q.i" class="srt-qc-row">
-                        <el-button size="small" :title="'选中第 ' + q.i + ' 句，并把播放跳到这一句的起始时间'" @click="qcJumpTo(q)">第 {{ q.i }} 句</el-button>
+                        <el-button size="small" :title="tr('files.qcJumpTitle', { n: q.i })" @click="qcJumpTo(q)">{{ tr('files.cueN', { n: q.i }) }}</el-button>
                         <span class="srt-qc-tags">
                           <el-tag v-for="(t,ti) in q.labels" :key="ti" size="small" type="warning">{{ t }}</el-tag>
                         </span>
                         <span class="srt-qc-text">
-                          <template v-if="q.src"><span class="hint">原文：</span>{{ q.src }}<br></template>
-                          <span class="hint">现译：</span>{{ q.dst }}<br>
+                          <template v-if="q.src"><span class="hint">{{ tr('files.srcWord') }}</span>{{ q.src }}<br></template>
+                          <span class="hint">{{ tr('files.dstWord') }}</span>{{ q.dst }}<br>
                           <span class="hint">{{ q.why.join('；') }}</span>
                         </span>
                       </div>
@@ -2637,86 +2636,86 @@
                   </div>
                   <div v-if="srtQc.timeline" style="margin-bottom:6px">
                     <div class="hint hint--block">
-                      时间轴三维 · {{ srtQc.timeline.message }}
-                      <template v-if="srtQc.media">（媒体 {{ srtQc.media.split('/').pop() }}，共 {{ fmtClock(srtQc.media_seconds) }}）</template>
-                      <template v-else>（这份字幕旁边没找到配对的媒体文件，覆盖率与片尾那两项算不了 —— 是缺输入，不是质检没开）</template>
+                      {{ tr('files.tlTitle') }} · {{ srtQc.timeline.message }}
+                      <template v-if="srtQc.media">{{ tr('files.tlMedia', { m: srtQc.media.split('/').pop(), d: fmtClock(srtQc.media_seconds) }) }}</template>
+                      <template v-else>{{ tr('files.tlNoMedia') }}</template>
                     </div>
                     <div class="srt-tl">
                       <div class="srt-tl__item">
-                        <span class="srt-tl__k">覆盖率</span>
+                        <span class="srt-tl__k">{{ tr('files.tlCoverage') }}</span>
                         <template v-if="srtQc.timeline.coverage.available">
                           <span>{{ (srtQc.timeline.coverage.ratio * 100).toFixed(0) }}%</span>
-                          <span class="hint">{{ srtQc.timeline.coverage.spoken }} 秒有字幕 / 媒体 {{ srtQc.timeline.coverage.media }} 秒</span>
-                          <el-tag v-if="srtQc.timeline.coverage.level === 'low'" size="small" type="warning">大段没有字幕</el-tag>
+                          <span class="hint">{{ tr('files.coverageSpoken', { spoken: srtQc.timeline.coverage.spoken, media: srtQc.timeline.coverage.media }) }}</span>
+                          <el-tag v-if="srtQc.timeline.coverage.level === 'low'" size="small" type="warning">{{ tr('files.coverageLow') }}</el-tag>
                         </template>
                         <template v-else>
-                          <el-tag size="small" type="info">这一项没算</el-tag>
+                          <el-tag size="small" type="info">{{ tr('files.notComputed') }}</el-tag>
                           <span class="hint">{{ srtQc.timeline.coverage.note }}</span>
                         </template>
                       </div>
                       <div class="srt-tl__item">
-                        <span class="srt-tl__k">最大间隙</span>
-                        <span>{{ srtQc.timeline.gaps.max }} 秒</span>
-                        <span class="hint" v-if="srtQc.timeline.gaps.before && srtQc.timeline.gaps.leading !== srtQc.timeline.gaps.max">第 {{ srtQc.timeline.gaps.before }} 句之前</span>
-                        <span class="hint" v-else-if="srtQc.timeline.gaps.max">第一条字幕之前</span>
-                        <span class="hint" v-if="srtQc.timeline.gaps.tail.available">片尾空档 {{ srtQc.timeline.gaps.tail.seconds }} 秒不计入（容忍带 {{ srtQc.timeline.gaps.band }} 秒）</span>
-                        <span class="hint" v-else>片尾那一段没分出来（缺媒体时长）</span>
-                        <el-tag v-if="srtQc.timeline.gaps.count_over" size="small" type="warning">超 {{ srtQc.timeline.gaps.warn }} 秒的有 {{ srtQc.timeline.gaps.count_over }} 处</el-tag>
-                        <span class="hint" v-if="srtQc.timeline.gaps.overlaps">重叠 {{ srtQc.timeline.gaps.overlaps }} 处（滚动式字幕本来就这样，不当问题）</span>
+                        <span class="srt-tl__k">{{ tr('files.tlGaps') }}</span>
+                        <span>{{ tr('files.secondsN', { n: srtQc.timeline.gaps.max }) }}</span>
+                        <span class="hint" v-if="srtQc.timeline.gaps.before && srtQc.timeline.gaps.leading !== srtQc.timeline.gaps.max">{{ tr('files.beforeCue', { n: srtQc.timeline.gaps.before }) }}</span>
+                        <span class="hint" v-else-if="srtQc.timeline.gaps.max">{{ tr('files.beforeFirst') }}</span>
+                        <span class="hint" v-if="srtQc.timeline.gaps.tail.available">{{ tr('files.tailBand', { n: srtQc.timeline.gaps.tail.seconds, band: srtQc.timeline.gaps.band }) }}</span>
+                        <span class="hint" v-else>{{ tr('files.tailUnknown') }}</span>
+                        <el-tag v-if="srtQc.timeline.gaps.count_over" size="small" type="warning">{{ tr('files.gapsOver', { warn: srtQc.timeline.gaps.warn, n: srtQc.timeline.gaps.count_over }) }}</el-tag>
+                        <span class="hint" v-if="srtQc.timeline.gaps.overlaps">{{ tr('files.gapsOverlap', { n: srtQc.timeline.gaps.overlaps }) }}</span>
                       </div>
                       <div class="srt-tl__item">
-                        <span class="srt-tl__k">字符速率</span>
+                        <span class="srt-tl__k">{{ tr('files.tlSpeed') }}</span>
                         <template v-if="srtQc.timeline.speed.available">
-                          <span>中位 {{ srtQc.timeline.speed.median_cps }} · 上限 {{ srtQc.timeline.speed.limit }} 字每秒</span>
-                          <el-tag v-if="srtQc.timeline.speed.over_count" size="small" type="warning">超上限 {{ srtQc.timeline.speed.over_count }} 句</el-tag>
-                          <el-tag v-if="srtQc.timeline.speed.short_count" size="small" type="warning">显示不足 {{ srtQc.timeline.speed.short_count }} 句太短</el-tag>
-                          <el-tag v-if="srtQc.timeline.speed.reversed_count" size="small" type="danger">时间轴倒挂 {{ srtQc.timeline.speed.reversed_count }} 句</el-tag>
-                          <span class="hint" v-if="srtQc.timeline.speed.flash_count">滚动式闪光条 {{ srtQc.timeline.speed.flash_count }} 条没参与统计</span>
+                          <span>{{ tr('files.speedLine', { median: srtQc.timeline.speed.median_cps, limit: srtQc.timeline.speed.limit }) }}</span>
+                          <el-tag v-if="srtQc.timeline.speed.over_count" size="small" type="warning">{{ tr('files.speedOver', { n: srtQc.timeline.speed.over_count }) }}</el-tag>
+                          <el-tag v-if="srtQc.timeline.speed.short_count" size="small" type="warning">{{ tr('files.speedShort', { n: srtQc.timeline.speed.short_count }) }}</el-tag>
+                          <el-tag v-if="srtQc.timeline.speed.reversed_count" size="small" type="danger">{{ tr('files.speedReversed', { n: srtQc.timeline.speed.reversed_count }) }}</el-tag>
+                          <span class="hint" v-if="srtQc.timeline.speed.flash_count">{{ tr('files.speedFlash', { n: srtQc.timeline.speed.flash_count }) }}</span>
                         </template>
-                        <template v-else><el-tag size="small" type="info">这一项没算</el-tag><span class="hint">整份字幕里没有可读的句子</span></template>
+                        <template v-else><el-tag size="small" type="info">{{ tr('files.notComputed') }}</el-tag><span class="hint">{{ tr('files.speedNoText') }}</span></template>
                       </div>
                       <div class="srt-tl__item">
-                        <span class="srt-tl__k">语气词 / 复读</span>
-                        <span>{{ srtQc.timeline.noise.filler_count }} 句 / {{ srtQc.timeline.noise.halluc_count }} 句</span>
-                        <el-button v-if="(srtQc.timeline.noise.drop || []).length" size="small" @click="qcDropNoise">按名单删掉这 {{ srtQc.timeline.noise.drop.length }} 句</el-button>
-                        <span class="hint">只列名单、没有替你删：歌词副歌本来就会重复</span>
+                        <span class="srt-tl__k">{{ tr('files.tlNoise') }}</span>
+                        <span>{{ tr('files.noiseCounts', { a: srtQc.timeline.noise.filler_count, b: srtQc.timeline.noise.halluc_count }) }}</span>
+                        <el-button v-if="(srtQc.timeline.noise.drop || []).length" size="small" @click="qcDropNoise">{{ tr('files.btnDropNoise', { n: srtQc.timeline.noise.drop.length }) }}</el-button>
+                        <span class="hint">{{ tr('files.noiseNote') }}</span>
                       </div>
                     </div>
                     <div v-if="srtQc.timeline.noise.fillers.length || srtQc.timeline.noise.halluc.length" class="hint hint--block" style="margin-top:4px">
-                      <template v-for="(h,hi) in srtQc.timeline.noise.halluc" :key="'h'+hi">第 {{ h.from }}～{{ h.to }} 句是同一句连读 {{ h.count }} 遍：{{ h.text }}<br></template>
-                      <template v-for="(f,fi) in srtQc.timeline.noise.fillers.slice(0,8)" :key="'f'+fi">第 {{ f.i }} 句整句只是语气词：{{ f.text }}<br></template>
-                      <template v-if="srtQc.timeline.noise.fillers.length > 8"><span class="hint">其余 {{ srtQc.timeline.noise.fillers.length - 8 }} 句在同一份名单里</span></template>
+                      <template v-for="(h,hi) in srtQc.timeline.noise.halluc" :key="'h'+hi">{{ tr('files.hallucLine', { from: h.from, to: h.to, count: h.count, text: h.text }) }}<br></template>
+                      <template v-for="(f,fi) in srtQc.timeline.noise.fillers.slice(0,8)" :key="'f'+fi">{{ tr('files.fillerLine', { i: f.i, text: f.text }) }}<br></template>
+                      <template v-if="srtQc.timeline.noise.fillers.length > 8"><span class="hint">{{ tr('files.noiseRest', { n: srtQc.timeline.noise.fillers.length - 8 }) }}</span></template>
                     </div>
                     <div v-if="srtQc.timeline.gaps.over.length" style="max-height:120px;overflow:auto;border:1px solid var(--el-border-color-lighter);border-radius:8px;padding:4px 8px;margin-top:4px">
                       <div v-for="q in srtQc.timeline.gaps.over" :key="'gp'+q.before" class="srt-qc-row">
-                        <el-button size="small" :title="'跳到第 ' + q.before + ' 句'" @click="qcJumpTo(q)">{{ q.leading ? '第一条之前' : '第 ' + q.before + ' 句之前' }}</el-button>
-                        <span class="srt-qc-tags"><el-tag size="small" type="warning">空了 {{ q.seconds }} 秒</el-tag><el-tag v-if="q.leading" size="small" type="info">片头</el-tag><el-tag v-if="q.in_tail_band" size="small" type="info">在片尾容忍带里</el-tag></span>
-                        <span class="srt-qc-text">{{ q.leading ? '片子一开始就该有字幕，第一条却等到 ' + q.start + ' 秒才出现' : q.at + ' 秒说完，下一句 ' + q.start + ' 秒才出现' }}</span>
+                        <el-button size="small" :title="tr('files.jumpedTo', { n: q.before })" @click="qcJumpTo(q)">{{ q.leading ? tr('files.beforeFirstShort') : tr('files.beforeCue', { n: q.before }) }}</el-button>
+                        <span class="srt-qc-tags"><el-tag size="small" type="warning">{{ tr('files.gapSeconds', { n: q.seconds }) }}</el-tag><el-tag v-if="q.leading" size="small" type="info">{{ tr('files.gapHead') }}</el-tag><el-tag v-if="q.in_tail_band" size="small" type="info">{{ tr('files.gapTailBandTag') }}</el-tag></span>
+                        <span class="srt-qc-text">{{ q.leading ? tr('files.gapLeadText', { s: q.start }) : tr('files.gapMidText', { at: q.at, start: q.start }) }}</span>
                       </div>
-                      <div class="hint" v-if="srtQc.timeline.gaps.count_over > srtQc.timeline.gaps.over.length">其余 {{ srtQc.timeline.gaps.count_over - srtQc.timeline.gaps.over.length }} 处更小的空档没列在这里</div>
+                      <div class="hint" v-if="srtQc.timeline.gaps.count_over > srtQc.timeline.gaps.over.length">{{ tr('files.gapsRest', { n: srtQc.timeline.gaps.count_over - srtQc.timeline.gaps.over.length }) }}</div>
                     </div>
                     <div v-if="srtQc.timeline.speed.over.length" style="max-height:120px;overflow:auto;border:1px solid var(--el-border-color-lighter);border-radius:8px;padding:4px 8px;margin-top:4px">
                       <div v-for="q in srtQc.timeline.speed.over" :key="'sp'+q.i" class="srt-qc-row">
-                        <el-button size="small" :title="'跳到第 ' + q.i + ' 句'" @click="qcJumpTo(q)">第 {{ q.i }} 句</el-button>
-                        <span class="srt-qc-tags"><el-tag size="small" type="warning">{{ q.cps }} 字每秒</el-tag></span>
-                        <span class="srt-qc-text">{{ q.text }}<br><span class="hint">{{ q.units }} 个字挤在 {{ q.dur }} 秒里</span></span>
+                        <el-button size="small" :title="tr('files.jumpedTo', { n: q.i })" @click="qcJumpTo(q)">{{ tr('files.cueN', { n: q.i }) }}</el-button>
+                        <span class="srt-qc-tags"><el-tag size="small" type="warning">{{ tr('files.cpsUnit', { cps: q.cps }) }}</el-tag></span>
+                        <span class="srt-qc-text">{{ q.text }}<br><span class="hint">{{ tr('files.squeeze', { units: q.units, dur: q.dur }) }}</span></span>
                       </div>
-                      <div class="hint" v-if="srtQc.timeline.speed.over_count > srtQc.timeline.speed.over.length">其余 {{ srtQc.timeline.speed.over_count - srtQc.timeline.speed.over.length }} 句读速慢一些的没列在这里</div>
+                      <div class="hint" v-if="srtQc.timeline.speed.over_count > srtQc.timeline.speed.over.length">{{ tr('files.speedRest', { n: srtQc.timeline.speed.over_count - srtQc.timeline.speed.over.length }) }}</div>
                     </div>
                     <div class="hint hint--block" style="margin-top:4px">{{ srtQc.timeline.gaps.note }}</div>
                     <div class="hint hint--block">{{ srtQc.timeline.speed.note }}</div>
                   </div>
                   <div style="max-height:320px;overflow:auto;border:1px solid var(--el-border-color-lighter);border-radius:8px;padding:4px 8px" ref="srtEditBox">
                     <div v-for="(r,i) in srtEdit.rows" :key="r._k" :data-si="i" class="srt-edit-row" :class="{ 'srt-edit-row--sel': i === srtEdit.sel }">
-                      <span class="srt-edit-row__idx" title="点这一下选中这一句，上方两个「0.5 秒」按钮就作用在它身上" @click="srtEdit.sel = i">{{ i + 1 }}</span>
+                      <span class="srt-edit-row__idx" :title="tr('files.pickRowTip')" @click="srtEdit.sel = i">{{ i + 1 }}</span>
                       <el-input-number size="small" v-model="r.start" :min="0" :step="0.1" :precision="3"
                                        controls-position="right" style="width:118px" @change="srtEdit.dirty = true"></el-input-number>
                       <el-input-number size="small" v-model="r.end" :min="0" :step="0.1" :precision="3"
                                        controls-position="right" style="width:118px" @change="srtEdit.dirty = true"></el-input-number>
                       <span class="srt-edit-row__sp"><el-tag v-if="r.speaker" size="small" :type="speakerTagType(r.speaker)">{{ r.speaker }}</el-tag></span>
                       <el-input size="small" v-model="r.text" style="flex:1;min-width:150px" @input="srtEdit.dirty = true"></el-input>
-                      <el-button size="small" :disabled="i >= srtEdit.rows.length - 1" @click="srtMerge(i)">合并</el-button>
-                      <el-button size="small" @click="srtDrop(i)">删</el-button>
+                      <el-button size="small" :disabled="i >= srtEdit.rows.length - 1" @click="srtMerge(i)">{{ tr('files.btnMerge') }}</el-button>
+                      <el-button size="small" @click="srtDrop(i)">{{ tr('files.btnDrop') }}</el-button>
                     </div>
                   </div>
                 </div>
@@ -2725,61 +2724,61 @@
             </div>
             <div v-if="burnDlg.row" class="card" id="card-file-burn">
               <div class="section-title row row--spread">
-                <span>烧录字幕（硬字幕）：{{ burnDlg.row.name }}</span>
-                <el-button size="small" @click="closeBurn">关闭</el-button>
+                <span>{{ tr('files.burnTitle', { n: burnDlg.row.name }) }}</span>
+                <el-button size="small" @click="closeBurn">{{ tr('common.close') }}</el-button>
               </div>
               <el-form :inline="true" size="small" style="margin-top:6px">
-                <el-form-item label="字幕文件">
+                <el-form-item :label="tr('files.burnLblSub')">
                   <el-select size="small" v-model="burnDlg.srt" style="width:250px" :disabled="burnRunning">
-                    <el-option label="自动（同名且最新的字幕）" value=""></el-option>
+                    <el-option :label="tr('files.burnSrtAuto')" value=""></el-option>
                     <el-option v-for="s in burnSubChoices" :key="s.path" :label="s.name" :value="s.path"></el-option>
                   </el-select>
                 </el-form-item>
-                <el-form-item label="字号">
+                <el-form-item :label="tr('files.burnLblSize')">
                   <el-input-number size="small" v-model="burnDlg.fontsize" :min="16" :max="96" :step="4" :disabled="burnRunning"></el-input-number>
                 </el-form-item>
-                <el-form-item label="位置">
+                <el-form-item :label="tr('files.burnLblPos')">
                   <el-select size="small" v-model="burnDlg.position" style="width:96px" :disabled="burnRunning">
-                    <el-option label="底部" value="bottom"></el-option>
-                    <el-option label="居中" value="middle"></el-option>
-                    <el-option label="顶部" value="top"></el-option>
+                    <el-option :label="tr('files.burnPosBottom')" value="bottom"></el-option>
+                    <el-option :label="tr('files.burnPosMiddle')" value="middle"></el-option>
+                    <el-option :label="tr('files.burnPosTop')" value="top"></el-option>
                   </el-select>
                 </el-form-item>
-                <el-form-item label="字体">
+                <el-form-item :label="tr('files.burnLblFont')">
                   <el-select size="small" v-model="burnDlg.font" style="width:150px" :disabled="burnRunning">
-                    <el-option label="微软雅黑" value="Microsoft YaHei"></el-option>
-                    <el-option label="黑体" value="SimHei"></el-option>
-                    <el-option label="宋体" value="SimSun"></el-option>
-                    <el-option label="思源黑体" value="Noto Sans CJK SC"></el-option>
+                    <el-option :label="tr('files.burnFontYahei')" value="Microsoft YaHei"></el-option>
+                    <el-option :label="tr('files.burnFontHei')" value="SimHei"></el-option>
+                    <el-option :label="tr('files.burnFontSong')" value="SimSun"></el-option>
+                    <el-option :label="tr('files.burnFontNoto')" value="Noto Sans CJK SC"></el-option>
                   </el-select>
                 </el-form-item>
-                <el-form-item label="画质">
-                  <el-select size="small" v-model="burnDlg.crf" style="width:120px" :disabled="burnRunning">
-                    <el-option label="高（体积较大）" :value="18"></el-option>
-                    <el-option label="均衡" :value="20"></el-option>
-                    <el-option label="节省空间" :value="23"></el-option>
+                <el-form-item :label="tr('files.burnLblQuality')">
+                  <el-select size="small" v-model="burnDlg.crf" style="width:150px" :disabled="burnRunning">
+                    <el-option :label="tr('files.burnQHigh')" :value="18"></el-option>
+                    <el-option :label="tr('files.burnQBalanced')" :value="20"></el-option>
+                    <el-option :label="tr('files.burnQSaving')" :value="23"></el-option>
                   </el-select>
                 </el-form-item>
-                <el-form-item label="覆盖旧文件">
+                <el-form-item :label="tr('files.burnLblOverwrite')">
                   <el-switch v-model="burnDlg.overwrite" :disabled="burnRunning"></el-switch>
                 </el-form-item>
               </el-form>
               <div class="hint" style="margin-bottom:8px">
-                字幕将直接写入画面，任意播放器均可显示，输出 {{ burnOutName }}；源文件与字幕均不改动。整段视频需重新编码，至少需数分钟，期间可切换页面。
+                {{ tr('files.burnHint', { out: burnOutName }) }}
               </div>
               <div class="row">
-                <el-button size="small" type="primary" :loading="burnStarting" :disabled="burnRunning" @click="startBurn"><svg class="btn-ico"><use href="#i-play"></use></svg>开始烧制</el-button>
-                <el-button size="small" v-if="burnRunning" type="danger" plain @click="stopBurn">停止</el-button>
+                <el-button size="small" type="primary" :loading="burnStarting" :disabled="burnRunning" @click="startBurn"><svg class="btn-ico"><use href="#i-play"></use></svg>{{ tr('files.burnStart') }}</el-button>
+                <el-button size="small" v-if="burnRunning" type="danger" plain @click="stopBurn">{{ tr('common.stop') }}</el-button>
                 <span v-if="burnJob" class="hint">{{ burnStatusText }}</span>
               </div>
               <el-progress v-if="burnRunning" :percentage="burnPercent" :stroke-width="10" style="margin-top:8px"></el-progress>
             </div>
             <div v-if="pipelineView" class="card" id="card-file-pipeline">
               <div class="section-title row row--spread">
-                <span>流水线产物：{{ pipelineRow && pipelineRow.name }}（{{ pipelineView.updated || '尚未运行' }}）</span>
+                <span>{{ tr('files.pipeTitle', { name: pipelineRow && pipelineRow.name, updated: pipelineView.updated || tr('files.pipeNever') }) }}</span>
                 <span>
-                  <el-button size="small" @click="refreshPipeline(pipelineRow, true)">刷新</el-button>
-                  <el-button size="small" @click="closePipeline">关闭</el-button>
+                  <el-button size="small" @click="refreshPipeline(pipelineRow, true)">{{ tr('common.refresh') }}</el-button>
+                  <el-button size="small" @click="closePipeline">{{ tr('common.close') }}</el-button>
                 </span>
               </div>
               <div v-for="s in pipelineView.stages" :key="s.name"
@@ -2787,80 +2786,80 @@
                 <el-tag :type="pipeStatusType(s.status)" size="small" style="min-width:64px;text-align:center">{{ pipeStatusLabel(s.status) }}</el-tag>
                 <span style="min-width:88px">{{ s.label }}</span>
                 <el-button v-if="s.out" size="small" plain @click="openFile(s.out)">{{ s.out_name }}</el-button>
-                <span v-else class="hint" style="min-width:120px">无产物</span>
+                <span v-else class="hint" style="min-width:120px">{{ tr('files.pipeNoOut') }}</span>
                 <span class="hint" style="flex:1">{{ s.note }}{{ s.at ? ' · ' + s.at : '' }}</span>
-                <el-button size="small" plain :disabled="s.status === 'running'" @click="rerunStage(s.name)">重新运行此步</el-button>
+                <el-button size="small" plain :disabled="s.status === 'running'" @click="rerunStage(s.name)">{{ tr('files.pipeRerun') }}</el-button>
               </div>
               <div class="hint" style="margin-top:6px">
-                阶段产物保存在同目录，进度记录于 &lt;主名&gt;.pipeline.json；重新运行单步直接读取上一步落盘结果，无需重新转写整条流水线。
+                {{ tr('files.pipeHintA') }} &lt;{{ tr('files.pipeNameCode') }}&gt;.pipeline.json{{ tr('files.pipeHintB') }}
               </div>
             </div>
             <div class="card" style="padding:12px 16px">
-              <div class="section-title" style="margin-bottom:8px">批量字幕处理</div>
+              <div class="section-title" style="margin-bottom:8px">{{ tr('files.batchTitle') }}</div>
               <div class="row row--tight">
-                <el-select size="small" v-model="batchMode" style="width:160px">
-                  <el-option label="批量转写" value="transcribe"></el-option>
-                  <el-option label="批量机翻 SRT" value="translate"></el-option>
-                  <el-option label="转写+机翻" value="both"></el-option>
+                <el-select size="small" v-model="batchMode" style="width:200px">
+                  <el-option :label="tr('files.batchTranscribe')" value="transcribe"></el-option>
+                  <el-option :label="tr('files.batchTranslate')" value="translate"></el-option>
+                  <el-option :label="tr('files.batchBoth')" value="both"></el-option>
                 </el-select>
-                <el-select size="small" v-model="batchScope" style="width:160px">
-                  <el-option label="当前目录(递归)" value="folder"></el-option>
-                  <el-option label="仅勾选文件" value="selected"></el-option>
+                <el-select size="small" v-model="batchScope" style="width:200px">
+                  <el-option :label="tr('files.scopeFolder')" value="folder"></el-option>
+                  <el-option :label="tr('files.scopeSelected')" value="selected"></el-option>
                 </el-select>
-                <el-button size="small" type="primary" :loading="batchRunning" @click="runBatchAi"><svg class="btn-ico"><use href="#i-play"></use></svg>开始批量处理</el-button>
-                <span class="hint">语言与引擎在设置页配置，进度输出到日志</span>
+                <el-button size="small" type="primary" :loading="batchRunning" @click="runBatchAi"><svg class="btn-ico"><use href="#i-play"></use></svg>{{ tr('files.batchRun') }}</el-button>
+                <span class="hint">{{ tr('files.batchHint') }}</span>
               </div>
               <div class="row row--tight row--mt">
-                <span class="hint">时间轴校准（限已勾选的 .srt）：</span>
+                <span class="hint">{{ tr('files.calibLabel') }}</span>
                 <el-input-number size="small" v-model="syncOffsetSec" :step="0.1" :precision="2" style="width:130px"></el-input-number>
-                <span class="hint">秒（负值表示提前）</span>
+                <span class="hint">{{ tr('files.calibSec') }}</span>
                 <el-input-number size="small" v-model="syncScale" :step="0.001" :precision="4" :min="0.5" :max="2" style="width:120px"></el-input-number>
-                <span class="hint">时间轴缩放</span>
-                <el-checkbox v-model="syncInplace">覆盖原文件</el-checkbox>
-                <el-button size="small" type="primary" plain @click="runSrtCalibrateSelected">校准已勾选字幕</el-button>
-                <el-button size="small" @click="exportBilingualSelected">双语导出已勾选字幕</el-button>
+                <span class="hint">{{ tr('files.calibScale') }}</span>
+                <el-checkbox v-model="syncInplace">{{ tr('files.calibInplace') }}</el-checkbox>
+                <el-button size="small" type="primary" plain @click="runSrtCalibrateSelected">{{ tr('files.calibRun') }}</el-button>
+                <el-button size="small" @click="exportBilingualSelected">{{ tr('files.bilingualRun') }}</el-button>
               </div>
             </div>
             <div class="card">
-              <div v-if="!filteredFiles.length" class="empty-tip">目录为空</div>
+              <div v-if="!filteredFiles.length" class="empty-tip">{{ tr('files.emptyDir') }}</div>
               <el-table v-else :data="pagers.files.paged" size="small" stripe :default-sort="{ prop: 'name', order: 'ascending' }" @sort-change="onFileSortChange" @row-click="onFileRowClick" @selection-change="onFileSelectionChange">
                 <el-table-column type="selection" width="42" :selectable="(row) => !row.is_dir"></el-table-column>
-                <el-table-column prop="name" label="名称" min-width="240" sortable="custom" :sort-orders="['ascending', 'descending']">
+                <el-table-column prop="name" :label="tr('common.colName')" min-width="240" sortable="custom" :sort-orders="['ascending', 'descending']">
                   <template #default="{ row }">
                     <span>{{ row.is_dir ? '📁' : '📄' }} {{ row.name }}</span>
                   </template>
                 </el-table-column>
-                <el-table-column prop="size" label="大小" width="110" sortable="custom" :sort-orders="['ascending', 'descending']">
+                <el-table-column prop="size" :label="tr('common.colSize')" width="110" sortable="custom" :sort-orders="['ascending', 'descending']">
                   <template #default="{ row }">{{ row.is_dir ? '—' : formatSize(row.size) }}</template>
                 </el-table-column>
-                <el-table-column prop="mtime" label="修改时间" width="160" sortable="custom" :sort-orders="['ascending', 'descending']"></el-table-column>
-                <el-table-column label="操作" width="230" align="left">
+                <el-table-column prop="mtime" :label="tr('common.colMtime')" width="160" sortable="custom" :sort-orders="['ascending', 'descending']"></el-table-column>
+                <el-table-column :label="tr('common.colOps')" width="280" align="left">
                   <template #default="{ row, $index }">
                     <div class="file-ops">
-                      <el-button v-if="!row.is_dir && isPlayable(row)" size="small" plain @click.stop="playFile(row)">播放</el-button>
-                      <el-button v-if="row.is_dir" size="small" plain @click.stop="loadFiles(row.path)">进入</el-button>
-                      <el-button v-if="!row.is_dir" size="small" plain @click.stop="openFile(row.path)">打开</el-button>
-                      <el-button v-if="row.is_dir" size="small" plain @click.stop="zipPath(row.path, row.name)">打包</el-button>
-                      <el-button size="small" plain type="danger" @click.stop="deleteFile(row)">删除</el-button>
+                      <el-button v-if="!row.is_dir && isPlayable(row)" size="small" plain @click.stop="playFile(row)">{{ tr('files.btnPlay') }}</el-button>
+                      <el-button v-if="row.is_dir" size="small" plain @click.stop="loadFiles(row.path)">{{ tr('files.btnEnter') }}</el-button>
+                      <el-button v-if="!row.is_dir" size="small" plain @click.stop="openFile(row.path)">{{ tr('files.btnOpen') }}</el-button>
+                      <el-button v-if="row.is_dir" size="small" plain @click.stop="zipPath(row.path, row.name)">{{ tr('files.btnZip') }}</el-button>
+                      <el-button size="small" plain type="danger" @click.stop="deleteFile(row)">{{ tr('common.del') }}</el-button>
                       <el-dropdown v-if="!row.is_dir && (isMediaFile(row) || isSrtFile(row) || isAudioFile(row))" trigger="click" @command="runFileAction">
-                        <el-button size="small" plain @click.stop><svg class="btn-ico"><use href="#i-more"></use></svg>更多</el-button>
+                        <el-button size="small" plain @click.stop><svg class="btn-ico"><use href="#i-more"></use></svg>{{ tr('queue.btnMore') }}</el-button>
                         <template #dropdown>
                           <el-dropdown-menu>
-                            <el-dropdown-item v-if="isMediaFile(row)" :command="'aiTranscribe|' + $index">转写</el-dropdown-item>
-                            <el-dropdown-item v-if="isMediaFile(row) || isSrtFile(row)" :command="'aiTranslateSrt|' + $index">翻译</el-dropdown-item>
-                            <el-dropdown-item v-if="isMediaFile(row)" :command="'aiPipeline|' + $index">流水线</el-dropdown-item>
-                            <el-dropdown-item v-if="isMediaFile(row)" :command="'showPipeline|' + $index">查看产物</el-dropdown-item>
-                            <el-dropdown-item v-if="isMediaFile(row)" :command="'aiDemucs|' + $index">分离人声</el-dropdown-item>
-                            <el-dropdown-item v-if="isMediaFile(row)" :command="'analyzeAudioFile|' + $index">音频分析</el-dropdown-item>
-                            <el-dropdown-item v-if="(row.ext||'').toLowerCase()==='.srt'" :command="'aiTts|' + $index">配音</el-dropdown-item>
-                            <el-dropdown-item v-if="isSrtFile(row)" :command="'aiCalibrateSrt|' + $index">校准时间轴</el-dropdown-item>
-                            <el-dropdown-item v-if="isSrtFile(row)" :command="'exportBilingual|' + $index">双语导出</el-dropdown-item>
-                            <el-dropdown-item v-if="isVideoFile(row)" :command="'openBurn|' + $index">烧录字幕</el-dropdown-item>
+                            <el-dropdown-item v-if="isMediaFile(row)" :command="'aiTranscribe|' + $index">{{ tr('files.miTranscribe') }}</el-dropdown-item>
+                            <el-dropdown-item v-if="isMediaFile(row) || isSrtFile(row)" :command="'aiTranslateSrt|' + $index">{{ tr('files.miTranslate') }}</el-dropdown-item>
+                            <el-dropdown-item v-if="isMediaFile(row)" :command="'aiPipeline|' + $index">{{ tr('files.miPipeline') }}</el-dropdown-item>
+                            <el-dropdown-item v-if="isMediaFile(row)" :command="'showPipeline|' + $index">{{ tr('files.miOutputs') }}</el-dropdown-item>
+                            <el-dropdown-item v-if="isMediaFile(row)" :command="'aiDemucs|' + $index">{{ tr('files.miVocal') }}</el-dropdown-item>
+                            <el-dropdown-item v-if="isMediaFile(row)" :command="'analyzeAudioFile|' + $index">{{ tr('files.miAnalyze') }}</el-dropdown-item>
+                            <el-dropdown-item v-if="(row.ext||'').toLowerCase()==='.srt'" :command="'aiTts|' + $index">{{ tr('files.miTts') }}</el-dropdown-item>
+                            <el-dropdown-item v-if="isSrtFile(row)" :command="'aiCalibrateSrt|' + $index">{{ tr('files.miCalibrate') }}</el-dropdown-item>
+                            <el-dropdown-item v-if="isSrtFile(row)" :command="'exportBilingual|' + $index">{{ tr('files.miBilingual') }}</el-dropdown-item>
+                            <el-dropdown-item v-if="isVideoFile(row)" :command="'openBurn|' + $index">{{ tr('files.miBurn') }}</el-dropdown-item>
                             <el-dropdown-item v-if="isAudioFile(row)" :command="'openPicard|' + $index">Picard</el-dropdown-item>
-                            <el-dropdown-item v-if="isAudioFile(row)" :command="'mbTagFile|' + $index">写入标签</el-dropdown-item>
-                            <el-dropdown-item v-if="isAudioFile(row)" :command="'mbEnrichFile|' + $index">MB 匹配</el-dropdown-item>
-                            <el-dropdown-item v-if="isAudioFile(row)" :command="'fingerprintFile|' + $index">指纹识别</el-dropdown-item>
-                            <el-dropdown-item v-if="isAudioFile(row)" :command="'guessTagsFile|' + $index">猜测标签</el-dropdown-item>
+                            <el-dropdown-item v-if="isAudioFile(row)" :command="'mbTagFile|' + $index">{{ tr('files.miMbTag') }}</el-dropdown-item>
+                            <el-dropdown-item v-if="isAudioFile(row)" :command="'mbEnrichFile|' + $index">{{ tr('files.miMbMatch') }}</el-dropdown-item>
+                            <el-dropdown-item v-if="isAudioFile(row)" :command="'fingerprintFile|' + $index">{{ tr('files.miFingerprint') }}</el-dropdown-item>
+                            <el-dropdown-item v-if="isAudioFile(row)" :command="'guessTagsFile|' + $index">{{ tr('files.miGuessTags') }}</el-dropdown-item>
                           </el-dropdown-menu>
                         </template>
                       </el-dropdown>
@@ -2870,7 +2869,7 @@
               </el-table>
               <el-pagination v-if="pagers.files.show" v-model:current-page="pagers.files.page" :page-size="pagers.files.pageSize"
                              :total="pagers.files.total" layout="total, prev, pager, next, jumper" size="small" background class="pager"></el-pagination>
-              <div v-if="pagers.files.show" class="hint hint--block">翻页后当前页的勾选会清空，请分页勾选后分别执行批量操作</div>
+              <div v-if="pagers.files.show" class="hint hint--block">{{ tr('files.pagerHint') }}</div>
             </div>
           </div>
 
@@ -7826,7 +7825,7 @@
           try {
             await api('/api/open-folder', { method: 'POST', body: JSON.stringify({ path: filesPath.value || '' }) });
           } catch (e) {
-            ElementPlus.ElMessage.error(e.message || '打开失败');
+            ElementPlus.ElMessage.error(e.message || tr('files.tOpenFailed'));
           }
         }
         async function testCookie() {
@@ -8844,7 +8843,7 @@
             if (batchScope.value === 'selected') {
               const paths = (selectedFiles.value || []).map((r) => r.path).filter(Boolean);
               if (!paths.length) {
-                ElementPlus.ElMessage.warning('请先勾选文件');
+                ElementPlus.ElMessage.warning(tr('files.tBatchNeedSel'));
                 return;
               }
               body.paths = paths;
@@ -8852,7 +8851,7 @@
               // 当前目录绝对路径 = filesRoot + filesPath
               const folder = [filesRoot.value, filesPath.value].filter(Boolean).join('/').replace(/\\/g, '/');
               if (!folder && !filesRoot.value) {
-                ElementPlus.ElMessage.warning('无法确定目录');
+                ElementPlus.ElMessage.warning(tr('files.tBatchNoDir'));
                 return;
               }
               body.folder = filesRoot.value && filesPath.value
@@ -8860,7 +8859,7 @@
                 : (filesRoot.value || filesPath.value);
             }
             const r = await api('/api/ai/batch', { method: 'POST', body: JSON.stringify(body) });
-            ElementPlus.ElMessage.success(r.message || `已开始 ${r.count || ''} 个文件`);
+            ElementPlus.ElMessage.success(r.message || tr('files.tBatchStarted', { n: r.count || '' }));
           } catch (e) {
             ElementPlus.ElMessage.error(String(e.message || e));
           } finally {
@@ -8872,7 +8871,7 @@
             .filter((r) => (r.name || '').toLowerCase().endsWith('.srt'))
             .map((r) => r.path);
           if (!paths.length) {
-            ElementPlus.ElMessage.warning('请勾选 .srt 文件');
+            ElementPlus.ElMessage.warning(tr('files.tCalibNeed'));
             return;
           }
           let ok = 0;
@@ -8892,7 +8891,7 @@
               ElementPlus.ElMessage.error(`${path}: ${e.message || e}`);
             }
           }
-          ElementPlus.ElMessage.success(`已校准 ${ok}/${paths.length} 个字幕`);
+          ElementPlus.ElMessage.success(tr('files.tCalibOk', { ok, n: paths.length }));
           loadFiles(filesPath.value);
         }
         async function aiCalibrateSrt(row) {
@@ -8941,7 +8940,7 @@
             (r) => /\.srt$/i.test(r.name || '') && !/\.bi\./i.test(r.name || '')
           );
           if (!srts.length) {
-            ElementPlus.ElMessage.warning('请先勾选 .srt 文件（已生成的 .bi. 文件请排除）');
+            ElementPlus.ElMessage.warning(tr('files.tBilingualNeed'));
             return;
           }
           let ok = 0;
@@ -8954,7 +8953,7 @@
               skipped.push(`${row.name}: ${e.message || e}`);
             }
           }
-          if (ok) ElementPlus.ElMessage.success(`已导出 ${ok} 组双语字幕${skipped.length ? `，${skipped.length} 个跳过` : ''}`);
+          if (ok) ElementPlus.ElMessage.success(tr('files.tBilingualOk', { n: ok }) + (skipped.length ? tr('files.tBilingualSkip', { n: skipped.length }) : ''));
           if (skipped.length) ElementPlus.ElMessage.warning(skipped[0]);
           loadFiles(filesPath.value);
         }
@@ -8983,7 +8982,7 @@
           const j = burnJob.value;
           if (!j) return '';
           if (j.status === 'running') {
-            return `进行中 ${j.elapsed || '…'}${j.total ? ' / ' + Math.round(j.total) + 's' : ''} · ${j.message || ''}`;
+            return `${tr('files.burnRunning')} ${j.elapsed || '…'}${j.total ? ' / ' + Math.round(j.total) + 's' : ''} · ${j.message || ''}`;
           }
           return j.message || '';
         });
@@ -9038,8 +9037,8 @@
                 font: d.font, crf: d.crf, overwrite: d.overwrite,
               }),
             });
-            ElementPlus.ElMessage.success(r.message || '开始烧录字幕');
-            burnJob.value = { media: row.path, out: r.out, status: 'running', elapsed: '', total: 0, message: '准备中' };
+            ElementPlus.ElMessage.success(r.message || tr('files.tBurnStarted'));
+            burnJob.value = { media: row.path, out: r.out, status: 'running', elapsed: '', total: 0, message: tr('files.burnPreparing') };
             pollBurn();
           } catch (e) {
             ElementPlus.ElMessage.error(String(e.message || e));
@@ -9052,7 +9051,7 @@
           if (!row) return;
           try {
             await api('/api/ai/hardsub_stop', { method: 'POST', body: JSON.stringify({ path: row.path }) });
-            ElementPlus.ElMessage.info('已请求停止，未完成的文件将被删除');
+            ElementPlus.ElMessage.info(tr('files.tBurnStopReq'));
           } catch (e) {
             ElementPlus.ElMessage.error(String(e.message || e));
           }
@@ -9120,7 +9119,7 @@
               method: 'POST',
               body: JSON.stringify(pipelineBody(row.path, name)),
             });
-            ElementPlus.ElMessage.success(r.message || '已启动');
+            ElementPlus.ElMessage.success(r.message || tr('files.tStageStarted'));
             refreshPipeline(row);
           } catch (e) { ElementPlus.ElMessage.error(String(e.message || e)); }
         }
@@ -9315,7 +9314,7 @@
         }
         async function openSrtEditor() {
           if (!transcriptPath.value) {
-            ElementPlus.ElMessage.warning('先在文件列表里播放这一项，再打开逐句校对');
+            ElementPlus.ElMessage.warning(tr('files.tProofFirst'));
             return false;
           }
           srtEdit.busy = true;
@@ -9331,7 +9330,7 @@
             srtEdit.dirty = false;
             srtQcReset();
             srtEdit.on = true;
-            if (!srtEdit.rows.length) ElementPlus.ElMessage.info(r.message || '这份字幕里没有解析出有效句子');
+            if (!srtEdit.rows.length) ElementPlus.ElMessage.info(r.message || tr('files.tNoCues'));
             return true;
           } catch (e) {
             ElementPlus.ElMessage.error(e.message);
@@ -9342,7 +9341,7 @@
         }
         function srtCloseEdit() {
           if (srtEdit.dirty) {
-            ElementPlus.ElMessage.warning('还有未保存的改动：先按「保存」写回字幕，或按「放弃修改」退回原样');
+            ElementPlus.ElMessage.warning(tr('files.tUnsavedClose'));
             return;
           }
           srtEdit.on = false;
@@ -9364,7 +9363,7 @@
         }
         async function runSrtQc() {
           if (!srtEdit.srt) {
-            ElementPlus.ElMessage.warning('先按「逐句校对」打开一份字幕，质检才知道查哪一条');
+            ElementPlus.ElMessage.warning(tr('files.tQcOpenFirst'));
             return;
           }
           srtQc.busy = true;
@@ -9382,7 +9381,7 @@
             srtQc.timeline = r.timeline || null;
             srtQc.media = r.media || '';
             srtQc.media_seconds = r.media_seconds || 0;
-            if (!srtQc.rows.length) ElementPlus.ElMessage.success(r.message || '没有发现可疑句');
+            if (!srtQc.rows.length) ElementPlus.ElMessage.success(r.message || tr('files.tQcClean'));
           } catch (e) {
             ElementPlus.ElMessage.error(e.message);
           } finally {
@@ -9395,13 +9394,12 @@
           const idxs = d.map(x => x - 1).filter(x => x >= 0 && x < srtEdit.rows.length).sort((a, b) => b - a);
           if (!idxs.length) return;
           ElementPlus.ElMessageBox.confirm(
-            `要删的是质检点名的 ${idxs.length} 句：纯语气词，以及同一句连着复读三遍以上的那几处。`
-            + '删掉只是改界面上这份，按「保存」才会写盘（写盘前照例留备份）。歌词副歌本来就会重复，拿不准就别删。',
-            '按名单删句', { type: 'warning', confirmButtonText: '删', cancelButtonText: '先不删' }
+            tr('files.tDropNoiseBody', { n: idxs.length }),
+            tr('files.tDropNoiseTitle'), { type: 'warning', confirmButtonText: tr('files.btnDrop'), cancelButtonText: tr('files.btnDropNo') }
           ).then(() => {
             idxs.forEach(i => srtDrop(i));
             srtEdit.sel = -1;
-            ElementPlus.ElMessage.success(`已删掉 ${idxs.length} 句，还没写盘 —— 核对一下再按「保存」`);
+            ElementPlus.ElMessage.success(tr('files.tNoiseDropped', { n: idxs.length }));
           }).catch(() => {});
         }
         function qcJumpTo(q) {
@@ -9424,17 +9422,17 @@
         }
         async function runSrtRewrap() {
           if (!srtEdit.srt) {
-            ElementPlus.ElMessage.warning('先按「逐句校对」打开一份字幕，重排才知道改哪一条');
+            ElementPlus.ElMessage.warning(tr('files.tRewrapOpenFirst'));
             return;
           }
           if (srtEdit.dirty) {
-            ElementPlus.ElMessage.warning('重排改的是磁盘上的字幕：请先按「保存」写回行内改动，或按「放弃修改」退回磁盘版本');
+            ElementPlus.ElMessage.warning(tr('files.tRewrapDirty'));
             return;
           }
           srtQc.busy = true;
           try {
             const r = await api('/api/subtitle/rewrap', { method: 'POST', body: JSON.stringify({ path: srtEdit.srt }) });
-            ElementPlus.ElMessage.success(r.message || '已按每行字数重排');
+            ElementPlus.ElMessage.success(r.message || tr('files.tRewrapped'));
             await openSrtEditor();
             srtQc.message = r.message || '';
           } catch (e) {
@@ -9445,7 +9443,7 @@
         }
         async function srtDiscard() {
           if (await openSrtEditor()) {
-            ElementPlus.ElMessage.info('已放弃未保存的改动，重新读回了磁盘上的字幕');
+            ElementPlus.ElMessage.info(tr('files.tDiscarded'));
           }
         }
         function srtShiftSel(step) {
@@ -9473,7 +9471,7 @@
         }
         async function srtSave() {
           if (!srtEdit.rows.length) {
-            ElementPlus.ElMessage.warning('句子已经全部删空，这样保存等于把整份字幕清空。要退回原样请按「放弃修改」');
+            ElementPlus.ElMessage.warning(tr('files.tSaveEmptyWarn'));
             return;
           }
           srtEdit.busy = true;
@@ -9489,7 +9487,7 @@
             });
             srtEdit.mtimeTs = r.mtime_ts || 0;
             srtEdit.dirty = false;
-            ElementPlus.ElMessage.success(r.message + '，改前的内容备份为 ' + String(r.backup || '').split('/').pop());
+            ElementPlus.ElMessage.success(r.message + tr('files.tSavedBackup', { f: String(r.backup || '').split('/').pop() }));
             await loadTranscript(transcriptPath.value);
           } catch (e) {
             ElementPlus.ElMessage.error(e.message);
@@ -9515,7 +9513,7 @@
             link.download = (name || 'archive') + '.zip';
             link.click();
             URL.revokeObjectURL(url);
-          }).catch(e => ElementPlus.ElMessage.error(e.message || '打包失败'));
+          }).catch(e => ElementPlus.ElMessage.error(e.message || tr('files.tZipFailed')));
         }
         function zipCurrentFolder() {
           zipPath(filesPath.value || '', filesPath.value ? filesPath.value.split('/').pop() : 'downloads');
@@ -12274,7 +12272,7 @@
             filesPath.value = data.path || '';
             filesRoot.value = data.root || '';
           } catch (e) {
-            ElementPlus.ElMessage.error('读取文件失败: ' + e.message);
+            ElementPlus.ElMessage.error(tr('files.tReadFailed', { m: e.message }));
           }
         }
         function onFileRowClick(row) {
@@ -12296,17 +12294,17 @@
         }
         async function deleteFile(row) {
           try {
-            await ElementPlus.ElMessageBox.confirm(`确定删除 ${row.name}？`, '确认', { type: 'warning' });
+            await ElementPlus.ElMessageBox.confirm(tr('files.tDeleteQ', { n: row.name }), tr('common.confirm'), { type: 'warning' });
             await api('/api/files/delete', { method: 'POST', body: JSON.stringify({ path: row.path }) });
-            ElementPlus.ElMessage.success('已删除');
+            ElementPlus.ElMessage.success(tr('files.tDeleted'));
             await loadFiles(filesPath.value);
           } catch (_) {}
         }
         async function clearArchive() {
           try {
-            await ElementPlus.ElMessageBox.confirm('清空后「跳过已下载」将失效，确定？', '确认', { type: 'warning' });
+            await ElementPlus.ElMessageBox.confirm(tr('files.tClearArchiveQ'), tr('common.confirm'), { type: 'warning' });
             await api('/api/files/clear-archive', { method: 'POST', body: '{}' });
-            ElementPlus.ElMessage.success('已清空下载记录');
+            ElementPlus.ElMessage.success(tr('files.tArchiveCleared'));
           } catch (e) {
             if (e && e.message) ElementPlus.ElMessage.error(e.message);
           }
