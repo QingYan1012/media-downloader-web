@@ -19,7 +19,8 @@
    埋点参数先收口再入库，键形不对就当没给；前端只在英文界面且两份词表都有这个词时才现拼。
 6. **逐页闸门**（I）：一页一块地抠模板 —— 登记过的页（PAGES_DONE）除了注释以外不许有中文；
    同一页的处理动作在脚本里拼的那几句也一样（PAGE_HANDLERS），注释不算，它在讲代码。
-   没登记的页只报中文行数，不当断言 —— 那是接下来一批一批要清零的债。
+   比后端数据的那几行（预设名、占位标题）登记在 RESIDUE 里：允许的到底是哪几行，逐行对，
+   悄悄多出来一行也算红。没登记的页只报中文行数，不当断言 —— 那是接下来一批一批要清零的债。
 
 全程不起服务、不写 config、不碰下载目录（H 组真跑 LogManager.log，但 LOG_FILE 临时挪到 %TEMP%）；
 node 的读数写到 %TEMP% 再读回（控制台是 GBK）。
@@ -357,7 +358,7 @@ def strip_comments(src: str) -> str:
     return re.sub(r"<!--.*?-->", "", src, flags=re.S)
 
 
-PAGES_DONE = ["home"]   # ← 每翻完一页把页名加进来；登记了却没翻干净会被 I3 判红
+PAGES_DONE = ["home", "queue"]   # ← 每翻完一页把页名加进来；登记了却没翻干净会被 I3 判红
 ck("I2 PAGES_DONE 都是真有的页", all(page_block(k) for k in PAGES_DONE),
    str([k for k in PAGES_DONE if not page_block(k)]))
 for _pg in PAGES_DONE:
@@ -372,7 +373,18 @@ PAGE_HANDLERS = {
     # 这一页的模板翻干净了还不算：点下去弹的那句提示是脚本里拼的，也得跟着翻
     "home": ["applyPreset", "pasteUrl", "clipAdd", "clipIgnore", "startDownload", "stopAll",
              "importUrlFile", "onUrlFile", "browsePath", "doAnalyze", "analyze",
-             "pasteAnalyzeUrl", "downloadSpecificFormat"],
+             "pasteAnalyzeUrl", "downloadSpecificFormat", "downloadQualityPreset"],
+    "queue": ["retryFailed", "editTaskHeaders", "retrySelected", "cleanupParts", "clearFinished",
+              "toggleSelect", "toggleSelectAll", "pauseSelected", "resumeSelected", "deleteSelected",
+              "pinSelected", "unpinSelected", "moveTopSelected", "laterSelected", "startLaterSelected",
+              "pauseAll", "resumeAll", "resetThrottle", "gotoTask", "notifyDone",
+              "statusLabel", "taskHeadline", "taskSpecTitle", "taskSpec"],
+}
+# 允许留中文的处理器：这些行比的是后端发来的数据（预设名、占位标题），翻成英文这行判断就失效。
+# 「允许留下」不等于「不用管」——残留的行数和那几句都钉死，改了名字或悄悄多出一行都判红
+RESIDUE = {
+    "downloadQualityPreset": ["仅音频"],
+    "taskHeadline": ["等待中..."],
 }
 
 
@@ -393,18 +405,34 @@ def strip_js_comments(src: str) -> str:
 
 ck("I5a 每个登记了处理动作的页名都是真有的页",
    all(k in [m[0] for m in MARKS] for k in PAGE_HANDLERS), str(list(PAGE_HANDLERS)))
+_registered = {f for _fns in PAGE_HANDLERS.values() for f in _fns}
+ck("I5b 每个允许留中文的处理器都登记在某一页里（漏登记就没人盯它了）",
+   all(f in _registered for f in RESIDUE), str([f for f in RESIDUE if f not in _registered]))
 for _pg, _fns in PAGE_HANDLERS.items():
     for _fn in _fns:
         _b = js_fn(_fn)
         if not _b:
             ck(f"I5[{_pg}.{_fn}] 这个处理器抠到了", False, "找不到函数体（改名了？）")
             continue
-        _left = [ln.strip()[:50] for ln in strip_js_comments(_b).splitlines() if CJK.search(ln)]
-        ck(f"I5[{_pg}.{_fn}] 处理动作弹给用户的句子全走词表", not _left, str(_left[:3]))
-# downloadQualityPreset 比的是后端解析出来的预设名（'仅音频'），名字翻了这行判断就失效，
-# 它跟后端正文同一批走（键 + 现拼）；这一条钉住「剩下的中文只剩这一处」，别让它悄悄长大
-_qp = [ln.strip() for ln in strip_js_comments(js_fn("downloadQualityPreset")).splitlines() if CJK.search(ln)]
-ck("I6[home] 唯一没翻的处理器残留就是后端预设名那一条比对", len(_qp) == 1 and "仅音频" in _qp[0], str(_qp[:2]))
+        _left = [ln.strip() for ln in strip_js_comments(_b).splitlines() if CJK.search(ln)]
+        if _fn in RESIDUE:
+            _exp = RESIDUE[_fn]
+            ck(f"I6[{_pg}.{_fn}] 残留只有比后端数据的那 {len(_exp)} 行",
+               len(_left) == len(_exp) and all(x in ln for x, ln in zip(_exp, _left)),
+               str([ln[:60] for ln in _left]))
+        else:
+            ck(f"I5[{_pg}.{_fn}] 处理动作弹给用户的句子全走词表", not _left, str(_left[:3]))
+# 模板里调用的处理器必须出现在 setup 的 return 名单里：漏一个不是「那一行不显示」，
+# 是整页渲染抛错 —— 静态切片看不出来，只有浏览器里才炸（沙箱实测就是这么撞上的）
+_ret_at = HTML.rindex("statusType, statusLabel,")
+RETURNED = HTML[HTML.rindex("return {", 0, _ret_at):HTML.index("};", _ret_at)]
+_defs = set(re.findall(r"^ {8}(?:async )?function ([a-z][A-Za-z0-9_]*)\(", HTML, flags=re.M))
+_cands = set()
+for _pg in PAGES_DONE:
+    _cands |= set(re.findall(r"\b([a-z][A-Za-z0-9_]*)\s*\(", strip_comments(page_block(_pg))))
+_missing = sorted(n for n in _cands if n in _defs and n not in RETURNED)
+ck("I7 登记过的页里，模板调用的处理器都在 setup 的 return 名单里", not _missing, str(_missing))
+
 _todo = []
 for _k, _ in MARKS:
     if _k in PAGES_DONE:

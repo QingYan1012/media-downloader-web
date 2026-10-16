@@ -291,9 +291,10 @@ ck("F13 pop 一次给值、再来就是 False；没记过的任务不 KeyError",
    and eng_h.pop_raw_bytes("没有这个 id") is False)
 
 print("== G. 界面上屏 ==")
-ck("G1 卡片两张模板的标签改成「成品核对」（这一行现在也可能装校验值）",
-   HTML.count("成品核对 · {{ t.verify_note }}") == 2 and "画质核对 ·" not in HTML,
-   HTML.count("成品核对 · {{ t.verify_note }}"))
+ck("G1 卡片两张模板的标签改成「成品核对」（这一行现在也可能装校验值；句子搬进词表后按 tr 的键钉）",
+   HTML.count("{{ tr('task.verifyPrefix') }} · {{ t.verify_note }}") == 2 and "画质核对 ·" not in HTML
+   and "'task.verifyPrefix': '成品核对'," in I18N_ZH,
+   HTML.count("{{ tr('task.verifyPrefix') }} · {{ t.verify_note }}"))
 ck("G2 入队默认对象里有这两个键（v-model 指到没声明的键上，Vue 那侧是 undefined）",
    "expect_hash: ''," in HTML and "hash_algo: 'auto'," in HTML)
 ck("G3 v-model 的键都在默认对象里（这一对是新加的，别只写模板）",

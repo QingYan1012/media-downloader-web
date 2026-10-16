@@ -2017,74 +2017,74 @@
           <div v-show="page === 'queue'">
             <div v-if="status.throttle && status.throttle.length" class="card row row--mb">
               <span style="font-size:16px">🐢</span>
-              <b>站点降速中</b>
+              <b>{{ tr('queue.throttleTitle') }}</b>
               <el-tag v-for="t in status.throttle" :key="t.host" type="warning" size="small" closable @close="resetThrottle(t.host)" @click="resetThrottle(t.host)">
-                {{ t.host }} 剩 {{ t.left }}s（第 {{ t.strikes }} 次）
+                {{ tr('queue.throttleTag', { host: t.host, left: t.left, strikes: t.strikes }) }}
               </el-tag>
-              <span class="hint hint--block">这些域名暂时限制为 1 个并发任务，冷却结束后自动恢复</span>
-              <el-button size="small" plain @click="resetThrottle()">全部立即恢复</el-button>
+              <span class="hint hint--block">{{ tr('queue.throttleHint') }}</span>
+              <el-button size="small" plain @click="resetThrottle()">{{ tr('queue.throttleResumeAll') }}</el-button>
             </div>
             <div v-if="windowHeld" class="card row row--mb">
               <span style="font-size:16px">⏱</span>
-              <b>定时窗外，暂不开新任务</b>
+              <b>{{ tr('queue.windowTitle') }}</b>
               <el-tag v-for="r in windowHeld" :key="'wb-' + r.name" type="info" size="small">
-                {{ r.name }} · 等待 {{ r.held }} 条 · {{ r.resume_at }} 自动开始
+                {{ tr('queue.windowTag', { name: r.name, held: r.held, resumeAt: r.resume_at }) }}
               </el-tag>
-              <span class="hint hint--block">按「设置 → 队列定时窗」的时段，已经在下载的任务不受影响，到点自动继续</span>
+              <span class="hint hint--block">{{ tr('queue.windowHint') }}</span>
             </div>
             <div class="row-actions row row--mb row--tight">
-              <el-checkbox v-model="selectAll" @change="toggleSelectAll">全选</el-checkbox>
+              <el-checkbox v-model="selectAll" @change="toggleSelectAll">{{ tr('queue.all') }}</el-checkbox>
               <el-button-group>
-                <el-button size="small" @click="pauseSelected" :disabled="!selectedIds.length">暂停</el-button>
-                <el-button size="small" @click="resumeSelected" :disabled="!selectedIds.length">继续</el-button>
-                <el-button size="small" type="danger" plain @click="deleteSelected" :disabled="!selectedIds.length">删除</el-button>
+                <el-button size="small" @click="pauseSelected" :disabled="!selectedIds.length">{{ tr('queue.btnPause') }}</el-button>
+                <el-button size="small" @click="resumeSelected" :disabled="!selectedIds.length">{{ tr('queue.btnResume') }}</el-button>
+                <el-button size="small" type="danger" plain @click="deleteSelected" :disabled="!selectedIds.length">{{ tr('queue.btnDelete') }}</el-button>
               </el-button-group>
               <el-button-group>
-                <el-button size="small" type="primary" plain @click="moveTopSelected" :disabled="!selectedIds.length">置顶/队首</el-button>
-                <el-button size="small" @click="laterSelected" :disabled="!selectedIds.length">稍后</el-button>
-                <el-button size="small" @click="startLaterSelected" :disabled="!selectedIds.length">启动稍后</el-button>
+                <el-button size="small" type="primary" plain @click="moveTopSelected" :disabled="!selectedIds.length">{{ tr('queue.btnTop') }}</el-button>
+                <el-button size="small" @click="laterSelected" :disabled="!selectedIds.length">{{ tr('queue.btnLater') }}</el-button>
+                <el-button size="small" @click="startLaterSelected" :disabled="!selectedIds.length">{{ tr('queue.btnStartLater') }}</el-button>
               </el-button-group>
               <el-button-group>
-                <el-button size="small" @click="pauseAll">全部暂停</el-button>
-                <el-button size="small" @click="resumeAll">全部继续</el-button>
-                <el-button size="small" type="danger" plain @click="stopAll">全部停止</el-button>
+                <el-button size="small" @click="pauseAll">{{ tr('queue.btnPauseAll') }}</el-button>
+                <el-button size="small" @click="resumeAll">{{ tr('queue.btnResumeAll') }}</el-button>
+                <el-button size="small" type="danger" plain @click="stopAll">{{ tr('queue.btnStopAll') }}</el-button>
               </el-button-group>
               <el-dropdown trigger="click">
-                <el-button size="small">更多 <span style="margin-left:2px">▾</span></el-button>
+                <el-button size="small">{{ tr('queue.btnMore') }} <span style="margin-left:2px">▾</span></el-button>
                 <template #dropdown>
                   <el-dropdown-menu>
-                    <el-dropdown-item @click="pinSelected" :disabled="!selectedIds.length">仅置顶标记</el-dropdown-item>
-                    <el-dropdown-item @click="unpinSelected" :disabled="!selectedIds.length">取消置顶</el-dropdown-item>
-                    <el-dropdown-item divided @click="retrySelected" :disabled="!selectedIds.length">重试选中</el-dropdown-item>
-                    <el-dropdown-item @click="retryFailed">重试全部失败</el-dropdown-item>
-                    <el-dropdown-item @click="editTaskHeaders" :disabled="selectedIds.length!==1">改 Header/URL</el-dropdown-item>
-                    <el-dropdown-item divided @click="clearFinished">清除已完成</el-dropdown-item>
-                    <el-dropdown-item @click="cleanupParts">清理临时文件</el-dropdown-item>
+                    <el-dropdown-item @click="pinSelected" :disabled="!selectedIds.length">{{ tr('queue.ddPinOnly') }}</el-dropdown-item>
+                    <el-dropdown-item @click="unpinSelected" :disabled="!selectedIds.length">{{ tr('queue.ddUnpin') }}</el-dropdown-item>
+                    <el-dropdown-item divided @click="retrySelected" :disabled="!selectedIds.length">{{ tr('queue.ddRetrySelected') }}</el-dropdown-item>
+                    <el-dropdown-item @click="retryFailed">{{ tr('queue.ddRetryFailed') }}</el-dropdown-item>
+                    <el-dropdown-item @click="editTaskHeaders" :disabled="selectedIds.length!==1">{{ tr('queue.ddEditHeaders') }}</el-dropdown-item>
+                    <el-dropdown-item divided @click="clearFinished">{{ tr('queue.ddClearFinished') }}</el-dropdown-item>
+                    <el-dropdown-item @click="cleanupParts">{{ tr('queue.ddCleanupParts') }}</el-dropdown-item>
                   </el-dropdown-menu>
                 </template>
               </el-dropdown>
               <el-select v-model="taskSort" size="small" style="width:110px" @change="loadTasks">
-                <el-option label="按队列" value="queue"></el-option>
-                <el-option label="按时间" value="created"></el-option>
-                <el-option label="按状态" value="status"></el-option>
-                <el-option label="按标题" value="title"></el-option>
+                <el-option :label="tr('queue.sortQueue')" value="queue"></el-option>
+                <el-option :label="tr('queue.sortCreated')" value="created"></el-option>
+                <el-option :label="tr('queue.sortStatus')" value="status"></el-option>
+                <el-option :label="tr('queue.sortTitle')" value="title"></el-option>
               </el-select>
-              <el-tag v-if="queuePaused" type="warning">队列已暂停</el-tag>
+              <el-tag v-if="queuePaused" type="warning">{{ tr('queue.pausedTag') }}</el-tag>
               <el-tag :type="sseOn ? 'success' : 'info'" effect="plain" size="small"
-                      :title="sseOn ? '任务进度由服务端实时推送，轮询已降成兜底' : '没连上推送接口，正在按 1.5 秒轮询刷新'">
-                {{ sseOn ? '实时推送' : '轮询' }}
+                      :title="sseOn ? tr('queue.sseOnTip') : tr('queue.sseOffTip')">
+                {{ sseOn ? tr('queue.sseOn') : tr('queue.sseOff') }}
               </el-tag>
             </div>
-            <div v-if="!queueTasks.length" class="empty-tip">当前暂无下载任务</div>
+            <div v-if="!queueTasks.length" class="empty-tip">{{ tr('queue.empty') }}</div>
             <div v-for="t in pagers.queueTasks.paged" :key="t.id" :id="'task-' + t.id"
                  class="task-card" :class="{ selected: selectedIds.includes(t.id), flash: flashTaskId === String(t.id) }">
               <div class="task-url row row--tight">
                 <el-checkbox :model-value="selectedIds.includes(t.id)" @change="(v) => toggleSelect(t.id, v)"></el-checkbox>
-                <img v-if="t.thumbnail && !thumbBroken[t.id]" :src="t.thumbnail" class="task-thumb" referrerpolicy="no-referrer" loading="lazy" alt="封面" @error="thumbBroken[t.id] = 1" />
-                <el-tag v-if="t.pinned" size="small" type="danger" effect="dark">置顶</el-tag>
+                <img v-if="t.thumbnail && !thumbBroken[t.id]" :src="t.thumbnail" class="task-thumb" referrerpolicy="no-referrer" loading="lazy" :alt="tr('task.thumbAlt')" @error="thumbBroken[t.id] = 1" />
+                <el-tag v-if="t.pinned" size="small" type="danger" effect="dark">{{ tr('task.pinnedTag') }}</el-tag>
                 <el-tag size="small" :type="statusType(t.status)">{{ statusLabel(t.status) }}</el-tag>
                 <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-                  {{ t.title !== '等待中...' ? t.title : t.url }}
+                  {{ taskHeadline(t) }}
                 </span>
               </div>
               <el-progress
@@ -2098,13 +2098,13 @@
               <!-- 成品回读：「成功」只说明文件能播；是不是用户点的那一档、是不是期望的那一份，都要回读成品才知道 -->
               <div v-if="t.verify_note"
                    style="color:var(--warn);font-size:12px;margin-top:6px;line-height:1.5">
-                成品核对 · {{ t.verify_note }}
+                {{ tr('task.verifyPrefix') }} · {{ t.verify_note }}
               </div>
               <div class="task-meta">
                 <span>
                   {{ t.speed || '' }} {{ t.eta ? 'ETA ' + t.eta : '' }}
                   <span v-if="taskSpec(t)" class="task-spec" :title="taskSpecTitle(t)">{{ taskSpec(t) }}</span>
-                  <el-tag v-if="t.retry_count" size="small" type="warning" style="margin-left:6px">重试 {{ t.retry_count }}/{{ t.max_retries || 3 }}</el-tag>
+                  <el-tag v-if="t.retry_count" size="small" type="warning" style="margin-left:6px">{{ tr('task.retryTag', { n: t.retry_count, max: t.max_retries || 3 }) }}</el-tag>
                   <el-tag v-if="t.resume_hint" size="small" type="info" style="margin-left:4px">{{ t.resume_hint }}</el-tag>
                 </span>
                 <span style="max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ t.filepath || t.url }}</span>
@@ -2196,14 +2196,14 @@
                    class="task-card" :class="{ selected: selectedIds.includes(t.id), flash: flashTaskId === String(t.id) }">
                 <div class="task-url row row--tight">
                   <el-checkbox :model-value="selectedIds.includes(t.id)" @change="(v) => toggleSelect(t.id, v)"></el-checkbox>
-                  <el-tag v-if="t.pinned" size="small" type="danger" effect="dark">置顶</el-tag>
+                  <el-tag v-if="t.pinned" size="small" type="danger" effect="dark">{{ tr('task.pinnedTag') }}</el-tag>
                   <el-tag size="small" :type="statusType(t.status)">{{ statusLabel(t.status) }}</el-tag>
                   <el-tag size="small" effect="plain">{{ btSourceLabel(t) }}</el-tag>
                   <el-tag v-if="t.category" size="small" effect="plain"
                           :title="'自动分类把它归到「' + t.category + '」，成品存在这一档的子目录里'">分类 {{ t.category }}</el-tag>
                   <el-tag v-if="t.seeding" size="small" type="success" effect="plain">做种中</el-tag>
                   <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-                    {{ t.title !== '等待中...' ? t.title : t.url }}
+                    {{ taskHeadline(t) }}
                   </span>
                   <el-button v-if="(t.files || []).length > 1" size="small" plain
                              @click="toggleBtFiles(t)">文件 {{ btPicked(t) }}/{{ t.files.length }}</el-button>
@@ -2222,13 +2222,13 @@
                 <!-- 成品回读：「成功」只说明文件能播；是不是用户点的那一档、是不是期望的那一份，都要回读成品才知道 -->
                 <div v-if="t.verify_note"
                      style="color:var(--warn);font-size:12px;margin-top:6px;line-height:1.5">
-                  成品核对 · {{ t.verify_note }}
+                  {{ tr('task.verifyPrefix') }} · {{ t.verify_note }}
                 </div>
                 <div class="task-meta">
                   <span>
                     {{ t.speed || '' }} {{ t.eta ? 'ETA ' + t.eta : '' }}
                     <span v-if="taskSpec(t)" class="task-spec" :title="taskSpecTitle(t)">{{ taskSpec(t) }}</span>
-                    <el-tag v-if="t.retry_count" size="small" type="warning" style="margin-left:6px">重试 {{ t.retry_count }}/{{ t.max_retries || 3 }}</el-tag>
+                    <el-tag v-if="t.retry_count" size="small" type="warning" style="margin-left:6px">{{ tr('task.retryTag', { n: t.retry_count, max: t.max_retries || 3 }) }}</el-tag>
                     <el-tag v-if="t.resume_hint" size="small" type="info" style="margin-left:4px">{{ t.resume_hint }}</el-tag>
                   </span>
                   <span style="max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ t.filepath || t.url }}</span>
@@ -11844,15 +11844,15 @@
           if (!id) return;
           try {
             const { value } = await ElementPlus.ElMessageBox.prompt(
-              '可填 Cookie 一行（name=value; ...）或 JSON：{"cookie":"...","referer":"...","url":"...","restart":true}',
-              '修改任务 Cookie / Header / URL',
-              { inputValue: 'cookie=', confirmButtonText: '应用', inputPlaceholder: 'cookie=... 或 JSON' }
+              tr('queue.editPrompt'),
+              tr('queue.editCaption'),
+              { inputValue: 'cookie=', confirmButtonText: tr('queue.editConfirm'), inputPlaceholder: tr('queue.editInputPh') }
             );
             let body = {};
             const raw = (value || '').trim();
             if (raw.startsWith('{')) {
               try { body = JSON.parse(raw); } catch (_) {
-                ElementPlus.ElMessage.error('JSON 无效');
+                ElementPlus.ElMessage.error(tr('queue.tRetryJson'));
                 return;
               }
             } else if (raw.toLowerCase().startsWith('cookie=')) {
@@ -11860,12 +11860,12 @@
             } else if (raw.includes('=') && (raw.includes(';') || raw.split('=').length === 2)) {
               body = { cookie: raw, restart: true };
             } else {
-              ElementPlus.ElMessage.error('请输入 Cookie 字符串或 JSON');
+              ElementPlus.ElMessage.error(tr('queue.tRetryNeedCookie'));
               return;
             }
             body.id = id;
             const r = await api('/api/tasks/edit', { method: 'POST', body: JSON.stringify(body) });
-            ElementPlus.ElMessage.success(r.applied === 'restarted' ? '已更新并重试' : '已保存参数');
+            ElementPlus.ElMessage.success(r.applied === 'restarted' ? tr('queue.tUpdatedRestart') : tr('queue.tParamsSaved'));
           } catch (e) {
             if (e !== 'cancel' && e !== 'close') ElementPlus.ElMessage.error(String(e.message || e));
           }
@@ -11876,15 +11876,15 @@
               await api('/api/retry-one', { method: 'POST', body: JSON.stringify({ ids: [id] }) });
             } catch (_) {}
           }
-          ElementPlus.ElMessage.success('已提交重试');
+          ElementPlus.ElMessage.success(tr('queue.tRetrySubmitted'));
           await loadTasks();
         }
         async function cleanupParts() {
           try {
             const data = await api('/api/cleanup-parts', { method: 'POST', body: '{}' });
-            ElementPlus.ElMessage.success(`已清理 ${data.removed || 0} 个临时文件`);
+            ElementPlus.ElMessage.success(tr('queue.clearedParts', { n: data.removed || 0 }));
           } catch (e) {
-            ElementPlus.ElMessage.error(e.message || '清理失败');
+            ElementPlus.ElMessage.error(e.message || tr('queue.cleanupFailed'));
           }
         }
         function importUrlFile() {
@@ -11920,9 +11920,9 @@
           const list = isBt ? btTasks.value : queueTasks.value;
           const idx = list.findIndex(t => String(t.id) === String(id));
           page.value = isBt ? 'bt' : 'queue';
-          logAction('通知跳转：' + (isBt ? '磁力 / 种子' : '队列'));
+          logAction(isBt ? 'ui.goto_bt' : 'ui.goto_queue');
           if (idx < 0) {
-            ElementPlus.ElMessage.warning('这个任务已经不在列表里了，可能已被清掉');
+            ElementPlus.ElMessage.warning(tr('queue.goneFromList'));
             return;
           }
           pagers[key].page = Math.floor(idx / LIST_PAGE_SIZE) + 1;
@@ -11944,11 +11944,11 @@
             }
             const id = String(task.id);
             const opts = {
-              body: task.title !== '等待中...' ? task.title : task.url,
+              body: taskHeadline(task),
               tag: 'dl-done-' + id,
             };
             if (task.thumbnail && !thumbBroken[id]) opts.icon = task.thumbnail;
-            const n = new Notification('下载完成', opts);
+            const n = new Notification(tr('queue.notifyTitle'), opts);
             n.onclick = (ev) => {
               if (ev && ev.preventDefault) ev.preventDefault();
               try { n.close(); } catch (_) {}
@@ -11980,13 +11980,13 @@
         async function pauseSelected() {
           if (!selectedIds.value.length) return;
           await api('/api/pause', { method: 'POST', body: JSON.stringify({ ids: selectedIds.value }) });
-          ElementPlus.ElMessage.info('已暂停选中任务');
+          ElementPlus.ElMessage.info(tr('queue.tPaused'));
           await loadTasks();
         }
         async function resumeSelected() {
           if (!selectedIds.value.length) return;
           await api('/api/resume', { method: 'POST', body: JSON.stringify({ ids: selectedIds.value }) });
-          ElementPlus.ElMessage.success('已继续选中任务');
+          ElementPlus.ElMessage.success(tr('queue.tResumed'));
           await loadTasks();
         }
         async function deleteSelected() {
@@ -11994,47 +11994,47 @@
           await api('/api/tasks/delete', { method: 'POST', body: JSON.stringify({ ids: selectedIds.value }) });
           selectedIds.value = [];
           selectAll.value = false;
-          ElementPlus.ElMessage.success('已删除选中任务');
+          ElementPlus.ElMessage.success(tr('queue.tDeleted'));
           await loadTasks();
         }
         async function pinSelected() {
           if (!selectedIds.value.length) return;
           await api('/api/tasks/pin', { method: 'POST', body: JSON.stringify({ ids: selectedIds.value }) });
-          ElementPlus.ElMessage.success('已置顶');
+          ElementPlus.ElMessage.success(tr('queue.tPinOn'));
           await loadTasks();
         }
         async function unpinSelected() {
           if (!selectedIds.value.length) return;
           await api('/api/tasks/unpin', { method: 'POST', body: JSON.stringify({ ids: selectedIds.value }) });
-          ElementPlus.ElMessage.info('已取消置顶');
+          ElementPlus.ElMessage.info(tr('queue.tPinOff'));
           await loadTasks();
         }
         async function moveTopSelected() {
           if (!selectedIds.value.length) return;
           await api('/api/tasks/top', { method: 'POST', body: JSON.stringify({ ids: selectedIds.value }) });
-          ElementPlus.ElMessage.success('已移到队首');
+          ElementPlus.ElMessage.success(tr('queue.tMovedTop'));
           await loadTasks();
         }
         async function laterSelected() {
           if (!selectedIds.value.length) return;
           await api('/api/tasks/later', { method: 'POST', body: JSON.stringify({ ids: selectedIds.value }) });
-          ElementPlus.ElMessage.info('已设为稍后下载');
+          ElementPlus.ElMessage.info(tr('queue.tSetLater'));
           await loadTasks();
         }
         async function startLaterSelected() {
           if (!selectedIds.value.length) return;
           await api('/api/tasks/start-later', { method: 'POST', body: JSON.stringify({ ids: selectedIds.value }) });
-          ElementPlus.ElMessage.success('已启动稍后任务');
+          ElementPlus.ElMessage.success(tr('queue.tStartedLater'));
           await loadTasks();
         }
         async function pauseAll() {
           await api('/api/pause', { method: 'POST', body: JSON.stringify({}) });
-          ElementPlus.ElMessage.info('队列已暂停');
+          ElementPlus.ElMessage.info(tr('queue.pausedTag'));
           await loadTasks();
         }
         async function resumeAll() {
           await api('/api/resume', { method: 'POST', body: JSON.stringify({}) });
-          ElementPlus.ElMessage.success('队列已继续');
+          ElementPlus.ElMessage.success(tr('queue.tQueueResumed'));
           await loadTasks();
         }
         async function resetThrottle(host) {
@@ -12043,7 +12043,7 @@
               method: 'POST',
               body: JSON.stringify({ host: host || '' }),
             });
-            ElementPlus.ElMessage.success(r.cleared ? '已解除降速，队列继续调度' : '当前没有降速中的站点');
+            ElementPlus.ElMessage.success(r.cleared ? tr('queue.tThrottleCleared') : tr('queue.tThrottleNone'));
             await Promise.all([loadTasks(), loadStatus()]);
           } catch (e) {
             ElementPlus.ElMessage.error(String(e.message || e));
@@ -12340,12 +12340,12 @@
         }
         function taskSpecTitle(t) {
           const bits = [];
-          if (t && t.res_label) bits.push('实际下到的流：' + t.res_label);
-          if (t && Number(t.total_bytes) > 0) bits.push('总量 ' + formatSize(t.total_bytes));
+          if (t && t.res_label) bits.push(tr('spec.stream', { label: t.res_label }));
+          if (t && Number(t.total_bytes) > 0) bits.push(tr('spec.total', { size: formatSize(t.total_bytes) }));
           // 校验值一致时卡片不留一行（免得每次都亮橙色的），但用户确实问过这件事，悬浮里给一句
-          if (t && t.hash_state === 'ok') bits.push('校验值一致 · ' + String(t.hash_algo || '').toUpperCase() + ' ' + String(t.file_hash || '').slice(0, 12) + '…');
-          else if (t && t.hash_state === 'unknown') bits.push('校验值没法判：成品读不出来');
-          return bits.join('，');
+          if (t && t.hash_state === 'ok') bits.push(tr('spec.hashOk', { algo: String(t.hash_algo || '').toUpperCase(), hash: String(t.file_hash || '').slice(0, 12) }));
+          else if (t && t.hash_state === 'unknown') bits.push(tr('spec.hashUnknown'));
+          return bits.join(tr('spec.sep'));
         }
         function tierRows(info, kind) {
           return ((info && info.tier_sizes) || []).filter(r => r && r.kind === kind);
@@ -13142,7 +13142,14 @@ const CFG_LABELS = {
           return { finished: 'success', failed: 'danger', downloading: 'primary', queued: 'info', stopped: 'warning', paused: 'warning', later: 'info' }[s] || 'info';
         }
         function statusLabel(s) {
-          return { finished: '完成', failed: '失败', downloading: '下载中', queued: '排队', stopped: '已停止', paused: '已暂停', later: '稍后' }[s] || s;
+          return { finished: tr('status.finished'), failed: tr('status.failed'), downloading: tr('status.downloading'),
+                   queued: tr('status.queued'), stopped: tr('status.stopped'), paused: tr('status.paused'),
+                   later: tr('status.later') }[s] || s;
+        }
+        // 卡片标题：后端还没解析出名字时 title 是它写的那个占位串，这时候退回 URL。
+        // 比的是数据不是界面文字，所以这一行留中文，由 i18n_test 的 I6 钉着
+        function taskHeadline(t) {
+          return t.title !== '等待中...' ? t.title : t.url;
         }
 
         watch(page, (p) => {
@@ -13341,7 +13348,7 @@ const CFG_LABELS = {
           btLimitTask, btLimitDl, btLimitUl, btLimitApplying, btLimitResult, toggleBtLimit, applyBtLimit,
           analyzing, analyzeUrl, analyze, analyzeFromInfoPage, pasteAnalyzeUrl,
           downloadFromInfo, downloadEntry, downloadQualityPreset, downloadAllEntries, entryTableRef, entrySel, entryRange, onEntrySelection, entryAt, selectEntryRange, clearEntrySel, downloadSelectedEntries, selectedQuality, infoCodec, infoCodecOptions, shownQualityPresets, infoAudioTop, copyText, copyFormats,
-          loadFiles, onFileRowClick, openFile, goParentDir, deleteFile, clearArchive, formatSize, taskSize, taskSpec, taskSpecTitle, tierSizeText, thumbBroken, flashTaskId, formatCount, formatDuration,
+          loadFiles, onFileRowClick, openFile, goParentDir, deleteFile, clearArchive, formatSize, taskSize, taskSpec, taskSpecTitle, taskHeadline, tierSizeText, thumbBroken, flashTaskId, formatCount, formatDuration,
           fileSearch, fileSort, filteredFiles, runFileAction, openDownloadFolder, testCookie, redownload, toggleDark,
           UI_THEMES, setTheme,
           loadStatus, checkEnv, updateYtdlp, updateFfmpeg,
