@@ -2118,7 +2118,7 @@
           <!-- 磁力 / 种子 -->
           <div v-show="page === 'bt'">
             <div class="card row--mb">
-              <div class="section-title">添加磁力链接或种子</div>
+              <div class="section-title">{{ tr('bt.addTitle') }}</div>
               <div class="link-start">
                 <div class="link-start__main">
                   <el-input
@@ -2126,25 +2126,25 @@
                     type="textarea"
                     size="large"
                     :autosize="{ minRows: 3, maxRows: 10 }"
-                    placeholder="magnet:?xt=urn:btih:... 一行一个&#10;本地种子写路径：file:///H:/下载/影片.torrent 或 H:\下载\影片.torrent"></el-input>
+                    :placeholder="tr('bt.addPh')"></el-input>
                   <div class="tool-bar">
-                    <el-button size="small" @click="pasteBt">粘贴</el-button>
-                    <el-button size="small" :loading="torrentUploading" @click="pickTorrentFile">上传种子</el-button>
+                    <el-button size="small" @click="pasteBt">{{ tr('common.paste') }}</el-button>
+                    <el-button size="small" :loading="torrentUploading" @click="pickTorrentFile">{{ tr('bt.btnUpload') }}</el-button>
                     <input ref="torrentFileInput" type="file" accept=".torrent" style="display:none" @change="onTorrentFile" />
-                    <el-button size="small" @click="btText = ''">清空</el-button>
+                    <el-button size="small" @click="btText = ''">{{ tr('common.clear') }}</el-button>
                     <span class="hint hint--block">
-                      已识别 {{ btLinkCount }} 条磁力链接或种子<span v-if="btIgnoredCount">，另有 {{ btIgnoredCount }} 行不是这两类或与之重复，未加入</span>
-                      <span v-if="!btLinkCount && !btIgnoredCount">。上传的 .torrent 会写成一行本机路径，点「开始下载」即交给 aria2</span>
+                      {{ tr('bt.parsed', { n: btLinkCount }) }}<span v-if="btIgnoredCount">{{ tr('bt.parsedIgnored', { n: btIgnoredCount }) }}</span>
+                      <span v-if="!btLinkCount && !btIgnoredCount">{{ tr('bt.parsedNone') }}</span>
                     </span>
                   </div>
                 </div>
                 <div class="tile link-start__side">
                   <div class="stack stack--tight">
-                    <el-button type="primary" size="large" :loading="btStarting" @click="startBtDownload"><svg class="btn-ico"><use href="#i-download"></use></svg>开始下载</el-button>
-                    <el-checkbox v-model="btSeedOnly" size="small">只做种（本机已有成品，不再下一遍）</el-checkbox>
-                    <span class="hint">磁力链接这一刻还没有文件清单，勾了「只做种」会被挡下：请先用「上传种子」给出 .torrent</span>
-                    <span class="hint">磁力链接要先拿到种子元数据才知道里面有哪几个文件，拿到后才能点「文件 n/m」改选要下的部分</span>
-                    <span class="hint">下完后按下方「做种」设置继续上传；不想做种就把做种比率、做种时长都设为 0</span>
+                    <el-button type="primary" size="large" :loading="btStarting" @click="startBtDownload"><svg class="btn-ico"><use href="#i-download"></use></svg>{{ tr('common.startDl') }}</el-button>
+                    <el-checkbox v-model="btSeedOnly" size="small">{{ tr('bt.seedOnly') }}</el-checkbox>
+                    <span class="hint">{{ tr('bt.seedOnlyBlockedHint') }}</span>
+                    <span class="hint">{{ tr('bt.metaFirstHint') }}</span>
+                    <span class="hint">{{ tr('bt.hintSeedAfter') }}</span>
                   </div>
                 </div>
               </div>
@@ -2152,46 +2152,45 @@
 
             <div v-if="seedingRows.length || seedingNote" class="card stack stack--tight row--mb">
               <div class="row row--tight">
-                <b>正在做种 {{ seedingRows.length }} 项</b>
-                <el-button size="small" plain @click="loadSeeding">刷新</el-button>
-                <el-button size="small" plain type="danger" :disabled="!seedingRows.length" @click="stopAllSeeding">全部停止做种</el-button>
-                <span class="hint">做种只上传，不占用下载并发；停止做种不会删除已下载的文件</span>
+                <b>{{ tr('bt.seedHead', { n: seedingRows.length }) }}</b>
+                <el-button size="small" plain @click="loadSeeding">{{ tr('common.refresh') }}</el-button>
+                <el-button size="small" plain type="danger" :disabled="!seedingRows.length" @click="stopAllSeeding">{{ tr('bt.btnStopAllSeed') }}</el-button>
+                <span class="hint">{{ tr('bt.seedNotCountedHint') }}</span>
               </div>
               <div v-for="s in seedingRows" :key="s.gid" class="row row--tight">
                 <span style="flex:1;min-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
                       :title="s.title || s.name">{{ s.title || s.name }}</span>
-                <el-tag size="small" :type="s.managed ? 'info' : 'warning'" effect="plain">{{ s.managed ? '本程序' : 'aria2 其他' }}</el-tag>
+                <el-tag size="small" :type="s.managed ? 'info' : 'warning'" effect="plain">{{ s.managed ? tr('bt.managedYes') : tr('bt.managedNo') }}</el-tag>
                 <el-tag v-if="s.in_queue === false" size="small" type="danger" effect="plain"
-                        :title="'aria2 报的任务状态是 ' + (s.aria2_status || '读不到') + '，不在做种队列里'">
-                  {{ s.aria2_status === 'paused' ? '已暂停' : '不在队列' }}
+                        :title="tr('bt.unmanagedTip', { s: s.aria2_status || tr('bt.unknownStatus') })">
+                  {{ s.aria2_status === 'paused' ? tr('status.paused') : tr('bt.notInQueue') }}
                 </el-tag>
                 <span v-if="seedTotals(s)" class="hint">{{ seedTotals(s) }}</span>
-                <span v-if="seedReadout(s)" class="hint"
-                      :title="'aria2 当场读数：上传速率 / 连接数 / 对方做种人数 / 这份种子里的 tracker 条数；aria2 没回的那项就不显示'">{{ seedReadout(s) }}</span>
-                <el-button size="small" plain @click="stopSeed(s.gid ? { gid: s.gid } : { id: s.task_id })">停止</el-button>
+                <span v-if="seedReadout(s)" class="hint" :title="tr('bt.readoutTip')">{{ seedReadout(s) }}</span>
+                <el-button size="small" plain @click="stopSeed(s.gid ? { gid: s.gid } : { id: s.task_id })">{{ tr('common.stop') }}</el-button>
               </div>
               <div v-if="seedingNote" class="hint hint--block">{{ seedingNote }}</div>
             </div>
 
             <div class="card row--mb">
-              <div class="section-title">种子任务</div>
+              <div class="section-title">{{ tr('bt.tasksTitle') }}</div>
               <div class="row row--mb row--tight">
-                <el-checkbox v-model="selectAll" @change="toggleSelectAll">全选</el-checkbox>
-                <el-button size="small" type="danger" plain @click="deleteSelected" :disabled="!selectedIds.length">删除选中</el-button>
-                <el-button size="small" @click="retrySelected" :disabled="!selectedIds.length">重试选中</el-button>
+                <el-checkbox v-model="selectAll" @change="toggleSelectAll">{{ tr('common.selectAll') }}</el-checkbox>
+                <el-button size="small" type="danger" plain @click="deleteSelected" :disabled="!selectedIds.length">{{ tr('common.delSelected') }}</el-button>
+                <el-button size="small" @click="retrySelected" :disabled="!selectedIds.length">{{ tr('common.retrySelected') }}</el-button>
                 <el-select v-model="taskSort" size="small" style="width:110px" @change="loadTasks">
-                  <el-option label="按队列" value="queue"></el-option>
-                  <el-option label="按时间" value="created"></el-option>
-                  <el-option label="按状态" value="status"></el-option>
-                  <el-option label="按标题" value="title"></el-option>
+                  <el-option :label="tr('queue.sortQueue')" value="queue"></el-option>
+                  <el-option :label="tr('queue.sortCreated')" value="created"></el-option>
+                  <el-option :label="tr('queue.sortStatus')" value="status"></el-option>
+                  <el-option :label="tr('queue.sortTitle')" value="title"></el-option>
                 </el-select>
-                <el-button size="small" plain @click="loadTasks">刷新</el-button>
+                <el-button size="small" plain @click="loadTasks">{{ tr('common.refresh') }}</el-button>
                 <el-tag :type="sseOn ? 'success' : 'info'" effect="plain" size="small"
-                        :title="sseOn ? '任务进度由服务端实时推送，轮询已降成兜底' : '没连上推送接口，正在按 1.5 秒轮询刷新'">
-                  {{ sseOn ? '实时推送' : '轮询' }}
+                        :title="sseOn ? tr('queue.sseOnTip') : tr('queue.sseOffTip')">
+                  {{ sseOn ? tr('queue.sseOn') : tr('queue.sseOff') }}
                 </el-tag>
               </div>
-              <div v-if="!btTasks.length" class="empty-tip">当前没有磁力或种子任务，可在上方添加</div>
+              <div v-if="!btTasks.length" class="empty-tip">{{ tr('bt.empty') }}</div>
               <div v-for="t in pagers.btTasks.paged" :key="t.id" :id="'task-' + t.id"
                    class="task-card" :class="{ selected: selectedIds.includes(t.id), flash: flashTaskId === String(t.id) }">
                 <div class="task-url row row--tight">
@@ -2200,16 +2199,16 @@
                   <el-tag size="small" :type="statusType(t.status)">{{ statusLabel(t.status) }}</el-tag>
                   <el-tag size="small" effect="plain">{{ btSourceLabel(t) }}</el-tag>
                   <el-tag v-if="t.category" size="small" effect="plain"
-                          :title="'自动分类把它归到「' + t.category + '」，成品存在这一档的子目录里'">分类 {{ t.category }}</el-tag>
-                  <el-tag v-if="t.seeding" size="small" type="success" effect="plain">做种中</el-tag>
+                          :title="tr('bt.catTip', { c: t.category })">{{ tr('bt.catTag', { c: t.category }) }}</el-tag>
+                  <el-tag v-if="t.seeding" size="small" type="success" effect="plain">{{ tr('bt.seedTag') }}</el-tag>
                   <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
                     {{ taskHeadline(t) }}
                   </span>
                   <el-button v-if="(t.files || []).length > 1" size="small" plain
-                             @click="toggleBtFiles(t)">文件 {{ btPicked(t) }}/{{ t.files.length }}</el-button>
+                             @click="toggleBtFiles(t)">{{ tr('bt.filesBtn', { n: btPicked(t), m: t.files.length }) }}</el-button>
                   <el-button v-if="t.seeding || ['downloading', 'queued', 'paused', 'stopped', 'later'].includes(t.status)"
-                             size="small" plain @click="toggleBtLimit(t)">限速</el-button>
-                  <el-button v-if="t.seeding" size="small" plain type="danger" @click="stopSeed({ id: t.id })">停止做种</el-button>
+                             size="small" plain @click="toggleBtLimit(t)">{{ tr('bt.btnLimit') }}</el-button>
+                  <el-button v-if="t.seeding" size="small" plain type="danger" @click="stopSeed({ id: t.id })">{{ tr('bt.btnStopSeed') }}</el-button>
                 </div>
                 <el-progress
                   :percentage="Math.min(100, Math.round(t.progress || 0))"
@@ -2236,10 +2235,10 @@
                 <div v-if="btFilesTask === t.id" class="stack stack--tight"
                      style="margin-top:8px;padding-top:8px;border-top:1px solid var(--line)">
                   <div class="row row--tight">
-                    <el-button size="small" plain @click="btPickAll(true)">全选</el-button>
-                    <el-button size="small" plain @click="btPickAll(false)">全不选</el-button>
-                    <span class="hint">已选 {{ btPickCount }} / {{ btFileRows.length }} 个 · {{ formatSize(btPickSize) }}</span>
-                    <el-button size="small" type="primary" :loading="btSelecting" @click="applyBtSelect(t)">应用选择</el-button>
+                    <el-button size="small" plain @click="btPickAll(true)">{{ tr('common.selectAll') }}</el-button>
+                    <el-button size="small" plain @click="btPickAll(false)">{{ tr('bt.pickNone') }}</el-button>
+                    <span class="hint">{{ tr('bt.pickSummary', { n: btPickCount, m: btFileRows.length, size: formatSize(btPickSize) }) }}</span>
+                    <el-button size="small" type="primary" :loading="btSelecting" @click="applyBtSelect(t)">{{ tr('bt.btnApplySelect') }}</el-button>
                   </div>
                   <div style="max-height:260px;overflow:auto">
                     <div v-for="f in btFileRows" :key="f.index" class="row row--tight">
@@ -2249,24 +2248,18 @@
                       <span class="hint">{{ formatSize(f.size) }}</span>
                     </div>
                   </div>
-                  <span class="hint hint--block">改选只影响尚未下完的部分，已经下完的文件不会被删除；任务结束时主成品在已下载的文件里挑（优先视频/音频，其次最大）。</span>
+                  <span class="hint hint--block">{{ tr('bt.selectApplyHint') }}</span>
                 </div>
                 <div v-if="btLimitTask === t.id" class="stack stack--tight"
                      style="margin-top:8px;padding-top:8px;border-top:1px solid var(--line)">
                   <div class="row row--tight">
-                    <span class="hint">下载</span>
-                    <el-input size="small" v-model="btLimitDl" placeholder="留空不改，0=不限，可写 1M / 512K" clearable style="width:190px"></el-input>
-                    <span class="hint">上传</span>
-                    <el-input size="small" v-model="btLimitUl" placeholder="留空不改，0=不限，可写 1M / 512K" clearable style="width:190px"></el-input>
-                    <el-button size="small" type="primary" :loading="btLimitApplying" @click="applyBtLimit(t)">应用限速</el-button>
+                    <span class="hint">{{ tr('bt.dlWord') }}</span>
+                    <el-input size="small" v-model="btLimitDl" :placeholder="tr('bt.limitPh')" clearable style="width:190px"></el-input>
+                    <span class="hint">{{ tr('bt.ulWord') }}</span>
+                    <el-input size="small" v-model="btLimitUl" :placeholder="tr('bt.limitPh')" clearable style="width:190px"></el-input>
+                    <el-button size="small" type="primary" :loading="btLimitApplying" @click="applyBtLimit(t)">{{ tr('bt.btnApplyLimit') }}</el-button>
                   </div>
-                  <span class="hint hint--block">
-                    这一路改的是 aria2 里这个任务当前生效的限速，不用重启 aria2，也不用重新提交；点「应用限速」后显示的是从 aria2 读回来的值
-                    （aria2 把限速统一读成字节数，1M 显示为 1048576）。
-                    实测下载中、排队、已暂停、正在做种的任务都改得动；已经下完并且停止做种、或已经出错的任务被 aria2 移出了活动队列，
-                    它会当场回「Cannot change option」，界面会把它在 aria2 里的当前状态一起写出来。
-                    要让限速对以后每个新任务都成立，请改下方「新任务下载限速」「新任务上传限速」并保存设置。
-                  </span>
+                  <span class="hint hint--block">{{ tr('bt.limitHint') }}</span>
                   <span v-if="btLimitResult" class="hint hint--block">{{ btLimitResult }}</span>
                 </div>
               </div>
@@ -2276,132 +2269,128 @@
             </div>
 
             <div class="card row--mb">
-              <div class="section-title">Tracker 与限速</div>
+              <div class="section-title">{{ tr('bt.trackerTitle') }}</div>
               <div class="row row--tight row--mb">
-                <el-button size="small" plain :loading="btTrackerLoading" @click="loadBtTrackers">读取现状</el-button>
-                <el-button size="small" plain :loading="btTrackerRefreshing" @click="refreshBtTrackers">立即获取列表</el-button>
+                <el-button size="small" plain :loading="btTrackerLoading" @click="loadBtTrackers">{{ tr('bt.btnReadTrackers') }}</el-button>
+                <el-button size="small" plain :loading="btTrackerRefreshing" @click="refreshBtTrackers">{{ tr('bt.btnRefreshTrackers') }}</el-button>
                 <span class="hint" style="flex:1">{{ btTrackerText }}</span>
               </div>
               <div v-if="btTrackerNote" class="hint hint--block" style="margin-bottom:8px">{{ btTrackerNote }}</div>
               <el-form label-position="top" @submit.prevent>
-                <el-form-item label="列表来源地址">
+                <el-form-item :label="tr('bt.lblSources')">
                   <el-input size="small" v-model="settings.bt_tracker_sources" type="textarea"
                             :autosize="{ minRows: 2, maxRows: 6 }"
-                            placeholder="一行一个纯文本列表的网址"></el-input>
-                  <span class="hint">默认是 ngosang/trackerslist 与 XIU2/TrackersListCollection 两个公开维护的列表；这里只存网址，列表正文每次现抓，不写进源码也不打进安装包</span>
+                            :placeholder="tr('bt.phSources')"></el-input>
+                  <span class="hint">{{ tr('bt.hintSources') }}</span>
                 </el-form-item>
-                <el-form-item label="自己填写的 tracker">
+                <el-form-item :label="tr('bt.lblManual')">
                   <el-input size="small" v-model="settings.bt_trackers" type="textarea"
                             :autosize="{ minRows: 2, maxRows: 6 }"
-                            placeholder="一行一个 announce 地址，例如 http://tracker.example:1337/announce"></el-input>
-                  <span class="hint">这几条排在抓来的列表前面，只有 http / https 的 announce 地址会被收下，其余的行会直接丢掉</span>
+                            :placeholder="tr('bt.phManual')"></el-input>
+                  <span class="hint">{{ tr('bt.hintManual') }}</span>
                 </el-form-item>
-                <el-form-item label="自动获取">
+                <el-form-item :label="tr('bt.lblAuto')">
                   <el-switch v-model="settings.bt_tracker_auto_update"></el-switch>
-                  <span class="hint">开着时，提交新任务前若缓存里缺某个来源就补抓一次；关掉则只用已经抓回来存着的那份</span>
+                  <span class="hint">{{ tr('bt.hintAuto') }}</span>
                 </el-form-item>
-                <el-form-item label="注入条数上限">
+                <el-form-item :label="tr('bt.lblInjectMax')">
                   <el-input-number size="small" v-model="settings.bt_tracker_max" :min="0" :max="200" :step="5"></el-input-number>
-                  <span class="hint">一次给任务带多少条 tracker。aria2 是挨个问的，堆太多第一轮反而慢；填 0 表示不注入</span>
+                  <span class="hint">{{ tr('bt.hintInjectMax') }}</span>
                 </el-form-item>
-                <el-form-item label="新任务下载限速">
-                  <el-input size="small" v-model="settings.bt_dl_limit" placeholder="留空=不限，可写 1M / 512K" clearable style="max-width:240px"></el-input>
+                <el-form-item :label="tr('bt.lblDlLimit')">
+                  <el-input size="small" v-model="settings.bt_dl_limit" :placeholder="tr('bt.phLimitNew')" clearable style="max-width:240px"></el-input>
                 </el-form-item>
-                <el-form-item label="新任务上传限速">
-                  <el-input size="small" v-model="settings.bt_ul_limit" placeholder="留空=不限，可写 1M / 512K" clearable style="max-width:240px"></el-input>
-                  <span class="hint">这两条只加在新提交的任务上，做种阶段同样吃上传限速；已经在下方的「限速」按钮里按任务单独改过的，以那一行的读回值为准</span>
+                <el-form-item :label="tr('bt.lblUlLimit')">
+                  <el-input size="small" v-model="settings.bt_ul_limit" :placeholder="tr('bt.phLimitNew')" clearable style="max-width:240px"></el-input>
+                  <span class="hint">{{ tr('bt.hintNewLimit') }}</span>
                 </el-form-item>
-                <el-form-item label="首尾优先">
+                <el-form-item :label="tr('bt.lblPieceFirst')">
                   <el-switch v-model="settings.bt_prioritize_piece"></el-switch>
-                  <span class="hint">先下每个文件的首尾各 1M，边下边预览时能更早打开；只影响新任务</span>
+                  <span class="hint">{{ tr('bt.hintPieceFirst') }}</span>
                 </el-form-item>
               </el-form>
               <div class="row row--tight">
-                <el-button size="small" type="primary" @click="saveSettings()">保存设置</el-button>
+                <el-button size="small" type="primary" @click="saveSettings()">{{ tr('common.save') }}</el-button>
               </div>
-              <div class="hint hint--block" style="margin-top:6px">tracker 与首尾优先只能在新任务提交时带上：已存在的任务改不了，aria2 会当场回「Cannot change option」，所以改完这几项要重新提交任务才生效。</div>
+              <div class="hint hint--block" style="margin-top:6px">{{ tr('bt.trackerApplyHint') }}</div>
             </div>
 
             <div class="card row--mb">
-              <div class="section-title">自动分类</div>
+              <div class="section-title">{{ tr('bt.classifyTitle') }}</div>
               <div class="row row--tight row--mb">
-                <el-button size="small" plain @click="addBtRule">新增规则</el-button>
-                <span class="hint" title="两种规则排在同一张表里，从上往下问、第一条命中就定下来。磁力 / 种子这一页先问「名字」规则（种子里的标题、磁力链接上的 dn），名字没命中再问「链接」规则；普通下载（YouTube、B 站、直链）没有可比的名字，只问「链接」规则，也不吃下面那个兜底目录。忽略大小写。">按种子里的名字或按链接决定存到全局下载目录下的哪个子目录；规则从上往下问，第一条命中就定下来。</span>
+                <el-button size="small" plain @click="addBtRule">{{ tr('bt.btnRuleAdd') }}</el-button>
+                <span class="hint" :title="tr('bt.ruleTip')">{{ tr('bt.ruleHead') }}</span>
               </div>
-              <div v-if="!settings.bt_auto_rules.length" class="empty-tip">还没有规则：所有磁力 / 种子 / 普通下载都直接存到全局下载目录（在「设置」页配置）</div>
+              <div v-if="!settings.bt_auto_rules.length" class="empty-tip">{{ tr('bt.ruleEmpty') }}</div>
               <div v-for="(r, i) in settings.bt_auto_rules" :key="i" class="row row--tight" style="margin-bottom:8px">
-                <el-switch v-model="r.enabled" size="small" title="启用这条规则；关掉则跳过它继续问下一条"></el-switch>
-                <el-input size="small" v-model="r.name" placeholder="规则名，如 剧集" style="width:130px"></el-input>
-                <el-select size="small" v-model="r.scope" style="width:120px" title="这条问的是名字还是链接">
-                  <el-option label="名字" value="name"></el-option>
-                  <el-option label="链接" value="url"></el-option>
+                <el-switch v-model="r.enabled" size="small" :title="tr('bt.ruleEnabledTip')"></el-switch>
+                <el-input size="small" v-model="r.name" :placeholder="tr('bt.phRuleName')" style="width:130px"></el-input>
+                <el-select size="small" v-model="r.scope" style="width:120px" :title="tr('bt.ruleScopeTip')">
+                  <el-option :label="tr('bt.scopeName')" value="name"></el-option>
+                  <el-option :label="tr('bt.scopeUrl')" value="url"></el-option>
                 </el-select>
-                <el-select size="small" v-model="r.mode" style="width:110px">
-                  <el-option :label="r.scope === 'url' ? '链接包含' : '名字包含'" value="contains"></el-option>
-                  <el-option label="正则表达式" value="regex"></el-option>
+                <el-select size="small" v-model="r.mode" style="width:150px">
+                  <el-option :label="r.scope === 'url' ? tr('bt.modeContainsUrl') : tr('bt.modeContainsName')" value="contains"></el-option>
+                  <el-option :label="tr('bt.modeRegex')" value="regex"></el-option>
                 </el-select>
-                <el-input size="small" v-model="r.pattern" :placeholder="r.scope === 'url' ? '要匹配的链接关键词或正则，如 youtube.com' : '要匹配的关键词或正则'" style="flex:1;min-width:150px"></el-input>
-                <el-input size="small" v-model="r.subdir" placeholder="存到子目录，如 剧集/2026" style="flex:1;min-width:150px"></el-input>
-                <el-button size="small" plain :disabled="i === 0" @click="moveBtRule(i, -1)">上移</el-button>
-                <el-button size="small" plain :disabled="i === settings.bt_auto_rules.length - 1" @click="moveBtRule(i, 1)">下移</el-button>
-                <el-button size="small" plain type="danger" @click="delBtRule(i)">删除</el-button>
+                <el-input size="small" v-model="r.pattern" :placeholder="r.scope === 'url' ? tr('bt.phPatternUrl') : tr('bt.phPatternName')" style="flex:1;min-width:150px"></el-input>
+                <el-input size="small" v-model="r.subdir" :placeholder="tr('bt.phSubdir')" style="flex:1;min-width:150px"></el-input>
+                <el-button size="small" plain :disabled="i === 0" @click="moveBtRule(i, -1)">{{ tr('common.moveUp') }}</el-button>
+                <el-button size="small" plain :disabled="i === settings.bt_auto_rules.length - 1" @click="moveBtRule(i, 1)">{{ tr('common.moveDown') }}</el-button>
+                <el-button size="small" plain type="danger" @click="delBtRule(i)">{{ tr('common.del') }}</el-button>
               </div>
               <div class="row row--tight row--mt">
-                <span>都不命中时存到</span>
-                <el-input size="small" v-model="settings.bt_auto_fallback" placeholder="留空 = 仍存默认下载目录" clearable style="width:220px"></el-input>
-                <span class="hint">没写文件名的磁力链接在拿到种子元数据前没有名字可比，也会被这一档接住。这一档只管磁力 / 种子：普通下载没命中链接规则就照旧存默认目录，不然只加一条链接规则就把整个下载目录改了地方。</span>
+                <span>{{ tr('bt.fallbackLabel') }}</span>
+                <el-input size="small" v-model="settings.bt_auto_fallback" :placeholder="tr('bt.phFallback')" clearable style="width:220px"></el-input>
+                <span class="hint">{{ tr('bt.fallbackHint') }}</span>
               </div>
               <div class="row row--tight row--mt">
-                <el-input size="small" v-model="btRuleTestName" placeholder="试一个种子名字，或贴一条磁力 / 种子 / 普通下载链接" style="flex:1;min-width:220px" @paste="onPaste($event, 'text')"></el-input>
-                <el-button size="small" plain :loading="btRuleTesting" @click="testBtRule">试匹配</el-button>
-                <el-button size="small" type="primary" @click="saveSettings()">保存设置</el-button>
+                <el-input size="small" v-model="btRuleTestName" :placeholder="tr('bt.phRuleTest')" style="flex:1;min-width:220px" @paste="onPaste($event, 'text')"></el-input>
+                <el-button size="small" plain :loading="btRuleTesting" @click="testBtRule">{{ tr('bt.btnRuleTest') }}</el-button>
+                <el-button size="small" type="primary" @click="saveSettings()">{{ tr('common.save') }}</el-button>
               </div>
               <div v-if="btRuleTested" class="hint hint--block" style="margin-top:6px">{{ btRuleTested }}</div>
-              <div class="hint hint--block" style="margin-top:6px">
-                子目录写的是下载目录下面的相对路径（可以多级），带盘符或 .. 的会被当场顶回去。
-                规则只决定之后新提交的任务存在哪：已经在下载或已经在做种的任务不会搬迁，勾了「只做种」的也不改落点——那份成品本来就在本地。
-                下载页那一格「保存目录」如果填的是别的目录，以手动的为准、规则不改落点（日志里仍会写它本可以命中哪条）。
-              </div>
+              <div class="hint hint--block" style="margin-top:6px">{{ tr('bt.ruleFootHint') }}</div>
             </div>
 
             <div class="card row--mb">
-              <div class="section-title">aria2 与做种</div>
+              <div class="section-title">{{ tr('bt.aria2Title') }}</div>
               <el-form label-position="top" @submit.prevent>
                 <el-form-item label="aria2 RPC">
-                  <el-input size="small" v-model="settings.aria2_rpc" placeholder="留空则用 http://127.0.0.1:6800/jsonrpc" clearable style="max-width:420px"></el-input>
-                  <span class="hint">分片下载与磁力/种子共用这一地址，只填本机 127.0.0.1 的服务</span>
+                  <el-input size="small" v-model="settings.aria2_rpc" :placeholder="tr('bt.phRpc')" clearable style="max-width:420px"></el-input>
+                  <span class="hint">{{ tr('bt.hintRpc') }}</span>
                 </el-form-item>
                 <el-form-item label="aria2 Secret">
                   <el-input size="small" v-model="settings.aria2_secret" clearable show-password style="max-width:420px"></el-input>
-                  <span class="hint">仅在 aria2 自身设置了 RPC Secret 时填写</span>
+                  <span class="hint">{{ tr('bt.hintSecret') }}</span>
                 </el-form-item>
-                <el-form-item label="aria2c 路径">
-                  <el-input size="small" v-model="settings.aria2_bin" placeholder="留空则自动查找 tools 目录与 PATH" clearable style="max-width:420px"></el-input>
+                <el-form-item :label="tr('bt.lblBin')">
+                  <el-input size="small" v-model="settings.aria2_bin" :placeholder="tr('bt.phBin')" clearable style="max-width:420px"></el-input>
                 </el-form-item>
-                <el-form-item label="自动拉起 aria2">
+                <el-form-item :label="tr('bt.lblAutostart')">
                   <el-switch v-model="settings.aria2_autostart"></el-switch>
-                  <span class="hint">RPC 无应答时由本程序启动一个只监听 127.0.0.1 的 aria2c，退出程序时一并关闭</span>
+                  <span class="hint">{{ tr('bt.hintAutostart') }}</span>
                 </el-form-item>
-                <el-form-item label="做种比率">
+                <el-form-item :label="tr('bt.lblSeedRatio')">
                   <el-input-number size="small" v-model="settings.torrent_seed_ratio" :min="0" :max="20" :step="0.1" :precision="2"></el-input-number>
-                  <span class="hint">上传量达到下载量的该倍数时停止上传，0=不按比率停</span>
+                  <span class="hint">{{ tr('bt.hintSeedRatio') }}</span>
                 </el-form-item>
-                <el-form-item label="做种时长（秒）">
+                <el-form-item :label="tr('bt.lblSeedTime')">
                   <el-input-number size="small" v-model="settings.torrent_seed_time" :min="0" :max="604800" :step="600"></el-input-number>
-                  <span class="hint">做满该秒数停止上传，0=不按时长停</span>
+                  <span class="hint">{{ tr('bt.hintSeedTime') }}</span>
                 </el-form-item>
-                <el-form-item label="种子元数据等待（秒）">
+                <el-form-item :label="tr('bt.lblMetaTimeout')">
                   <el-input-number size="small" v-model="settings.torrent_meta_timeout" :min="30" :max="1800" :step="30"></el-input-number>
-                  <span class="hint">超时仍未拿到文件清单即判失败，通常是此刻没有做种者</span>
+                  <span class="hint">{{ tr('bt.hintMetaTimeout') }}</span>
                 </el-form-item>
               </el-form>
               <div class="row row--tight">
-                <el-button size="small" plain :loading="aria2Checking" @click="checkAria2">检测 aria2</el-button>
-                <el-button size="small" type="primary" plain :loading="aria2Installing" @click="installAria2">安装 / 更新 aria2c</el-button>
-                <el-button size="small" type="primary" @click="saveSettings()">保存设置</el-button>
+                <el-button size="small" plain :loading="aria2Checking" @click="checkAria2">{{ tr('bt.btnCheckAria2') }}</el-button>
+                <el-button size="small" type="primary" plain :loading="aria2Installing" @click="installAria2">{{ tr('bt.btnInstall') }}</el-button>
+                <el-button size="small" type="primary" @click="saveSettings()">{{ tr('common.save') }}</el-button>
               </div>
-              <div class="hint hint--block" style="margin-top:6px">{{ aria2Info || '点击「检测 aria2」确认 RPC 是否可连接、aria2c 在哪' }}</div>
-              <div class="hint hint--block">做种比率与做种时长同时为 0 时，任务下载完成后会一直上传，需在上方的「正在做种」面板手动停止。</div>
+              <div class="hint hint--block" style="margin-top:6px">{{ aria2Info || tr('bt.aria2Probe') }}</div>
+              <div class="hint hint--block">{{ tr('bt.seedZeroHint') }}</div>
             </div>
           </div>
 
@@ -11470,7 +11459,7 @@
         const btIgnoredCount = computed(() => btParsed.value.ignored + btParsed.value.dup);
 
         function btSourceLabel(t) {
-          return String(t.url || '').toLowerCase().startsWith('magnet:') ? '磁力' : '种子';
+          return String(t.url || '').toLowerCase().startsWith('magnet:') ? tr('bt.srcMagnet') : tr('bt.srcTorrent');
         }
         function btPicked(t) {
           return (t.files || []).filter(f => f.selected).length;
@@ -11492,7 +11481,7 @@
         async function applyBtSelect(t) {
           const indices = btFileRows.value.filter(f => f.selected).map(f => f.index);
           if (!indices.length) {
-            ElementPlus.ElMessage.warning('至少要勾选一个文件');
+            ElementPlus.ElMessage.warning(tr('bt.tApplySelect'));
             return;
           }
           btSelecting.value = true;
@@ -11502,7 +11491,7 @@
               body: JSON.stringify({ task_id: t.id, indices }),
             });
             btFileRows.value = (r.files || []).map(f => ({ ...f }));
-            ElementPlus.ElMessage.success(`已让 aria2 只下这 ${r.count} 个文件`);
+            ElementPlus.ElMessage.success(tr('bt.tSelectedFiles', { n: r.count }));
             await loadTasks();
           } catch (e) {
             ElementPlus.ElMessage.error(String(e.message || e));
@@ -11525,21 +11514,23 @@
         }
         async function testBtRule() {
           const v = (btRuleTestName.value || '').trim();
-          if (!v) { ElementPlus.ElMessage.warning('先写一个种子名字，或贴一条磁力 / 种子 / 普通下载链接'); return; }
+          if (!v) { ElementPlus.ElMessage.warning(tr('bt.tRuleTestNeed')); return; }
           btRuleTesting.value = true;
           try {
+            // 普通 http(s) 也交给后端：那一类只有链接规则问得到
             const isUrl = /^magnet:/i.test(v) || /\.torrent$/i.test(v) || /^file:\/\//i.test(v)
-              || /^https?:\/\//i.test(v);   // 普通 http(s) 也交给后端：那一类只有链接规则问得到
+              || /^https?:\/\//i.test(v);
             const r = await api('/api/torrent/rules/test', {
               method: 'POST', uiName: '试自动分类规则',
               body: JSON.stringify(isUrl ? { url: v } : { name: v }),
             });
             // 名字是空的（普通下载链接、没带 dn 的磁力）就别写「比的是「」」：那句只会让人以为出了错
+            // r.message 是后端写下的判定，按口径不翻；前后那半句是界面拼的，走词表
             btRuleTested.value = r.name
-              ? `${r.message}｜比的是「${r.name}」，来源：${r.name_from}`
-              : `${r.message}｜来源：${r.name_from}`;
+              ? `${r.message}${tr('bt.ruleTestName', { n: r.name, f: r.name_from })}`
+              : `${r.message}${tr('bt.ruleTestFrom', { f: r.name_from })}`;
           } catch (e) {
-            btRuleTested.value = '试匹配没走通：' + String(e.message || e);
+            btRuleTested.value = tr('bt.tRuleTestFailed', { m: String(e.message || e) });
           } finally {
             btRuleTesting.value = false;
           }
@@ -11547,16 +11538,16 @@
         // aria2 少回一个键就少说一段：没量到的数不能替它写成 0，「peer 0」会被读成「确实没连上人」。
         function seedTotals(s) {
           const p = [];
-          if (s.uploaded !== undefined && s.uploaded !== null) p.push('已传 ' + formatSize(Number(s.uploaded)));
-          if (s.share_ratio !== undefined && s.share_ratio !== null) p.push('比率 ' + Number(s.share_ratio).toFixed(2));
-          if (s.seed_seconds !== undefined && s.seed_seconds !== null) p.push('做种 ' + formatDuration(s.seed_seconds));
+          if (s.uploaded !== undefined && s.uploaded !== null) p.push(tr('bt.seedUpWord', { v: formatSize(Number(s.uploaded)) }));
+          if (s.share_ratio !== undefined && s.share_ratio !== null) p.push(tr('bt.seedRatioWord', { v: Number(s.share_ratio).toFixed(2) }));
+          if (s.seed_seconds !== undefined && s.seed_seconds !== null) p.push(tr('bt.seedTimeWord', { v: formatDuration(s.seed_seconds) }));
           return p.join(' · ');
         }
         function seedReadout(s) {
           const p = [];
           if (s.upload_speed) p.push('↑' + formatSize(Number(s.upload_speed)) + '/s');
-          if (s.num_peers !== undefined) p.push('连接 ' + s.num_peers);
-          if (s.num_seeders !== undefined) p.push('做种者 ' + s.num_seeders);
+          if (s.num_peers !== undefined) p.push(tr('bt.peers', { n: s.num_peers }));
+          if (s.num_seeders !== undefined) p.push(tr('bt.seeders', { n: s.num_seeders }));
           if (s.tracker_count !== undefined) p.push('tracker ' + s.tracker_count);
           return p.join(' · ');
         }
@@ -11575,7 +11566,7 @@
           const body = target && target.gid ? { gids: [target.gid] } : { ids: [target.id] };
           try {
             const r = await api('/api/torrent/stop-seed', { method: 'POST', uiName: '停止做种', body: JSON.stringify(body) });
-            ElementPlus.ElMessage.success(r.stopped ? `已停止 ${r.stopped} 项做种，已下载的文件不动` : (r.message || '没有点到在做种的任务'));
+            ElementPlus.ElMessage.success(r.stopped ? tr('bt.tSeedStopped', { n: r.stopped }) : (r.message || tr('bt.tNoSeeding')));
             await Promise.all([loadSeeding(), loadTasks()]);
           } catch (e) {
             ElementPlus.ElMessage.error(String(e.message || e));
@@ -11583,11 +11574,11 @@
         }
         async function stopAllSeeding() {
           try {
-            await ElementPlus.ElMessageBox.confirm('停止全部做种？已下载的文件不会删除，之后不再上传。', '确认', { type: 'warning' });
+            await ElementPlus.ElMessageBox.confirm(tr('bt.confirmStopAll'), tr('common.confirm'), { type: 'warning' });
           } catch (_) { return; }
           try {
             const r = await api('/api/torrent/stop-seed', { method: 'POST', uiName: '全部停止做种', body: JSON.stringify({ all: true }) });
-            ElementPlus.ElMessage.success(`已停止 ${r.stopped} 项做种`);
+            ElementPlus.ElMessage.success(tr('bt.tSeedStoppedAll', { n: r.stopped }));
             await loadSeeding();
           } catch (e) {
             ElementPlus.ElMessage.error(String(e.message || e));
@@ -11599,16 +11590,17 @@
             const r = await api('/api/aria2/status');
             // 地址回的是真正连的那个（设置里留空时是默认的 6800），光说「可连接」不知道连的到底是谁
             const addr = String(r.rpc || '').replace(/^https?:\/\//, '').replace(/\/jsonrpc.*$/, '');
-            const bits = [(r.online ? 'RPC 可连接' : 'RPC 无应答') + (addr ? `（${addr}）` : '')];
-            bits.push(r.binary ? 'aria2c：' + String(r.binary).split(/[\\/]/).pop() : '未找到 aria2c');
-            if (r.daemon && r.daemon.owned) bits.push('进程由本程序拉起（PID ' + r.daemon.pid + '）');
-            bits.push(r.autostart ? '自动拉起已开' : '自动拉起已关');
-            if (r.seeding) bits.push(`做种 ${r.seeding} 项`);
-            // 拉不起来时把后端给的原因原样带上，别让用户对着「无应答」猜
+            const bits = [addr ? (r.online ? tr('bt.rpcOnlineAt', { v: addr }) : tr('bt.rpcOfflineAt', { v: addr }))
+              : (r.online ? tr('bt.rpcOnline') : tr('bt.rpcOffline'))];
+            bits.push(r.binary ? tr('bt.binFound', { p: String(r.binary).split(/[\\/]/).pop() }) : tr('bt.binMissing'));
+            if (r.daemon && r.daemon.owned) bits.push(tr('bt.owned', { p: r.daemon.pid }));
+            bits.push(r.autostart ? tr('bt.autostartOn') : tr('bt.autostartOff'));
+            if (r.seeding) bits.push(tr('bt.seedCount', { n: r.seeding }));
+            // 拉不起来时把后端给的原因原样带上，别让用户对着「无应答」猜（那句是后端记录，不翻）
             if (r.ensure && r.ensure.why) bits.push(r.ensure.why);
             aria2Info.value = bits.join(' · ');
           } catch (e) {
-            aria2Info.value = '检测失败：' + String(e.message || e);
+            aria2Info.value = tr('bt.tCheckFailed', { m: String(e.message || e) });
           } finally {
             aria2Checking.value = false;
           }
@@ -11618,7 +11610,7 @@
           aria2Installing.value = true;
           try {
             const r = await api('/api/update/aria2', { method: 'POST' });
-            ElementPlus.ElMessage.info(r.message || 'aria2c 安装已在后台开始');
+            ElementPlus.ElMessage.info(r.message || tr('bt.tInstallStarted'));
             setTimeout(() => { checkAria2(); loadStatus(); loadComponents(); }, 15000);
           } catch (e) {
             ElementPlus.ElMessage.error(String(e.message || e));
@@ -11629,17 +11621,17 @@
         function btTrackerHead(r) {
           const src = r.sources || [];
           const okN = src.filter(s => s.ok).length;
-          const bits = [`抓到的来源 ${okN}/${src.length} 个`, `手动 ${r.manual ? r.manual.length : 0} 条`,
-            `下一个新任务带上 ${r.count} 条`, `上限 ${r.max === 0 ? '0（不注入）' : r.max}`];
-          bits.push(r.auto_update ? '自动获取已开' : '自动获取已关');
-          bits.push(r.cache_time ? '缓存于 ' + String(r.cache_time).replace('T', ' ') : '本机还没有缓存');
+          const bits = [tr('bt.trkSources', { ok: okN, n: src.length }), tr('bt.trkManual', { n: r.manual ? r.manual.length : 0 }),
+            tr('bt.trkNext', { n: r.count }), tr('bt.trkMax', { v: r.max === 0 ? tr('bt.trkMaxZero') : r.max })];
+          bits.push(r.auto_update ? tr('bt.trkAutoOn') : tr('bt.trkAutoOff'));
+          bits.push(r.cache_time ? tr('bt.trkCached', { t: String(r.cache_time).replace('T', ' ') }) : tr('bt.trkNoCache'));
           return bits.join(' · ');
         }
         function btTrackerProblems(r) {
           const out = [];
           if (r.note) out.push(r.note);
           (r.sources || []).filter(s => !s.ok).forEach(s => {
-            out.push(`${s.label || s.url}：${s.fetched ? (s.error || '这次没抓到') : '还没抓过'}`);
+            out.push(`${s.label || s.url}：${s.fetched ? (s.error || tr('bt.trkNotFetched')) : tr('bt.trkNeverFetched')}`);
           });
           return out.join('；');
         }
@@ -11650,7 +11642,7 @@
             btTrackerText.value = btTrackerHead(r);
             btTrackerNote.value = btTrackerProblems(r);
           } catch (e) {
-            btTrackerText.value = '读取失败：' + String(e.message || e);
+            btTrackerText.value = tr('bt.trkReadFailed', { m: String(e.message || e) });
             btTrackerNote.value = '';
           } finally {
             btTrackerLoading.value = false;
@@ -11662,8 +11654,9 @@
             const r = await api('/api/bt/trackers/refresh', {
               method: 'POST', uiName: '立即获取 tracker 列表', body: JSON.stringify({}),
             });
+            // r.message 是后端那句抓取结果，按口径不翻；后缀是界面补的
             (r.failed || []).length
-              ? ElementPlus.ElMessage.warning(r.message + `（${r.failed.length} 个来源没抓到）`)
+              ? ElementPlus.ElMessage.warning(r.message + tr('bt.trkFailedSuffix', { n: r.failed.length }))
               : ElementPlus.ElMessage.success(r.message);
             await loadBtTrackers();
           } catch (e) {
@@ -11686,7 +11679,7 @@
           const dl = String(btLimitDl.value || '').trim();
           const ul = String(btLimitUl.value || '').trim();
           if (!dl && !ul) {
-            ElementPlus.ElMessage.warning('下载限速和上传限速至少填一个，填 0 表示取消限速');
+            ElementPlus.ElMessage.warning(tr('bt.tLimitNeedOne'));
             return;
           }
           btLimitApplying.value = true;
@@ -11697,12 +11690,12 @@
             const r = await api('/api/bt/limit', {
               method: 'POST', uiName: '改任务限速', body: JSON.stringify(body),
             });
-            // 后端回的是从 aria2 读回来的值，界面只报这个，不报用户刚敲的那串
-            btLimitResult.value = (r.ok ? '已生效（aria2 读回）：' : '未确认生效：') + r.message;
+            // 后端回的是从 aria2 读回来的值，界面只报这个，不报用户刚敲的那串（值是后端写的，不翻）
+            btLimitResult.value = (r.ok ? tr('bt.tLimitApplied') : tr('bt.tLimitUnconfirmed')) + r.message;
             r.ok ? ElementPlus.ElMessage.success(r.message) : ElementPlus.ElMessage.warning(r.message);
             await loadTasks();
           } catch (e) {
-            btLimitResult.value = '失败：' + String(e.message || e);
+            btLimitResult.value = tr('bt.tLimitFailed', { m: String(e.message || e) });
             ElementPlus.ElMessage.error(String(e.message || e));
           } finally {
             btLimitApplying.value = false;
@@ -11716,7 +11709,7 @@
           ev.target.value = '';
           if (!f) return;
           if (!/\.torrent$/i.test(f.name)) {
-            ElementPlus.ElMessage.warning('只能选择 .torrent 种子文件');
+            ElementPlus.ElMessage.warning(tr('bt.tOnlyTorrent'));
             return;
           }
           torrentUploading.value = true;
@@ -11728,7 +11721,7 @@
             if (!resp.ok) throw new Error(friendlyError(data.detail || resp.statusText));
             btText.value = (btText.value.trim() ? btText.value.trim() + '\n' : '') + data.url;
             logAction('上传种子文件');
-            ElementPlus.ElMessage.success(`种子「${data.name}」（${formatSize(data.size)}）已写入输入框，点「开始下载」入队`);
+            ElementPlus.ElMessage.success(tr('bt.tTorrentFilled', { n: data.name, size: formatSize(data.size) }));
           } catch (e) {
             ElementPlus.ElMessage.error(String(e.message || e));
           } finally {
@@ -11741,7 +11734,7 @@
             const text = await navigator.clipboard.readText();
             if (text) btText.value = (btText.value ? btText.value + '\n' : '') + text.trim();
           } catch {
-            ElementPlus.ElMessage.warning('无法读取剪贴板，请手动粘贴');
+            ElementPlus.ElMessage.warning(tr('bt.tClipboardFailed'));
           }
         }
 
@@ -11749,8 +11742,8 @@
           const { urls, dup, ignored } = btParsed.value;
           if (!urls.length) {
             ElementPlus.ElMessage.warning(ignored + dup
-              ? `输入的 ${ignored + dup} 行里没有磁力链接或本地种子路径`
-              : '请粘贴 magnet: 链接，或点「上传种子」选择本地 .torrent 文件');
+              ? tr('bt.tNoValidLines', { n: ignored + dup })
+              : tr('bt.tNeedMagnet'));
             return;
           }
           const seedOnly = btSeedOnly.value;
@@ -11764,10 +11757,10 @@
             btSeedOnly.value = false;
             const merged = dup + (r && r.merged ? r.merged : 0);
             ElementPlus.ElMessage.success(
-              `已交给 aria2 ${r && r.added != null ? r.added : (r.ids || []).length} 个任务`
-              + (seedOnly ? ' · 按「只做种」挂上，已有成品不会被重新下载' : '')
-              + (merged ? ` · 已合并 ${merged} 条重复` : '')
-              + (r && r.skipped ? ` · ${r.skipped} 条不是磁力链接或种子，被忽略` : '')
+              tr('bt.tAdded', { n: r && r.added != null ? r.added : (r.ids || []).length })
+              + (seedOnly ? ' · ' + tr('bt.tSeedOnlyOn') : '')
+              + (merged ? ' · ' + tr('bt.tMerged', { n: merged }) : '')
+              + (r && r.skipped ? ' · ' + tr('bt.tSkippedBt', { n: r.skipped }) : '')
             );
             await Promise.all([loadTasks(), loadSeeding()]);
           } catch (e) {

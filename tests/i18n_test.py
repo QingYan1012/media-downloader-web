@@ -249,7 +249,11 @@ ck("F5 词表里没有订阅规则摘要那类后端正文",
    not [k for k in DICT["zh"] if "规则已更新" in DICT["zh"][k] or "每次最多" in DICT["zh"][k]])
 CJK = re.compile(r"[\u4e00-\u9fff]")
 latin = re.compile(r"[A-Za-z]")
-zh_plain = [k for k, v in DICT["zh"].items() if not CJK.search(str(v)) and latin.search(str(v))]
+# 例外：zh 原话里本来就没有汉字的那几条 —— 「aria2c：」是工具名加全角冒号，
+# 后面接的是本机路径。给它编一句中文反而是我新写的话，不是界面原本那句
+F6_OK = {"bt.binFound"}
+zh_plain = [k for k, v in DICT["zh"].items()
+            if not CJK.search(str(v)) and latin.search(str(v)) and k not in F6_OK]
 ck("F6 zh 那份每条要么含中文、要么只是不含字母的标点（词表里的分隔符）——不许混进其实是英文的条目",
    not zh_plain, str(zh_plain[:6]))
 same = [k for k in set(DICT["zh"]) & set(DICT["en"]) if DICT["zh"][k] == DICT["en"][k]]
@@ -358,7 +362,7 @@ def strip_comments(src: str) -> str:
     return re.sub(r"<!--.*?-->", "", src, flags=re.S)
 
 
-PAGES_DONE = ["home", "queue"]   # ← 每翻完一页把页名加进来；登记了却没翻干净会被 I3 判红
+PAGES_DONE = ["home", "queue", "bt"]   # ← 每翻完一页把页名加进来；登记了却没翻干净会被 I3 判红
 ck("I2 PAGES_DONE 都是真有的页", all(page_block(k) for k in PAGES_DONE),
    str([k for k in PAGES_DONE if not page_block(k)]))
 for _pg in PAGES_DONE:
@@ -379,6 +383,13 @@ PAGE_HANDLERS = {
               "pinSelected", "unpinSelected", "moveTopSelected", "laterSelected", "startLaterSelected",
               "pauseAll", "resumeAll", "resetThrottle", "gotoTask", "notifyDone",
               "statusLabel", "taskHeadline", "taskSpecTitle", "taskSpec"],
+    # 磁力 / 种子页：卡片模板与队列共用（task.* / status.*），这一页自己的动作全在这里登记。
+    # 同页还调的 saveSettings（设置页那一批）与 friendlyError（排在界面路径翻完之后）没登记，
+    # 它们各自的中文行数仍然在下面的脚本区残留计数里看得见。
+    "bt": ["btSourceLabel", "applyBtSelect", "testBtRule", "seedTotals", "seedReadout",
+           "stopSeed", "stopAllSeeding", "checkAria2", "installAria2", "btTrackerHead",
+           "btTrackerProblems", "loadBtTrackers", "refreshBtTrackers", "applyBtLimit",
+           "onTorrentFile", "pasteBt", "startBtDownload"],
 }
 # 允许留中文的处理器：这些行比的是后端发来的数据（预设名、占位标题），翻成英文这行判断就失效。
 # 「允许留下」不等于「不用管」——残留的行数和那几句都钉死，改了名字或悄悄多出一行都判红
@@ -408,20 +419,29 @@ ck("I5a 每个登记了处理动作的页名都是真有的页",
 _registered = {f for _fns in PAGE_HANDLERS.values() for f in _fns}
 ck("I5b 每个允许留中文的处理器都登记在某一页里（漏登记就没人盯它了）",
    all(f in _registered for f in RESIDUE), str([f for f in RESIDUE if f not in _registered]))
+# 埋点那一句（uiName / logAction 的动作名）是发给后端进运行日志的记录，排在 ACTION_NAMES 那一批再收。
+# I5 不算它，但每一页有几条要钉住：悄悄多出一条埋点，或者那一批改完忘了删这里的名额，都会判红
+MAIDIAN = re.compile(r"""uiName: '|logAction\('""")
+MAIDIAN_EXPECT = {"home": 0, "queue": 0, "bt": 7}
 for _pg, _fns in PAGE_HANDLERS.items():
+    _md = 0
     for _fn in _fns:
         _b = js_fn(_fn)
         if not _b:
             ck(f"I5[{_pg}.{_fn}] 这个处理器抠到了", False, "找不到函数体（改名了？）")
             continue
         _left = [ln.strip() for ln in strip_js_comments(_b).splitlines() if CJK.search(ln)]
+        _nowords = [ln for ln in _left if not MAIDIAN.search(ln)]
+        _md += len(_left) - len(_nowords)
         if _fn in RESIDUE:
             _exp = RESIDUE[_fn]
             ck(f"I6[{_pg}.{_fn}] 残留只有比后端数据的那 {len(_exp)} 行",
-               len(_left) == len(_exp) and all(x in ln for x, ln in zip(_exp, _left)),
-               str([ln[:60] for ln in _left]))
+               len(_nowords) == len(_exp) and all(x in ln for x, ln in zip(_exp, _nowords)),
+               str([ln[:60] for ln in _nowords]))
         else:
-            ck(f"I5[{_pg}.{_fn}] 处理动作弹给用户的句子全走词表", not _left, str(_left[:3]))
+            ck(f"I5[{_pg}.{_fn}] 处理动作弹给用户的句子全走词表", not _nowords, str(_nowords[:3]))
+    ck(f"I8[{_pg}] 埋点动作名仍只有 {MAIDIAN_EXPECT[_pg]} 行在等 ACTION_NAMES 那一批",
+       _md == MAIDIAN_EXPECT[_pg], f"实际 {_md} 行")
 # 模板里调用的处理器必须出现在 setup 的 return 名单里：漏一个不是「那一行不显示」，
 # 是整页渲染抛错 —— 静态切片看不出来，只有浏览器里才炸（沙箱实测就是这么撞上的）
 _ret_at = HTML.rindex("statusType, statusLabel,")
