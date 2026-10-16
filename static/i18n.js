@@ -427,6 +427,10 @@
       /* 这一页工具条上的通用词。队列页那几条同名的是上一批留下的，值一样；
          以后再有一页要用，直接引这里的，别再抄第三份 */
       'common.confirm': '确认',
+      /* 确认框的按钮：Element Plus 的 ElMessageBox 是命令式弹的，看不见 el-config-provider，
+         只在装应用那一刻读一次语言。所以这两个词由界面在弹出时现取，见 index.html 的 mb 包装。 */
+      'common.ok': '确定',
+      'common.cancel': '取消',
       'common.clear': '清空',
       'common.del': '删除',
       'common.delSelected': '删除选中',
@@ -1015,6 +1019,10 @@
       /* Generic toolbar words this page needs. The queue page has its own copies from the previous
          batch with the same values; a later page should take these instead of a third copy. */
       'common.confirm': 'Confirm',
+      /* Dialog buttons. ElMessageBox is opened imperatively, so it never sees el-config-provider and
+         keeps the locale from app-install time; the page reads these two words at popup time. */
+      'common.ok': 'OK',
+      'common.cancel': 'Cancel',
       'common.clear': 'Clear',
       'common.del': 'Delete',
       'common.delSelected': 'Delete selected',

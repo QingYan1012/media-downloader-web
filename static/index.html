@@ -5847,6 +5847,23 @@
            名字用 tr 不用 t：模板里有 7 处 v-for="t in ..."（任务卡、色板等），叫 t 会在那些子树里被遮蔽。 */
         const uiLang = ref((window.MD_I18N && window.MD_I18N.lang) || 'zh');
         const tr = (key, vars) => (window.MD_I18N ? window.MD_I18N.t(key, vars, uiLang.value) : key);
+        /* 确认框的按钮：ElMessageBox 是命令式弹出来的，不经过 el-config-provider，语言只在
+           .use(ElementPlus) 那一刻定过一次 —— 在页面里切成英文后，它仍会印「取消/确定」。
+           这里包一层，弹出时才按当前界面语言补按钮词；调用方自己写死的按钮词
+           （「按这份名单删」「去组件与依赖」那类）一概不覆盖。 */
+        const mb = ElementPlus.ElMessageBox;
+        ['confirm', 'prompt', 'alert'].forEach((name) => {
+          const orig = mb[name];
+          mb[name] = (...args) => {
+            const at = args.findIndex((a) => a && typeof a === 'object');
+            const opt = at < 0 ? {} : args[at];
+            const filled = { confirmButtonText: tr('common.ok'), cancelButtonText: tr('common.cancel'), ...opt };
+            // alert 天生只有一个按钮，别多塞一个没人点的取消词（调用方真给了 cancelButtonText 就留着）
+            if (name === 'alert' && opt.cancelButtonText === undefined) delete filled.cancelButtonText;
+            if (at < 0) args.push(filled); else args[at] = filled;
+            return orig.apply(mb, args);
+          };
+        });
         /* 侧栏条目：名字不在这里写死，由 t('nav.' + key) 从词表取，避免「数据里一份、词表里一份」两处漂移 */
         const navs = [
           { key: 'home', icon: 'download' },

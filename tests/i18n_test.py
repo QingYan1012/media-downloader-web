@@ -192,6 +192,18 @@ ck("C15 loadSettings 把后端的值收敛成 auto/zh/en 再应用",
    and "applyLang(settings.value.ui_language);" in HTML)
 ck("C16 界面初值也是 auto（后端读回来之前不至于闪一下别的语言）",
    "ui_language: 'auto'," in HTML)
+# ElMessageBox 是命令式弹的，不吃 el-config-provider：语言只在 .use(ElementPlus) 那刻定过一次，
+# 在页面里切成英文后确认框的按钮仍印「取消/确定」。接线改成了弹出时现取按钮词，钉住三件事。
+ck("C17 confirm/prompt/alert 三个入口都被包了一层（少一个就有一类框漏掉）",
+   "const mb = ElementPlus.ElMessageBox;" in HTML
+   and "['confirm', 'prompt', 'alert'].forEach" in HTML, "")
+ck("C18 按钮词按当前界面语言现取，且调用方写死的按钮词排在后面（顺序反了就把「按这份名单删」盖成「确定」）",
+   "confirmButtonText: tr('common.ok'), cancelButtonText: tr('common.cancel'), ...opt" in HTML, "")
+ck("C19 alert 不硬塞取消键（它天生只有一个按钮），但别人显式给了就留着",
+   "if (name === 'alert' && opt.cancelButtonText === undefined) delete filled.cancelButtonText;" in HTML, "")
+ck("C20 这两个按钮词两份词表都有（缺 en 就印回中文，缺 zh 界面直接空着）",
+   "'common.ok':" in zh_blob and "'common.cancel':" in zh_blob
+   and "'common.ok':" in en_blob and "'common.cancel':" in en_blob, "")
 
 # ---------------------------------------------------------------- D. 后端那一层
 print("== D. 后端：只存这一项，别处一概不读 ==")
