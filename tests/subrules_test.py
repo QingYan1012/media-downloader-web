@@ -3,26 +3,80 @@ r"""订阅按条规则自检。
 两段：
   1) 纯内存跑规则清洗 / 逐条判定 / scan_one 入队 —— 假 engine、假 queue、save() 空转，
      不碰 subscriptions.json，也不联网。
-  2) 打本机 server（127.0.0.1:8765）验 HTTP 口径 + 规则真的落盘；跑完把 subscriptions.json
-     按原字节还原（G8），内存态要靠重启 server 才跟磁盘一致，所以收尾必须重启一次。
+  2) 打一份**沙箱实例**（临时状态目录 + 一个空出来的端口，预置一条「沙箱自检订阅」，
+     enabled=False 所以调度器不会去联网扫它）验 HTTP 口径 + 规则真的落盘，跑完连状态目录一起删。
 
-跑法：先起 server.py，再 `python tests/subrules_test.py`。
+以前第二段是直打 127.0.0.1:8765 的：它把「规则已更新」原样写进天天在用的那台实例的 app.log，
+还顺手改了用户自己的第一条订阅（界面「运行日志」上那条「中文歌单」就是这么来的），收尾得把
+subscriptions.json 按原字节盖回去、还得重启那台才让内存态与磁盘对上。现在这些都归沙箱承担：
+项目根的 app.log 一条不落（H1），自检订阅不会长进用户自己的 subscriptions.json（H3），
+H2 反向确认记录真的只进了沙箱那份。
+
+跑法：`python tests/subrules_test.py` —— 不用先起 server，这套件自己起自己关。
+真要拿现成的实例跑（比如就想看 8765 上的表现）：`--base http://127.0.0.1:8765`；
+那种跑法动的是那台的第一条订阅，收尾用接口把它还原回跑前那份（G9/G10，不再整包盖字节、
+也不再要求重启），H 段自然跳过。假定那台实例的状态目录就是项目根（8765 正是这么起的），
+否则 G7/G10 读的 S.SUBS_FILE 不是它实际写的那份文件。
 """
 from __future__ import annotations
 
+import atexit
 import json
+import os
+import shutil
+import socket
+import subprocess
 import sys
+import tempfile
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+APP_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(APP_DIR))
+
+# 沙箱必须在 import server 之前定下来：STATE_DIR / SUBS_FILE / LOG_FILE 是那时读环境变量算出来的，
+# 先 import 再改 env 的话，这套件在内存里看的那份文件和子进程真正写的那份就不是同一个文件了。
+SANDBOX_TITLE = "沙箱自检订阅"
+LIVE_BASE = next((sys.argv[i + 1] for i, a in enumerate(sys.argv) if a == "--base" and i + 1 < len(sys.argv)), "")
+SANDBOX = not LIVE_BASE
+PROC = None
+STATE_DIR = ""
+if SANDBOX:
+    STATE_DIR = tempfile.mkdtemp(prefix="md_subrules_state_")
+    (Path(STATE_DIR) / "subscriptions.json").write_text(json.dumps([{
+        "id": "subrules01", "url": "https://www.youtube.com/channel/selftest", "kind": "", "mode": "",
+        "title": SANDBOX_TITLE, "enabled": False, "auto_download": False, "last_ids": [],
+        "last_check": "", "added_at": "", "new_count": 0, "rules": {"max_per_scan": 8},
+        "feed": [], "archived": [],
+    }], ensure_ascii=False, indent=2), encoding="utf-8")
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as _s:
+        _s.bind(("127.0.0.1", 0))
+        _PORT = _s.getsockname()[1]
+    os.environ["MEDIADOWNLOADER_STATE_DIR"] = STATE_DIR
+    os.environ["MEDIADOWNLOADER_PORT"] = str(_PORT)
+    BASE = f"http://127.0.0.1:{_PORT}"
+    PROC = subprocess.Popen(
+        [sys.executable, str(APP_DIR / "server.py")], cwd=str(APP_DIR),
+        env=dict(os.environ, PYTHONUTF8="1"),
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        **({"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}),
+    )
+    atexit.register(lambda: stop_sandbox())
+    print(f"[沙箱] 实例已派出：端口 {_PORT}，状态目录 {STATE_DIR}")
+else:
+    BASE = LIVE_BASE.rstrip("/")
+
 import server as S  # noqa: E402
 
-BASE = "http://127.0.0.1:8765"
+USER_SUBS_FILE = APP_DIR / "subscriptions.json"
+USER_LOG_FILE = APP_DIR / "app.log"
 FAILED: list[str] = []
 LOGS: list[str] = []
 SUBS_SNAPSHOT = S.SUBS_FILE.read_bytes() if S.SUBS_FILE.exists() else None
+USER_SUBS_BYTES = USER_SUBS_FILE.read_bytes() if USER_SUBS_FILE.exists() else None
+USER_LOG_START = USER_LOG_FILE.stat().st_size if USER_LOG_FILE.exists() else 0
 
 
 def ck(name: str, cond, extra: str = ""):
@@ -30,6 +84,28 @@ def ck(name: str, cond, extra: str = ""):
     if not ok:
         FAILED.append(name)
     print(("PASS " if ok else "FAIL ") + name + (f"  [{extra}]" if extra else ""))
+
+
+def stop_sandbox() -> None:
+    global PROC
+    if PROC is not None:
+        try:
+            PROC.terminate()
+            PROC.wait(15)
+        except Exception:
+            PROC.kill()
+        PROC = None
+    if STATE_DIR:
+        shutil.rmtree(STATE_DIR, ignore_errors=True)
+
+
+def appended_lines(path: Path, start: int) -> list[str]:
+    """用户那台 app.log 里 start 这个偏移之后新追加的行 —— 它可能同时在写别的记录，只比对新行"""
+    if not path.is_file():
+        return []
+    with open(path, "rb") as f:
+        f.seek(start)
+        return [l for l in f.read().decode("utf-8", "replace").splitlines() if l.strip()]
 
 
 # ---------------------------------------------------------------- 假组件
@@ -240,7 +316,22 @@ ck("F3 存进去的是清洗过的规则", got == {"only_kw": ["正片"], "max_p
 ck("F4 保存后日志回读生效口径", any("规则已更新" in m and "标题含「正片」" in m for m in LOGS), LOGS[-1])
 
 # ---------------------------------------------------------------- 7. HTTP
-print("=== G. HTTP 口径（打真实 server，跑完按原字节还原 subscriptions.json） ===")
+def wait_sandbox() -> bool:
+    """等沙箱那台起来 —— 派进程到现在这段时间正好跑完 A~F 的内存检查"""
+    for _ in range(60):
+        if PROC.poll() is not None:
+            break
+        try:
+            if http("GET", "/api/status")[0] == 200:
+                return True
+        except Exception:
+            pass
+        time.sleep(1)
+    err = (PROC.stderr.read().decode("utf-8", "replace") if PROC.stderr else "")[-500:]
+    print("FAIL G0 沙箱实例起不来  [" + (err or "60 秒内 /api/status 没响应") + "]")
+    FAILED.append("G0 沙箱实例起不来")
+    stop_sandbox()
+    return False
 
 
 def http(method, path, body=None):
@@ -258,6 +349,22 @@ def http(method, path, body=None):
             return e.code, raw
 
 
+def _disk_subs() -> list:
+    """落盘那份订阅表：沙箱跑法读的是沙箱状态目录，--base 跑法读的是项目根（见文件头的假定）"""
+    try:
+        return json.loads(S.SUBS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+
+if SANDBOX and not wait_sandbox():
+    print()
+    print("FAILED: " + ", ".join(FAILED))
+    sys.exit(1)
+
+print("=== G. HTTP 口径（" + ("沙箱实例，状态目录跑完整个删掉） ==="
+                            if SANDBOX else "现成实例 " + BASE + "，收尾用接口还原第一条订阅的规则） ==="))
+
 code, data = http("GET", "/api/subs")
 live_subs = data.get("subs", []) if isinstance(data, dict) else []
 ck("G1 GET /api/subs 可用", code == 200, code)
@@ -269,6 +376,7 @@ c4, d4 = http("POST", "/api/subs/rules", {"id": "deadbeef00", "rules": {}})
 ck("G4 不存在的订阅 404", c4 == 404, (c4, d4))
 if live_subs:
     sid = live_subs[0]["id"]
+    before = live_subs[0].get("rules") or {}
     try:
         c5, d5 = http("POST", "/api/subs/rules", {"id": sid, "rules": {"filename_template": "%(title)s.%(quality)s"}})
         ck("G5 缺 %(ext)s 的模板 400 且话术能看懂", c5 == 400 and "扩展名" in str(d5), (c5, d5))
@@ -284,12 +392,37 @@ if live_subs:
         _c8b, d8b = http("GET", "/api/subs")
         ck("G8b 连读两次规则不变形", d8b["subs"][0]["rules"] == d8["subs"][0]["rules"], d8b["subs"][0]["rules"])
     finally:
-        if SUBS_SNAPSHOT is not None:
-            S.SUBS_FILE.write_bytes(SUBS_SNAPSHOT)
-            ck("G9 subscriptions.json 已按原字节还原", S.SUBS_FILE.read_bytes() == SUBS_SNAPSHOT)
-            ck("G10 内存态需重启才与磁盘一致（收尾必做）", True)
+        # 还原走接口而不是整包盖字节：盖文件会把那台实例并发写进去的 last_check 之类一起冲掉，
+        # 而且盖完内存态还是脏的（老规矩里「收尾必须重启」就是为这个）。
+        c9, _d9 = http("POST", "/api/subs/rules", {"id": sid, "rules": before})
+        _c10, after = http("GET", "/api/subs")
+        back = next((s.get("rules") for s in (after.get("subs") or []) if s.get("id") == sid), None)
+        ck("G9 跑完把这条订阅的规则还回原样", c9 == 200 and back == before, (c9, before, back))
+        ck("G10 内存态与磁盘同一份（还原走接口，不用重启实例）",
+           back == before and any((s.get("rules") or {}) == before for s in _disk_subs()), _disk_subs())
 else:
     print("（当前没有订阅，跳过落盘往返）")
+
+# ---------------------------------------------------------------- 8. 脚印
+print("=== H. 这套件的记录只留在沙箱里 ===")
+if SANDBOX:
+    mine = [l for l in appended_lines(USER_LOG_FILE, USER_LOG_START) if SANDBOX_TITLE in l]
+    ck("H1 项目根的 app.log 里没多出这条自检订阅的记录", not mine, str(mine[:1])[:200])
+    _p = Path(STATE_DIR) / "app.log"
+    sandbox_log = _p.read_text(encoding="utf-8", errors="replace") if _p.is_file() else ""
+    ck("H2 这条记录确实落在了沙箱那份 app.log 里", SANDBOX_TITLE in sandbox_log and "规则已更新" in sandbox_log,
+       f"沙箱日志 {len(sandbox_log)} 字符")
+    # 只查「有没有长进用户那份」，不比字节：用户那台自己也在写 subscriptions.json（定时扫描会更新 last_check），
+    # 比字节会把人家正常的写入误报成这套件的脚印。
+    user_text = USER_SUBS_FILE.read_text(encoding="utf-8", errors="replace") if USER_SUBS_FILE.exists() else ""
+    ck("H3 用户自己的 subscriptions.json 里没有这条自检订阅",
+       SANDBOX_TITLE not in user_text and "subrules01" not in user_text, user_text[:120])
+else:
+    print("（--base 跑法：写的就是那台实例的日志与订阅文件，H1~H3 跳过，收尾靠 G9 还原）")
+
+stop_sandbox()
+if SANDBOX:
+    ck("H4 沙箱状态目录已删干净", not Path(STATE_DIR).exists(), STATE_DIR)
 
 print()
 print("FAILED: " + (", ".join(FAILED) if FAILED else "none"))

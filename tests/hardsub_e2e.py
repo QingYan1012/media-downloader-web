@@ -1,6 +1,11 @@
 r"""硬字幕烧录（POST /api/ai/hardsub）端到端自检。
 
-跑法：先按平时的方式起 server.py（127.0.0.1:8765），再 `python tests/hardsub_e2e.py`。
+跑法：`python tests/hardsub_e2e.py` —— 这套件自己起一份**沙箱实例**（临时状态目录 + 一个空出来的端口），
+跑完关掉、连状态目录一起删。它**不打 127.0.0.1:8765**：以前那台是天天在用的实例，烧录与「停止烧字幕」
+这些写操作会原样落进项目根的 `app.log`，然后就在「运行日志」页上一直挂着 —— 素材与产物虽然只落
+%TEMP%\md_burn_selftest，日志那一份却是别人机器的记录。末尾 G1/G2 两条钉的就是这件事。
+真要拿现成的实例跑（比如就想看 8765 上的表现）：`--base http://127.0.0.1:8765`，那种跑法日志必然写进
+那台实例，G1/G2 自动跳过。
 素材全部现造在 %TEMP%\md_burn_selftest，输出也只落那里；不碰 Downloads、不写 config.json。
 用完自动清干净（留 --keep 可以留着看抽帧图）。
 """
@@ -10,13 +15,15 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
 
-BASE = "http://127.0.0.1:8765"
+BASE = "http://127.0.0.1:8765"  # main() 里按跑法改；call() 每次读的是这个全局
 APP = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FF = os.path.join(APP, "tools", "ffmpeg.exe")
 FP = os.path.join(APP, "tools", "ffprobe.exe")
@@ -111,12 +118,62 @@ def build_fixtures() -> None:
         "4\n00:00:06,400 --> 00:00:07,800\n第四句 [说话人1] 带说话人标记\n")
 
 
-def main() -> int:
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def start_sandbox():
+    """起一份只属于这套件的实例：状态与日志都落临时目录，项目根的 app.log 一个字节都不该多。
+
+    `MEDIADOWNLOADER_STATE_DIR` 搬得走 config / history / cookies / Downloads / app.log；
+    `tg_session/`、`browser_sniff_profile/`、`catcatch_rules.json` 这三个钉在 APP_DIR 上，
+    这套件不碰 Telegram 也不碰浏览器嗅探，所以那三处不会长出东西来。
+    """
+    state = tempfile.mkdtemp(prefix="md_hardsub_state_")
+    port = _free_port()
+    global BASE
+    BASE = f"http://127.0.0.1:{port}"
+    env = dict(os.environ, MEDIADOWNLOADER_STATE_DIR=state, MEDIADOWNLOADER_PORT=str(port), PYTHONUTF8="1")
+    proc = subprocess.Popen(
+        [sys.executable, os.path.join(APP, "server.py")],
+        cwd=APP, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, **KW,
+    )
+    for _ in range(60):
+        time.sleep(1)
+        if proc.poll() is not None:
+            break
+        if call("/api/status")[0] == 200:
+            print(f"[沙箱] 实例已起：端口 {port}，状态目录 {state}")
+            return proc, state
+    err = (proc.stderr.read().decode("utf-8", "replace") if proc.stderr else "")[-500:]
+    stop_sandbox(proc, state)
+    raise RuntimeError(f"沙箱实例起不来：{err or '60 秒内 /api/status 没响应'}")
+
+
+def stop_sandbox(proc, state: str | None) -> None:
+    try:
+        proc.terminate()
+        proc.wait(15)
+    except Exception:
+        proc.kill()
+    if state:
+        shutil.rmtree(state, ignore_errors=True)
+
+
+def log_appended(path: str, start: int) -> list[str]:
+    """app.log 里 start 这个偏移之后新追加的行 —— 那台天天在用的实例可能同时在写，只比对新行"""
+    if not os.path.isfile(path):
+        return []
+    with open(path, "rb") as f:
+        f.seek(start)
+        return [l for l in f.read().decode("utf-8", "replace").splitlines() if l.strip()]
+
+
+def run_checks() -> int:
     if not (os.path.isfile(FF) and os.path.isfile(FP)):
         print("这套自检需要 tools/ 下的 ffmpeg + ffprobe")
-        return 2
-    if call("/api/status")[0] != 200:
-        print(f"连不上 {BASE}，先把 server.py 起起来再跑")
         return 2
     build_fixtures()
     src = os.path.join(D, "clip.mp4")
@@ -223,13 +280,50 @@ def main() -> int:
     call("/api/ai/hardsub_stop", {"path": big})
     settle(60)
 
+    return 0
+
+
+def main() -> int:
+    global BASE
+    root_log = os.path.join(APP, "app.log")
+    live_base = next((sys.argv[i + 1] for i, a in enumerate(sys.argv) if a == "--base" and i + 1 < len(sys.argv)), "")
+    proc = state = None
+    if live_base:
+        BASE = live_base.rstrip("/")
+        if call("/api/status")[0] != 200:
+            print(f"连不上 {BASE}，那台实例没在跑")
+            return 2
+        print(f"[现成实例] 用 {BASE} —— 这次的烧录记录会落进那台的 app.log，G1/G2 跳过")
+    else:
+        try:
+            proc, state = start_sandbox()
+        except RuntimeError as e:
+            print(e)
+            return 2
+    before = os.path.getsize(root_log) if os.path.isfile(root_log) else 0
+    try:
+        run_checks()
+    finally:
+        sandbox_log = ""
+        if state:
+            p = os.path.join(state, "app.log")
+            sandbox_log = open(p, encoding="utf-8", errors="replace").read() if os.path.isfile(p) else ""
+            stop_sandbox(proc, state)
+            print(f"[沙箱] 实例已关，状态目录已删 → {os.path.exists(state)}")
+        if "--keep" in sys.argv:
+            print("素材留在", D)
+        else:
+            shutil.rmtree(D, ignore_errors=True)
+            print("已清理", D, "→", os.path.exists(D))
+        if not live_base:
+            print("=== G. 这套件不该在别人机器的日志里留脚印 ===")
+            mine = [l for l in log_appended(root_log, before)
+                    if "烧字幕" in l or "双语导出" in l or "md_burn_selftest" in l]
+            check("G1 项目根的 app.log 里没多出这次的烧字幕记录", not mine, str(mine[:1])[:200])
+            check("G2 这些记录确实落在了沙箱那份 app.log 里", "烧字幕" in sandbox_log,
+                  f"沙箱日志 {len(sandbox_log)} 字符")
     print()
     print("FAILED:", fails or "none")
-    if "--keep" in sys.argv:
-        print("素材留在", D)
-    else:
-        shutil.rmtree(D, ignore_errors=True)
-        print("已清理", D, "→", os.path.exists(D))
     return 1 if fails else 0
 
 
