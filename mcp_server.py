@@ -50,11 +50,28 @@ def base_url() -> str:
 _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
+def _auth_headers() -> dict:
+    """机器令牌：环境变量 MEDIADOWNLOADER_MCP_TOKEN 优先，没设就读本机 config.json 里那串。
+
+    按默认口径（只拦非本机连接）桥连 127.0.0.1 本来就用不上它；带着只有好处 ——
+    哪天服务改绑到局网 IP、或前面套了反向代理，桥不用改一行就还能用。
+    """
+    tok = (os.environ.get("MEDIADOWNLOADER_MCP_TOKEN") or "").strip()
+    if not tok:
+        try:
+            with open(APP_DIR / "config.json", "r", encoding="utf-8") as f:
+                tok = str(json.load(f).get("web_auth_machine_token") or "").strip()
+        except Exception:
+            tok = ""
+    return {"X-MDL-Token": tok} if tok else {}
+
+
 def _http(url: str, payload=None, timeout: float = None):
     """发一次请求，返回 (状态码, content-type, 原始字节)。非 2xx 也照样把响应体带回来。"""
     data = None if payload is None else json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=data,
-                                 headers={"Content-Type": "application/json"} if data else {})
+    headers = {"Content-Type": "application/json"} if data else {}
+    headers.update(_auth_headers())
+    req = urllib.request.Request(url, data=data, headers=headers)
     try:
         with _OPENER.open(req, timeout=timeout or TIMEOUT) as r:
             return r.status, (r.headers.get("content-type") or ""), r.read()
@@ -264,7 +281,7 @@ def _brief(ctype: str, raw: bytes) -> str:
 
 def _peek_stream(url: str, t0: float):
     """SSE 只取第一条 data:，取到就断，不让客户端等到超时。"""
-    req = urllib.request.Request(url, headers={"Accept": "text/event-stream"})
+    req = urllib.request.Request(url, headers={"Accept": "text/event-stream", **_auth_headers()})
     first = ""
     got = 0
     try:

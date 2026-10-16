@@ -9,10 +9,11 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 from urllib.parse import urlparse
 
 _LOCK = threading.Lock()
@@ -20,27 +21,33 @@ _PROC: Optional[subprocess.Popen] = None
 _STARTED_BY_US = False
 
 
-def find_binary(configured: str = "", app_dir: Optional[Path] = None) -> str:
+def find_binary(configured: str = "", app_dir: Optional[Path] = None,
+                runnable: Optional[Callable] = None) -> str:
     """按「设置里指的路径 → tools/ → PATH → 环境变量」找 aria2c，找一个算一个。
 
     返回空串表示本机没有：这时界面上要能说清「要么装一个，要么在设置里指路径」，
     而不是让下载卡在半路。
+
+    runnable 由调用方注入（server.is_native_binary）：容器镜像的 tools/ 里常带着 Windows 的
+    aria2c.exe，文件在但 Linux 执行不了，只判 is_file 会选中它、然后在 Popen 处炸。
     """
+    ok = runnable or (lambda p: Path(p).is_file())
+    names = ("aria2c.exe", "aria2c") if sys.platform == "win32" else ("aria2c",)
     cands = []
     if configured:
         cands.append(Path(configured))
     if app_dir:
-        cands.append(Path(app_dir) / "tools" / "aria2c.exe")
-        cands.append(Path(app_dir) / "tools" / "aria2c")
+        for n in names:
+            cands.append(Path(app_dir) / "tools" / n)
     env = (os.environ.get("MEDIA_ARIA2_BIN") or "").strip()
     if env:
         cands.append(Path(env))
     for c in cands:
-        if str(c) and c.is_file():
+        if str(c) and ok(c):
             return str(c)
-    for name in ("aria2c.exe", "aria2c"):
-        got = shutil.which(name)
-        if got:
+    for n in names:
+        got = shutil.which(n)
+        if got and ok(got):
             return got
     return ""
 

@@ -81,9 +81,21 @@ class FakeQueue:
         self.pending = []
         self.running = 0
         self.paused = False
+        self.window = {"open": True, "note": "没设定时窗，什么时候都能跑", "resume_at": "",
+                       "wait_minutes": 5, "global_window": "", "held": 0,
+                       "queues": [{"name": "night", "open": False, "windows": "22:00-06:00",
+                                   "note": "现在不在运行时段", "resume_at": "22:00",
+                                   "wait_minutes": 5, "held": 2}]}
 
     def list_tasks(self, sort_by="queue"):
         return [t.to_dict() for t in self.tasks.values()]
+
+    def window_status(self):
+        # 「离开门还差几分钟」每拍都在掉，和 throttle 的剩余冷却秒数同一口径：只带不签
+        self.window["wait_minutes"] = max(0, int(self.window.get("wait_minutes") or 0) - 1)
+        for row in self.window["queues"]:
+            row["wait_minutes"] = max(0, int(row.get("wait_minutes") or 0) - 1)
+        return json.loads(json.dumps(self.window))
 
 
 class FakeThrottle:
@@ -239,6 +251,20 @@ del q.tasks["t3"]
 ck("C9 全部还原后签名回到基线", S._sse_state_sig(S._sse_state()) == base_sig)
 ck("C10 冷却剩余秒数每拍都在掉，但不进签名",
    S._sse_state_sig(S._sse_state()) == S._sse_state_sig(S._sse_state()) == base_sig)
+ck("C10b state 带定时窗", isinstance(base_state.get("window"), dict)
+   and "open" in base_state["window"] and isinstance(base_state["window"].get("queues"), list))
+ck("C10c 定时窗离开门还剩几分钟，也不进签名",
+   S._sse_state_sig(S._sse_state()) == S._sse_state_sig(S._sse_state()) == base_sig)
+q.window["open"] = False
+q.window["resume_at"] = "09:00"
+ck("C10d 窗开没开、几点开门变了要重推", S._sse_state_sig(S._sse_state()) != base_sig)
+q.window["open"] = True
+q.window["resume_at"] = ""
+ck("C10e 窗还原后签名回到基线", S._sse_state_sig(S._sse_state()) == base_sig)
+q.window["queues"][0]["held"] = 7
+ck("C10f 队列行压了几条变了要重推", S._sse_state_sig(S._sse_state()) != base_sig)
+q.window["queues"][0]["held"] = 2
+ck("C10g 定时窗全部还原后签名回到基线", S._sse_state_sig(S._sse_state()) == base_sig)
 pr = S._sse_prog()
 ck("C11 prog 只收下载中的任务", set(pr["rows"]) == {"t1"})
 ck("C12 prog 带四件套", set(pr["rows"]["t1"]) == {"progress", "speed", "eta", "elapsed_sec"})
@@ -299,6 +325,9 @@ with SSEClient() as cli:
     ck("E4 首帧带 running/paused/pending",
        p["running"] == 1 and p["paused"] is False and p["pending"] == 1)
     ck("E5 首帧任务含 progress 字段", "progress" in (p["tasks"][0] or {}))
+    ck("E5b 首帧带定时窗状态（横幅靠这一份渲染）",
+       isinstance(p.get("window"), dict) and "open" in p["window"]
+       and "held" in p["window"], json.dumps(p.get("window"), ensure_ascii=False)[:120])
     st = requests.get(BASE + "/api/events/stats", timeout=5).json()
     ck("E6 连接计数为 1", st["clients"] == 1, json.dumps(st, ensure_ascii=False))
 

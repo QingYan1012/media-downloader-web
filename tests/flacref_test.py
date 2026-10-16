@@ -99,7 +99,7 @@ def fake_get(url, **kw):
 
 requests.get = fake_get
 try:
-    rows = M._flacref_get("qobuz", "晴天 周杰伦", 0, proxy="http://127.0.0.1:7897")
+    rows = M._flacref_get("qobuz", "晴天 周杰伦", 0, proxy="http://127.0.0.1:9999")
     no_proxy_url, no_proxy_kw = None, None
     M._flacref_get("tidal", "晴天", 0)
     no_proxy_kw = CALLS[-1][1]
@@ -115,7 +115,7 @@ ck("C2 只带 User-Agent（这个站开放搜索就认它），不塞任何凭�
    set(kw1["headers"]) == {"User-Agent", "Accept"}
    and all(k not in str(kw1) for k in ("token", "Cookie", "appSecret", "x-user-auth")), repr(kw1["headers"]))
 ck("C3 给了代理才传 proxies，没给就不传（跟随环境）",
-   kw1["proxies"] == {"http": "http://127.0.0.1:7897", "https": "http://127.0.0.1:7897"}
+   kw1["proxies"] == {"http": "http://127.0.0.1:9999", "https": "http://127.0.0.1:9999"}
    and "proxies" not in no_proxy_kw, repr([kw1.get("proxies"), "proxies" in no_proxy_kw]))
 ck("C4 非 dict 的行被剔掉，其余照常返回", len(rows) == 2, repr(len(rows)))
 ck("C5 六条被访问的 URL 里没有任何一道门槛路径（prepare / queue / keys / turnstile）",

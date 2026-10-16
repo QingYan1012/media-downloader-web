@@ -1,4 +1,4 @@
-r"""按曲名匹配那一轮的三件事：预算按源分档、未完清单列全、落盘目录不许甩出下载目录。
+r"""按曲名匹配那一轮的四件事：预算按源分档、未完清单列全、落盘目录不许甩出下载目录、匹配要把勾选的源全搜完再择优。
 
 全程不联网：搜索打桩，坏曲名用前导斜杠复现线上 musicdl 的死法，只读写 %TEMP%。
 跑法：`python tests/matchround_test.py`（不需要先起 server）。
@@ -488,6 +488,92 @@ ck("P7 无 base 与 base=工作目录本身归到同一格（不再拼出 musicd
        M.MUSICDL_OUTPUTS, "_musicdl_cache"))
 M.MUSICDL_OUTPUTS = _real_outputs
 shutil.rmtree(OUT, ignore_errors=True)
+
+# ---------------------------------------------------------------- 遍历全部匹配源再择优
+# 用户指正的口径：「第一个搜到能用的就停」是错的 —— 后面的平台上可能有分更高、档位更好的
+# 同一条录音。现在把所有勾选的源都问一遍再取最像的那条，平票才按勾选顺序。
+print("=== R. 匹配：所有勾选源都搜完，再取分最高的那条 ===")
+_SONG_A = {"id": "cand_a", "title": "甲", "artists": "某歌手, 其他人", "duration_s": 200}
+_SONG_B = {"id": "cand_b", "title": "甲", "artists": "某歌手", "duration_s": 200}
+# 平票那两条要各自独立的缓存条目，不然两个源返回同一个 id，取到的是同一首歌的对象、测不出顺序
+_SONG_C = {"id": "cand_c", "title": "甲", "artists": "某歌手", "duration_s": 200}
+_SONG_D = {"id": "cand_d", "title": "甲", "artists": "某歌手", "duration_s": 200}
+for _cid, _obj in (("cand_a", Song("甲", "某歌手, 其他人", "NeteaseMusicClient")),
+                   ("cand_b", Song("甲", "某歌手", "QQMusicClient")),
+                   ("cand_c", Song("甲", "某歌手", "NeteaseMusicClient")),
+                   ("cand_d", Song("甲", "某歌手", "QQMusicClient"))):
+    M.set_cached_song(_cid, _obj)
+
+TABLE: dict = {}
+ASKED: list = []
+DELAYS: dict = {}
+
+
+def fake_table(src, keyword, **kw):
+    d = DELAYS.get(src)
+    if d:
+        time.sleep(d)      # 模拟「后面的源先回话」：并行发问时到达顺序不由勾选顺序决定
+    ASKED.append(src)
+    return list(TABLE.get(src) or []), []
+
+
+def resolve_once(table, titles=("甲",), sources=("NeteaseMusicClient", "QQMusicClient"),
+                 delays=None):
+    TABLE.clear()
+    TABLE.update(table)
+    DELAYS.clear()
+    DELAYS.update(delays or {})
+    ASKED.clear()
+    LOGS.clear()
+    return M.resolve_placeholders(
+        [(f"cid_{t}", {"title": t, "artists": "某歌手", "duration_s": 200}) for t in titles],
+        sources=list(sources), work_dir="", log=log)
+
+
+M._search_one_source = fake_table
+ck("R0 反向核对：先确认两条候选的分真的差一档（A 96 / B 100）",
+   M.track_score({"title": "甲", "artists": "某歌手", "duration_s": 200}, _SONG_A)["score"] == 96.0
+   and M.track_score({"title": "甲", "artists": "某歌手", "duration_s": 200}, _SONG_B)["score"] == 100.0,
+   [M.track_score({"title": "甲", "artists": "某歌手", "duration_s": 200}, s)["score"]
+    for s in (_SONG_A, _SONG_B)])
+n_hit = resolve_once({"NeteaseMusicClient": [dict(_SONG_A)], "QQMusicClient": [dict(_SONG_B)]})
+# 源是并行问的，问的先后不再由勾选顺序决定（到达顺序会随网络抖），要钉的是「一个都没漏」
+ck("R1 两个源都被问到（首中即停已取消，第一个源有货也不提前收场）",
+   sorted(ASKED) == sorted(["NeteaseMusicClient", "QQMusicClient"]), ASKED)
+ck("R2 取的是分高的那一条，哪怕它在后面那个源里",
+   n_hit == 1 and M.get_cached_song("cid_甲").singers == "某歌手"
+   and M.get_cached_song("cid_甲").source == "QQMusicClient",
+   getattr(M.get_cached_song("cid_甲"), "source", None))
+ck("R3 日志那句「每首搜到就停」已换成「都搜一遍再取最像的那条」",
+   any("都搜一遍" in m and "搜到就停" not in m for m in LOGS),
+   [m for m in LOGS if "开始按曲名匹配" in m])
+n_hit = resolve_once({"NeteaseMusicClient": [dict(_SONG_C)], "QQMusicClient": [dict(_SONG_D)]})
+ck("R4 分数、档位、音质三项全等（平票）时按勾选顺序取，先勾的赢",
+   n_hit == 1 and M.get_cached_song("cid_甲").source == "NeteaseMusicClient",
+   getattr(M.get_cached_song("cid_甲"), "source", None))
+# 并行发问真正要钉的一条：平票的顺序不能由「谁先回话」决定，否则同一张歌单两次下到的
+# 平台可能不一样。这里让后勾的 QQ 立刻回话、先勾的网易云慢 0.2s。
+n_hit = resolve_once({"NeteaseMusicClient": [dict(_SONG_C)], "QQMusicClient": [dict(_SONG_D)]},
+                     delays={"NeteaseMusicClient": 0.2})
+ck("R4b 先勾的那个回话慢、后勾的先到时，平票仍然按勾选顺序",
+   n_hit == 1 and ASKED[0] == "QQMusicClient"
+   and M.get_cached_song("cid_甲").source == "NeteaseMusicClient",
+   (ASKED, getattr(M.get_cached_song("cid_甲"), "source", None)))
+n_hit = resolve_once({"NeteaseMusicClient": [], "QQMusicClient": [dict(_SONG_B)]})
+ck("R5 前面的源空手、只有后面的源有货时照样匹配上",
+   n_hit == 1 and sorted(ASKED) == sorted(["NeteaseMusicClient", "QQMusicClient"]), (n_hit, ASKED))
+M.set_cached_song("cid_甲", {"title": "甲", "artists": "某歌手", "needs_match": True})
+n_hit = resolve_once({"NeteaseMusicClient": [{"id": "x1", "title": "乙", "artists": "别人",
+                                              "duration_s": 200}],
+                      "QQMusicClient": [{"id": "x2", "title": "丙", "artists": "别人",
+                                         "duration_s": 200}]})
+ck("R6 全都对不上时照旧算没命中，跨源的拒因仍带得出来",
+   n_hit == 0 and isinstance(M.get_cached_song("cid_甲"), dict)
+   and any("没找到" in m for m in LOGS), [m for m in LOGS if "匹配 1/1" in m])
+ck("R7 三个源就搜三遍，一个都不落（遍历的数量跟着勾选走）",
+   resolve_once({"NeteaseMusicClient": [], "QQMusicClient": [], "MiguMusicClient": []},
+                sources=("NeteaseMusicClient", "QQMusicClient", "MiguMusicClient")) == 0
+   and len(ASKED) == 3, ASKED)
 
 print("FAILED: " + ("; ".join(FAILED) if FAILED else "none"))
 sys.exit(1 if FAILED else 0)

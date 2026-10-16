@@ -273,9 +273,12 @@ ck("E6 占位条目已原地换成真 SongInfo（调用方的 id 不用换）",
    isinstance(M.get_cached_song(hit_id), FakeSong), type(M.get_cached_song(hit_id)).__name__)
 ck("E7 没匹配上的仍是占位 dict（下回还能再试）",
    isinstance(M.get_cached_song(miss_id), dict) and M.get_cached_song(miss_id).get("needs_match"))
-ck("E8 按「歌手 + 曲名」搜，且命中即停不再搜下一个源",
-   any(x.endswith("某歌手 命中") for x in SEARCHED) and
-   sum(1 for x in SEARCHED if "命中" in x) == 1, SEARCHED)
+ck("E8 按「歌手 + 曲名」搜，且把勾选的匹配源全问一遍（不再首中即停；并行发问，问的先后不算口径）",
+   sorted(x.split("|")[0] for x in SEARCHED if x.endswith("某歌手 命中"))
+   == sorted(M.TRACK_MATCH_SOURCES), SEARCHED)
+ck("E8b 几家给的候选一模一样时按勾选顺序取，先勾的那个赢",
+   str(getattr(M.get_cached_song(hit_id), "source", "")) == "NeteaseMusicClient",
+   type(M.get_cached_song(hit_id)).__name__)
 ck("E9 汇总里列出没匹配到的曲名，不静默丢",
    any("查无此歌" in m for m in LOGS), [m for m in LOGS if "没找到" in m])
 ck("E10 用户勾了源就按勾的匹配",

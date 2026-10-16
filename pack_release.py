@@ -60,13 +60,16 @@ APP_PY = [
     "ai_pipeline.py",
     "aria2_client.py",
     "aria2_daemon.py",
+    "pot_daemon.py",  # PO Token 服务端的代起逻辑：漏了它，「组件与依赖」里那句「程序自己会拉」就是空话
     "bt_trackers.py",
     "audio_analyze.py",
     "diarize_tools.py",
     "voice_tools.py",
     "mcp_server.py",
 ]
-APP_FILES = ["requirements.txt", "README.md", "README.en.md", "CHANGELOG.md", "LICENSE", "Dockerfile", "docker-compose.yml"]
+APP_FILES = ["requirements.txt", "README.md", "README.en.md", "CHANGELOG.md", "LICENSE", "Dockerfile", "docker-compose.yml", ".dockerignore",
+             # README 只留「怎么开始 + 有什么」，细节在这两份里；不跟着进包，包里的 README 就指着不存在的文件
+             "docs/详细功能介绍.md", "docs/detailed-features.en.md"]
 APP_DIRS = ["static", "plugins", "extension", "docs/screenshots"]
 TOOLS_FILES = ["ffmpeg.exe", "ffprobe.exe", "N_m3u8DL-RE.exe", "yt-dlp.exe"]
 
@@ -82,9 +85,16 @@ EXCLUDE_DIR_NAMES = {
     "torrent_state",
 }
 EXCLUDE_FILE_RE = re.compile(
-    r"(?i)\.(pyc|pyo|log|zip|7z|rar|part|tmp|bak)$|"
+    # 分段拼接时别在两处都写 `|`：多出来的那个空分支会匹配任意文件名，整个排除表反向变成「全排除」
+    r"(?i)\.(pyc|pyo|log|zip|7z|rar|part|tmp|bak)$"
+    # 带时间后缀的编辑备份（*.bak-<数字>）不以 .bak 结尾，上面那条逮不住；config.json.bak-* 里是这台机器的密钥
+    r"|\.bak-\d|"
     r"^(config\.json|history\.json|library_cache\.json|live_monitors\.json|tg_media_index\.json|"
-    r"rss_feeds\.json|subscriptions\.json|music_favorites\.json|catcatch_rules\.json|pack_release\.py)$"
+    r"rss_feeds\.json|subscriptions\.json|music_favorites\.json|catcatch_rules\.json|"
+    # 没送出去的通知记的是这台机器下过什么，锁定名单记的是谁在撞这门，清理状态记的是它删过什么：都不跟着包走
+    r"notify_outbox\.json|login_state\.json|cookiecloud_state\.json|cleanup_state\.json|"
+    # 同步状态记的是这台机器拉过哪些 Cookie 文件：也不跟着包走
+    r"pack_release\.py)$"
 )
 
 
@@ -263,6 +273,14 @@ def check_components_payload(d: dict) -> None:
     print(f"[smoke] 组件接口三档版本齐全，随包清单命中 {sum(1 for i in items if i.get('bundled'))} 项")
 
 
+def _free_port() -> int:
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
 def smoke_test(dst: Path) -> None:
     """真起一次打包后的服务，打一个会 import 同目录模块的接口。
 
@@ -273,7 +291,7 @@ def smoke_test(dst: Path) -> None:
     import time
     import urllib.request
 
-    port = "8791"
+    port = str(_free_port())  # 写死一个端口会在被占时假报「包坏了」：这里只是试跑，用哪个都行
     env = dict(os.environ, MEDIADOWNLOADER_PORT=port, PYTHONUTF8="1")
     proc = subprocess.Popen(
         [str(dst / "runtime" / "python.exe"), str(dst / "server.py")],
@@ -316,15 +334,33 @@ def smoke_test(dst: Path) -> None:
         # 试跑会在包里落下本机配置/缓存，绝不能跟着 zip 出去
         for f in ("config.json", "history.json", "app.log", "library_cache.json",
                   "subscriptions.json", "live_monitors.json", "rss_feeds.json",
-                  "music_favorites.json", "catcatch_rules.json", "mcp_calls.log"):
+                  "music_favorites.json", "catcatch_rules.json", "mcp_calls.log",
+                  "notify_outbox.json", "login_state.json", "cookiecloud_state.json", "cleanup_state.json"):
             (dst / f).unlink(missing_ok=True)
         for p in dst.glob("app-*.log"):   # 按天归档的运行日志同样属于本机数据
+            p.unlink(missing_ok=True)
+        for p in dst.glob("*.bak-*"):     # 带时间的编辑/配置备份：试跑真落过盘的话也不跟着包走
             p.unlink(missing_ok=True)
         for d in ("Downloads", "Whisper", "browser_sniff_profile", "local_index"):
             shutil.rmtree(dst / d, ignore_errors=True)
         for p in dst.rglob("__pycache__"):
             if p.is_dir():
                 shutil.rmtree(p, ignore_errors=True)
+
+
+def check_present(dst: Path) -> None:
+    """复制这一步最容易「静默什么没拿到」：排除表写错一个字符、目录名打错，脚本照样跑完、
+    zip 照样出来，只是包里没有界面 —— 对方解压后打开是空白，本机却一点看不出来。
+    所以这里逐个点名要求存在的文件与必须有内容的目录，缺一个就中止。"""
+    missing = [n for n in ("static/index.html", "server.py", "CHANGELOG.md", "README.md",
+                           "README.en.md", "requirements.txt", "components_bundled.json",
+                           "启动.bat", "使用说明.txt") if not (dst / n).is_file()]
+    empty = [d for d in ("static", "plugins", "extension")
+             if (APP_DIR / d).is_dir() and not any((dst / d).rglob("*"))]
+    if missing or empty:
+        raise SystemExit(f"[ABORT] 包里缺文件：{missing or ''} 空目录：{empty or ''}"
+                         "（多半是 EXCLUDE_FILE_RE 或 APP_DIRS 写坏了，别让空壳包出去）")
+    print(f"[present] 必进包的文件与目录齐了（static 里 {len(list((dst / 'static').rglob('*')))} 项）")
 
 
 def check_module_imports(dst: Path) -> None:
@@ -450,6 +486,7 @@ def copy_app(dst: Path) -> None:
     for name in APP_PY + APP_FILES:
         src = APP_DIR / name
         if src.exists():
+            (dst / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dst / name)
     for name in APP_DIRS:
         src = APP_DIR / name
@@ -579,6 +616,9 @@ musicdl 已经装在包里：页面显示绿色的「● musicdl 已就绪 · v�
   其中 `zhconv` 用于跨平台按曲名匹配前把歌名/歌手统一成简体，缺了只是退回「繁體歌单匹配不上」的旧行为。
   用设置里的「PyPI 镜像」；该源失败会自动回落到官方源和其它国内镜像。
 - 更新过程写在「运行日志」里（能看到用的哪个源、成功没有）。
+- 「bgutil PO Token 插件」这一行初始是红的：点「安装」只补得上插件（pip 装进包内 runtime），
+  取票那个服务端是个 node 项目，不随包带，也不在「一键更新」里 —— 要用得自己在本机装 node
+  并把服务跑起来，再到设置里填地址。没有它 YouTube 照样解析，只是高清档取决于站点给不给。
 装完当前进程可能仍用内存里的旧版本：重启一次「启动.bat」即可生效。
 
 【本地语音转写（Whisper）】
@@ -670,6 +710,7 @@ def main() -> None:
     copy_app(dst)
     write_bundled_manifest(dst, version)
     write_launchers(dst, version)
+    check_present(dst)
 
     # 复用旧 runtime 时会带着上次试跑生成的字节码目录，纯占体积
     caches = [p for p in dst.rglob("__pycache__") if p.is_dir()]
@@ -685,8 +726,10 @@ def main() -> None:
     leaks = [str(p.relative_to(dst)) for p in dst.rglob("*")
              if p.is_file() and (
                  p.name in ("config.json", "cookies.txt", "history.json", "library_cache.json",
-                            "mcp_calls.log")
+                            "mcp_calls.log", "notify_outbox.json", "login_state.json", "cookiecloud_state.json",
+                    "cleanup_state.json")
                  or p.name == "app.log"
+                 or ".bak-" in p.name      # 编辑/恢复默认留下的带时间备份，里面是这台的密钥与路径
                  or (p.name.startswith("app-") and p.name.endswith(".log")))]
     if leaks:
         raise SystemExit(f"[ABORT] 包里混入私密/本机文件：{leaks}")

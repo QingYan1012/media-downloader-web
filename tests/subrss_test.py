@@ -94,7 +94,7 @@ ck("B3 垃圾日期留空而不是瞎猜", S._rss_pub_date("最近") == "" and S
 
 print("=== C. RSS 条目换算 ===")
 orig_parse, orig_decide = S.parse_rss_feed, S.proxy_decision
-S.proxy_decision = lambda *a, **k: ("proxy", "http://127.0.0.1:7897")
+S.proxy_decision = lambda *a, **k: ("proxy", "http://127.0.0.1:9999")
 S.parse_rss_feed = lambda url, proxy="": {"title": "示例源", "entries": [
     feed_entry(1), feed_entry(2, typ="audio"),
     feed_entry(3, link="mailto:nobody@example.com"),

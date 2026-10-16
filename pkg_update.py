@@ -61,20 +61,29 @@ MIRROR_NAMES = {
 }
 
 # 网页「组件与依赖」面板里可点更新的 Python 依赖
+# cn = 面板上给人看的那一行中文（用户看用途，不看包名）；label 留全名，日志与悬停提示用
 PIP_PACKAGES: List[dict] = [
-    {"name": "yt-dlp", "label": "yt-dlp Python 包（tools\\ 里没有 exe 时才用它）"},
-    {"name": "musicdl", "label": "musicdl（音乐搜索 / 歌词 / 封面）"},
-    {"name": "zhconv", "label": "zhconv（匹配前繁简归一，不装则繁體歌单在简体曲库里匹配不上）"},
-    {"name": "mutagen", "label": "mutagen（音频标签写入）"},
-    {"name": "edge-tts", "label": "edge-tts（配音合成）"},
-    {"name": "deep-translator", "label": "deep-translator（字幕翻译）"},
-    {"name": "telethon", "label": "telethon（Telegram 私有/受限频道会话）"},
-    {"name": "python-socks", "label": "python-socks（telethon 走 SOCKS5 代理要装）"},
-    {"name": "cryptg", "label": "cryptg（telethon 加密加速，不装会退回纯 Python、Telegram 操作明显变慢）"},
-    {"name": "psutil", "label": "psutil（结束直播录制时收掉拉流的 ffmpeg 子进程，不装则成品可能一直变大、删不掉）"},
-    {"name": "numpy", "label": "numpy（音频分析 / 说话人分离）"},
-    {"name": "librosa", "label": "librosa（音频分析：节拍 / 响度 / 调性，会带 numba，体积较大）"},
-    {"name": "faster-whisper", "label": "faster-whisper（本地转写，体积大）"},
+    {"name": "yt-dlp", "cn": "解析规则（Python 包）",
+     "label": "yt-dlp Python 包（tools\\ 里没有 exe 时才用它）"},
+    {"name": "musicdl", "cn": "音乐搜索 / 歌词 / 封面", "label": "musicdl（音乐搜索 / 歌词 / 封面）"},
+    {"name": "zhconv", "cn": "繁简归一",
+     "label": "zhconv（匹配前繁简归一，不装则繁體歌单在简体曲库里匹配不上）"},
+    {"name": "mutagen", "cn": "音频标签写入", "label": "mutagen（音频标签写入）"},
+    {"name": "edge-tts", "cn": "字幕配音", "label": "edge-tts（配音合成）"},
+    {"name": "deep-translator", "cn": "字幕机翻", "label": "deep-translator（字幕翻译）"},
+    {"name": "telethon", "cn": "Telegram 私有频道", "label": "telethon（Telegram 私有/受限频道会话）"},
+    {"name": "python-socks", "cn": "Telegram 走 SOCKS5",
+     "label": "python-socks（telethon 走 SOCKS5 代理要装）"},
+    {"name": "cryptg", "cn": "Telegram 加密加速",
+     "label": "cryptg（telethon 加密加速，不装会退回纯 Python、Telegram 操作明显变慢）"},
+    {"name": "psutil", "cn": "录制收尾收进程",
+     "label": "psutil（结束直播录制时收掉拉流的 ffmpeg 子进程，不装则成品可能一直变大、删不掉）"},
+    {"name": "numpy", "cn": "音频分析基础库", "label": "numpy（音频分析 / 说话人分离）"},
+    {"name": "librosa", "cn": "节拍 / 响度 / 调性",
+     "label": "librosa（音频分析：节拍 / 响度 / 调性，会带 numba，体积较大）"},
+    {"name": "faster-whisper", "cn": "本地转写", "label": "faster-whisper（本地转写，体积大）"},
+    {"name": "bgutil-ytdlp-pot-provider", "cn": "YouTube 取票插件",
+     "label": "bgutil PO Token 插件（yt-dlp 要票的客户端靠它取票；服务端不在这里）"},
 ]
 
 

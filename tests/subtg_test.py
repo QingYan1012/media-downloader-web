@@ -163,7 +163,7 @@ calls: list[dict] = []
 orig_hist, orig_decide = TC.list_channel_history, S.proxy_decision
 TC.list_channel_history = lambda ch, **kw: (calls.append({"ch": ch, **kw}) or
                                             (pages.pop(0) if pages else [], {"stopped": "已到数量上限", "errors": {}}))
-S.proxy_decision = lambda *a, **k: ("proxy", "http://127.0.0.1:7897")
+S.proxy_decision = lambda *a, **k: ("proxy", "http://127.0.0.1:9999")
 try:
     mgr, q = new_mgr(sub_first_download_n=0, sub_auto_download=True)
     sub = mgr.add("https://t.me/s/europa_press")
@@ -171,7 +171,7 @@ try:
     n1 = mgr.scan_one(sub, auto_download=False)
     ck("D2 首次扫描只记 ID 不下", n1 == 0 and len(sub["last_ids"]) == 2 and q.batches == [], sub["last_ids"])
     ck("D3 标题取到频道名", sub["title"] == "europa_press", sub["title"])
-    ck("D4 代理按平台决策后真的传下去", calls[-1]["proxy"] == "http://127.0.0.1:7897", calls[-1].get("proxy"))
+    ck("D4 代理按平台决策后真的传下去", calls[-1]["proxy"] == "http://127.0.0.1:9999", calls[-1].get("proxy"))
     ck("D5 没设类型时不只看视频（全类型都翻）", set(calls[-1]["types"]) == set(TC.ALL_TYPES), calls[-1]["types"])
     pages.insert(0, [anon_row(4), anon_row(3), anon_row(2)])
     n2 = mgr.scan_one(sub, auto_download=True)

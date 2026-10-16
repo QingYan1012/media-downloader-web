@@ -1481,6 +1481,7 @@ def search_music(
 
     annotate_quality_spec(results, quality_spec)
     annotate_reference_compare(results, ref_rows)
+    annotate_query_score(results, keyword)
     return results
 
 
@@ -1962,10 +1963,12 @@ def _parse_playlist_via_musicdl(
 SPOTIFY_PAGE_SIZE = 300
 SPOTIFY_LIST_LIMIT = 1000
 SPOTIFY_LIST_BUDGET = 240
-# persisted-query 的 sha256 要下完整个 web-player JS 包才搜得到（本机实测 ~45s），而它只跟
-# Spotify 的前端版本走 —— 缓存住，翻页和第二张歌单就不必再付这笔钱。
+# persisted-query 的 sha256 要从 Spotify 的 web-player JS 包里搜，而它只跟 Spotify 的前端
+# 版本走 —— 缓存住，翻页、第二张歌单和单曲都不必再付这笔钱。
+# 本机实测：主包一跳 1.2s 就带回全部 81 个查询指纹；它引用的 75 个分片要 57s 且一个查询串
+# 都不含（musicdl 自己每次都全量扫，所以是那句「每页 45s」）。于是先扫主包，扫不到才补分片。
 SPOTIFY_HASH_TTL = 6 * 3600
-_SPOTIFY_HASH: Dict[str, Any] = {"value": "", "ts": 0.0}
+_SPOTIFY_HASH: Dict[str, Any] = {"value": {}, "ts": 0.0}
 
 # 默认匹配源：这几个平台的地址是自己家的 CDN，搜到就能下、几秒一首。Spotify/Apple 并非取不到
 # 地址（musicdl 走第三方转链，单曲实测能下），只是每首约十秒且时常失败，所以不进默认、只作可选。
@@ -1976,6 +1979,11 @@ TRACK_MATCH_BUDGET = 1500
 # 整批落在「本轮没轮到搜」里。勾了这两个源时整轮预算放宽到 3000s。
 TRACK_MATCH_BUDGET_RELAY = 3000
 TRACK_MATCH_WORKERS = 3
+# 一首歌要问完所有勾选的源，所以每一首内部也得并行问 —— 串行问是「各源耗时相加」：
+# 实测默认 5 个源串行 103~134s 一首，50 首的清单一定撞进「本轮没轮到搜」。并行后
+# 一首的墙钟约等于最慢那个源（本机 QQ 常是 59s）。曲目级 3 线程 × 源级 4 = 至多 12 路
+# 并发搜索，与聚合搜索「每源一条线程」的量级一致。
+TRACK_MATCH_SOURCE_WORKERS = 4
 # 时长容差：曲名+歌手都对上时，过去一律放宽 60s，可 30 秒的单曲跟 90 秒的版本也能算"同一首"。
 # 改成绝对值与比例两者取严，再留一个下限容纳平台间固有的尾差/编码差。
 TRACK_DUR_TOL_ABS = 60
@@ -1990,38 +1998,106 @@ DOWNLOAD_CHUNK = 6
 
 def _spotify_playlist_id(url: str) -> str:
     """取 /playlist/<id>；intl-ja 这类前缀路径也在里面。取不到说明链接指的不是歌单页。"""
+    return _spotify_path_id(url, "playlist")
+
+
+def _spotify_track_id(url: str) -> str:
+    """取 /track/<id>（歌单每行的 page_url 就是它）。取不到说明链接指的不是单曲页。"""
+    return _spotify_path_id(url, "track")
+
+
+def _spotify_path_id(url: str, kind: str) -> str:
     from urllib.parse import urlparse
     segs = [s for s in (urlparse(url).path or "").split("/") if s]
     for i, seg in enumerate(segs[:-1]):
-        if seg == "playlist":
+        if seg == kind:
             return segs[i + 1]
     return ""
 
 
-def _spotify_hash(session: Any, js_pack: str, ovr: dict, force: bool = False) -> str:
-    from musicdl.modules.utils.spotifyutils import SpotifyMusicClientPlaylistUtils as PU
-    now = time.time()
-    if not force and _SPOTIFY_HASH["value"] and now - _SPOTIFY_HASH["ts"] < SPOTIFY_HASH_TTL:
-        return _SPOTIFY_HASH["value"]
+def _spotify_hash(session: Any, js_pack: str, ovr: dict, force: bool = False,
+                  op: str = "fetchPlaylist") -> str:
+    """某个 pathfinder 查询的 sha256 指纹；整张表缓存 6h，取不到返回 ""。"""
+    table = _SPOTIFY_HASH["value"]
+    if not isinstance(table, dict):
+        table = {}
+    if not force and table and time.time() - _SPOTIFY_HASH["ts"] < SPOTIFY_HASH_TTL:
+        return str(table.get(op) or "")
+    found = _spotify_scan_hashes(session, js_pack, ovr)
+    if found:
+        _SPOTIFY_HASH["value"], _SPOTIFY_HASH["ts"] = found, time.time()
+    return str((found or table).get(op) or "")
+
+
+def _spotify_scan_hashes(session: Any, js_pack: str, ovr: dict) -> Dict[str, str]:
+    """在 web-player 的 JS 里捞 persisted-query 指纹表：{"fetchPlaylist": "<sha>", ...}。"""
+    import re
+    from musicdl.modules.utils.spotifyutils import SpotifyMusicClientUtils as SU
+    pat = re.compile(r'"([A-Za-z_]+)","(?:query|mutation)","([a-f0-9]{64})"')
+    raw = ""
+    if js_pack:
+        try:
+            r = session.get(js_pack, headers=SU.COMMON_HEADERS, timeout=(6, 30), **ovr)
+            r.raise_for_status()
+            raw = r.text or ""
+        except Exception:
+            raw = ""
+    found = dict(pat.findall(raw))
+    if found:
+        return found
+    # 主包里没有 = Spotify 把查询挪进分片了，这时才付全量扫描的钱
     try:
-        h = str(PU.getsha256hash(session, js_pack, request_overrides=ovr) or "")
+        from musicdl.modules.utils.spotifyutils import SpotifyMusicClientPlaylistUtils as PU
+        str_map, hash_map = PU.extractmappings(raw)
+        blob = raw
+        for chunk in PU.combinechunks(str_map, hash_map):
+            try:
+                blob += session.get(
+                    f"https://open.spotifycdn.com/cdn/build/web-player/{chunk}",
+                    headers=SU.COMMON_HEADERS, timeout=(6, 30), **ovr).text or ""
+            except Exception:
+                pass
+        return dict(pat.findall(blob))
     except Exception:
-        h = ""
-    if h:
-        _SPOTIFY_HASH["value"], _SPOTIFY_HASH["ts"] = h, now
-    return h
+        return found
 
 
-def _spotify_fetch_page(session: Any, tokens: dict, sha: str, playlist_id: str,
-                        offset: int, limit: int, ovr: dict) -> dict:
-    """报文照抄 musicdl 的 fetchplaylist，只把指纹改成参数 —— 缓存和过期重算才插得进去
-    （它自己每页都现算一次，翻页就成了每页 45s）。
+def _spotify_tokens(session: Any, ovr: dict) -> tuple:
+    """免登录凑齐 pathfinder 的三件套（访问令牌 / Client-Token / 前端版本号）。
+
+    返回 (sessiondata, tokens, 错误原因)；拿不到令牌时前两项是空字典。
+    """
+    from musicdl.modules.utils.spotifyutils import SpotifyMusicClientUtils as SU
+    try:
+        sd = SU.getsessiondata(session, request_overrides=ovr)
+        secret = SU.getlatesttotpsecret()
+        tok = SU.getaccesstoken(session, SU.generatetotp(secret["secret"]), secret["version"],
+                                request_overrides=ovr)
+        access = str(tok.get("accessToken") or "")
+        if not access:
+            return {}, {}, "Spotify 没发访问令牌（多半是被限流，稍后再试或换个代理节点）"
+        version = str(sd.get("clientVersion") or "")
+        tokens = {
+            "access": access, "version": version,
+            "client": str(SU.getclienttoken(session, version, tok.get("clientId") or "",
+                                            sd.get("deviceId") or "",
+                                            request_overrides=ovr) or ""),
+        }
+        return sd or {}, tokens, ""
+    except Exception as e:
+        return {}, {}, f"连不上 Spotify 的公开接口：{_net_err_cn(e)}"
+
+
+
+def _spotify_query(session: Any, tokens: dict, sha: str, op: str, variables: dict,
+                   ovr: dict) -> dict:
+    """打一次 pathfinder 查询。报文照抄 musicdl 的 fetchplaylist，只把指纹与变量改成参数
+    —— 缓存和过期重算才插得进去（它自己每页都现算一次，翻页就成了每页 45s）。
     """
     from musicdl.modules.utils.spotifyutils import SpotifyMusicClientUtils as SU
     payload = {
-        "operationName": "fetchPlaylist",
-        "variables": {"uri": f"spotify:playlist:{playlist_id}", "offset": offset,
-                      "limit": limit, "enableWatchFeedEntrypoint": False},
+        "operationName": op,
+        "variables": variables,
         "extensions": {"persistedQuery": {"version": 1, "sha256Hash": sha}},
     }
     headers = {
@@ -2038,23 +2114,42 @@ def _spotify_fetch_page(session: Any, tokens: dict, sha: str, playlist_id: str,
     return r.json() or {}
 
 
-def _spotify_track_fields(entry: dict) -> dict:
-    """pathfinder 的一行曲目 → 我们的条目 dict。不是歌（播客单集、有声书）返回 {}。"""
-    data = ((entry or {}).get("itemV2") or {}).get("data") or \
-           ((entry or {}).get("item") or {}).get("data") or {}
+def _spotify_fetch_page(session: Any, tokens: dict, sha: str, playlist_id: str,
+                        offset: int, limit: int, ovr: dict) -> dict:
+    return _spotify_query(session, tokens, sha, "fetchPlaylist",
+                          {"uri": f"spotify:playlist:{playlist_id}", "offset": offset,
+                           "limit": limit, "enableWatchFeedEntrypoint": False}, ovr)
+
+
+
+def _spotify_track_fields(entry: dict, *, track_union: bool = False) -> dict:
+    """pathfinder 的一行曲目 → 我们的条目 dict。不是歌（播客单集、有声书）返回 {}。
+
+    track_union=True 时进来的就是 getTrack 的那个对象本身，不是歌单里的一行：那边歌手拆成
+    firstArtist + otherArtists（各自是 items[].profile.name），时长字段叫 duration。
+    """
+    data = (entry or {}) if track_union else \
+        (((entry or {}).get("itemV2") or {}).get("data") or
+         ((entry or {}).get("item") or {}).get("data") or {})
     if not isinstance(data, dict) or str(data.get("__typename") or "Track") != "Track":
         return {}
     title = str(data.get("name") or "").strip()
     if not title:
         return {}
-    artists = ", ".join([
-        str(((a or {}).get("profile") or {}).get("name") or "").strip()
-        for a in ((data.get("artists") or {}).get("items") or [])
-        if ((a or {}).get("profile") or {}).get("name")
-    ])
+
+    def _names(conn) -> list:
+        got = ((conn or {}).get("items") or []) if isinstance(conn, dict) else []
+        return [str(((a or {}).get("profile") or {}).get("name") or "").strip()
+                for a in got if ((a or {}).get("profile") or {}).get("name")]
+
+    artists = _names(data.get("artists"))
+    if not artists:
+        artists = _names(data.get("firstArtist")) + _names(data.get("otherArtists"))
+    artists = ", ".join([a for a in artists if a])
     album_obj = data.get("albumOfTrack") or {}
     dur = data.get("trackDuration") or data.get("duration") or {}
     ms = (dur or {}).get("totalMilliseconds") or 0
+
     covers = (album_obj.get("coverArt") or {}).get("sources") or []
     cover = ""
     if covers:
@@ -2095,39 +2190,33 @@ def _spotify_track_fields(entry: dict) -> dict:
     }
 
 
+def _spotify_client(proxy: str) -> tuple:
+    """凑一个能直接打 pathfinder 的客户端。返回 (session, sd, tokens, ovr, 错误原因)。
+
+    歌单和单曲都要这一整套（令牌 10 分钟就过期，每次都现取），错误话术也只留一份。
+    """
+    try:
+        import requests
+    except Exception as e:
+        return None, {}, {}, {}, f"musicdl 不可用：{type(e).__name__}: {e}"
+    ovr: Dict[str, Any] = {"verify": False}
+    prx = _proxies_of(proxy)
+    if prx:
+        ovr["proxies"] = prx
+    session = requests.Session()
+    sd, tokens, err = _spotify_tokens(session, ovr)
+    return session, sd, tokens, ovr, err
+
+
 def list_spotify_playlist(url: str, *, proxy: str = "", log: Callable = print,
                           limit: int = SPOTIFY_LIST_LIMIT) -> tuple:
     """免登录列出 Spotify 歌单曲目。返回 (曲目, 歌单名, 错误原因)；只查元数据，不碰音频地址。"""
     pid = _spotify_playlist_id(url)
     if not pid:
         return [], "", "链接里没有 /playlist/<id>，不是 Spotify 歌单页"
-    try:
-        import requests
-        from musicdl.modules.utils.spotifyutils import SpotifyMusicClientUtils as SU
-    except Exception as e:
-        return [], "", f"musicdl 不可用：{type(e).__name__}: {e}"
-    ovr: Dict[str, Any] = {"verify": False}
-    prx = _proxies_of(proxy)
-    if prx:
-        ovr["proxies"] = prx
-    session = requests.Session()
-    try:
-        sd = SU.getsessiondata(session, request_overrides=ovr)
-        secret = SU.getlatesttotpsecret()
-        tok = SU.getaccesstoken(session, SU.generatetotp(secret["secret"]), secret["version"],
-                                request_overrides=ovr)
-        access = str(tok.get("accessToken") or "")
-        if not access:
-            return [], "", "Spotify 没发访问令牌（多半是被限流，稍后再试或换个代理节点）"
-        version = str(sd.get("clientVersion") or "")
-        tokens = {
-            "access": access, "version": version,
-            "client": str(SU.getclienttoken(session, version, tok.get("clientId") or "",
-                                            sd.get("deviceId") or "",
-                                            request_overrides=ovr) or ""),
-        }
-    except Exception as e:
-        return [], "", f"连不上 Spotify 的公开接口：{_net_err_cn(e)}"
+    session, sd, tokens, ovr, err = _spotify_client(proxy)
+    if err:
+        return [], "", err
 
     tried: set = set()
     for attempt in (1, 2):
@@ -2169,8 +2258,214 @@ def list_spotify_playlist(url: str, *, proxy: str = "", log: Callable = print,
                 it["id"] = _cache_song(it)     # 占位条目也进缓存：下载时才换成真 SongInfo
             log(f"Spotify 歌单「{name or pid}」共 {total or len(items)} 首，列出 {len(items)} 首")
             return items, name, ""
-        _SPOTIFY_HASH["value"] = ""            # 接口说指纹不对（Spotify 刚发过版）→ 重算再来
+        _SPOTIFY_HASH["value"] = {}             # 接口说指纹不对（Spotify 刚发过版）→ 重算再来
     return [], "", "Spotify 接口指纹取不到（它的前端刚改版，或被代理节点干扰），列不出曲目"
+
+
+SPOTIFY_TRACK_BUDGET = 60
+
+
+SPOTIFY_SHORT_HOSTS = ("spotify.link", "t.spotify.com")
+
+
+def _is_spotify_short(url: str) -> bool:
+    host = _url_host(str(url or ""))
+    return any(host == h or host.endswith("." + h) for h in SPOTIFY_SHORT_HOSTS)
+
+
+def _spotify_unshort(url: str, session: Any, ovr: dict) -> str:
+    """spotify.link / t.spotify.com 短链跳一次拿最终网址；跳不动就原样返回。
+
+    只发一个 GET 看 Location，不执行页面下发的任何 JS。
+    """
+    try:
+        r = session.get(url, allow_redirects=True, headers={"User-Agent": "Mozilla/5.0"},
+                        timeout=(6, 20), **ovr)
+        return str(r.url or url)
+    except Exception:
+        return url
+
+
+def list_spotify_track(url: str, *, proxy: str = "", log: Callable = print) -> tuple:
+    """免登录取一条 Spotify 单曲链接的元数据。返回 (条目 dict 或 {}, 错误原因)。
+
+    用 pathfinder 的 getTrack 查询（歌单那边是 fetchPlaylist）：实测本机一跳 0.3s 回全
+    曲名 / 歌手 / 时长 / 专辑 / 封面。这里只拿元数据，音频地址仍留给下载时的跨平台匹配
+    （见 resolve_placeholders），所以产出的是和歌单同一形状的 needs_match 占位。
+    """
+    session, sd, tokens, ovr, err = _spotify_client(proxy)
+    if err:
+        return {}, err
+    tid = _spotify_track_id(url)
+    if not tid and _is_spotify_short(url):
+        tid = _spotify_track_id(_spotify_unshort(url, session, ovr))
+    if not tid:
+        return {}, "链接里没有 /track/<id>，不是 Spotify 单曲页"
+    tried: set = set()
+    for attempt in (1, 2):
+        sha = _spotify_hash(session, str(sd.get("jsPack") or ""), ovr,
+                            force=(attempt == 2), op="getTrack")
+        if not sha or sha in tried:
+            break
+        tried.add(sha)
+        try:
+            page = _spotify_query(session, tokens, sha, "getTrack",
+                                  {"uri": f"spotify:track:{tid}"}, ovr)
+        except Exception as e:
+            return {}, f"Spotify 单曲接口出错：{_net_err_cn(e)}"
+        data = (page.get("data") or {}).get("trackUnion") or {}
+        if page.get("errors") and not data:
+            _SPOTIFY_HASH["value"] = {}          # 指纹过期，重扫一遍再来
+            continue
+        if not data or str(data.get("__typename") or "") != "Track":
+            reason = str(data.get("message") or "") if data else ""
+            return {}, (f"Spotify 说这条链接不是歌（或已经下架）{': ' + reason if reason else ''}"
+                        if data or page.get("errors") else "Spotify 没返回这首歌的元数据")
+        item = _spotify_track_fields(data, track_union=True)
+        if not item:
+            return {}, "Spotify 这首歌的元数据里没有曲名，没法拿去别的平台匹配"
+        item["id"] = _cache_song(item)
+        log(f"Spotify 单曲「{item['title']}」元数据已取得"
+            f"（{item['artists'] or '歌手未知'}，{item['duration'] or '时长未知'}），"
+            "下载时按曲名去勾选的平台匹配音频地址")
+        return item, ""
+    return {}, "Spotify 接口指纹取不到（它的前端刚改版，或被代理节点干扰），拿不到这首歌的信息"
+
+
+def _netease_song_id(url: str) -> str:
+    """网易云单曲链接里的数字 song id：?id=、#/song?id=、#track= 这几种写法都收。
+
+    只认路径或片段里出现 song/track 的链接 —— 同一个域名下 /playlist?id= 是歌单，
+    拿它当单曲会解析出完全不相干的一首歌。
+    """
+    import re
+    from urllib.parse import parse_qs, urlparse
+    p = urlparse(url)
+    low = (p.path or "").lower()
+    frag = (p.fragment or "").lstrip("/!?")
+    blob = f"{low} #{frag}"
+    if "song" not in blob and "track" not in blob:
+        return ""
+    for src in (parse_qs(p.query), parse_qs(frag.split("?")[1] if "?" in frag else frag)):
+        for key in ("id", "songId", "track", "songid"):
+            val = str((src.get(key) or [""])[0] or "")
+            if re.fullmatch(r"\d{4,}", val):
+                return val
+    m = re.search(r"[/#](?:song|track)[/=](\d{4,})", url)
+    return m.group(1) if m else ""
+
+
+def _qq_song_mid(url: str) -> str:
+    """QQ 音乐单曲链接里的 songmid：/songdetail/<mid>、?songmid=<mid>。
+
+    裸 `mid=` 只在路径或片段里带 song 时才认 —— 专辑页也用 mid，把它当单曲会指着
+    另一张唱片说话。
+    """
+    import re
+    from urllib.parse import parse_qs, urlparse
+    p = urlparse(url)
+    frag = p.fragment or ""
+    low = f"{(p.path or '').lower()}{frag.lower()}"
+    srcs = [parse_qs(p.query)]
+    if "?" in frag:
+        srcs.append(parse_qs(frag.split("?", 1)[1]))
+    pat = re.compile(r"[A-Za-z0-9]{10,20}")
+    for src in srcs:
+        for key in ("songmid", "songMid", "SongMid"):
+            val = str((src.get(key) or [""])[0] or "")
+            if pat.fullmatch(val):
+                return val
+    if "song" in low:
+        for src in srcs:
+            val = str((src.get("mid") or [""])[0] or "")
+            if pat.fullmatch(val):
+                return val
+    m = re.search(r"songdetail/([A-Za-z0-9]{10,20})", url, re.I)
+    return m.group(1) if m else ""
+
+
+def list_netease_track(url: str, *, proxy: str = "", log: Callable = print) -> tuple:
+    """免登录取网易云单曲的元数据。返回 (条目 dict 或 {}, 错误原因)。
+
+    实测本机：`api/song/detail?ids=[<数字 id>]` 不要 Cookie，0.15~0.29s 回曲名 / 歌手 /
+    时长（毫秒）/ 专辑名 / 封面。但它**不回音频地址** —— 所以这里产出的还是 needs_match
+    占位，下载时交给同一套跨平台匹配（勾选的源全搜一遍再择优，这一条通常还是以满分离开的
+    网易云自己胜出，等于把这条元数据换成能下 audio 的那一行）。
+    """
+    sid = _netease_song_id(url)
+    if not sid:
+        return {}, "链接里没有网易云单曲的数字 song id（形如 music.163.com/song?id=186000）"
+    try:
+        import requests
+    except Exception as e:
+        return {}, f"requests 不可用：{type(e).__name__}: {e}"
+    ovr: Dict[str, Any] = {"verify": False}
+    prx = _proxies_of(proxy)
+    if prx:
+        ovr["proxies"] = prx
+    headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://music.163.com/"}
+    last_err = ""
+    for host in ("music.163.com", "interface3.music.163.com"):
+        try:
+            r = requests.get(f"https://{host}/api/song/detail", params={"ids": f"[{sid}]"},
+                             headers=headers, timeout=(6, 20), **ovr)
+            r.raise_for_status()
+            songs = (r.json() or {}).get("songs") or []
+        except Exception as e:
+            last_err = _net_err_cn(e) if isinstance(e, Exception) else str(e)
+            continue
+        if not songs:
+            last_err = "网易云没返回这首歌（链接里的 id 不存在，或这首歌已下架）"
+            continue
+        s0 = songs[0] if isinstance(songs[0], dict) else {}
+        title = str(s0.get("name") or "").strip()
+        if not title:
+            last_err = "网易云返回的这首歌曲名是空的"
+            continue
+        artists = ", ".join([str(a.get("name") or "").strip()
+                             for a in (s0.get("artists") or []) if isinstance(a, dict)
+                             and a.get("name")])
+        ms = int(s0.get("duration") or 0)
+        album = s0.get("album") or {}
+        item = {
+            "id": "",
+            "title": title,
+            "artists": artists,
+            "album": str(album.get("name") or ""),
+            "duration": _hms(ms),
+            "duration_s": _dur_seconds(float(ms or 0) / 1000),
+            "source": "Netease",
+            "real_source": "网易云（这一行是链接页的元数据，音频地址要下载时匹配才拿到）",
+            "unofficial": False,
+            "musicdl_source": "NeteaseMusicClient",
+            "url": "",
+            "page_url": f"https://music.163.com/song?id={sid}",
+            "quality": "",
+            "cover": str(album.get("picUrl") or ""),
+            "can_musicdl_download": False,
+            "needs_match": True,
+        }
+        item["id"] = _cache_song(item)
+        log(f"网易云单曲「{title}」元数据已取得（{artists or '歌手未知'}，"
+            f"{item['duration'] or '时长未知'}），下载时按曲名去勾选的平台匹配音频地址")
+        return item, ""
+    return {}, f"拿不到这首网易云歌曲的信息：{last_err or '接口没返回数据'}"
+
+
+def qq_single_track_note(url: str) -> str:
+    """QQ 音乐单曲链接：免 Cookie 到底能不能拿到元数据 —— 拿不到，如实说去哪条路走。
+
+    实测本机（无 Cookie）：`fcg_play_single_song` 回 91 字节的空 data，
+    `musicu.fcg` 的 `pf_song_detail_svr` 回 code 500003，`get_song_detail_frontend` 回
+    500005，`y.qq.com/n/ryqq/songdetail/<mid>` 是 JS 壳（og:title 里没有曲名）。
+    本程序没有做「带 Cookie 的 QQ 单曲解析」这条通路，所以不能写成「补个 Cookie 就行」。
+    """
+    mid = _qq_song_mid(url)
+    if not mid:
+        return ""
+    return ("QQ 音乐单曲页免 Cookie 拿不到这首歌的曲名与时长（实测它的三个详情接口分别回 "
+            "空 data / 500003 / 500005，网页是 JS 壳），而本程序没有做带 Cookie 的 QQ 单曲"
+            "解析 —— 请把「曲名 歌手」填到上面的搜索框，那边能出可下载的曲目")
 
 
 def _dur_close(want_dur: int, got_dur: int) -> bool:
@@ -2456,11 +2751,118 @@ def track_score(want: dict, cand: dict, *, require_artist: bool = False) -> dict
     return out
 
 
+# 关键词里的模式词不参与比对：search_album 会往关键词尾巴上拼「专辑」，
+# 留着它，专辑搜索的每一行曲名维都会被这三个字拖到线以下。
+_QUERY_STOP = {"专辑", "album", "单曲", "歌曲", "collection"}
+
+
+def query_score(keyword: str, cand: dict) -> dict:
+    """搜索结果这一行与「用户输入的关键词」有多对得上，返回形状与 track_score 一致。
+
+    关键词是自由文本，不分曲名与歌手，所以逐词拿去两个字段里各比一次：像曲名的记曲名维、
+    像歌手的记歌手维（本仓库自己拼查询用的就是「歌手 曲名」这个写法，见 _resolve_placeholder），
+    两边都不像的先搁着，最后归给「没人认领」的那一维。再过 track_score 同一套 MATCH_* 阈值。
+    哪一侧一个词都没分到就把那一侧报成 None —— 判不了就不卡人，与 _score_artists 缺一侧给 100
+    同口径，但界面上写的是「未参与」，不是摆一个 100 让人以为核过了。时长恒为 None：关键词里没有时长可比。
+
+    这个分数回答的是「对得上你输入的词吗」，不是「与某条标注是不是同一版录音」——
+    后者要有时长才谈得上，那是 track_score 的活，别拿这个数字当那个结论用。
+    """
+    import re
+    out: Dict[str, Any] = {"score": 0.0, "name": None, "artist": None,
+                           "time": None, "reject": ""}
+    if not isinstance(cand, dict):
+        out["reject"] = "没有可比对的结果行"
+        return out
+    raw = str(keyword or "")
+    parts = [p for p in re.split(r"[\s/／\-–—,，、;；&+]+", raw)
+             if p and _norm_text(p) and _norm_text(p) not in _QUERY_STOP]
+    if not parts:
+        out["reject"] = "关键词里没有可比对的词"
+        return out
+    cand_title = str(cand.get("title") or "").strip()
+    t_norm = _norm_text(cand_title)
+    a_raw = cand.get("artists")
+    has_artist = bool(_artist_list(a_raw))
+    hit_t: List[float] = []
+    hit_a: List[str] = []
+    rest: List[str] = []
+    for p in parts:
+        pn = _norm_text(p)
+        s_t = _sim_ratio(pn, t_norm)
+        s_a = _score_artists(pn, a_raw) if has_artist else -1.0
+        if s_t <= 0 and s_a <= 0:
+            rest.append(pn)          # 曲名与歌手两个字段里都找不着，先搁着
+        elif s_a > s_t:
+            hit_a.append(pn)
+        else:
+            hit_t.append(s_t)
+    if rest:
+        # 搁下来的词记到「没人认领」的那一维去，只为让两个子分说得通：
+        # 搜「周杰伦 晴天」翻出「夜曲 — 周杰伦」，歌手已被『周杰伦』占了，剩下的只能算曲名没对上；
+        # 翻出「晴天 — 张信哲」相反，曲名对上了、没人认领歌手，那『周杰伦』就是歌手不对。
+        # 归错一维，界面上那句原因就跟着说错，所以拒因另外单写一句准话（见下面 rest 那段）。
+        if not has_artist or len(hit_a) >= len(hit_t):
+            hit_t.extend([0.0] * len(rest))
+        else:
+            hit_a.extend(rest)
+    if not hit_t and not hit_a:
+        out["reject"] = "关键词里没有可比对的词"
+        return out
+    label = (cand_title or "（无曲名）")[:20]
+    # 曲名维逐词算完再取平均，不能先把词拼起来再比：拼成「晴天周杰伦」去比曲名「晴天」，
+    # 会被 _sim_ratio 的长度封顶压到 40，正主与翻唱就都成了「曲名不像」。
+    name = round(sum(hit_t) / len(hit_t), 1) if hit_t else None
+    artist = _score_artists(" ".join(hit_a), a_raw) if hit_a else None
+    out["name"], out["artist"] = name, artist
+    dims = [d for d in (name, artist) if d is not None]
+    out["score"] = round(min(100.0, sum(dims) / len(dims)), 1)
+    extra_ver = _version_tags(cand_title) - _version_tags(raw)
+    if extra_ver:
+        out["reject"] = (f"「{label}」标了{'、'.join(sorted(extra_ver))}，"
+                         "你要的词里没有这些版本词")
+        return out
+    if rest:
+        out["reject"] = (f"关键词里的{'、'.join(rest[:3])}在这条的曲名/歌手上认不出来"
+                         f"（这条歌手一栏写的是「{(str(a_raw or '').strip() or '空')[:20]}」）")
+        return out
+    if name is not None and name <= MATCH_NAME_MIN:
+        out["reject"] = f"曲名「{label}」与关键词不像（相似度 {name:.0f}）"
+        return out
+    if artist is not None and artist < MATCH_ARTIST_MIN:
+        out["reject"] = f"「{label}」歌手与关键词对不上（相似度 {artist:.0f}）"
+        return out
+    return out
+
+
+def annotate_query_score(rows: List[dict], keyword: str) -> List[dict]:
+    """给搜索结果表逐行补上「与关键词的吻合度」：score + 三维子分 + 拒因 + 录取线。
+
+    track_score 的分数以前只在换源与查重时露过一次面，普通搜索行往界面什么都不带，
+    用户只能自己逐条核对「这条到底是不是我要的那首」。
+    """
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        sc = query_score(keyword, r)
+        r["score"] = round(sc["score"])
+        r["score_name"] = sc["name"]
+        r["score_artist"] = sc["artist"]
+        r["score_time"] = sc["time"]
+        r["score_reject"] = sc["reject"]
+        r["match_accept"] = MATCH_ACCEPT
+    return rows
+
+
 def _resolve_placeholder(cid: str, item: dict, *, srcs: List[str], work_dir: str,
                          cookies: str, proxy_for: Optional[Callable[[str], str]],
                          st: dict, rejects: Optional[dict] = None,
                          quality_spec: Any = None) -> str:
     """按「歌手 + 曲名」在别的平台找同一首歌，找到就把缓存里的占位换成真 SongInfo。
+
+    **勾选的匹配源全部搜完再择优** —— 第一个源搜到就停会漏掉后面平台上分更高、
+    档位更好的那一条，同一首歌在两家都有时用户拿到的就是先撞上的那家而不是最像的那家。
+    平票（分数、档位、音质三项全等）时按勾选顺序取，先勾的赢。
 
     quality_spec 只影响「几条都判定为同一首时选哪一条」，不改变是不是同一首的判定。
     """
@@ -2468,27 +2870,48 @@ def _resolve_placeholder(cid: str, item: dict, *, srcs: List[str], work_dir: str
     if not query:
         return ""
     notes: List[str] = []
-    for src in srcs:
+    pool: List[dict] = []
+    # 每条候选记住「是问哪个源搜出来的」：条目自带的 source 字段来自平台自己的返回，
+    # 而这一行要知道的是我们敲了谁家的门（平票时按勾选顺序取，也要按那个顺序认得候选）。
+    asked: List[tuple] = []
+    # 并行问，但结果按勾选顺序归位（平票时「先勾的赢」靠的就是这个顺序，不能按谁先回来说话）。
+    def _ask(src: str) -> List[dict]:
         try:
             songs, _errs = _search_one_source(
                 src, query, st=st, work_dir=work_dir, cookies=cookies,
                 proxy=_source_proxy(src, "", proxy_for),
             )
         except Exception:
-            continue
-        hit = _pick_track_match(item, songs, notes, quality_spec=quality_spec)
-        if not hit:
-            continue
-        real = get_cached_song(str(hit.get("id") or ""))
-        if real is None:
-            continue
-        # 真结果来自另一个平台的搜索，没有"这首歌在原歌单里排第几"的概念 —— 把占位行上的序号搬过去
-        carry_archive_fields(item, real)
-        set_cached_song(cid, real)
-        return src.replace("MusicClient", "")
-    if rejects is not None and notes:
-        rejects[cid] = notes[:2]
-    return ""
+            return []
+        return list(songs or [])
+
+    from concurrent.futures import ThreadPoolExecutor
+    if len(srcs) <= 1:
+        buckets = [_ask(s) for s in srcs]
+    else:
+        with ThreadPoolExecutor(max_workers=min(len(srcs), TRACK_MATCH_SOURCE_WORKERS)) as sp:
+            buckets = list(sp.map(_ask, srcs))
+    for src, songs in zip(srcs, buckets):
+        for s in songs:
+            pool.append(s)
+            asked.append((src, s))
+    if not pool:
+        if rejects is not None and notes:
+            rejects[cid] = notes[:2]
+        return ""
+    hit = _pick_track_match(item, pool, notes, quality_spec=quality_spec)
+    if not hit:
+        if rejects is not None and notes:
+            rejects[cid] = notes[:2]
+        return ""
+    real = get_cached_song(str(hit.get("id") or ""))
+    if real is None:
+        return ""
+    # 真结果来自另一个平台的搜索，没有"这首歌在原歌单里排第几"的概念 —— 把占位行上的序号搬过去
+    carry_archive_fields(item, real)
+    set_cached_song(cid, real)
+    won = next((s for s, d in asked if d is hit), srcs[0] if srcs else "")
+    return won.replace("MusicClient", "")
 
 
 def pick_play_url(song: Any) -> str:
@@ -2715,7 +3138,7 @@ def resolve_placeholders(pairs: List[tuple], *, sources: Optional[List[str]] = N
                "connect_timeout": 4, "read_timeout": 10})
     total = len(pairs)
     log(f"开始按曲名匹配 {total} 首：{'/'.join(s.replace('MusicClient', '') for s in srcs)}"
-        f"（每首搜到就停，整轮最长 {budget}s）")
+        f"（每首把这些源都搜一遍，再取最像的那条；整轮最长 {budget}s）")
     spec_label = quality_spec_label(quality_spec)
     if spec_label:
         log(f"本次音质要求：{spec_label}"
@@ -2946,6 +3369,50 @@ def parse_playlist(
             diag["hint"] = err
         return got
 
+    def _single_track_kind() -> str:
+        """这条链接是不是某个平台的单曲页 → "spotify" / "netease" / "qq" / ""（不是）。"""
+        if owner == "SpotifyMusicClient" and (_spotify_track_id(url) or _is_spotify_short(url)):
+            return "spotify"
+        if owner == "NeteaseMusicClient" and _netease_song_id(url):
+            return "netease"
+        if owner == "QQMusicClient" and _qq_song_mid(url):
+            return "qq"
+        return ""
+
+    def _try_single_track() -> Optional[List[Dict[str, Any]]]:
+        """单曲链接的入口：拿元数据 mint 一条 needs_match 占位，音频地址留给下载时那套匹配。
+
+        返回 None = 这不是单曲页，歌单那条路继续走；返回 [] = 是单曲页但拿不到（或这个平台
+        免 Cookie 根本拿不到），原因已经写进 diag 与日志。
+        """
+        kind = _single_track_kind()
+        if not kind:
+            return None
+        if kind == "qq":
+            note = qq_single_track_note(url)
+            diag["attempts"].append({"source": "qq-single", "count": 0, "error": note})
+            diag["hint"] = note
+            log(f"单曲解析: 0 首 —— {note}", "error")
+            return []
+        budget = SPOTIFY_TRACK_BUDGET if kind == "spotify" else 30
+        fn = list_spotify_track if kind == "spotify" else list_netease_track
+        started = time.time()
+        res, timed_out = _call_with_budget(
+            lambda: fn(url, proxy=proxy, log=log), budget, default=({}, ""))
+        item, err = (res if not timed_out
+                     else ({}, f"单曲元数据查询超过 {budget}s 已中止（该站点直连不通？）"))
+        count = 1 if item else 0
+        diag["attempts"].append({"source": f"{kind}-single", "count": count, "error": err,
+                                 "seconds": round(time.time() - started, 1)})
+        if item:
+            diag["engine"] = f"{kind}-single"
+            diag["name"] = str(item.get("title") or "")
+            log(f"单曲解析: 1 首 —— {item.get('title') or ''}（待匹配）")
+            return [item]
+        diag["hint"] = err or "这个单曲链接拿不到曲目信息"
+        log(f"单曲解析: 0 首 —— {diag['hint']}", "error")
+        return []
+
     items: List[Dict[str, Any]] = []
     can_ytdlp = bool(yt_only) or owner in YTDLP_PLAYLIST_SOURCES
     checked = {normalize_source_name(s) for s in (sources or []) if s}
@@ -2964,6 +3431,10 @@ def parse_playlist(
         can_ytdlp = True
     elif not owner:
         log(f"{host or '该链接'} 没有对应的 musicdl 歌单源，改用 yt-dlp 解析", "warning")
+
+    single = _try_single_track()
+    if single is not None:
+        return single
 
     if owner == "SpotifyMusicClient" and prefer != "quality":
         log("Spotify 只列曲目（一次请求拿整张歌单的曲名/歌手/时长，不逐曲取址）；"
@@ -5241,7 +5712,8 @@ def find_fpcalc() -> str:
     if hit:
         return hit
     # 「一键配置 PATH」只写用户注册表，已经在跑的进程读不到，所以要能直接用随包那一份
-    bundled = Path(__file__).resolve().parent / "chromaprint" / "fpcalc.exe"
+    stem = "fpcalc.exe" if sys.platform == "win32" else "fpcalc"
+    bundled = Path(__file__).resolve().parent / "chromaprint" / stem
     return str(bundled) if bundled.is_file() else ""
 
 

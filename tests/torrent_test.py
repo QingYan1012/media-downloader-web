@@ -1122,9 +1122,15 @@ _bad_clean = S.bt_rules_clean([{"pattern": "", "mode": "contains", "subdir": "x"
 ck("N5 保存前逐条体检：缺关键词 / 正则写坏 / 匹配方式不认识 / 形状不对，各自点名第几条",
    len(_bad_clean[0]) == 1 and len(_bad_clean[1]) == 4
    and all(f"第 {i} 条" in m for i, m in zip((1, 2, 3, 4), _bad_clean[1])), str(_bad_clean))
-ck("N5b 收下来的规则补上默认值（匹配方式默认「包含」、默认启用、名字缺省也补一个）",
+ck("N5b 收下来的规则补上默认值（匹配方式默认「包含」、默认启用、名字缺省也补一个、匹配对象默认「名字」）",
    _bad_clean[0][0] == {"name": "规则 5", "pattern": "good", "mode": "contains",
-                        "subdir": "影片", "enabled": True}, str(_bad_clean[0]))
+                        "subdir": "影片", "scope": "name", "enabled": True}, str(_bad_clean[0]))
+_sc_clean = S.bt_rules_clean([{"name": "链接的", "scope": "url", "pattern": "youtube.com", "subdir": "视频"},
+                              {"name": "对象写错", "scope": "referer", "pattern": "x"},
+                              {"name": "缺关键词的链接规则", "scope": "url", "pattern": "  "}])
+ck("N5c 匹配对象只认「名字 / 链接」：写错的点名，链接规则缺关键词时那句说的是链接",
+   len(_sc_clean[0]) == 1 and _sc_clean[0][0]["scope"] == "url"
+   and "匹配对象" in _sc_clean[1][0] and "没写要匹配的链接" in _sc_clean[1][1], str(_sc_clean))
 ck("N6 匹配不分大小写（种子里 1080P / 1080p 混着写是常态，分成两条规则只会越写越长）",
    S.bt_rule_match("Show.S01E01.1080P.x264", RULES)[0]["name"] == "剧集")
 ck("N7 顺序就是优先级：两条都命中时按从上往下第一条定",
@@ -1189,6 +1195,60 @@ _d6, _c6, _w6 = S.bt_target_dir({"kind": "magnet", "name": "演示片 1080p", "p
 ck("N15 没配规则时目录原样、一条日志都不多写（默认设置不该凭空多出一层目录）",
    _d6 == str(DL) and not _LOG and _c6 == "", str((_d6, _LOG)))
 
+# ---------- N24~N33：同一张表里的「链接规则」—— 普通下载也按规则落子目录 ----------
+URL_RULES = RULES + [
+    {"name": "网页视频", "scope": "url", "mode": "contains", "pattern": "youtube.com",
+     "subdir": "视频/YouTube", "enabled": True},
+    {"name": "论坛直链", "scope": "url", "mode": "regex", "pattern": r"/bbs/\d+",
+     "subdir": "论坛", "enabled": True},
+]
+ck("N24 一张表里两种规则各问各的：链接规则不会拿去比种子名",
+   S.bt_rule_match("https://www.youtube.com/watch?v=1", URL_RULES, "url")[0]["name"] == "网页视频"
+   and S.bt_rule_match("某剧 1080p", URL_RULES, "name")[0]["name"] == "剧集"
+   and S.bt_rule_match("演示片 1080p", URL_RULES, "url")[0] is None,
+   str([S.bt_rule_match("某剧 1080p", URL_RULES, "name")[0],
+        S.bt_rule_match("演示片 1080p", URL_RULES, "url")[0]]))
+ck("N24b 老规则没写 scope（手改 config.json / 旧配置文件升级上来）当作名字规则，不会误吃链接",
+   S.bt_rule_match("https://x/y", [{"pattern": "x", "mode": "contains", "subdir": "z"}], "url")[0] is None
+   and S.bt_rule_match("x", [{"pattern": "x", "mode": "contains", "subdir": "z"}], "name")[0] is not None)
+ck("N25 磁力先问名字、名字没中才问链接（两条都撞得上时，名字那条赢）",
+   S._rule_decide("某剧 S01E02 1080p", "https://www.youtube.com/watch?v=1", URL_RULES)[0]["name"] == "剧集"
+   and S._rule_decide("没人管的名字", "https://www.youtube.com/watch?v=1", URL_RULES)[0]["name"] == "网页视频"
+   and S._rule_decide("", "https://www.youtube.com/watch?v=1", URL_RULES)[0]["name"] == "网页视频",
+   str(S._rule_decide("某剧 S01E02 1080p", "https://www.youtube.com/watch?v=1", URL_RULES)))
+_LOG.clear()
+_u1, _uc1, _uw1 = S.url_target_dir("https://www.youtube.com/watch?v=abc", {"bt_auto_rules": URL_RULES},
+                                  str(DL), _lg)
+ck("N26 普通下载命中链接规则：落到下载目录下的子目录，回分类名",
+   _u1 == str(Path(DL) / "视频" / "YouTube") and _uc1 == "网页视频" and "youtube.com" in _uw1,
+   str((_u1, _uc1, _uw1)))
+ck("N26b 链接规则写成正则时也算得中（直链按路径归类是常见写法）",
+   S.url_target_dir("https://bbs.example.com/bbs/123/f.mkv", {"bt_auto_rules": URL_RULES},
+                    str(DL), _lg)[1] == "论坛直链")
+_LOG.clear()
+_u2, _uc2, _uw2 = S.url_target_dir("https://example.com/没撞上任何规则.mkv",
+                                  {"bt_auto_rules": URL_RULES, "bt_auto_fallback": "没分类"},
+                                  str(DL), _lg)
+ck("N27 普通下载没命中：留在默认目录，绝不进兜底档（兜底只管磁力 / 种子，不然加一条链接规则就把整个下载目录改了地方）",
+   _u2 == str(DL) and _uc2 == "" and not _LOG, str((_u2, _uc2, _LOG)))
+_LOG.clear()
+_u3, _uc3, _uw3 = S.url_target_dir("https://www.youtube.com/watch?v=abc",
+                                  {"bt_auto_rules": URL_RULES}, str(Path(DL) / "手选的目录"), _lg,
+                                  manual=True)
+ck("N27b 用户手填了保存目录时手动的赢：不改落点，但日志仍写明本可以命中哪条",
+   _u3 == str(Path(DL) / "手选的目录") and _uc3 == ""
+   and any("手动指定" in m and "youtube.com" in m for _l, m in _LOG), str((_u3, _uc3, [m for _l, m in _LOG])))
+_LOG.clear()
+_u4, _uc4, _uw4 = S.url_target_dir("https://www.youtube.com/watch?v=abc", {"bt_auto_rules": RULES},
+                                  str(DL), _lg)
+ck("N27c 表里一条链接规则都没有时，普通下载原样走默认目录、一个字都不写（老设置不该有任何变化）",
+   _u4 == str(DL) and _uc4 == "" and not _LOG, str((_u4, _uc4, _LOG)))
+ck("N28 判断「手动指定」不能用非空：界面那格预填的就是全局目录",
+   S._opts_dir_is_manual("", str(DL)) is False
+   and S._opts_dir_is_manual(str(DL), str(DL)) is False
+   and S._opts_dir_is_manual(str(DL) + "\\", str(DL)) is False
+   and S._opts_dir_is_manual(str(Path(DL) / "别的"), str(DL)) is True)
+
 # N16~N18 真跑一趟 _torrent_job：aria2 收到的目录必须就是分类后的目录
 S._BT_WATCH.clear()
 LOGS.rows.clear()
@@ -1226,6 +1286,18 @@ ck("N18 没带 dn 的磁力没名字可比：有兜底目录就先进兜底目�
    acC.added_uri and acC.added_uri["dir"] == str(Path(DL) / "没分类"), str(acC.added_uri))
 ck("N18b 日志说清是「此刻还没名字」，不是「这个名字没命中规则」",
    any("还没有可比的名字" in m for _l, m in LOGS.rows), str([m for _l, m in LOGS.rows]))
+LOGS.rows.clear()
+_tD, (_okD, _pD, _nD), acD, _prD = run_job(
+    MAGNET32,
+    [{"status": "active", "totalLength": "0", "completedLength": "0", "numPeers": "0", "speed": "0"},
+     {"status": "complete", "totalLength": "114", "completedLength": "114", "numPeers": "1", "speed": "0"},
+     {"status": "complete", "totalLength": "4096", "completedLength": "4096", "numPeers": "1", "speed": "0"}],
+    raw_files,
+    cfg=dict(BT_CFG, bt_auto_rules=RULES + [{"name": "按 tracker", "scope": "url", "mode": "contains",
+                                             "pattern": "announce", "subdir": "种子"}]))
+ck("N18c 没带 dn 的磁力也能按链接规则落点：这条链接里有 announce，链接规则把它接走了（不必等名字）",
+   acD.added_uri and acD.added_uri["dir"] == str(Path(DL) / "种子"), str(acD.added_uri))
+LOGS.rows.clear()
 
 
 # N19~N21 接口层：保存时挡住非法规则、试跑接口说得中是哪条
@@ -1284,18 +1356,53 @@ try:
        g5["matched"] is None and "还没配规则" in g5["message"]
        and g5["dir"] == str(DL), str(g5))
     try:
-        S.api_torrent_rules_test(S.BtRuleTestBody(url="https://example.com/a.torrent"))
+        S.api_torrent_rules_test(S.BtRuleTestBody(url="ftp://example.com/movie.mp4"))
         n22 = "没报错"
     except S.HTTPException as e:
         n22 = str(e.detail)
-    ck("N22 拿网页链接来试规则要当场顶回去（那条根本不走 aria2，试了也是误导）",
+    ck("N22 既不是磁力 / 种子、也不是 http(s) 的链接仍然当场顶回去（这种地址程序本来就不接）",
        "magnet" in n22 and n22 != "没报错", n22)
+    n22b = S.api_torrent_rules_test(S.BtRuleTestBody(url="https://example.com/a.torrent"))
+    ck("N22b 网上的 .torrent 链接不再被拒：它走的是普通下载这条路，按链接规则给个结论就行（口径改了）",
+       n22b["ok"] is True and n22b["matched"] is None
+       and "普通下载链接" in n22b["name_from"] and n22b["dir"] == str(DL), str(n22b))
     try:
         S.api_torrent_rules_test(S.BtRuleTestBody())
         n23 = "没报错"
     except S.HTTPException as e:
         n23 = str(e.detail)
     ck("N23 名字和链接都没给时问一句要试什么", n23 != "没报错" and "试" in n23, n23)
+
+    # 链接规则进了同一张表以后，试跑入口也得能吃网页链接（#206③）
+    S.cfg = CapCfg({"download_dir": str(DL), "bt_auto_rules": RULES + [
+        {"name": "网页视频", "scope": "url", "mode": "contains", "pattern": "youtube.com",
+         "subdir": "视频/YouTube"},
+        {"name": "按 tracker", "scope": "url", "mode": "contains", "pattern": "announce",
+         "subdir": "种子"}],
+        "bt_auto_fallback": "没分类"})
+    h1 = S.api_torrent_rules_test(S.BtRuleTestBody(url="https://www.youtube.com/watch?v=abc"))
+    ck("N29 试跑贴一条网页链接：说的是链接规则撞上了哪条、落到哪，并写明名字一栏为什么是空的",
+       h1["matched"]["name"] == "网页视频" and h1["dir"] == str(Path(DL) / "视频" / "YouTube")
+       and "普通下载链接" in h1["name_from"], str(h1))
+    h2 = S.api_torrent_rules_test(S.BtRuleTestBody(url="https://example.com/没撞上的.mp4"))
+    ck("N29b 网页链接没命中时那句要写清它不吃兜底目录（不然用户会以为兜底档会把普通下载也接住）",
+       h2["matched"] is None and h2["dir"] == str(DL)
+       and "兜底只管磁力" in h2["message"] and "链接规则" in h2["message"], str(h2))
+    h3 = S.api_torrent_rules_test(S.BtRuleTestBody(
+        url="magnet:?xt=urn:btih:" + "m" * 32 + "&dn=%E6%9F%90%E5%89%A7%20S01E02%201080p&tr=http%3A%2F%2Fx%2Fannounce"))
+    ck("N29c 磁力带 dn 时先问名字规则：这条的名字撞上「剧集」，链接里那个 announce 规则不许抢",
+       h3["matched"]["name"] == "剧集" and h3["dir"] == str(Path(DL) / "剧集"), str(h3))
+    h4 = S.api_torrent_rules_test(S.BtRuleTestBody(
+        url="magnet:?xt=urn:btih:" + "n" * 32 + "&dn=%E6%B2%A1%E4%BA%BA%E7%AE%A1&tr=http%3A%2F%2Fx%2Fannounce"))
+    ck("N29d 名字没中才轮到链接规则：announce 撞上，落点是链接规则那条",
+       h4["matched"]["name"] == "按 tracker" and h4["dir"] == str(Path(DL) / "种子"), str(h4))
+    h5 = S.api_torrent_rules_test(S.BtRuleTestBody(url=MAGNET32))
+    ck("N29e 没带 dn 的磁力此刻没有名字可比，但链接规则照样能接住它（这正是加 URL 规则的意义）",
+       h5["matched"]["name"] == "按 tracker" and h5["dir"] == str(Path(DL) / "种子"), str(h5))
+    h6 = S.api_torrent_rules_test(S.BtRuleTestBody(url="magnet:?xt=urn:btih:" + "p" * 32))
+    ck("N29f 名字和链接都没命中、又是没带 dn 的磁力：那句要说清问的是两种规则、兜底档接的是这一类",
+       h6["matched"] is None and "名字与链接的规则" in h6["message"]
+       and h6["dir"] == str(Path(DL) / "没分类"), str(h6))
 finally:
     S.cfg = _old_cfg_n
 

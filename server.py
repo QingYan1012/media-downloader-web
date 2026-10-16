@@ -8,11 +8,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
+import hmac
 import io
 import json
 import os
 import re
+import secrets
 import shlex
 import shutil
 import subprocess
@@ -31,7 +34,7 @@ from urllib.parse import parse_qsl, parse_qs, quote, unquote, urlencode, urlspli
 
 import requests
 from fastapi import UploadFile, File, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -47,15 +50,22 @@ import pkg_update  # noqa: E402  同目录模块，必须等上面的 sys.path �
 import risk_control  # noqa: E402  同上：站点风控 / 登录墙 / 限流的判定
 import bt_trackers  # noqa: E402  同上：磁力/种子的 tracker 来源清单与运行时抓取
 TOOLS_DIR = APP_DIR / "tools"              # FFmpeg、yt-dlp
-COOKIES_DIR = APP_DIR / "cookies"          # Cookie 文件
+# 容器/服务化部署时把可变状态整体挪到一个目录（挂一卷就走），代码与工具仍留在 APP_DIR。
+# 不设这个环境变量时 STATE_DIR == APP_DIR，本机行为与历史完全一致。
+STATE_DIR = Path(os.environ.get("MEDIADOWNLOADER_STATE_DIR") or APP_DIR)
+COOKIES_DIR = STATE_DIR / "cookies"          # Cookie 文件
 DEFAULT_COOKIE_FILE = COOKIES_DIR / "cookies.txt"
-CONFIG_FILE = APP_DIR / "config.json"
-HISTORY_FILE = APP_DIR / "history.json"
-SUBS_FILE = APP_DIR / "subscriptions.json"
-LIVE_MONITORS_FILE = APP_DIR / "live_monitors.json"
-MUSIC_FAVS_FILE = APP_DIR / "music_favorites.json"   # 自建音乐收藏清单（跨源聚合的一单）
-LOG_FILE = APP_DIR / "app.log"
-DEFAULT_DOWNLOAD_DIR = APP_DIR / "Downloads"  # 项目内 Downloads
+CONFIG_FILE = STATE_DIR / "config.json"
+HISTORY_FILE = STATE_DIR / "history.json"
+SUBS_FILE = STATE_DIR / "subscriptions.json"
+LIVE_MONITORS_FILE = STATE_DIR / "live_monitors.json"
+MUSIC_FAVS_FILE = STATE_DIR / "music_favorites.json"   # 自建音乐收藏清单（跨源聚合的一单）
+NOTIFY_OUTBOX_FILE = STATE_DIR / "notify_outbox.json"  # 没送出去的通知（重启后接着补发）
+AUTH_STATE_FILE = STATE_DIR / "login_state.json"       # 登录失败计数与锁定名单（重启后仍在）
+COOKIECLOUD_STATE_FILE = STATE_DIR / "cookiecloud_state.json"  # CookieCloud 上次拉/推的时间与条数
+CLEANUP_STATE_FILE = STATE_DIR / "cleanup_state.json"          # 按龄清理上次跑的时间与结果
+LOG_FILE = STATE_DIR / "app.log"
+DEFAULT_DOWNLOAD_DIR = STATE_DIR / "Downloads"  # 项目内 Downloads
 WHISPER_DIR = APP_DIR / "Whisper"             # 本地 Whisper 目录
 PLUGINS_DIR = APP_DIR / "plugins"            # URL 解析插件
 
@@ -619,12 +629,16 @@ def _find_local_whisper_bin() -> Optional[str]:
     if WHISPER_DIR.is_dir():
         for name in ("whisper.exe", "whisper-cli.exe", "main.exe", "whisper"):
             p = WHISPER_DIR / name
-            if p.exists():
+            if is_native_binary(p):
                 candidates.append(str(p))
-        for p in WHISPER_DIR.rglob("whisper*.exe"):
-            candidates.append(str(p))
+        # Windows 随包常把二进制放在子目录，所以按 whisper*.exe 递归；
+        # Linux/macOS 的文件名没有 .exe，通配放宽到 whisper*，再由能否执行来收口。
+        pattern = "whisper*.exe" if sys.platform == "win32" else "whisper*"
+        for p in WHISPER_DIR.rglob(pattern):
+            if is_native_binary(p):
+                candidates.append(str(p))
     w = shutil.which("whisper")
-    if w:
+    if w and is_native_binary(w):
         candidates.append(w)
     return candidates[0] if candidates else None
 
@@ -1534,6 +1548,320 @@ def qc_stats_text(rows: List[dict]) -> str:
     )
 
 
+# -------------------- 字幕时间轴质检：覆盖率 / 最大间隙 / 字符速率 --------------------
+# 上面那套是「这句话译得对不对」，得有两路文字才查得了。下面这三条只看这一份字幕自己的
+# 时间轴，单语字幕、站点下下来的自动字幕、Whisper 转写产物都能查，不需要另一路原文。
+QC_TL_GAP_WARN = 30.0      # 相邻两句之间空多久算「大段没字幕」
+QC_TL_MIN_SHOW = 0.4       # 一句显示短于这个秒数，正常速度也读不完
+QC_TL_CJK_CPS = 9.0        # 读速上限（全角宽 / 秒）：目标语言是中日韩时
+QC_TL_LATIN_CPS = 14.0     # 拉丁语字幕换算成全角宽后的上限
+QC_TL_COVERAGE_LOW = 0.35  # 覆盖率低于此值提个醒；这不判错，器乐与无人声段本来就该空着
+QC_TL_HALLUC_RUN = 3       # 同一句连着复读这么多条起才报「疑似幻觉」
+QC_TL_FILLER_UNITS = 3.0   # 整句不超过这么多个全角宽才有资格被当成语气词
+
+_QC_FILLER_CHARS = set("嗯啊呃哦噢喔唔呜哎唉哎呀啦嘛呗哟哈嘶呐哦嘞")
+_QC_FILLER_WORDS = {
+    "嗯", "啊", "呃", "哦", "噢", "唔", "呜", "哎", "唉", "呀", "啦", "嘛", "呗", "哟", "哈", "嘶", "嘞",
+    "那个", "这个", "就是说", "然后呢", "然后", "对吧", "是吧", "好吧", "好的",
+    "um", "uh", "umm", "uhh", "er", "eh", "ah", "oh", "hmm", "hm", "mm", "mhm", "so", "like",
+    "yeah", "yep", "well", "right", "ok", "okay", "youknow", "imean", "kinda", "sorta", "righthere",
+}
+_QC_FILL_SPLIT_RE = re.compile(r"[^\w一-鿿豈-﫿]+", flags=re.UNICODE)
+_QC_TAG_ANY_RE = re.compile(r"<[^>]*>")
+QC_TL_FLASH = 0.1  # 比这还短的一条是排布产物（滚动式字幕的 0.01 秒闪光条），不参与读速
+
+
+def _qc_plain(text: str) -> str:
+    """量显示宽度之前先把 VTT 的内联标记剥掉。
+
+    karaoke 式字幕每个字后面都挂一个 <00:00:35.626> 时间戳与 <c>，不剥的话一行歌词能算出
+    「2500 字每秒」——这是本机一份真字幕实测出来的假数字。
+    """
+    t = _QC_TAG_ANY_RE.sub("", text or "")
+    return t.replace("&nbsp;", " ").strip()
+
+
+def _qc_is_filler(text: str) -> bool:
+    """整句只是语气词 / 口头禅。只报不删 —— 歌词与台词里「啊」「嗯」本来就是要的内容。"""
+    t = _QC_FILL_SPLIT_RE.sub(" ", _qc_plain(text)).strip().lower()
+    if not t or text_units(t) > QC_TL_FILLER_UNITS:
+        return False
+    toks = [w for w in t.split() if w]
+    if not toks:
+        return False
+    if all(w in _QC_FILLER_WORDS for w in toks):
+        return True
+    joined = "".join(toks)
+    if joined in _QC_FILLER_WORDS:
+        return True
+    return len(joined) <= 4 and all(ch in _QC_FILLER_CHARS for ch in joined)
+
+
+def _qc_halluc_runs(items: List[tuple]) -> List[dict]:
+    """同一句连续复读 ≥QC_TL_HALLUC_RUN 条：Whisper 在静音、片尾背景乐上最容易这样吐。"""
+    out: List[dict] = []
+    norm = [_qc_norm(_qc_plain(tx)) for _n, _s, _e, tx in items]
+    i = 0
+    while i < len(norm):
+        j = i
+        while norm[i] and j + 1 < len(norm) and norm[j + 1] == norm[i]:
+            j += 1
+        if j - i + 1 >= QC_TL_HALLUC_RUN:
+            out.append({"from": items[i][0], "to": items[j][0], "count": j - i + 1,
+                        "text": (items[i][3] or "")[:60]})
+        i = j + 1
+    return out
+
+
+def _qc_tail_band(media_seconds: float) -> float:
+    """片尾容忍带：末尾这一段内的空档不计入「最大间隙」。字幕说完后剩的是演职员表与片尾曲。"""
+    if media_seconds <= 0:
+        return 0.0
+    return round(max(10.0, min(90.0, media_seconds * 0.08)), 2)
+
+
+def _qc_merged(spans: List[Tuple[float, float]]) -> float:
+    """区间并集总长（重叠部分只算一次）。"""
+    total, cur_s, cur_e = 0.0, None, None
+    for s, e in sorted(spans):
+        if cur_e is None or s > cur_e:
+            if cur_e is not None:
+                total += cur_e - cur_s
+            cur_s, cur_e = s, e
+        else:
+            cur_e = max(cur_e, e)
+    if cur_e is not None:
+        total += cur_e - cur_s
+    return round(total, 2)
+
+
+def qc_timeline(cues: List[dict], *, media_seconds: float = 0.0, target_lang: str = "zh",
+                why_no_media: str = "") -> dict:
+    """时间轴三维质检。cues 要带 start / end / text（校对台那份行序就是这里的句序）。
+
+    拿不到的输入要如实说「这一项没算」，不能让界面看起来像用户把质检关了。
+    """
+    lang = (target_lang or "zh").strip().lower()
+    cps_limit = QC_TL_CJK_CPS if lang.startswith(("zh", "ja", "ko", "yue")) else QC_TL_LATIN_CPS
+    rows = [(i + 1, float(c.get("start") or 0), float(c.get("end") or 0), (c.get("text") or "").strip())
+            for i, c in enumerate(cues)]
+    band = _qc_tail_band(media_seconds)
+
+    # 覆盖率：有重叠的自动字幕按并集算，不然会算出超过 100%
+    spans = [(max(0.0, s), max(0.0, e)) for _n, s, e, _t in rows if e > s]
+    spoken = _qc_merged(spans)
+    if media_seconds > 0:
+        ratio = round(min(spoken / media_seconds, 1.0), 4)
+        coverage = {"available": True, "spoken": spoken, "media": round(media_seconds, 2), "ratio": ratio,
+                    "level": "low" if ratio < QC_TL_COVERAGE_LOW else "ok",
+                    "note": ("覆盖率低本身不是错：器乐、无人声、纯画面的段落本来就该空着，"
+                             f"它要和「最大间隙」合起来看才说明问题")}
+    else:
+        coverage = {"available": False, "spoken": spoken, "media": 0.0, "ratio": None, "level": "unknown",
+                    "note": (f"这一项没算：{why_no_media or '拿不到媒体时长'}"
+                             "（是缺输入，不是质检被关着）")}
+
+    # 最大间隙
+    ordered = sorted(rows, key=lambda r: (r[1], r[2]))
+    gaps, overlaps, overlap_secs = [], 0, 0.0
+    if ordered and ordered[0][1] > 0.05:
+        # 片头空档：第一条字幕之前那段没人说话（或转写没开头），也算一条空档
+        gaps.append({"before": ordered[0][0], "at": 0.0, "start": round(ordered[0][1], 2),
+                     "seconds": round(ordered[0][1], 2), "in_tail_band": False, "leading": True})
+    prev_end = None
+    for n, s, e, _t in ordered:
+        if prev_end is not None:
+            d = round(s - prev_end, 2)
+            if d > 0.05:
+                gaps.append({"before": n, "at": round(prev_end, 2), "start": round(s, 2), "seconds": d,
+                             "in_tail_band": bool(band and media_seconds and prev_end >= media_seconds - band)})
+            elif d < -0.05:
+                overlaps += 1
+                overlap_secs = round(overlap_secs - d, 2)
+        prev_end = e if prev_end is None else max(prev_end, e)
+    counted = [g for g in gaps if not g["in_tail_band"]]
+    worst = max(counted, key=lambda g: g["seconds"]) if counted else None
+    tail_gap = round(max(0.0, media_seconds - ordered[-1][2]), 2) if (media_seconds > 0 and ordered) else None
+    over_list = sorted((g for g in gaps if g["seconds"] > QC_TL_GAP_WARN), key=lambda g: -g["seconds"])[:8]
+    gaps_out = {
+        "available": bool(ordered),
+        "max": worst["seconds"] if worst else 0.0,
+        "before": worst["before"] if worst else 0,
+        "count_over": len([g for g in gaps if g["seconds"] > QC_TL_GAP_WARN]),
+        "warn": QC_TL_GAP_WARN,
+        "over": over_list,
+        "leading": round(ordered[0][1], 2) if ordered else 0.0,
+        # 拿不到媒体时长时，片尾那段就报「没算」，别让它看起来像量出来是 0 秒
+        "tail": ({"available": True, "seconds": tail_gap, "tolerated": True} if tail_gap is not None
+                 else {"available": False, "seconds": None, "tolerated": False}),
+        "band": band,
+        "overlaps": overlaps,
+        "overlap_secs": overlap_secs,
+        "note": (f"句与句之间超过 {QC_TL_GAP_WARN:g} 秒的空档算一条，第一条之前的片头空档也算一条；"
+                 + (f"片尾 {band:g} 秒以内（或末句之后）的空档不计入最大间隙，那段一般是演职员表与片尾曲。" if media_seconds > 0
+                    else "末句之后那段没算（拿不到媒体时长，片尾容忍带也无从谈起）。")
+                 + "句子之间的少量重叠不算问题：站点自动字幕常用滚动式排布，两条本来就叠在一起。"),
+    }
+
+    # 字符速率
+    fast, short, reversed_, flash = [], [], [], []
+    filler_cues, timed_units = [], []
+    for n, s, e, t in rows:
+        plain = _qc_plain(t)
+        if not plain:
+            continue
+        if _qc_is_filler(plain):
+            filler_cues.append({"i": n, "text": plain[:40], "start": round(s, 2)})
+            continue
+        if e <= s:
+            reversed_.append({"i": n, "text": plain[:40], "start": round(s, 2), "end": round(e, 2)})
+            continue
+        u = text_units(plain)
+        if (e - s) < QC_TL_FLASH:
+            # 滚动式字幕会插一条只有 0.01 秒的重复条，它不是给人读的，别拿它算读速
+            flash.append({"i": n, "dur": round(e - s, 3), "text": plain[:40]})
+            continue
+        timed_units.append(round(u / (e - s), 2))
+        if u / (e - s) > cps_limit:
+            fast.append({"i": n, "start": round(s, 2), "cps": round(u / (e - s), 2), "units": round(u, 1),
+                         "dur": round(e - s, 2), "text": plain[:60]})
+        elif (e - s) < QC_TL_MIN_SHOW and u >= 1:
+            short.append({"i": n, "dur": round(e - s, 2), "text": plain[:40]})
+    fast.sort(key=lambda x: -x["cps"])
+    speed = {
+        "available": bool(timed_units),
+        "limit": cps_limit,
+        "over": fast[:8],
+        "over_count": len(fast),
+        "short": short[:8],
+        "short_count": len(short),
+        "reversed": reversed_[:8],
+        "reversed_count": len(reversed_),
+        "flash": flash[:8],
+        "flash_count": len(flash),
+        "median_cps": round(sorted(timed_units)[len(timed_units) // 2], 2) if timed_units else 0.0,
+        "note": (f"按显示宽度算，且先把 VTT 的内联标记剥掉：一句 {cps_limit:g} 个全角宽每秒是上限"
+                 "（中文约 9、外文换算后约 14）；"
+                 f"显示不足 {QC_TL_MIN_SHOW:g} 秒的句子基本读不完。"
+                 f"比 {QC_TL_FLASH:g} 秒还短的条目按排布产物看待（站点滚动式字幕的重复闪光条就是这种），"
+                 "不参与读速；纯语气词也不参与。"),
+    }
+
+    halluc = _qc_halluc_runs(ordered)
+    drop = sorted({c["i"] for c in filler_cues} | {n for r in halluc for n in range(r["from"], r["to"] + 1)})
+    noise = {
+        "fillers": filler_cues,
+        "filler_count": len(filler_cues),
+        "halluc": halluc,
+        "halluc_count": sum(r["count"] for r in halluc),
+        "drop": drop,
+        "note": ("这两类都只列出来，程序没有替你删：歌词副歌本来就会连着重复，"
+                 "纪录片里的「嗯」也可能正是要的内容。要删就在逐句校对台按名单删，保存前照例留一份备份。"),
+    }
+
+    bits = []
+    if coverage["available"]:
+        bits.append(f"覆盖率 {coverage['ratio'] * 100:.0f}%")
+    else:
+        bits.append("覆盖率没算")
+    bits.append((f"片头空了 {gaps_out['max']:g} 秒" if worst and worst.get("leading")
+                 else f"最大间隙 {gaps_out['max']:g} 秒" + (f"（第 {gaps_out['before']} 句之前）" if worst else "")))
+    if gaps_out["count_over"]:
+        bits.append(f"超 {QC_TL_GAP_WARN:g} 秒的空档 {gaps_out['count_over']} 处")
+    if speed["available"]:
+        bits.append(f"最快读速 {max(timed_units):g} 字每秒" if fast else f"读速最高 {max(timed_units):g} 字每秒")
+    if noise["filler_count"] or noise["halluc_count"]:
+        bits.append(f"语气词 {noise['filler_count']} 句 / 疑似复读 {noise['halluc_count']} 句")
+    return {"thresholds": {"gap": QC_TL_GAP_WARN, "min_show": QC_TL_MIN_SHOW, "cps": cps_limit,
+                           "coverage_low": QC_TL_COVERAGE_LOW, "halluc_run": QC_TL_HALLUC_RUN,
+                           "tail_band": band},
+            "cues": len(rows),
+            "coverage": coverage,
+            "gaps": gaps_out,
+            "speed": speed,
+            "noise": noise,
+            "message": " · ".join(bits)}
+
+
+def _qc_media_stems(srt: Path) -> List[str]:
+    """字幕文件名剥掉语言后缀后剩下的候选主干，用来在同一个目录里找回配对的媒体文件。"""
+    stems, cur = [], srt.stem
+    for _ in range(3):
+        stems.append(cur)
+        m = re.search(r"[._]([A-Za-z][A-Za-z0-9-]{1,7})$", cur)
+        if not m:
+            break
+        tail = m.group(1).lower()
+        if not re.fullmatch(r"[a-z]{2,3}(-[a-z0-9]{2,4})?", tail) and tail not in ("bi", "ai", "orig"):
+            break
+        cur = cur[:m.start()]
+    return [s for s in stems if s]
+
+
+def _qc_media_seconds(srt: Path, media_hint: str = "") -> Tuple[float, str, str]:
+    """给时间轴质检找媒体时长。回 (秒数, 媒体路径, 拿不到时的原因)。"""
+    cand: Optional[Path] = None
+    if (media_hint or "").strip():
+        p = Path(media_hint)
+        if p.is_file():
+            cand = p
+    if cand is None:
+        for stem in _qc_media_stems(srt):
+            for ext in _MEDIA_EXTS:
+                q = srt.with_name(stem + ext)
+                if q.is_file():
+                    cand = q
+                    break
+            if cand:
+                break
+            hits = sorted(q for q in srt.parent.glob(stem + "*") if q.suffix.lower() in _MEDIA_EXTS)
+            if hits:
+                cand = hits[0]
+                break
+    if cand is None:
+        return 0.0, "", f"{srt.name} 旁边找不到配对的媒体文件"
+    if not _ffprobe_bin():
+        return 0.0, str(cand), "本机没有 ffprobe，探不到媒体时长"
+    dur = float((_ffprobe_info(cand) or {}).get("duration") or 0)
+    if dur <= 0:
+        return 0.0, str(cand), f"ffprobe 读不出 {cand.name} 的时长"
+    return round(dur, 2), str(cand), ""
+
+
+def qc_timeline_of_file(srt: Path, media_hint: str = "", target_lang: str = "zh") -> dict:
+    """把一份字幕文件算成时间轴结果。读不动就回空字典 —— 这是自检，不该把流水线带崩。"""
+    try:
+        cues = _edit_cues(srt)
+    except Exception:
+        return {}
+    if not cues:
+        return {}
+    secs, _mp, why = _qc_media_seconds(srt, media_hint)
+    return qc_timeline(cues, media_seconds=secs, target_lang=target_lang, why_no_media=why)
+
+
+def qc_timeline_text(tl: dict) -> str:
+    """时间轴质检压成一句日志用的话（流水线里用，界面上另有结构化的一份）。"""
+    if not tl:
+        return ""
+    cov, gp, sp, nz = tl["coverage"], tl["gaps"], tl["speed"], tl["noise"]
+    head = (f"覆盖率 {cov['ratio'] * 100:.0f}%（{cov['spoken']:g} 秒有字幕 / 媒体 {cov['media']:g} 秒）"
+            if cov["available"] else f"覆盖率没算（{cov['note'].split('：', 1)[-1].split('（')[0]}）")
+    seg = [head,
+           (f"片头空了 {gp['max']:g} 秒（第一条字幕之前）" if gp["leading"] == gp["max"] and gp["max"] > 0
+            else f"最大间隙 {gp['max']:g} 秒" + (f"（第 {gp['before']} 句之前）" if gp["max"] else ""))]
+    if gp["tail"]["available"]:
+        seg.append(f"片尾空档 {gp['tail']['seconds']:g} 秒（不计入）")
+    if gp["count_over"]:
+        seg.append(f"超 {gp['warn']:g} 秒的空档 {gp['count_over']} 处")
+    if sp["available"]:
+        seg.append(f"读速超上限 {sp['over_count']} 句" if sp["over_count"] else f"读速都在上限内（中位 {sp['median_cps']:g}）")
+    if sp["reversed_count"]:
+        seg.append(f"时间轴倒挂 {sp['reversed_count']} 句")
+    if nz["filler_count"] or nz["halluc_count"]:
+        seg.append(f"语气词 {nz['filler_count']} 句、疑似复读 {nz['halluc_count']} 句（都没替你删）")
+    return "字幕时间轴: " + " · ".join(seg)
+
 
 def _translate_batch_deepl(texts: List[str], target: str, source: str = "", log: Callable = print) -> List[str]:
     key = (cfg.data.get("deepl_api_key") or "").strip()
@@ -2090,6 +2418,33 @@ def translate_srt_file(
         elif fixable:
             log("反射修正没开（设置 → 字幕翻译），可疑句只报告不改动")
 
+        # 时间轴三维：覆盖率 / 最大间隙 / 字符速率 —— 不吃「另一路」，单语字幕也算得出来
+        tl_cues = []
+        for c in trans_cues:
+            left, _, right = (c.get("timing") or "").partition("-->")
+            tl_cues.append({"start": _srt_ts_to_ms(left) / 1000.0,
+                            "end": _srt_ts_to_ms(right) / 1000.0,
+                            "text": c.get("text") or ""})
+        secs, _mp, why = _qc_media_seconds(p, "")
+        tl = qc_timeline(tl_cues, media_seconds=secs, target_lang=target_lang, why_no_media=why)
+        log(qc_timeline_text(tl))
+        for g in tl["gaps"]["over"][:3]:
+            log(f"  {'片头空了' if g.get('leading') else '第 ' + str(g['before']) + ' 句之前空了'} {g['seconds']:g} 秒", "warning")
+        for f in tl["speed"]["over"][:3]:
+            log(f"  第 {f['i']} 句读速 {f['cps']:g} 字 / 秒（{f['units']:g} 个字挤在 {f['dur']:g} 秒里）", "warning")
+        for r in tl["speed"]["reversed"]:
+            log(f"  第 {r['i']} 句结束时间比开始还早（{r['start']:g} → {r['end']:g}）", "warning")
+        for h in tl["noise"]["halluc"][:3]:
+            log(f"  第 {h['from']}～{h['to']} 句是同一句连着复读 {h['count']} 遍：{h['text']}", "warning")
+        if tl["noise"]["drop"]:
+            d = tl["noise"]["drop"]
+            log("  上面点名的语气词与复读句没有替你删（歌词副歌本来就会重复，得看片子）；"
+                "要删请在「逐句校对 → 字幕质检」按名单删："
+                + "、".join(str(x) for x in d[:12]) + ("…" if len(d) > 12 else ""))
+    else:
+        log("字幕质检没开（设置 → 字幕翻译）：这一轮逐句对照与时间轴三维都没跑，"
+            "日志里看不到质检行不等于「查过且没问题」")
+
     suffix = target_lang.lower().replace("en-us", "en").replace("zh-cn", "zh").replace("zh-hans", "zh")
     out = p.with_name(p.stem + f".{suffix}.srt")
     if out.resolve() == p.resolve():
@@ -2117,6 +2472,23 @@ def translate_srt_file(
             )
             log(f"双语字幕 ASS(译文居下/原文居上): {bi_ass.name}")
     return str(out)
+
+
+def _qc_report_written(paths: List[str], media: Path, lang: str, log: Callable = print) -> None:
+    """刚转写出来的字幕顺手算一遍时间轴三维：只写日志，一个字都不动文件。"""
+    for f in paths:
+        q = Path(f)
+        if q.suffix.lower() not in (".srt", ".vtt") or not q.is_file():
+            continue
+        tl = qc_timeline_of_file(q, str(media), lang or "zh")
+        if not tl:
+            continue
+        log(qc_timeline_text(tl))
+        if tl["noise"]["drop"]:
+            d = tl["noise"]["drop"]
+            log("  转写产物里的语气词与复读句没有替你删（Whisper 在静音与片尾背景乐上最容易复读，"
+                "歌词副歌又是真的会重复）：句 " + "、".join(str(x) for x in d[:10])
+                + ("…" if len(d) > 10 else "") + "；要删请在「逐句校对 → 字幕质检」按名单删")
 
 
 def run_local_ai_on_file(
@@ -2172,6 +2544,7 @@ def run_local_ai_on_file(
             log(f"faster-whisper 翻译失败，尝试 CLI: {e}", "warning")
 
     if not transcribe and not translate:
+        _qc_report_written(out_files, p, lang, log)
         return out_files
 
     # 2/3) CLI
@@ -2182,6 +2555,7 @@ def run_local_ai_on_file(
             f"请 pip install faster-whisper 或把程序放到 {WHISPER_DIR}",
             "warning",
         )
+        _qc_report_written(out_files, p, lang, log)
         return out_files
     out_dir = str(p.parent)
     base_cmd = [whisper, str(p), "--output_dir", out_dir, "--output_format", "srt"]
@@ -2220,6 +2594,7 @@ def run_local_ai_on_file(
                     out_files.append(str(srt))
         except Exception as e:
             log(f"翻译异常: {e}", "warning")
+    _qc_report_written(out_files, p, lang, log)
     return out_files
 
 
@@ -3113,6 +3488,11 @@ class DownloadTask:
     uploaded: int = 0             # 已上传字节
     share_ratio: float = 0.0      # 上传 / 下载比率
     seed_seconds: int = 0         # 已做种秒数
+    verify_note: str = ""         # 成品回读：实得高度与所选档位对不上时的一句说明，空=没偏差
+    expect_hash: str = ""         # 入队时给的期望摘要（小写 hex），空=没让核对校验值
+    hash_algo: str = ""           # md5 / sha1 / sha256 / sha512，跟期望值一起定下来
+    file_hash: str = ""           # 下完对成品实算的摘要，核对过才有值
+    hash_state: str = ""          # 核对结论："" 没核对 / ok 一致 / bad 对不上 / unknown 判不出
 
     def to_dict(self):
         d = asdict(self)
@@ -3136,6 +3516,15 @@ class DownloadTask:
         except Exception:
             capturing = False
         d["chat_capturing"] = capturing
+        if self.is_live:
+            # 界面上的「录满 X 分钟自动保存」要用：任务自己带了时长就按它，否则跟随全局默认
+            try:
+                d["live_limit_min"] = _live_effective_minutes(
+                    (getattr(self, "_opts", {}) or {}).get("live_max_minutes"),
+                    cfg.data.get("live_max_minutes"),
+                )
+            except Exception:
+                d["live_limit_min"] = 0
         return d
 
 
@@ -3145,6 +3534,10 @@ class ConfigManager:
         "video_quality": "best",
         "audio_quality": "best",
         "format": "mkv",
+        # 转码 / 烧字幕时用什么编码器。默认就是以前那一种：CPU 的 libx264。
+        "video_encoder": "cpu",  # auto / cpu / nvidia / intel / amd
+        "video_cpu_codec": "x264",  # x264 / x265（硬件起不来时兜底用这个）
+        "video_cpu_preset": "medium",  # veryfast / fast / medium / slow
         "embed_sub": True,
         "audio_only": False,
         "proxy": "",
@@ -3154,6 +3547,29 @@ class ConfigManager:
         "cookie_browser": "chrome",
         # 默认使用项目内 cookies/cookies.txt
         "cookie_file": str(DEFAULT_COOKIE_FILE),
+        # 公开优先：默认关 —— 关着时解析与下载都照旧无条件带上 Cookie，行为一字不变。
+        # 开着时先按不带 Cookie 解析一次，只有那一次被登录墙/会员/年龄/风控页挡住（或只给到
+        # 被裁的清单）才带 Cookie 再解析；429 与网络错不重跑。判过的结论按 URL 记一阵子。
+        "cookie_public_first": False,
+        # CookieCloud：浏览器插件把 Cookie 推到自己架的服务器上，这边再拉成本地 cookies/*.txt。
+        # 默认关 —— 开着也不会自己动，要点「从云端拉取」才发请求。服务器/UUID/密钥只在
+        # /api/cookiecloud/account 这一条路上读写（密钥不回显、不进日志），不跟着整包设置走。
+        "cookiecloud_enabled": False,
+        "cookiecloud_server": "",
+        "cookiecloud_uuid": "",
+        "cookiecloud_key": "",
+        "cookiecloud_scheme": "auto",   # auto / legacy / aes-128-cbc-fixed
+        "cookiecloud_domains": "",      # 换行分隔的域名过滤，空 = 云端给什么就收什么
+        # 按龄清理。默认关，而且**开着开关也只自动清程序自己造的垃圾**（日志归档与 .bak 备份）；
+        # 下载目录那一档永远只在用户看过名单、点过「按名单删除」之后才动，动的也不是删除 ——
+        # 是先挪进 Downloads/_cleanup_trash/ 待一段时间，超过回收保留天数才真删。
+        # 天数填 0 就是这一档不碰。日志归档那条本来就有（启动时按 7 天删一次），
+        # 这一轮把它变成可配，并且让长跑几天的进程每天也真跑一次，而不是只有重启时才清。
+        "cleanup_enabled": False,
+        "cleanup_log_days": 7,
+        "cleanup_backup_days": 0,
+        "cleanup_download_days": 0,
+        "cleanup_trash_days": 30,
         "concurrent": 3,
         "sponsorblock": "off",
         "filename_template": "%(title).60B [%(id)s].%(ext)s",
@@ -3171,9 +3587,14 @@ class ConfigManager:
         "diarization_enabled": False,
         "diarization_max_speakers": 4,  # 2-8，最多分几个人
         "hf_token": "",  # HuggingFace Token，可选，加速/提高模型下载限额
+        # 语音工具那两项以前只写在读取处的兜底里，默认值表没登记：界面上有这两项，
+        # 「恢复默认」的名单里就没有它们。默认值和代码里那份兜底保持一致。
+        "demucs_model": "htdemucs",
+        "edge_tts_voice": "",  # 空 = 用引擎自己的默认音色
         # 字幕机翻（DeepL / OpenAI）
         "subtitle_translate_provider": "deepl",  # deepl|openai|claude|gemini|google|azure|none
         "subtitle_target_lang": "zh",
+        "translate_auto_fallback": True,  # 主力翻译源失败时自动换备份源（读取处那份兜底同值）
         "subtitle_glossary": "",  # 术语表：一行一条「原文 -> 译文」，# 开头为注释
         "subtitle_wrap": True,  # 成品字幕按显示宽度加权换行（中 1 / 英 0.5）
         "subtitle_wrap_width": 16,  # 每行最多多少个全角宽
@@ -3276,6 +3697,8 @@ class ConfigManager:
         "sub_auto_download": True,
         # 直播
         "live_from_start": True,
+        # 录满这么多分钟自动收尾保存：手动录制与未单独设时长的监控房间采用，0 = 不限时长
+        "live_max_minutes": 0,
         # 多平台 Cookie：platform -> {source, file, browser, status}
         "platform_cookies": {},
         # 风控
@@ -3294,6 +3717,8 @@ class ConfigManager:
         "adaptive_throttle": True,  # 命中 429 后自动把该站点并发降到 1 并冷却
         "global_speed_limit": "",  # 全局限速，如 2M；空=不限
         "speed_windows": "",  # 限速时段，一行一条：00:00-08:00 -> 2M
+        "run_window": "",  # 队列定时窗（全局），一行一条：22:00-06:00；空=什么时候都能开新任务
+        "queue_windows": {},  # 每条命名队列各自的窗 {队列名: "22:00-06:00"}，没填的只看全局
         # 解析插件
         "plugins_enabled": True,
         # aria2 可选后端
@@ -3316,9 +3741,10 @@ class ConfigManager:
         "bt_dl_limit": "",           # 每个种子任务的下载限速，aria2 认 1M / 512K，空=不限
         "bt_ul_limit": "",           # 每个种子任务的上传限速（做种也吃这条）
         "bt_prioritize_piece": False,  # 先下每个文件的首尾各 1M，边下边预览用得上
-        # 自动分类（参照 qBittorrent 的分类/自动追加）：按种子里的名字决定存到下载目录下的哪个子目录
-        "bt_auto_rules": [],         # [{name, mode: contains|regex, pattern, subdir, enabled}]，从上往下第一条命中生效
+        # 自动分类（参照 qBittorrent 的分类/自动追加）：按种子里的名字或按链接决定存到下载目录下的哪个子目录
+        "bt_auto_rules": [],         # [{name, scope: name|url, mode: contains|regex, pattern, subdir, enabled}]，从上往下第一条命中生效
         "bt_auto_fallback": "",      # 一条规则都没命中时存到这里（空=就用默认下载目录）
+        "clipboard_watch": False,    # 剪贴板监听：默认关，发现了也只是问一句，绝不自动入队
         "http_impersonate": True,  # 用 curl_cffi 模拟浏览器 TLS，降低 403
         "po_provider_enabled": False,  # 有 bgutil PO Token 服务时才试需要票的播放器客户端
         "po_provider_url": "http://127.0.0.1:4416",
@@ -3357,6 +3783,16 @@ class ConfigManager:
         "live_stream_pref_twitch": "hls",
         "live_stream_pref_default": "auto",
         "live_stream_fallback": True,
+        # 访问保护（登录）：默认关，开着才对「非本机来的连接」生效，127.0.0.1 一律不受影响
+        "web_auth_enabled": False,
+        "web_auth_session_hours": 12,   # 空闲多久要重登
+        "web_auth_remember_days": 30,   # 勾了「记住这台设备」后的最长有效天数
+        "web_auth_max_fails": 5,        # 连错几次锁
+        "web_auth_lock_minutes": 15,    # 锁多久
+        # 下面三条是只写不读的：口令只存加盐哈希，SECRET_KEY 与机器令牌由程序生成
+        "secret_key": "",
+        "web_auth_password_hash": "",
+        "web_auth_machine_token": "",
     }
 
     def __init__(self):
@@ -3391,6 +3827,17 @@ PLATFORM_RULES = [
     ("pinterest", ("pinterest.com", "pin.it")),
     ("weixin", ("channels.weixin.qq.com", "weixin.qq.com")),
     ("xinpianchang", ("xinpianchang.com",)),
+    # 下面这几条是 10-13 补的：facebook / twitch / reddit 早就写在 PROXY_NEEDED_PLATFORMS 里，
+    # 但这张表没有对应键，detect_platform 永远返回 default，那几个集合项等于死代码 ——
+    # 用户在「网络策略」里也看不到这几行，没法单独指定走/不走代理。
+    ("facebook", ("facebook.com", "fb.watch", "fb.com")),
+    ("twitch", ("twitch.tv",)),
+    ("reddit", ("reddit.com", "redd.it")),
+    ("vimeo", ("vimeo.com",)),
+    ("soundcloud", ("soundcloud.com",)),
+    ("linkedin", ("linkedin.com",)),
+    ("weibo", ("weibo.com", "weibo.cn")),
+    ("acfun", ("acfun.cn",)),
 ]
 PLATFORM_LABELS = {
     "youtube": "YouTube",
@@ -3403,6 +3850,14 @@ PLATFORM_LABELS = {
     "pinterest": "Pinterest",
     "weixin": "微信视频号",
     "xinpianchang": "新片场",
+    "facebook": "Facebook",
+    "twitch": "Twitch",
+    "reddit": "Reddit",
+    "vimeo": "Vimeo",
+    "soundcloud": "SoundCloud",
+    "linkedin": "LinkedIn",
+    "weibo": "微博",
+    "acfun": "AcFun",
     "default": "默认/其它",
 }
 
@@ -3433,10 +3888,13 @@ PROXY_DIRECT = "direct"  # 传给只收代理字符串的下游（music_search�
 PROXY_NEEDED_PLATFORMS = {
     "youtube", "instagram", "twitter", "pinterest", "tiktok",
     "facebook", "telegram", "reddit", "twitch",
+    # 补的这三条要和上面的新键一起看：键不存在时这个集合里写什么都是空的
+    "vimeo", "soundcloud", "linkedin",
 }
 # 国内能直连、绕代理只会更慢更不稳的站点
 PROXY_DIRECT_PLATFORMS = {
     "bilibili", "douyin", "xiaohongshu", "weixin", "xinpianchang",
+    "weibo", "acfun",
 }
 # 音乐源同理：Spotify 之类必须出国，腾讯系/网易云直连更快。Apple 国内可达，算直连档。
 PROXY_NEEDED_SOURCES = {
@@ -3628,9 +4086,21 @@ def apply_proxy_env(env: dict, target: str = "", source: str = "",
 LOG_KEEP_DAYS = 7
 
 
-def _prune_old_logs() -> int:
-    """删除超过 LOG_KEEP_DAYS 天的按天归档（app-YYYY-MM-DD.log），按修改时间判断。"""
-    cutoff = time.time() - LOG_KEEP_DAYS * 86400
+def _prune_old_logs(days: int = None) -> int:
+    """删除超过 N 天的按天归档（app-YYYY-MM-DD.log），按修改时间判断。
+
+    days 不传时读清理配置：开着按龄清理就按它填的天数删（填 0 = 这一档不碰，一份都不删），
+    没开才退回写死的 LOG_KEEP_DAYS。启动时这一趟因此跟着设置走，而不是只顾默认 7 天。
+    """
+    if days is None:
+        try:
+            days = int(cfg.data.get("cleanup_log_days", LOG_KEEP_DAYS)) if cfg.data.get("cleanup_enabled") \
+                else LOG_KEEP_DAYS
+        except Exception:
+            days = LOG_KEEP_DAYS
+    if days <= 0:
+        return 0
+    cutoff = time.time() - days * 86400
     n = 0
     try:
         files = list(APP_DIR.glob("app-*.log"))
@@ -3653,9 +4123,14 @@ class LogManager:
         self._lock = threading.Lock()
         self._seq = 0  # 单调递增，clear() 不回头，SSE 靠它判断有没有新行
         self._day = datetime.now().strftime("%Y-%m-%d")
-        removed = _prune_old_logs()
+        try:
+            keep = int(cfg.data.get("cleanup_log_days", LOG_KEEP_DAYS)) if cfg.data.get("cleanup_enabled") \
+                else LOG_KEEP_DAYS
+        except Exception:
+            keep = LOG_KEEP_DAYS
+        removed = _prune_old_logs(keep)
         if removed:
-            self.log(f"已清理 {removed} 个超过 {LOG_KEEP_DAYS} 天的日志归档", "info")
+            self.log(f"已清理 {removed} 个超过 {keep} 天的日志归档", "info")
 
     def _rollover_locked(self, today: str):
         """跨天时把昨天的 app.log 归档，保证单个文件内最多只有一天的内容（持锁调用）"""
@@ -3902,25 +4377,281 @@ class FFmpegManager:
         return self.local_bin.exists()
 
 
+# -------------------- 视频编码器：选择、探测与降级链 --------------------
+# 默认 cpu + x264 + medium 就是加这一段之前的行为：不升驱动、不装新 FFmpeg 的人，
+# 成品编码一个字都不该变。硬件编码与 x265 都要自己在设置里点一下才生效。
+VIDEO_ENCODER_MODES = ("auto", "cpu", "nvidia", "intel", "amd")
+VIDEO_CPU_CODECS = ("x264", "x265")
+VIDEO_CPU_PRESETS = ("veryfast", "fast", "medium", "slow")
+CPU_ENCODER = {"x264": "libx264", "x265": "libx265"}
+HW_ENCODER_BY_VENDOR = {"nvidia": "hevc_nvenc", "intel": "hevc_qsv", "amd": "hevc_amf"}
+# 「自动」就按这个顺序挨个试；Linux 的 VAAPI 这轮不做 —— 它要 -vaapi_device 加
+# hwupload 改写滤镜链，会和烧字幕那条 ass= 滤镜打架。
+HW_ENCODER_ORDER = ["hevc_nvenc", "hevc_qsv", "hevc_amf"]
+NVENC_PRESET_MAP = {"veryfast": "p1", "fast": "p2", "medium": "p4", "slow": "p5"}
+ENCODER_LABELS = {
+    "libx264": "H.264（CPU · libx264）",
+    "libx265": "H.265/HEVC（CPU · libx265）",
+    "hevc_nvenc": "H.265/HEVC（NVIDIA 硬件）",
+    "hevc_qsv": "H.265/HEVC（Intel 核显 QSV）",
+    "hevc_amf": "H.265/HEVC（AMD 硬件 AMF）",
+}
+# x265 明显比 x264 慢，超时预算按同一倍数放大，否则慢机器上会被自己的预算掐死。
+# 本机实测（1080p30、同一 30 秒片段、CRF 23 / preset medium）：libx264 4.3s，libx265 11.9s = 2.75 倍；
+# 合成噪声源那一次是 3.6 倍。取 3.0 是给慢机器留余量的口径，不是猜的。
+X265_TIMEOUT_MULT = 3.0
+_ENCODER_PROBE_TTL = 600.0
+_encoder_probe_cache: dict = {"ts": 0.0, "ffmpeg": "", "items": {}}
+
+
+def _sub_kwargs() -> dict:
+    kw = {"capture_output": True, "text": True, "encoding": "utf-8", "errors": "replace"}
+    if sys.platform == "win32":
+        kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return kw
+
+
+def _encoder_args(name: str, quality: int, preset: str) -> List[str]:
+    """这个编码器在命令行里长什么样。
+
+    quality 对外只露一个「越小越费码率」的 CRF 口径数字，各家参数名不同
+    （crf / cq / global_quality / qp_i+qp_p），在这一个函数里做映射。
+    HEVC 装进 mp4 要补 `-tag:v hvc1`，否则 QuickTime 和部分播放器认不出轨道。
+    """
+    q = str(max(0, min(51, int(quality))))
+    p = preset if preset in VIDEO_CPU_PRESETS else "medium"
+    if name == "libx264":
+        return ["-c:v", "libx264", "-preset", p, "-crf", q, "-pix_fmt", "yuv420p"]
+    if name == "libx265":
+        return ["-c:v", "libx265", "-preset", p, "-crf", q, "-pix_fmt", "yuv420p", "-tag:v", "hvc1"]
+    if name == "hevc_nvenc":
+        return ["-c:v", "hevc_nvenc", "-preset", NVENC_PRESET_MAP[p], "-rc", "vbr",
+                "-cq", q, "-b:v", "0", "-pix_fmt", "yuv420p", "-tag:v", "hvc1"]
+    if name == "hevc_qsv":
+        return ["-c:v", "hevc_qsv", "-preset", p, "-global_quality", q,
+                "-pix_fmt", "nv12", "-tag:v", "hvc1"]
+    if name == "hevc_amf":
+        return ["-c:v", "hevc_amf", "-quality", "balanced", "-rc", "cqp",
+                "-qp_i", q, "-qp_p", q, "-pix_fmt", "nv12", "-tag:v", "hvc1"]
+    raise ValueError(f"不支持的编码器: {name}")
+
+
+def _video_encode_pref() -> dict:
+    """设置里那三个下拉的当前取值；认不出的写法一律退回默认，不静默改用别的。"""
+    try:
+        mode = str(cfg.data.get("video_encoder") or "cpu").strip().lower()
+        codec = str(cfg.data.get("video_cpu_codec") or "x264").strip().lower()
+        preset = str(cfg.data.get("video_cpu_preset") or "medium").strip().lower()
+    except Exception:
+        mode, codec, preset = "cpu", "x264", "medium"
+    return {"mode": mode if mode in VIDEO_ENCODER_MODES else "cpu",
+            "codec": codec if codec in VIDEO_CPU_CODECS else "x264",
+            "preset": preset if preset in VIDEO_CPU_PRESETS else "medium"}
+
+
+def _video_encode_chain(quality: int) -> List[dict]:
+    """排出「先试哪个编码器、失败换哪个」。
+
+    CPU 那条永远垫底，x265 与 x264 互为兜底：只缺 libx265 的 FFmpeg 构建不该让整件事失败。
+    探测缓存说硬件编码器起不来时，这里把它从链上摘掉（CPU 的两条永不摘），
+    省得在大文件上白等一趟注定失败的编码。
+    """
+    pref = _video_encode_pref()
+    cpu_first = CPU_ENCODER[pref["codec"]]
+    cpu_second = CPU_ENCODER["x264" if pref["codec"] == "x265" else "x265"]
+    if pref["mode"] == "cpu":
+        cands = [cpu_first, cpu_second]
+    elif pref["mode"] in HW_ENCODER_BY_VENDOR:
+        cands = [HW_ENCODER_BY_VENDOR[pref["mode"]], cpu_first, cpu_second]
+    else:
+        cands = list(HW_ENCODER_ORDER) + [cpu_first, cpu_second]
+    probe = _encoder_probe_cache
+    fresh = bool(probe.get("items")) and time.time() - float(probe.get("ts") or 0) < _ENCODER_PROBE_TTL
+    out, seen = [], set()
+    for name in cands:
+        if name in seen:
+            continue
+        seen.add(name)
+        if fresh and not name.startswith("libx"):
+            if not (probe["items"].get(name) or {}).get("available", True):
+                continue
+        out.append({"encoder": name, "label": ENCODER_LABELS.get(name, name),
+                    "args": _encoder_args(name, quality, pref["preset"]),
+                    "timeout_mult": X265_TIMEOUT_MULT if name == "libx265" else 1.0})
+    return out or [{"encoder": "libx264", "label": ENCODER_LABELS["libx264"],
+                    "args": _encoder_args("libx264", quality, "medium"), "timeout_mult": 1.0}]
+
+
+def _encoders_built(ff: str) -> set:
+    """`ffmpeg -encoders` 里列得出的编码器名。列不出来就当没有，省得白跑一次探测。"""
+    try:
+        r = subprocess.run([ff, "-hide_banner", "-encoders"], timeout=15, **_sub_kwargs())
+        text = (r.stdout or "") + "\n" + (r.stderr or "")
+    except Exception:
+        return set()
+    names = set()
+    for line in text.splitlines():
+        m = re.match(r"^\s*V[.\w]{5}\s+(\S+)", line)
+        if m:
+            names.add(m.group(1))
+    return names
+
+
+def _encoder_fail_reason(text: str) -> str:
+    """把 ffmpeg 那句英文报错翻成一句能照着办事的中文。"""
+    t = (text or "").strip()
+    m = re.search(r"Driver does not support the required nvenc API version\.\s*"
+                  r"Required:\s*([\d.]+)\s*Found:\s*([\d.]+)", t, re.I)
+    if m:
+        return (f"显卡驱动不支持这个 FFmpeg 要的 NVENC API 版本（要 {m.group(1)}，"
+                f"本机驱动只有 {m.group(2)}）—— 升 NVIDIA 驱动，或换更旧的 FFmpeg")
+    m = re.search(r"minimum required Nvidia driver for nvenc is ([\d.]+)", t, re.I)
+    if m:
+        return f"NVIDIA 驱动需要 {m.group(1)} 或更新，本机不满足"
+    if "Cannot load" in t and ("nv-codec" in t or "cuda" in t.lower()):
+        return "加载不到 NVIDIA 的编解码库（没装驱动，或驱动不完整）"
+    if "Unknown encoder" in t:
+        return "这个 FFmpeg 构建里没有该编码器"
+    m = re.search(r"([^:\n]*(?:not supported|unusable|failed|Invalid|denied)[^\n]*)", t, re.I)
+    tail = (m.group(1) if m else "") or t.splitlines()[-1][:120] if t else ""
+    return f"起不来：{tail.strip()}"[:180] if tail else "编码器初始化失败（ffmpeg 没给出原因）"
+
+
+def _probe_encoder(ff: str, name: str, timeout_s: float = 8.0) -> tuple:
+    """真喂一帧黑场进去，看它开不开得起。
+
+    `-encoders` 列得出名字不代表能用：本机就遇到过 NVENC「列得出、驱动不认」。
+    AMF 在这类机器上会**直接挂住不返回**，所以必须带硬超时并当成不可用 ——
+    不然探测这一步会把界面卡死。
+    """
+    try:
+        args = _encoder_args(name, 28, "fast")
+    except Exception as e:
+        return False, str(e)
+    cmd = ([ff, "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+            "-i", "color=c=black:s=320x320:r=25:d=0.2"] + list(args) + ["-f", "null", "-"])
+    try:
+        r = subprocess.run(cmd, timeout=timeout_s, **_sub_kwargs())
+    except subprocess.TimeoutExpired:
+        return False, (f"试了 {int(timeout_s)} 秒没反应 —— 这个编码器会在真转码时把进程挂住，"
+                       "所以按不可用处理，降级链会直接跳过它")
+    except Exception as e:
+        return False, f"探测本身没跑起来：{type(e).__name__}: {e}"[:120]
+    if r.returncode == 0:
+        return True, ""
+    return False, _encoder_fail_reason((r.stderr or "") + "\n" + (r.stdout or ""))
+
+
+def _encoder_probe_status(refresh: bool = False) -> dict:
+    # 带 manual_path：设置里指了别的 FFmpeg 时，探测的必须是转码真要用的那一个
+    ff = ffmpeg_mgr.find(ffmpeg_mgr.manual_path)
+    now = time.time()
+    if not ff:
+        return {"ok": False, "message": "未找到 FFmpeg", "items": [],
+                "ffmpeg_path": "", "probed_at": 0, "ttl": _ENCODER_PROBE_TTL}
+    c = _encoder_probe_cache
+    c = _encoder_probe_cache
+    # refresh=1 必须真的重探：否则「换了 FFmpeg / 升了驱动再点探测」只会拿旧答案
+    if refresh or not (c["items"] and c["ffmpeg"] == str(ff) and now - float(c["ts"]) < _ENCODER_PROBE_TTL):
+        built = _encoders_built(ff)
+        items = {}
+        for name in list(HW_ENCODER_ORDER) + ["libx265", "libx264"]:
+            if built and name not in built:
+                items[name] = {"available": False, "reason": "这个 FFmpeg 构建里没有它"}
+                continue
+            ok, why = _probe_encoder(ff, name)
+            items[name] = {"available": ok, "reason": why}
+        _encoder_probe_cache.update(ts=now, ffmpeg=str(ff), items=items, built=built)
+    c = _encoder_probe_cache
+    built = c.get("built") or set()
+    items = [{"encoder": k, "label": ENCODER_LABELS.get(k, k),
+              "available": bool(v.get("available")), "reason": v.get("reason") or "",
+              # 列不出来就是「不知道」，别报 True 说「这个构建里有」
+              "built": (k in built) if built else None}
+             for k, v in (c.get("items") or {}).items()]
+    return {"ok": True, "items": items, "ffmpeg_path": c["ffmpeg"],
+            "ffmpeg_version": ffmpeg_mgr.version(), "probed_at": c["ts"],
+            "ttl": _ENCODER_PROBE_TTL, "message": ""}
+
+
+def _swap_encoder(args: List[str], encoder_args: List[str]) -> List[str]:
+    """把预设里写死的那串 libx264 参数换成当前编码器的参数。
+
+    预设自带的其余内容（`-vf scale`、音频那几段、`-b:a`）一个字都不动 ——
+    换的只有视频编码器自己那一段。
+    """
+    out, i = list(args), 0
+    while i < len(out):
+        if out[i] == "-c:v" and i + 1 < len(out):
+            j = i + 2
+            while j < len(out) and out[j] not in ("-c:a", "-c", "-map", "-movflags", "-vn"):
+                j += 1
+            out[i:j] = list(encoder_args)
+            break
+        i += 1
+    return out
+
+
+def _preset_needs_encoder(args: List[str]) -> bool:
+    """只有真的重编视频的预设才参与编码器替换；`-c copy` 和抽音频那几条原样走。"""
+    return "-c:v" in args and "copy" not in args and "-vn" not in args
+
+
+def _video_encoders_payload(refresh: bool = False) -> dict:
+    """界面「设置 → 视频编码」那张卡片的读数：本机每个候选编码器起不起得来、起不来为什么。
+    路由在下方 app 建好之后注册（这一段还在 `app` 之前，装饰器会 NameError）。"""
+    st = _encoder_probe_status(bool(refresh))
+    st["preference"] = _video_encode_pref()
+    st["modes"] = list(VIDEO_ENCODER_MODES)
+    st["cpu_codecs"] = list(VIDEO_CPU_CODECS)
+    st["presets"] = list(VIDEO_CPU_PRESETS)
+    st["chain"] = [{"encoder": x["encoder"], "label": x["label"],
+                    "timeout_mult": x["timeout_mult"]} for x in _video_encode_chain(23)]
+    return st
+
+
+def is_native_binary(path) -> bool:
+    """这个文件在当前系统上能不能直接 exec。
+
+    Docker 的 COPY 会把 Windows 的 tools\\*.exe 一起带进 Linux 镜像：文件存在、is_file() 为真，
+    但执行报 Exec format error，而调用处普遍用 try 把异常吞成「未安装」——只看存在性就会误报有。
+    """
+    try:
+        p = Path(path)
+        if not p.is_file():
+            return False
+        if sys.platform == "win32":
+            return True
+        if not os.access(p, os.X_OK):
+            return False
+        with p.open("rb") as fh:
+            head = fh.read(4)
+        # ELF 或 shebang 脚本才认；MZ（PE / .exe）在 Linux/macOS 上跑不起来。
+        return head[:4] == b"\x7fELF" or head[:2] == b"#!"
+    except Exception:
+        return False
+
+
 def find_n_m3u8dl() -> Optional[str]:
     """查找 N_m3u8DL-RE 专用 HLS/DASH 引擎（Ghost 同款思路）"""
+    exe = ".exe" if sys.platform == "win32" else ""
     names = (
-        "N_m3u8DL-RE.exe", "N_m3u8DL-RE",
-        "N_m3u8DL-CLI.exe", "N_m3u8DL-CLI",
-        "m3u8dl.exe", "m3u8dl",
+        f"N_m3u8DL-RE{exe}", f"N_m3u8DL-CLI{exe}", f"m3u8dl{exe}",
     )
+    if exe:
+        names += ("N_m3u8DL-RE", "N_m3u8DL-CLI", "m3u8dl")
     for n in names:
         p = TOOLS_DIR / n
-        if p.is_file():
+        if is_native_binary(p):
             return str(p)
     for n in names:
         found = shutil.which(n)
-        if found:
+        if found and is_native_binary(found):
             return found
-    # 递归 tools
+    # 递归 tools：只认当前平台跑得起来的，避免 Windows 包留在镜像里被选中
     for n in names:
         for p in TOOLS_DIR.rglob(n):
-            if p.is_file():
+            if is_native_binary(p):
                 return str(p)
     return None
 
@@ -4107,6 +4838,152 @@ def update_n_m3u8dl(log: Callable = print) -> str:
 
     ver = n_m3u8dl_version()
     return f"成功 {_NM3U8DL_TAG} → {ver}"
+
+
+# ---------- aria2c：安装入口与「连不上」的人话 ----------
+# 磁力/种子只有 aria2 一条路。本机没有 aria2c 时「自动拉起」是空的，界面只剩 urllib 甩出来的
+# WinError 10061，看不出下一步该干什么，所以这里补两件事：报错按「为什么连不上」分档说清，
+# 外加一个把 aria2c 装进 tools/ 的入口（官方发布页的 Windows 包，和 N_m3u8DL-RE 走同一套镜像）。
+_ARIA2_DIRECT = {
+    "win-64": "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip",
+    "win-32": "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-32bit-build1.zip",
+}
+
+
+def _aria2_asset_id() -> str:
+    """aria2 官方发布页只出 Windows 预编译包，其它平台走系统包管理器。"""
+    if sys.platform == "win32":
+        arch = (os.environ.get("PROCESSOR_ARCHITECTURE") or platform_machine_safe()).lower()
+        return "win-32" if arch in ("x86", "wow64") else "win-64"
+    return ""
+
+
+def aria2_err_cn(err, cfg_data: Optional[dict] = None, app_dir: Optional[Path] = None) -> str:
+    """把 aria2 RPC 的原始异常翻成人话。
+
+    连接被拒（WinError 10061）在这里是最常见的一种，而它真正的原因往往是「本机根本没有
+    aria2c」—— 那时「自动拉起」这个开关是空的，界面却只会甩 urllib 的原文，看不出下一步该干什么。
+    """
+    s = str(err or "")
+    low = s.lower()
+    rpc = str((cfg_data or {}).get("aria2_rpc") or "http://127.0.0.1:6800/jsonrpc")
+    if "10061" in s or "connection refused" in low or "积极拒绝" in s:
+        head = f"aria2 没有在跑（{rpc} 这个端口上没人应答）。"
+        found = True
+        try:
+            import aria2_daemon
+            d = aria2_daemon
+            found = bool(d.find_binary(str((cfg_data or {}).get("aria2_bin") or ""),
+                                        app_dir or APP_DIR, is_native_binary))
+        except Exception:
+            found = True
+        if not found:
+            return head + ("而且本机找不到 aria2c 可执行文件，所以「自动拉起 aria2」这个开关开着也是空的："
+                           "去「组件与依赖」点 aria2 那行的安装（会下到 tools\\aria2c.exe），"
+                           "或自己装一个后在设置里把路径指对。")
+        return head + "点「检测 aria2」或重新提交任务会自动拉起本机 aria2c；反复拉不起来时看 Logs\\aria2_daemon.log。"
+    if "timed out" in low or "timeout" in low:
+        return f"连 aria2（{rpc}）超时：多半是那个端口上别的服务卡住，或被防火墙拦了，检查设置里的 RPC 地址。"
+    if "401" in low or "403" in low or "unauthorized" in low or "secret" in low:
+        return "aria2 拒绝了这次请求：RPC Secret 不对。设置里的「aria2 Secret」要么填 aria2c 自己配的那个，要么留空。"
+    return f"aria2 连接异常：{s[:160]}"
+
+
+def aria2_local_version() -> str:
+    """本机 aria2c 的版本行；没装返回空串（「组件与依赖」那行按它决定显示「未安装」）。"""
+    try:
+        import aria2_daemon
+        p = aria2_daemon.find_binary(str(cfg.data.get("aria2_bin") or ""), APP_DIR, is_native_binary)
+    except Exception:
+        p = ""
+    if not p:
+        return ""
+    try:
+        kw: dict = {"capture_output": True, "timeout": 8, "text": True}
+        if sys.platform == "win32":
+            kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        r = subprocess.run([p, "--version"], **kw)
+        out = ((r.stdout or "") + (r.stderr or "")).strip()
+        line = (out.splitlines() or [""])[0].strip()
+        return line[:80] if line else Path(p).name
+    except Exception:
+        return Path(p).name
+
+
+def _extract_aria2_archive(tmp: Path, log: Callable) -> bool:
+    """官方 zip 里是一个带版本号的目录：只取 aria2c.exe 和它要用的 dll，文档与许可证不落地。"""
+    want = ("aria2c.exe", "aria2c")
+    installed = False
+    with zipfile.ZipFile(tmp, "r") as zf:
+        for member in zf.namelist():
+            base = Path(member).name
+            low = base.lower()
+            if not base or (low not in want and not low.endswith(".dll")):
+                continue
+            dest = TOOLS_DIR / base
+            with zf.open(member) as src, open(dest, "wb") as out:
+                shutil.copyfileobj(src, out)
+            log(f"已安装: {dest.name}")
+            if low in want:
+                installed = True
+    return installed
+
+
+def update_aria2(log: Callable = print) -> str:
+    """下载 aria2c 到 tools/ 并当场拉起 RPC：磁力/种子页在没有它的机器上本来就跑不动。"""
+    rid = _aria2_asset_id()
+    if not rid:
+        return "当前平台没有 aria2 的官方预编译包，请用系统包管理器装（Debian/Ubuntu：apt install aria2，" \
+               "Fedora：dnf install aria2，Arch：pacman -S aria2），装完点「检测 aria2」即可"
+    url = _ARIA2_DIRECT[rid]
+    name = url.rsplit("/", 1)[-1]
+    log(f"准备下载 aria2c（{rid}）…")
+    tmp = TOOLS_DIR / "_aria2_dl.zip"
+    last_err = ""
+    downloaded = False
+    mirror_list = list(_NM3U8DL_MIRRORS)
+    try:
+        gm = (cfg.data.get("github_mirror") or "").strip()
+        if gm:
+            mirror_list = [gm if gm.endswith("/") else gm + "/"] + [m for m in mirror_list if m != gm]
+    except Exception:
+        pass
+    for mirror in mirror_list:
+        full = (mirror + url) if mirror else url
+        try:
+            log(f"尝试: {full[:80]}…")
+            with requests.get(full, stream=True, timeout=300,
+                              headers={"User-Agent": "Mozilla/5.0 MediaDownloader-Web"},
+                              allow_redirects=True) as resp:
+                if resp.status_code != 200:
+                    last_err = f"HTTP {resp.status_code}"
+                    log(f"失败 {last_err}", "warning")
+                    continue
+                with open(tmp, "wb") as f:
+                    for chunk in resp.iter_content(chunk_size=256 * 1024):
+                        if chunk:
+                            f.write(chunk)
+            if tmp.exists() and tmp.stat().st_size > 100000:
+                downloaded = True
+                log(f"下载完成 ({tmp.stat().st_size // 1024} KB)")
+                break
+            last_err = "文件过小或为空"
+        except Exception as e:
+            last_err = str(e)
+            log(f"下载异常: {e}", "warning")
+            continue
+    if not downloaded:
+        tmp.unlink(missing_ok=True)
+        return f"下载失败: {last_err}。可手动下载后把 aria2c.exe 放进 tools\\：\n{url}"
+    try:
+        if not _extract_aria2_archive(tmp, log):
+            return "解压后没找到 aria2c.exe，包可能不完整"
+    except Exception as e:
+        return f"解压失败: {e}"
+    finally:
+        tmp.unlink(missing_ok=True)
+    ok, why = bt_ensure(dict(cfg.data), lambda m, level="info": log_mgr.log(f"[aria2 安装] {m}", level))
+    return ("装好并已自动拉起 aria2" if ok else f"装好了，但拉起失败：{why}")
 
 
 def _probe_hls_playlist(url: str, headers: Optional[dict] = None, proxy: str = "") -> tuple:
@@ -4385,12 +5262,35 @@ PLAYER_ERR_KEYS = (
     "403 forbidden",
 )
 _PO_CACHE: Dict = {"ts": 0.0, "ok": False, "installed": False, "detail": "", "url": PO_DEFAULT_URL}
+# pip 包名。落盘的不是同名模块，而是 yt_dlp_plugins/extractor/getpot_bgutil*.py
+POT_PROVIDER_PKG = "bgutil-ytdlp-pot-provider"
+# 造票那个服务端随程序放在 tools/ 下（要本机有 node 才起得来，程序不带 node 二进制）
+POT_SERVER_DIR_NAME = "bgutil-pot-server"
+# 被裁时补试的那一套：yt-dlp 的 all = 把所有播放器客户端各解一遍再合并，是唯一吃到票的那类
+YT_WIDE_CLIENTS = ["all"]
+
+# 画质档位名 → 高度上限。口径只在这里写一次：_resolve_format 用它拼 b[height<=…]，
+# 解析页的体积估算（_VIDEO_TIERS）和成品回读比对（tier_readback）都跟着它，
+# 否则「用户点的档」「程序限的高」「回读判的达标」三处会各算各的。
+VIDEO_QUALITY_HEIGHTS = {
+    "4K": 2160, "1440p": 1440, "1080p": 1080, "720p": 720, "480p": 480, "360p": 360,
+}
+
+
+def quality_height_cap(video_q) -> int:
+    """所选档位对应的高度上限，0 = 没设上限（best / 空 / 认不出的写法）。"""
+    return int(VIDEO_QUALITY_HEIGHTS.get(str(video_q or "").strip(), 0) or 0)
 
 
 def _pot_plugin_installed() -> bool:
+    # 装的到底是什么：pip 包名 bgutil-ytdlp-pot-provider 落盘的不是同名模块，
+    # 而是 yt-dlp 插件目录下的 yt_dlp_plugins/extractor/getpot_bgutil*.py，
+    # yt-dlp 只认后者。查错名字会把「已经装好」一直报成「没装」。
     import importlib.util
 
-    for mod in ("bgutil_ytdlp_pot_provider", "bgutil_ytdlp_pot_provider_plugin"):
+    for mod in ("yt_dlp_plugins.extractor.getpot_bgutil",
+                "yt_dlp_plugins.extractor.getpot_bgutil_http",
+                "yt_dlp_plugins.extractor.getpot_bgutil_script"):
         try:
             if importlib.util.find_spec(mod) is not None:
                 return True
@@ -4410,6 +5310,13 @@ def _po_err_cn(e: Exception) -> str:
             or "failed to establish" in low):
         return "连不上该地址（服务没启动或端口不对）"
     return str(e)[:100]
+
+
+def _po_ping_ok(url: str, timeout: float = 2.5) -> bool:
+    try:
+        return requests.get(str(url).rstrip("/") + "/ping", timeout=timeout, verify=False).status_code == 200
+    except Exception:
+        return False
 
 
 def po_token_health(*, force: bool = False, timeout: float = 2.5,
@@ -4435,6 +5342,23 @@ def po_token_health(*, force: bool = False, timeout: float = 2.5,
             detail += "（未装 bgutil 插件，拿不到票）"
     except Exception as e:
         detail = _po_err_cn(e)
+        # 「连不上这个地址」基本等于服务端没在跑，而不是人把地址写错了 —— 顺手拉一次
+        if "连不上该地址" in detail:
+            try:
+                import pot_daemon
+
+                got, why = pot_daemon.ensure_running(
+                    url=url, app_dir=APP_DIR,
+                    ping=lambda: _po_ping_ok(url, timeout),
+                    log=lambda m: log_mgr.log(m),
+                )
+                if got:
+                    ok = True
+                    detail = f"{why}（tools/{pot_daemon.SERVER_DIR_NAME}，程序代起）"
+                else:
+                    detail += f"；自动拉起没成：{why}"
+            except Exception as ee:
+                detail += f"；自动拉起失败 {str(ee)[:60]}"
     _PO_CACHE.update({"ts": now, "ok": ok, "installed": installed, "detail": detail, "url": url})
     return dict(_PO_CACHE, cached=False)
 
@@ -4739,6 +5663,151 @@ def resolve_speed_limit(c: dict, now=None) -> Tuple[str, str]:
     return "", ""
 
 
+def _hm_to_min(v: str) -> int:
+    return int(str(v)[:2]) * 60 + int(str(v)[3:5])
+
+
+def _hm_until(target: str, cur: str) -> int:
+    """从 cur 到下一个 target 还差几分钟（按 24 小时圈算，结果恒为非负）。"""
+    return (_hm_to_min(target) - _hm_to_min(cur)) % 1440
+
+
+def window_hit(a: str, b: str, cur: str) -> bool:
+    """这个时段此刻算不算命中：起 ≤ 止是当天内，反之按跨零点（22:00-06:00 是当晚到凌晨）。"""
+    return (a <= cur <= b) if a <= b else (cur >= a or cur <= b)
+
+
+# 后端自己会往队列里塞的名字：订阅追新走 subscribe（见 7401 那条入队），音乐下载走 music。
+# 界面上没有「建队列」这一处，所以校验要拿这三条与设置里那张 named_queues 并起来，
+# 只按表校验会把 music 这种正在用着的队列顶回去。
+KNOWN_QUEUE_NAMES = {"default", "subscribe", "music"}
+
+
+def parse_run_windows(text: str) -> Tuple[List[Tuple[str, str]], List[str]]:
+    """把「队列定时窗」收成 [(起, 止)]，一行一条：22:00-06:00。
+
+    钟点口径与限速时段同源（同一个 _SPEED_SPAN_RE 与 _hhmm），多带一段 `-> 2M` 也只取前面那半，
+    用户从限速那栏照抄过来不会报错。一条都没填 = 不限时段。
+    """
+    out: List[Tuple[str, str]] = []
+    errs: List[str] = []
+    for ln, raw in enumerate(str(text or "").splitlines(), 1):
+        line = raw.strip().replace("：", ":")
+        if not line or line.startswith("#") or line.startswith("//"):
+            continue
+        span = _SPEED_ARROW_RE.split(line, 1)[0].strip() or line
+        m = _SPEED_SPAN_RE.match(span)
+        if not m:
+            errs.append(f"第 {ln} 行「{line[:32]}」：时段要写成 22:00-06:00（24 小时制，跨零点照写）")
+            continue
+        a, b = _hhmm(m.group(1)), _hhmm(m.group(2))
+        if not a or not b:
+            errs.append(f"第 {ln} 行：时段「{span[:24]}」里有不存在的钟点（小时 0–23、分钟 0–59）")
+            continue
+        if a == b:
+            errs.append(f"第 {ln} 行：{a}–{a} 说不上是整圈还是零圈，起与止要写两个不同的钟点")
+            continue
+        out.append((a, b))
+    return out, errs
+
+
+def window_open(text: str, now=None) -> Tuple[bool, str, str, int]:
+    """这一刻能不能开新任务。返回 (能不能跑, 一句说明, 下一次开门的钟点, 还差几分钟)。
+
+    没填时段就是一直能跑 —— 这条默认值必须守住：升级上来的人没配过它，行为要和从前一字不差。
+    """
+    wins, errs = parse_run_windows(text)
+    cur = (now or datetime.now()).strftime("%H:%M")
+    warn = ("；没认出来的行：" + "；".join(errs[:2])) if errs else ""
+    if not wins:
+        return True, "没设定时窗，什么时候都能跑" + warn, "", 0
+    for a, b in wins:
+        if window_hit(a, b, cur):
+            return True, f"现在在运行时段 {a}–{b} 内" + warn, "", 0
+    best = min(wins, key=lambda p: _hm_until(p[0], cur))
+    left = _hm_until(best[0], cur)
+    return False, f"现在不在运行时段（{'、'.join(f'{a}–{b}' for a, b in wins)}）" + warn, best[0], left
+
+
+_COOKIE_HELP_KINDS = (risk_control.LOGIN_REQUIRED, risk_control.DENIED, risk_control.BOT_CHALLENGE)
+# 风控那套规则没覆盖到、却正是「登录 / 会员 / 年龄」墙的原文，单独兜住：
+# YouTube 的年龄门与「Sign in to confirm you're not a bot」都落在 classify 的 UNKNOWN 里，
+# 而它们恰是最该带 Cookie 再试一次的两种情况。
+_COOKIE_HELP_RE = re.compile(
+    r"age[- ]?restrict|confirm your age|sign in to (?:confirm|continue|download)|"
+    r"login required|members? only|premium|subscription required|"
+    r"需要登录|请先登录|仅限会员|大会员|需要会员",
+    re.I,
+)
+
+
+def cookie_might_help(text, url: str = "") -> bool:
+    """匿名解析失败那句原始报错，值不值得带 Cookie 再打一次平台接口。
+
+    限流与网络错明确不给重跑：多打一次只会把 429 的冷却拉长，也不会让链路通。
+    内容不存在同理 —— 带不带 Cookie 它都不在。
+    YouTube 那一支要多看一眼：活体读数里，这台机器匿名打开公开视频回的是「一条流都不给」
+    （No video formats found），带 Cookie 那份却有 43 条流到 2160p。那种形状落在 UNKNOWN 里，
+    按「只认登录墙那几句话」就会把整条链接判死，所以 YouTube 的「整条解不开」也算值得再打一次。
+    """
+    raw = str(text or "")
+    if not raw.strip():
+        return False
+    try:
+        kind = str(risk_control.classify_failure_text(raw).get("kind") or "")
+    except Exception:
+        kind = ""
+    if kind in (risk_control.RATE_LIMITED, risk_control.NETWORK, risk_control.NOT_FOUND):
+        return False
+    if kind in _COOKIE_HELP_KINDS:
+        return True
+    if _COOKIE_HELP_RE.search(raw):
+        return True
+    # 风控那套话术对不上、又没被明确排除：YouTube 上认「没给清单」这一种，别的平台不猜
+    if kind in (risk_control.UNKNOWN, risk_control.EMPTY):
+        try:
+            return detect_platform(url or "") == "youtube"
+        except Exception:
+            return False
+    return False
+
+
+def cfg_without_cookie(cfg: dict) -> dict:
+    """把所有 Cookie 入口都关掉的那份配置副本（公开优先的第一次尝试用的就是它）。
+
+    三条都得清干净：全局来源、逐平台覆写、以及手工粘进请求头的那串 —— 少清一条就还是带了 Cookie，
+    那这一次「匿名先试」就成了假的那次，缓存与日志都会照着它编。
+    """
+    out = dict(cfg or {})
+    out["cookie_source"] = "none"
+    out["cookie_browser"] = ""
+    out["cookie_file"] = ""
+    out["platform_cookies"] = {}
+    out["cookie"] = ""
+    hdrs = dict(out.get("http_headers") or {})
+    for k in [k for k in hdrs if str(k).strip().lower() == "cookie"]:
+        hdrs.pop(k, None)
+    out["http_headers"] = hdrs
+    return out
+
+
+# 「人动了 Cookie 这一层」的键：只要这几个变了，之前那次「这条匿名就够」的判定就该作废
+COOKIE_LAYER_KEYS = ("cookie_source", "cookie_browser", "cookie_file",
+                     "platform_cookies", "cookie", "cookie_public_first")
+
+
+def drop_all_cookie_prefs():
+    """Cookie 这一层刚被人改过：把所有「匿名够用 / 得带 Cookie」的判定一次清掉。
+
+    不清的后果是配好了 Cookie 却还是不登录 —— 那条 15 分钟内的旧结论会把新 Cookie 又关掉。
+    清了的代价只是下一条链接重新匿名试一次，一边是错、一边是多打一次，选后面那个。
+    """
+    try:
+        engine.drop_cookie_pref()
+    except Exception:
+        pass
+
+
 class DownloaderEngine:
     def __init__(self, log_cb=None, ffmpeg_mgr: FFmpegManager = None):
         self.log = log_cb or (lambda m, level="info": print(m))
@@ -4803,7 +5872,10 @@ class DownloaderEngine:
         try:
             exe_urls = pkg_update.github_url_candidates(YTDLP_EXE_URL, gh)
             src_urls = pkg_update.github_url_candidates(YTDLP_SRC_ZIP_URL, gh)
-            _download_with_mirrors(exe_urls, YTDLP_LOCAL_EXE, log=self.log, timeout=180)
+            # 真正被 import 的是下面解出来的 tools/yt_dlp 源码包；yt-dlp.exe 只是 Windows 命令行壳，
+            # 在 Linux/macOS 上下回来既跑不了也没人调用，白占十几 MB。
+            if sys.platform == "win32":
+                _download_with_mirrors(exe_urls, YTDLP_LOCAL_EXE, log=self.log, timeout=180)
             _download_with_mirrors(src_urls, TOOLS_DIR / "yt_dlp_src.zip", log=self.log, timeout=300)
             tmp_zip = TOOLS_DIR / "yt_dlp_src.zip"
             if YTDLP_LOCAL_PKG.exists():
@@ -4838,9 +5910,61 @@ class DownloaderEngine:
                 return "updated (pip)"
             return str(res)
 
+    def cookie_pref_state(self, cfg: dict, url: str = "") -> str:
+        """这条 URL 在「公开优先」下判过没有："" 没判 / "anon" 匿名就能开 / "cookie" 得带 Cookie。
+
+        判过一次就记在 `_cookie_pref` 里，解析、下载、CDN 直链请求头三处都问这里，
+        免得各自读一遍开关读出三种结果。开关关着或过期时回 ""：那时行为与从前一字不差。
+        """
+        if not cfg or not cfg.get("cookie_public_first") or not url:
+            return ""
+        try:
+            rec = self._cookie_pref.get(url)
+        except Exception:
+            return ""
+        if not rec:
+            return ""
+        try:
+            stamp, use_cookie = rec
+        except Exception:
+            return ""
+        if time.time() - float(stamp) > self._COOKIE_PREF_TTL:
+            try:
+                self._cookie_pref.pop(url, None)
+            except Exception:
+                pass
+            return ""
+        return "cookie" if use_cookie else "anon"
+
+    def cookie_off(self, cfg: dict, url: str = "") -> bool:
+        """这一条是不是已经判过「匿名就能开」—— 所有该不带 Cookie 的地方都问这一个问题。"""
+        return self.cookie_pref_state(cfg, url) == "anon"
+
+    def note_cookie_pref(self, url: str, use_cookie: bool):
+        """记下「这条 URL 匿名解析开了 / 得带 Cookie」，过期与取用都走 cookie_pref_state。"""
+        try:
+            self._cookie_pref[url] = (time.time(), bool(use_cookie))
+        except Exception:
+            pass
+
+    def drop_cookie_pref(self, url: str = ""):
+        """作废一条（或全部）判定：Cookie 这一层被人改过，旧的结论就不能再替它决定带不带。"""
+        try:
+            if not url:
+                self._cookie_pref.clear()
+                return
+            for k in {url, normalize_url(url)}:
+                self._cookie_pref.pop(k, None)
+        except Exception:
+            pass
+
     def _cookie_source(self, cfg: dict, url: str = "") -> tuple:
         """该 URL 实际能用的 Cookie：("browser", 浏览器名) / ("file", 路径) / (None, None)。
         只选了来源但文件不存在时算「没有 Cookie」。"""
+        # 公开优先判过「这条匿名就能开」之后，这里就是唯一出口：客户端链、下载、直链请求头
+        # 全都跟着不带 Cookie，不需要各自再抄一遍判断。
+        if self.cookie_off(cfg, url):
+            return None, None
         plat = detect_platform(url) if url else "default"
         pc = (cfg.get("platform_cookies") or {}).get(plat) or {}
         src = (pc.get("source") or cfg.get("cookie_source") or "none").strip().lower()
@@ -4918,7 +6042,8 @@ class DownloaderEngine:
             hdrs["User-Agent"] = ua
         if cfg.get("referer") and "Referer" not in hdrs:
             hdrs["Referer"] = cfg.get("referer")
-        if cfg.get("cookie") and "Cookie" not in hdrs:
+        # 手工粘的那串 Cookie 也是 Cookie：判过「这条匿名就能开」之后不能只挡 cookiefile 那两路
+        if cfg.get("cookie") and "Cookie" not in hdrs and not self.cookie_off(cfg, url):
             hdrs["Cookie"] = cfg.get("cookie")
         if hdrs:
             opts["http_headers"] = hdrs
@@ -5056,8 +6181,7 @@ class DownloaderEngine:
                 return f"ba[abr<={audio_cap}]/bestaudio/best"
             return "bestaudio/best"
 
-        height_map = {"4K": 2160, "1440p": 1440, "1080p": 1080, "720p": 720, "480p": 480, "360p": 360}
-        max_h = height_map.get(video_q)
+        max_h = quality_height_cap(video_q)
 
         # 检查列表里是否有真正的「分离视频流」（非 progressive）
         separate_vids = [
@@ -5095,25 +6219,78 @@ class DownloaderEngine:
                 return f"{v0['format_id']}+{a0['format_id']}"
 
         # 默认：可靠的 format 表达式（避免锁死在 360p progressive）
+        # 音频档位在这里也要生效：以前只有「列表完整到能点名 format_id」那一支认 audio_cap，
+        # 走表达式时用户选的 128k/192k 被无声丢掉，等于只下最高码率音频。
+        # 带码率上限的候选后面紧跟一条不带上限的同形状候选，源里没有那一档时 yt-dlp 顺 / 回退，
+        # 不至于整个任务无解。
+        def _vplus(vf: str, hcap) -> str:
+            h = f"[height<={hcap}]" if hcap else ""
+            one = f"bv*{vf}{h}+ba"
+            return f"{one}[abr<={audio_cap}]/{one}" if audio_cap else one
+
+        # 编解码偏好本身是 "[vcodec*=av01]/[vcodec*=av1]" 这种 / 串联的备选，直接拼进
+        # bv*[...][height<=2160] 里，那个高度上限就只挂在最后一个备选上：
+        # 第一个备选 bv*[vcodec*=av01] 变成「不限高度」，选 4K 实际下成 8K（10-13 实测，519.8 MB）。
+        # 所以每个备选都得各自带上上限，不能整串塞进去。
+        codec_alts = [c for c in (vcodec_pref.split("/") if vcodec_pref else []) if c]
         if max_h:
-            if vcodec_pref:
-                return (
-                    f"bv*{vcodec_pref}[height<={max_h}]+ba/"
-                    f"bv*[height<={max_h}]+ba/"
-                    f"b[height<={max_h}]/bv*+ba/b"
-                )
-            return f"bv*[height<={max_h}]+ba/b[height<={max_h}]/bv*+ba/b"
-        # best
-        if vcodec_pref:
-            return f"bv*{vcodec_pref}+ba/bv*+ba/b"
-        return "bv*+ba/b"
+            parts = [_vplus(c, max_h) for c in codec_alts] + [_vplus("", max_h)]
+            parts += [f"b[height<={max_h}]", "bv*+ba/b"]
+            return "/".join(parts)
+        parts = [_vplus(c, 0) for c in codec_alts] + [_vplus("", 0), "b"]
+        return "/".join(parts)
 
     # 解析结果短缓存，避免重复点「解析」反复打平台
     _info_cache: Dict[str, tuple] = {}
     _INFO_CACHE_TTL = 180  # 秒
 
+    # 「公开优先」判过的 URL → (时间, 这次要不要带 Cookie)。判一次管一阵：
+    # 每条新解析都先匿名试一遍意味着同一个登录墙视频要被打两次平台接口，
+    # 而 429 的账是按域名累计的，多出来的那次没有换来任何东西。
+    # TTL 比解析缓存长一倍：下载本身可能跑十几分钟，中途重解析（清缓存那条路）还得沿用同一次判定。
+    _cookie_pref: Dict[str, tuple] = {}
+    _COOKIE_PREF_TTL = 900  # 秒
+
+    # 本次下载「解析清单里最高的那条视频轨」，交给队列收尾做成品回读比对。
+    # 不塞进 _info_cache 是因为那一份 180 秒就过期，而下载本身可能跑十几分钟：
+    # 收尾再去读缓存多半已经没了，就永远判不出「清单里有 4K、成品却只有 1080p」这一类偏差。
+    _listed_max: Dict[str, int] = {}
+
+    # 这一单是不是走了「原样落盘」那几条路（CDN 直链绕过 yt-dlp、种子由 aria2 直接写文件）。
+    # 校验值核对要用它：走这两条路时成品就是上游那份字节，期望值对不上是真对不上；
+    # 而解析下载那侧还要转封装、嵌字幕，成品字节被本机重写过，不能混成一句「下载坏了」。
+    # 记在引擎侧而不是让收尾去猜 URL：判断「算不算直链」的口径只在这里有一份。
+    _raw_bytes: Dict[str, bool] = {}
+
+    def note_raw_bytes(self, task_id: str):
+        try:
+            self._raw_bytes[task_id] = True
+        except Exception:
+            pass
+
+    def pop_raw_bytes(self, task_id: str) -> bool:
+        """取走并清掉「这单原样落盘」的标记，和 pop_listed_max 同一口径：不留残值给下一个任务。"""
+        try:
+            return bool(self._raw_bytes.pop(task_id, False))
+        except Exception:
+            return False
+
+    def pop_listed_max(self, task_id: str) -> int:
+        """取走并清掉该任务清单里的最高视频轨高度。0 = 没预解析到（直播或解析失败）。"""
+        try:
+            return int(self._listed_max.pop(task_id, 0) or 0)
+        except Exception:
+            return 0
+
     def get_info(self, url: str, cfg: dict) -> Optional[Dict]:
-        import yt_dlp
+        """解析一条 URL：查缓存、展开短链，然后按「公开优先」决定要不要先匿名试一次。
+
+        开关关着时这条路就是原样一次 `_get_info_once`，一字不差。开着且这条确有 Cookie 可用时，
+        第一次不带 Cookie：公开能拿到的东西没必要把登录态发给平台，何况带 Cookie 会被 yt-dlp
+        剪掉 android/ios 那两个客户端（两条链本来就不是同一份清单）。代价是登录墙的视频要多打
+        一次接口，所以判过一次就记下来（`_cookie_pref`），而且只在那类「带 Cookie 才可能有救」的
+        失败上才重跑 —— 429 与网络错重跑没有意义，只会把冷却加长。
+        """
         import time as _time
 
         url = normalize_url(url)
@@ -5123,7 +6300,7 @@ class DownloaderEngine:
         if cached and now - cached[0] < self._INFO_CACHE_TTL:
             return cached[1]
 
-        # 抖音/TikTok 短链展开（限制超时）
+        # 抖音/TikTok 短链展开（限制超时）—— 两次尝试用的是同一份展开结果
         try:
             if any(x in url.lower() for x in ("v.douyin.com", "v.kuaishou.com", "vm.tiktok.com")):
                 kw = {"timeout": 8, "allow_redirects": True, "headers": {"User-Agent": _BILI_HEADERS["User-Agent"]}}
@@ -5136,6 +6313,61 @@ class DownloaderEngine:
         except Exception:
             pass
 
+        state = self.cookie_pref_state(cfg, url)
+        if state == "cookie":
+            # 上次判过「这条得带 Cookie」：不再重跑匿名那次。多打一次平台接口只会加长 429 的冷却
+            info, _err = self._get_info_once(url, cfg, cache_key, now)
+            return info
+        if not cfg.get("cookie_public_first") or not self._cookie_source(cfg, url)[0]:
+            # 开关关着 / 这条本来就没 Cookie 可用 —— 与从前同一条路，一次到底。
+            # 判过「匿名就能开」的也落在这里：`_cookie_source` 已经把 Cookie 收起来了。
+            info, _err = self._get_info_once(url, cfg, cache_key, now)
+            return info
+
+        # 短链展开过一次之后，下载那侧用的仍是用户输入的那条，两张 key 都记上才拦得住 Cookie
+        def _note(use_ck: bool):
+            self.note_cookie_pref(url, use_ck)
+            if cache_key != url:
+                self.note_cookie_pref(cache_key, use_ck)
+
+        anon, anon_err = self._get_info_once(url, cfg_without_cookie(cfg), cache_key, now)
+        if anon is not None and not _anon_list_clipped(anon, url):
+            _note(False)
+            self.log(f"公开优先：这条没带 Cookie 就解析开了（{len(anon.get('formats') or [])} 条流）")
+            return anon
+        if anon is None and not cookie_might_help(anon_err, url):
+            # 限流、网络错、内容不存在：带 Cookie 再打一次不改变任何东西
+            self.log("公开优先：匿名那一次失败的原因不是登录墙那类，不为此带 Cookie 重跑", "warning")
+            return None
+        why = "匿名那份清单被裁了（只有影音同条）" if anon is not None else "匿名那一次被挡"
+        _note(True)
+        self.log(f"公开优先：{why}，带 Cookie 再解析一次", "warning")
+        got, got_err = self._get_info_once(url, cfg, cache_key, now)
+        if got is None:
+            if anon is not None:
+                # 带 Cookie 那次反而没解析开（活体读数里就是那次的 429）：先吃已经拿到的匿名那份。
+                # 判定仍记「得带 Cookie」—— 能走到这里说明匿名那份是被裁的那份，把它钉成「匿名就够了」
+                # 等于接下来 15 分钟都照着 1080p 的清单下，那正是这个开关要防的静默降质。
+                self.log(f"带 Cookie 那次没解析开（{str(got_err)[:80]}），先用匿名那份；"
+                         f"这条下次解析还带 Cookie", "warning")
+                return anon
+            return None
+        if anon is not None and _yt_max_h(anon.get("formats") or []) > _yt_max_h(got.get("formats") or []):
+            self.log("带 Cookie 那份反而更低，用匿名那份", "warning")
+            _note(False)
+            # 缓存位上此时是带 Cookie 那次写进去的较低那份，跟着结论一起改回来
+            self._info_cache[cache_key] = (now, anon)
+            return anon
+        return got
+
+    def _get_info_once(self, url: str, cfg: dict, cache_key: str, now: float) -> Tuple[Optional[Dict], str]:
+        """打一次平台接口拿清单，回 (清单或 None, 最后一次原始报错)。
+
+        `url` 已规范化并展开过短链；`cache_key` / `now` 由调用方给，因为公开优先那两次尝试
+        共用的是一条 URL 的缓存位（判过就不该再换 key，否则匿名那份低清会被当答案缓存 180 秒）。
+        """
+        import yt_dlp
+
         low = url.lower()
         is_youtube = any(x in low for x in ("youtube.com", "youtu.be", "youtube-nocookie.com"))
         is_bili = "bilibili.com" in low or "b23.tv" in low
@@ -5146,21 +6378,34 @@ class DownloaderEngine:
             # 部分被限制的视频只从 HLS 吐高清。两者一次取并集最稳。
             yt_has_ck = bool(self._cookie_source(cfg, url)[0])
             first = ["default", "web_safari"]
+            widen = _yt_widen_attempt(cfg)
             if yt_has_ck:
-                client_tries = [first, None]
+                client_tries = [first] + widen + [None]
             else:
-                client_tries = [first, ["android", "web"], ["ios", "web"], None]
+                client_tries = [first, ["android", "web"], ["ios", "web"]] + widen + [None]
         else:
             client_tries = [None]
 
         last_err = None
         used_fallback_pip = False
+        # 这一轮试到底也没拿到分流清单时用的那份「能用但被裁」的信息。
+        # 放在 get_info 的局部而不是 self 上：同时解析两个链接时不该互相盖掉
+        fb_box = [None]
+
+        def _keep_best(info):
+            cur = fb_box[0]
+            if cur is None or _yt_max_h(info.get("formats") or []) > _yt_max_h(cur.get("formats") or []):
+                fb_box[0] = info
 
         def _run_tries():
             nonlocal last_err
             import yt_dlp
 
-            for clients in client_tries:
+            for ci, clients in enumerate(client_tries):
+                # 后面还排着「会吃票」的那次尝试吗？还排着，这份没有独立视频轨的清单就不算数
+                widen_pending = is_youtube and any(
+                    c == YT_WIDE_CLIENTS for c in client_tries[ci + 1:] if c
+                )
                 try:
                     opts = self._ydl_opts(cfg, for_info=True, player_clients=clients, url=url)
                     opts.pop("format", None)
@@ -5231,6 +6476,16 @@ class DownloaderEngine:
                             # 只有确实「什么高清都没有」才换客户端；不要误杀 1080 列表
                             if any_h >= 720 or sep_h >= 480:
                                 info["_md_clients"] = clients
+                                # 拿得到票却全是影音同条 = 客户端选错（default/web_safari 不吃票），
+                                # 不是站点不给高清。留着这份兜底，先让后面那次 all 重解
+                                if widen_pending and not _yt_has_dash(fmts):
+                                    self.log(
+                                        f"客户端 {clients} 只给影音同条（最高 {any_h}p），"
+                                        f"带票的 {YT_WIDE_CLIENTS[0]} 还没试，重解一遍取优",
+                                        "warning",
+                                    )
+                                    _keep_best(info)
+                                    continue
                                 self._info_cache[cache_key] = (now, info)
                                 return info
                             last_err = f"only low progressive (any_h={any_h}, sep_h={sep_h})"
@@ -5239,8 +6494,7 @@ class DownloaderEngine:
                                 "warning",
                             )
                             info["_md_clients"] = clients
-                            if not getattr(self, "_info_fallback", None):
-                                self._info_fallback = info
+                            _keep_best(info)
                             continue
                         info["_md_clients"] = clients
                         self._info_cache[cache_key] = (now, info)
@@ -5254,11 +6508,10 @@ class DownloaderEngine:
                     continue
             return None
 
-        self._info_fallback = None
         try:
             result = _run_tries()
             if result:
-                return result
+                return result, last_err
         except Exception as e:
             last_err = str(e)
 
@@ -5270,22 +6523,21 @@ class DownloaderEngine:
                 used_fallback_pip = True
                 result = _run_tries()
                 if result:
-                    return result
+                    return result, last_err
             except Exception as e:
                 last_err = str(e)
 
-        # 所有客户端都只有低清时，退回最后一次可用信息（仍可下 360p，总比失败强）
-        if getattr(self, "_info_fallback", None):
-            fb = self._info_fallback
-            self._info_fallback = None
-            self.log("未能拿到高清格式列表，将使用可用的低清/渐进流", "warning")
+        # 所有客户端都只有低清时，退回最好的一份（仍可下 1080p，总比失败强）
+        if fb_box[0]:
+            fb = fb_box[0]
+            self.log("试过的客户端都没给出独立视频轨，用其中最高的一份", "warning")
             self._info_cache[cache_key] = (now, fb)
-            return fb
+            return fb, last_err
 
         if last_err:
             tip = " | 请点「更新 yt-dlp」或 pip install -U yt-dlp" if used_fallback_pip or "extractor" in last_err.lower() else ""
             self.log(f"提取失败: {last_err[:160]}{tip}", "warning")
-        return None
+        return None, last_err
 
     def download(
         self,
@@ -5378,6 +6630,7 @@ class DownloaderEngine:
             elif ".flv" in low0:
                 dest = dest.with_suffix(".flv")
             try:
+                self.note_raw_bytes(task_id)   # 这一支不转封装不嵌轨，成品=上游那份字节
                 self.log(f"[{task_id[:8]}] CDN 直链下载（绕过 yt-dlp）…")
                 if progress_cb:
                     try:
@@ -5545,6 +6798,12 @@ class DownloaderEngine:
                     for f in media:
                         if f.get("vcodec") and f.get("vcodec") != "none":
                             max_listed = max(max_listed, f.get("height") or 0)
+                    # 记下清单上限：收尾的回读要比「实得 vs 所选」，得知道上游本来给到哪儿。
+                    # 重试几轮就取几轮的最大值——补试 all 那轮往往才是清单最全的那一份。
+                    if max_listed > 0:
+                        self._listed_max[task_id] = max(
+                            int(self._listed_max.get(task_id) or 0), max_listed
+                        )
                 else:
                     self.log(f"[{task_id[:8]}] 直播模式：跳过预解析，直接录制")
                     try:
@@ -5564,7 +6823,16 @@ class DownloaderEngine:
                     format_sel = self._resolve_format(
                         [], video_q, audio_q, audio_only, cfg.get("prefer_codec", "auto")
                     )
-                    if pc_chain:
+                    # 解析清单是哪个客户端解出来的就照它下载：窄客户端（default/tv/web_safari）
+                    # 不给独立视频轨，bv* 那一串会一路退到末尾的 b[height<=…]，
+                    # 用户点的 4K 就静默下成 1080p 渐进流，任务还是「成功」
+                    wide = bool(clients) and any(str(c).lower() in YT_WIDE_CLIENTS for c in clients)
+                    if wide:
+                        self.log(
+                            f"[{task_id[:8]}] 解析出的清单来自 {'/'.join(map(str, clients))}（含独立视频轨），"
+                            f"下载沿用同一套客户端，列表最高约 {max_listed}p"
+                        )
+                    elif pc_chain:
                         pci = max(0, min(int(cfg.get("_pc_idx") or 0), len(pc_chain) - 1))
                         clients = [pc_chain[pci]]
                     else:
@@ -6208,6 +7476,390 @@ class DownloaderEngine:
         return self._live_stems.pop(task_id, "") or ""
 
 
+# -------------------- 通知 outbox：事件先落盘，再由后台线程逐通道送 --------------------
+# 旧做法是「事件发生时同步发一次」：对端抖一下、正好断网、或者赶上程序重启，这条通知就永久
+# 没了，只在运行日志里留一行 warning。现在事件先进 outbox 写盘，后台线程按递增间隔重试，
+# 重启后接着补发；每个通道各自记账，所以补发不会把已经送到的那一份再发一遍。
+NOTIFY_RETRY_DELAYS = (30, 120, 600, 1800, 3600)   # 第 N 次失败后等多久再试
+NOTIFY_CHANNEL_LABELS = {"telegram": "Telegram", "serverchan": "Server酱", "wecom": "企业微信"}
+NOTIFY_KIND_LABELS = {"done": "下载完成", "fail": "下载失败", "sub": "订阅更新", "live": "直播开播"}
+_OUTBOX_KEEP = 50            # 磁盘上最多留这么多条（含已发出的，界面上看的是最近动态）
+_OUTBOX_MAX_AGE = 7 * 86400  # 一周前的事件不再补发：那时候人多半已经不需要这条了
+_NOTIFY_OUTBOX_TICK = 5.0    # 空闲时每隔几秒看一眼有没有到期的；新事件会直接踢一脚
+
+_outbox_lock = threading.Lock()
+_outbox_state = {"seq": 0, "records": []}
+_notify_outbox_kick = threading.Event()
+_notify_outbox_stop = threading.Event()
+_notify_outbox_thread = None
+
+
+def _outbox_save():
+    """把当前表写盘。先取快照再落盘，且走临时文件替换：写到一半崩了不该让下次启动读回半个 JSON。"""
+    with _outbox_lock:
+        payload = {"seq": _outbox_state["seq"],
+                   "records": [dict(r) for r in _outbox_state["records"]]}
+    try:
+        NOTIFY_OUTBOX_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = Path(str(NOTIFY_OUTBOX_FILE) + ".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, NOTIFY_OUTBOX_FILE)
+    except Exception as e:
+        log_mgr.log(f"通知 outbox 写入失败: {e}", "warning")
+
+
+def _outbox_load() -> int:
+    """开机把上次没送完的读回来，返回还在排队的条数。文件坏了就从空表开始，不影响启动。"""
+    now = time.time()
+    try:
+        raw = json.loads(NOTIFY_OUTBOX_FILE.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return 0
+    except Exception as e:
+        log_mgr.log(f"通知 outbox 读取失败，本次从空表开始: {e}", "warning")
+        return 0
+    records, too_old = [], 0
+    for r in (raw.get("records") or []):
+        if not isinstance(r, dict) or not r.get("text"):
+            continue
+        r["channels"] = [c for c in (r.get("channels") or []) if c in NOTIFY_CHANNEL_LABELS]
+        r["attempts"] = int(r.get("attempts") or 0)
+        r["next_try"] = float(r.get("next_try") or now)
+        r["created_at"] = float(r.get("created_at") or now)
+        if r.get("status") != "pending":
+            records.append(r)
+            continue
+        if now - r["created_at"] > _OUTBOX_MAX_AGE:
+            too_old += 1
+            continue
+        if not r["channels"]:
+            r["status"], r["done_at"], r["last_error"] = "dropped", now, "待发通道为空"
+        records.append(r)
+    with _outbox_lock:
+        _outbox_state["seq"] = int(raw.get("seq") or 0)
+        _outbox_state["records"] = records
+    if too_old:
+        log_mgr.log(f"通知 outbox：{_OUTBOX_MAX_AGE // 86400} 天前的 {too_old} 条不再补发", "warning")
+    return sum(1 for r in records if r.get("status") == "pending")
+
+
+def _outbox_prune_locked():
+    """表太长时先淘汰已经了结的（从最老的开始），还是超就丢最老的待发 —— 队列爆表说明通道一直坏。"""
+    recs = _outbox_state["records"]
+    if len(recs) <= _OUTBOX_KEEP:
+        return
+    for r in [x for x in recs if x.get("status") != "pending"]:
+        if len(_outbox_state["records"]) <= _OUTBOX_KEEP:
+            return
+        _outbox_state["records"].remove(r)
+    while len(_outbox_state["records"]) > _OUTBOX_KEEP:
+        _outbox_state["records"].pop(0)
+
+
+def _notify_targets(kind: str) -> List[str]:
+    """这个事件现在该发给哪些通道 —— 沿用各通道自己的开关，不新增设置项。"""
+    d = cfg.data
+    out = []
+    if tg_notifier.enabled() and (kind == "live" or d.get(f"telegram_notify_{kind}", True)):
+        out.append("telegram")
+    if kind == "done" and (d.get("serverchan_sendkey") or "").strip():
+        out.append("serverchan")
+    if d.get("wecom_enabled") and kind in ("done", "fail", "sub") and d.get(f"wecom_notify_{kind}", True):
+        out.append("wecom")
+    return out
+
+
+def _notify_send_channel(ch: str, title: str, text: str):
+    if ch == "telegram":
+        return tg_notifier.send_detail(text)
+    if ch == "serverchan":
+        return tg_notifier.send_serverchan_detail(title, text)
+    if ch == "wecom":
+        return wecom_send_detail(text)
+    return False, f"不认识的通道 {ch}"
+
+
+def _notify_enqueue(kind: str, title: str, text: str) -> bool:
+    """把一条通知事件写进 outbox。一个通道都没开时和过去一样静默跳过，连盘都不写。"""
+    targets = _notify_targets(kind)
+    if not targets:
+        return False
+    now = time.time()
+    with _outbox_lock:
+        _outbox_state["seq"] += 1
+        rec = {"id": _outbox_state["seq"], "kind": kind, "title": title, "text": text,
+               "created_at": now, "channels": list(targets), "attempts": 0,
+               "next_try": now, "last_error": "", "status": "pending", "done_at": 0.0}
+        _outbox_state["records"].append(rec)
+        _outbox_prune_locked()
+    _outbox_save()
+    _notify_outbox_kick.set()   # 让后台线程立刻来拿，正常情况就是秒级送达
+    return True
+
+
+def _outbox_replace(rec: dict):
+    """按 id 整条换回去：投递途中不改共享对象，界面读数就不会看到改了一半的记录。"""
+    with _outbox_lock:
+        for i, r in enumerate(_outbox_state["records"]):
+            if r.get("id") == rec.get("id"):
+                _outbox_state["records"][i] = rec
+                return
+
+
+def _outbox_attempt(rec: dict) -> None:
+    """跑一次投递：只碰还没成功的通道，成功一个划掉一个。"""
+    now = time.time()
+    wanted = _notify_targets(rec["kind"])
+    rec["channels"] = [c for c in rec["channels"] if c in wanted]
+    if not rec["channels"]:
+        rec["status"], rec["done_at"] = "dropped", now
+        rec["last_error"] = "这些通道后来都关了，不再补发"
+        return
+    rec["attempts"] += 1
+    errs, sent = [], []
+    for ch in list(rec["channels"]):
+        try:
+            ok, err = _notify_send_channel(ch, rec.get("title") or "", rec.get("text") or "")
+        except Exception as e:
+            ok, err = False, f"发送函数抛异常：{e}"
+        (sent if ok else errs).append(ch if ok else f"{NOTIFY_CHANNEL_LABELS.get(ch, ch)}：{err}")
+    for ch in sent:
+        rec["channels"].remove(ch)
+    if not rec["channels"]:
+        rec["status"], rec["done_at"], rec["last_error"] = "sent", now, ""
+        if rec["attempts"] > 1:
+            names = "、".join(NOTIFY_CHANNEL_LABELS.get(c, c) for c in sent) or "通道"
+            log_mgr.log(f"通知补发成功（第 {rec['attempts']} 次尝试）：{names} · {rec['title']}")
+        return
+    rec["last_error"] = "；".join(errs)[:300]
+    if rec["attempts"] > len(NOTIFY_RETRY_DELAYS):
+        rec["status"], rec["done_at"] = "dropped", now
+        log_mgr.log(f"通知试了 {rec['attempts']} 次仍没送出去，丢弃：{rec['title']}（{rec['last_error']}）",
+                    "warning")
+        return
+    delay = NOTIFY_RETRY_DELAYS[min(rec["attempts"] - 1, len(NOTIFY_RETRY_DELAYS) - 1)]
+    rec["next_try"] = now + delay
+
+
+def _outbox_tick() -> int:
+    """把到期的待发消息各试一次，返回处理了几条。"""
+    now = time.time()
+    with _outbox_lock:
+        due = [dict(r, channels=list(r.get("channels") or [])) for r in _outbox_state["records"]
+               if r.get("status") == "pending" and float(r.get("next_try") or 0) <= now]
+    if not due:
+        return 0
+    for r in due:
+        try:
+            _outbox_attempt(r)
+        except Exception as e:
+            r["last_error"] = f"投递异常：{e}"
+            r["next_try"] = now + NOTIFY_RETRY_DELAYS[0]
+        _outbox_replace(r)
+    _outbox_save()
+    return len(due)
+
+
+def _outbox_mark_due() -> int:
+    """界面上点「立即重试」：把所有待发的推到「现在就试」，真正的发送仍交给后台线程，
+    不让这个请求替用户等满 15 秒超时。"""
+    now = time.time()
+    with _outbox_lock:
+        n = 0
+        for i, r in enumerate(_outbox_state["records"]):
+            if r.get("status") == "pending":
+                _outbox_state["records"][i] = dict(r, next_try=now)
+                n += 1
+    _outbox_save()
+    _notify_outbox_kick.set()
+    return n
+
+
+def _outbox_clear_all() -> int:
+    """界面上点「清空」：待发的一并作废，已发出的记录抹掉。"""
+    with _outbox_lock:
+        n = len(_outbox_state["records"])
+        _outbox_state["records"] = []
+    _outbox_save()
+    return n
+
+
+def _outbox_payload() -> dict:
+    now = time.time()
+    with _outbox_lock:
+        recs = [dict(r, channels=list(r.get("channels") or [])) for r in _outbox_state["records"]]
+    records = []
+    for r in sorted(recs, key=lambda x: float(x.get("created_at") or 0), reverse=True):
+        pending = r.get("status") == "pending"
+        records.append({
+            "id": r.get("id"), "kind": r.get("kind"),
+            "kind_label": NOTIFY_KIND_LABELS.get(r.get("kind"), r.get("kind")),
+            "title": r.get("title") or "", "text": (r.get("text") or "")[:300],
+            "created_at": r.get("created_at"), "status": r.get("status"),
+            "attempts": r.get("attempts"),
+            "channels": [NOTIFY_CHANNEL_LABELS.get(c, c) for c in r.get("channels") or []],
+            "error": r.get("last_error") or "",
+            "next_in": max(0, round(float(r.get("next_try") or 0) - now)) if pending else 0,
+        })
+    counts = {k: sum(1 for x in records if x["status"] == k) for k in ("pending", "sent", "dropped")}
+    return {"ok": True, "records": records, "counts": counts,
+            "retry_delays": list(NOTIFY_RETRY_DELAYS), "tick_sec": _NOTIFY_OUTBOX_TICK,
+            "keep": _OUTBOX_KEEP, "file": str(NOTIFY_OUTBOX_FILE)}
+
+
+def start_notify_outbox():
+    """后台线程：新事件被踢一脚就立刻发，空闲时每 5 秒看一眼有没有到期待重试的。"""
+    global _notify_outbox_thread
+    if _notify_outbox_thread and _notify_outbox_thread.is_alive():
+        return
+    pending = _outbox_load()
+    if pending:
+        log_mgr.log(f"通知 outbox：读回 {pending} 条上次没送出去的，按 {' → '.join(str(d) + 's' for d in NOTIFY_RETRY_DELAYS)} 的节奏继续重试")
+
+    def loop():
+        while not _notify_outbox_stop.is_set():
+            try:
+                _outbox_tick()
+            except Exception as e:
+                log_mgr.log(f"通知 outbox 轮询异常: {e}", "warning")
+            _notify_outbox_kick.wait(_NOTIFY_OUTBOX_TICK)
+            _notify_outbox_kick.clear()
+
+    _notify_outbox_stop.clear()
+    _notify_outbox_thread = threading.Thread(target=loop, daemon=True, name="notify-outbox")
+    _notify_outbox_thread.start()
+    log_mgr.log("通知 outbox 已启动（失败的通知会落盘重试，重启不丢）")
+
+
+# -------------------- 剪贴板监听（#206④）--------------------
+# 只做「看见了一条链接，问一句要不要用」这一件事：默认关、读到的内容不落盘也不写日志，
+# 点「加入」也只是把链接填进下载输入框 —— 入队、发请求永远由用户自己按那一下决定。
+CLIP_POLL_SEC = 2.0
+CLIP_SEEN_KEEP = 30          # 记住最近这么多份内容，翻回去复制同一条不该再弹一次
+CLIP_TEXT_CAP = 4000         # 剪贴板里是一大段文字时不去里面刨链接
+# 中英文标点都不算链接的一部分：复制链接时旁边常跟着「」，、：，而 URL 里出现这些的极少，
+# 留在链接里会让浏览器一进去就 404。半角括号照旧放行（文件名里 a(1).mkv 太常见），
+# 冒号只排全角（端口要留）。
+_CLIP_STOP = r"\s<>\"'（）【】「」『』，。、；：！？…　"
+_CLIP_URL_RE = re.compile(r"(magnet:\?[^" + _CLIP_STOP + r"]+|https?://[^" + _CLIP_STOP + r"]+)",
+                          re.IGNORECASE)
+
+_clip_lock = threading.Lock()
+_clip_state: dict = {"last_key": "", "seen": [], "pending": None, "error": "",
+                     "checks": 0, "hits": 0, "since": 0.0}
+_clip_stop = threading.Event()
+_clip_thread: Optional[threading.Thread] = None
+
+
+def clipboard_text() -> Tuple[str, str]:
+    """读一次系统剪贴板里的纯文本，回 (内容, 说不清的缘故)。只读：不写、不清、不动别的格式。
+
+    用 ctypes 走 user32/kernel32 是为了零新依赖（本机已经有 pywin32 之外的东西都要用户自己装）。
+    剪贴板是全局锁资源，别的程序正写着时 OpenClipboard 会失败 —— 这不是错误，下一轮再读就是，
+    所以这里只把原因回给调用者，绝不重试到把界面卡住。
+    """
+    if sys.platform != "win32":
+        return "", "这一功能只在 Windows 上读系统剪贴板（其它系统走各自的接口，本机用不上）"
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except Exception as e:      # 极老的 Python / 非 Windows 上 windll 根本不存在
+        return "", f"这个环境用不了 Windows 剪贴板接口：{type(e).__name__}"
+    CF_UNICODETEXT = 13
+    user32 = ctypes.windll.user32      # type: ignore[attr-defined]
+    kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+    # 64 位上 HANDLE 是指针，默认 restype（c_int）会把它截断成 32 位，读出来必是垃圾
+    user32.OpenClipboard.restype = wintypes.BOOL
+    user32.OpenClipboard.argtypes = [wintypes.HWND]
+    user32.IsClipboardFormatAvailable.restype = wintypes.BOOL
+    user32.IsClipboardFormatAvailable.argtypes = [wintypes.UINT]
+    user32.GetClipboardData.restype = ctypes.c_void_p
+    user32.GetClipboardData.argtypes = [wintypes.UINT]
+    user32.CloseClipboard.restype = wintypes.BOOL
+    kernel32.GlobalSize.restype = ctypes.c_size_t
+    kernel32.GlobalSize.argtypes = [ctypes.c_void_p]
+    kernel32.GlobalLock.restype = ctypes.c_void_p
+    kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+    kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+    if not user32.OpenClipboard(None):
+        return "", "剪贴板正被别的程序占着，下一次轮询自动再试"
+    try:
+        if not user32.IsClipboardFormatAvailable(CF_UNICODETEXT):
+            return "", ""       # 图片 / 文件列表这一类没有文本可比，不算异常
+        h = user32.GetClipboardData(CF_UNICODETEXT)
+        if not h:
+            return "", "读不到剪贴板里的文本（可能刚被改写过）"
+        size = kernel32.GlobalSize(h)
+        ptr = kernel32.GlobalLock(h)
+        try:
+            if not ptr or not size:
+                return "", "剪贴板内容锁不住（可能刚被别的程序改写）"
+            raw = ctypes.string_at(ptr, size)
+        finally:
+            kernel32.GlobalUnlock(h)
+        text = raw.decode("utf-16-le", "ignore").strip("\x00").strip()
+        return text, ""
+    finally:
+        user32.CloseClipboard()
+
+
+def clip_extract_link(text: str) -> str:
+    """从剪贴板内容里认出一条可下载的链接；认不出就回空串（一大段文章不该被当成链接）。"""
+    t = str(text or "").strip()
+    if not t or len(t) > CLIP_TEXT_CAP:
+        return ""
+    m = _CLIP_URL_RE.search(t)
+    if not m:
+        return ""
+    link = m.group(1).strip()
+    # 半角标点能出现在 URL 里，所以尾巴上那一个才切（a(1).mkv 里的括号得留着）
+    return link[:-1] if len(link) > 12 and link[-1] in ",.)]" else link
+
+
+def _clip_tick() -> None:
+    """轮询一次：换了内容、且里面确实有链接，才把这一条挂到「待定」上。"""
+    text, err = clipboard_text()
+    with _clip_lock:
+        _clip_state["checks"] += 1
+        _clip_state["error"] = err
+        if not text:
+            return
+        key = hashlib.sha1(text.encode("utf-8", "ignore")).hexdigest()[:16]
+        if key == _clip_state["last_key"] or key in _clip_state["seen"]:
+            return          # 同一份内容来回弹才是问题，改过的不算
+        _clip_state["last_key"] = key
+        _clip_state["seen"] = (_clip_state["seen"] + [key])[-CLIP_SEEN_KEEP:]
+        link = clip_extract_link(text)
+        if not link:
+            return
+        _clip_state["hits"] += 1
+        # 只挂这一条：界面每 2 秒来取，取走前新的会把旧的顶掉（用户复制得快，说明旧的那条不要了）
+        _clip_state["pending"] = {"link": link, "kind": "magnet" if link.lower().startswith("magnet:") else "http",
+                                  "chars": len(text), "ts": datetime.now().isoformat(timespec="seconds")}
+
+
+def start_clipboard_watch() -> None:
+    """后台线程常驻，但只有设置里打开了才真去读剪贴板 —— 默认关着时它一趟也不碰。"""
+    global _clip_thread
+    if _clip_thread and _clip_thread.is_alive():
+        return
+    with _clip_lock:
+        _clip_state["since"] = time.time()
+
+    def loop():
+        while not _clip_stop.is_set():
+            try:
+                if cfg.data.get("clipboard_watch"):
+                    _clip_tick()
+            except Exception as e:
+                log_mgr.log(f"剪贴板监听轮询异常：{type(e).__name__}: {str(e)[:120]}", "warning")
+            _clip_stop.wait(CLIP_POLL_SEC)
+
+    _clip_stop.clear()
+    _clip_thread = threading.Thread(target=loop, daemon=True, name="clipboard-watch")
+    _clip_thread.start()
+
+
 # -------------------- Telegram 通知 --------------------
 class TelegramNotifier:
     def __init__(self, cfg: ConfigManager, log: Callable = None):
@@ -6218,9 +7870,10 @@ class TelegramNotifier:
         d = self.cfg.data
         return bool(d.get("telegram_enabled") and d.get("telegram_bot_token") and d.get("telegram_chat_id"))
 
-    def send(self, text: str) -> bool:
+    def send_detail(self, text: str):
+        """真发一条 Telegram 消息，返回 (成功, 失败原因)。原因会被界面读，所以要说人话。"""
         if not self.enabled():
-            return False
+            return False, "Telegram 没启用，或 Bot Token / Chat ID 是空的"
         token = (self.cfg.data.get("telegram_bot_token") or "").strip()
         chat_id = (self.cfg.data.get("telegram_chat_id") or "").strip()
         try:
@@ -6231,39 +7884,33 @@ class TelegramNotifier:
             )
             if r.status_code != 200:
                 self.log(f"Telegram 发送失败: {r.text[:120]}", "warning")
-                return False
-            return True
+                return False, f"HTTP {r.status_code}：{(r.text or '')[:160]}"
+            return True, ""
         except Exception as e:
             self.log(f"Telegram 异常: {e}", "warning")
-            return False
+            return False, f"请求没发出去：{e}"
+
+    def send(self, text: str) -> bool:
+        return self.send_detail(text)[0]
 
     def notify_done(self, title: str, url: str = "", path: str = ""):
-        text = f"✅ 下载完成\n{title or url}\n{path or url}"
-        self.send_serverchan("下载完成", text)
-        if not self.cfg.data.get("telegram_notify_done", True):
-            return
-        self.send(text)
+        _notify_enqueue("done", "下载完成", f"✅ 下载完成\n{title or url}\n{path or url}")
 
     def notify_fail(self, title: str, url: str = "", err: str = ""):
-        if not self.cfg.data.get("telegram_notify_fail", True):
-            return
-        self.send(f"❌ 下载失败\n{title or url}\n{err[:200]}")
+        _notify_enqueue("fail", "下载失败", f"❌ 下载失败\n{title or url}\n{(err or '')[:200]}")
 
     def notify_sub(self, sub_title: str, new_count: int, samples: List[str] = None):
-        if not self.cfg.data.get("telegram_notify_sub", True):
-            return
-        lines = (samples or [])[:5]
-        extra = "\n".join(f"· {x}" for x in lines)
-        self.send(f"📢 订阅更新: {sub_title}\n新增 {new_count} 条\n{extra}")
+        extra = "\n".join(f"· {x}" for x in (samples or [])[:5])
+        _notify_enqueue("sub", "订阅更新", f"📢 订阅更新: {sub_title}\n新增 {new_count} 条\n{extra}")
 
     def test(self) -> str:
         ok = self.send("🔔 MediaDownloader 测试消息\nTelegram 通知已连通。\n发送 /help 查看远程命令。")
         return "ok" if ok else "failed"
 
-    def send_serverchan(self, title: str, desp: str = "") -> bool:
+    def send_serverchan_detail(self, title: str, desp: str = ""):
         key = (self.cfg.data.get("serverchan_sendkey") or "").strip()
         if not key:
-            return False
+            return False, "Server酱 SendKey 没填"
         try:
             # Server酱 Turbo
             r = requests.post(
@@ -6271,10 +7918,16 @@ class TelegramNotifier:
                 data={"title": title[:100], "desp": desp[:2000]},
                 timeout=15,
             )
-            return r.status_code == 200
+            if r.status_code != 200:
+                self.log(f"Server酱失败: HTTP {r.status_code} {(r.text or '')[:120]}", "warning")
+                return False, f"HTTP {r.status_code}：{(r.text or '')[:160]}"
+            return True, ""
         except Exception as e:
             self.log(f"Server酱失败: {e}", "warning")
-            return False
+            return False, f"请求没发出去：{e}"
+
+    def send_serverchan(self, title: str, desp: str = "") -> bool:
+        return self.send_serverchan_detail(title, desp)[0]
 
     def _extract_urls(self, text: str) -> List[str]:
         if not text:
@@ -7677,6 +9330,11 @@ def _bt_add_options(cfg: dict, log_fn: Callable = lambda *a, **k: None) -> dict:
 
 
 _BT_RULE_MODES = ("contains", "regex")
+# 规则可以问「名字」也可以问「链接」：磁力/种子那侧一直是名字（种子里的标题才是人能读懂的东西），
+# 而普通下载（YouTube / B 站 / 直链）根本没有名字可比，只有 URL。两类规则排在同一张表里，
+# 同一条匹配口径（包含 / 正则、忽略大小写、从上往下先命中先得），只是问的对象不同。
+_BT_RULE_SCOPES = ("name", "url")
+_BT_SCOPE_LABELS = {"name": "名字", "url": "链接"}
 
 
 def bt_rule_subdir(raw) -> Tuple[str, str]:
@@ -7707,8 +9365,13 @@ def bt_rules_clean(raw) -> Tuple[List[dict], List[str]]:
         name = str(r.get("name") or "").strip()[:60] or f"规则 {i}"
         pattern = str(r.get("pattern") or "")
         mode = str(r.get("mode") or "contains").strip().lower()
+        scope = str(r.get("scope") or "name").strip().lower()
+        if scope not in _BT_RULE_SCOPES:
+            bad.append(f"第 {i} 条「{name}」的匹配对象只认「名字」或「链接」，现在收到的是「{scope[:20]}」")
+            continue
         if not pattern.strip():
-            bad.append(f"第 {i} 条「{name}」没写要匹配的名字")
+            bad.append(f"第 {i} 条「{name}」没写要匹配的"
+                       + ("链接" if scope == "url" else "名字"))
             continue
         if mode not in _BT_RULE_MODES:
             bad.append(f"第 {i} 条「{name}」的匹配方式只认「包含」或「正则」，现在收到的是「{mode[:20]}」")
@@ -7724,12 +9387,15 @@ def bt_rules_clean(raw) -> Tuple[List[dict], List[str]]:
                 bad.append(f"第 {i} 条「{name}」的正则没写对：{e}")
                 continue
         out.append({"name": name, "pattern": pattern, "mode": mode, "subdir": sub,
-                    "enabled": bool(r.get("enabled", True))})
+                    "scope": scope, "enabled": bool(r.get("enabled", True))})
     return out, bad
 
 
-def bt_rule_match(name: str, rules: List[dict]) -> Tuple[dict, str]:
+def bt_rule_match(name: str, rules: List[dict], scope: str = "name") -> Tuple[dict, str]:
     """按上下顺序问一遍，命中第一条就定下来（照 qBittorrent 自动分类的口径：先命中先得）。
+
+    只问 scope 这一类规则（名字 / 链接）—— 一张表里两种规则混排时，
+    「这条是问链接的」不能被拿去比种子名，否则 `https://` 这种词会把所有种子都收走。
 
     比大小写一律忽略：种子里的名字同一批人一会儿 1080P 一会儿 1080p，
     分两种写法只会让规则表越写越长。
@@ -7738,6 +9404,8 @@ def bt_rule_match(name: str, rules: List[dict]) -> Tuple[dict, str]:
     low = s.lower()
     for r in rules or []:
         if not isinstance(r, dict) or not r.get("enabled", True):
+            continue
+        if str(r.get("scope") or "name") != scope:
             continue
         pat = str(r.get("pattern") or "")
         if not pat:
@@ -7773,18 +9441,34 @@ def bt_rule_name(ref: dict, log_fn: Callable = lambda *a, **k: None) -> Tuple[st
     return stem, "种子文件名（种子内没读到名称）"
 
 
+def _rule_decide(name: str, url: str, rules: List[dict]) -> Tuple[dict, str]:
+    """先问名字规则、没中再问链接规则 —— 真正落点与界面「试跑」共用这一句，免得两处顺序漂移。"""
+    hit, why = (bt_rule_match(name, rules, "name") if name else (None, ""))
+    if not hit and url:
+        hit, why = bt_rule_match(url, rules, "url")
+    return hit, why
+
+
 def bt_target_dir(ref: dict, cfg: dict, base_dir: str,
-                  log_fn: Callable = lambda *a, **k: None) -> Tuple[str, str, str]:
+                  log_fn: Callable = lambda *a, **k: None,
+                  url: str = "") -> Tuple[str, str, str]:
     """按自动分类规则决定这个种子存到哪儿，回 (落盘目录, 分类名, 说给用户听的缘故)。
 
+    先问「名字」规则（种子里的标题是人能读懂的东西），名字没命中才问「链接」规则
+    （磁力链接多半只有一串 xt 哈希，按链接分类靠的是 dn / 来源写法）。
     没配规则就原样回默认目录，一条日志都不多写——不该出现「开着默认设置却莫名其妙多了层目录」。
     """
     rules = [r for r in (cfg.get("bt_auto_rules") or []) if isinstance(r, dict)]
     if not rules:
         return base_dir, "", ""
     name, whence = bt_rule_name(ref, log_fn)
-    hit, why = bt_rule_match(name, rules) if name else (None, "")
-    head = f"名字「{name[:60]}」没命中任何规则" if name else f"这条现在还没有可比的名字（{whence}）"
+    hit, why = _rule_decide(name, url, rules)
+    has_url = any(str(r.get("scope") or "name") == "url" for r in rules)
+    if name:
+        head = (f"名字「{name[:60]}」与链接都没命中任何规则" if has_url
+                else f"名字「{name[:60]}」没命中任何规则")
+    else:
+        head = f"这条现在还没有可比的名字（{whence}）"
     if hit:
         sub = str(hit.get("subdir") or "")
         if not sub:
@@ -7804,6 +9488,48 @@ def bt_target_dir(ref: dict, cfg: dict, base_dir: str,
     return base_dir, "", "没命中规则"
 
 
+def _opts_dir_is_manual(task_dir, global_dir) -> bool:
+    """这一批任务是不是用户自己在「保存目录」那一格点了别的目录。
+
+    界面那一格预填的就是全局目录（loadConfig 里 opts.download_dir = data.download_dir），
+    所以「非空」不等于手动指定，只有与全局不一样才算。判错的代价都看得见：当成手动则链接
+    规则永远不生效，当成非手动则用户手选的目录被规则改掉 —— 后一条是「开着默认设置却多了
+    一层目录」的翻版，所以规则给手动的让路，并在日志写明。
+    """
+    a = str(task_dir or "").strip()
+    if not a:
+        return False
+    return not _same_dir(a, str(global_dir or "").strip())
+
+
+def url_target_dir(url: str, cfg: dict, base_dir: str,
+                   log_fn: Callable = lambda *a, **k: None,
+                   manual: bool = False) -> Tuple[str, str, str]:
+    """普通下载（YouTube / B 站 / 直链这些没有「种子名」可比的东西）按链接规则决定落点。
+
+    与种子那条同一套口径：规则从上往下先命中先得，落到下载目录下面的相对子目录。
+    **不看「都不命中时存到」那个兜底目录** —— 兜底是给磁力那一页「没名字可比」准备的，
+    普通下载一旦也走兜底，等于只加了一条链接规则就把整个下载目录改了地方，那是意外。
+    manual=True 时规则给手动指定的目录让路，但命中了还是要说一声，不然用户不知道规则写对了。
+    """
+    rules = [r for r in (cfg.get("bt_auto_rules") or []) if isinstance(r, dict)]
+    if not any(str(r.get("scope") or "name") == "url" for r in rules):
+        return base_dir, "", ""
+    hit, why = bt_rule_match(url, rules, "url")
+    if not hit:
+        return base_dir, "", ""
+    if manual:
+        log_fn(f"自动分类：{why} → 这一条已手动指定保存目录，规则不改落点（仍存 {base_dir}）")
+        return base_dir, "", ""
+    sub = str(hit.get("subdir") or "")
+    if not sub:
+        log_fn(f"自动分类：{why} → 规则「{hit.get('name')}」没填子目录，仍存默认目录")
+        return base_dir, "", f"规则「{hit.get('name')}」没填子目录"
+    target = str(Path(base_dir) / sub)
+    log_fn(f"自动分类：{why} → 规则「{hit.get('name')}」，这一条存到 {target}")
+    return target, str(hit.get("name") or ""), f"命中规则「{hit.get('name')}」（{why}）"
+
+
 def bt_ensure(cfg: dict, log_fn) -> Tuple[bool, str]:
     """RPC 没人应答时，按设置决定「自己拉一个本机 aria2c」还是把缺的东西讲清楚。"""
     ac = _bt_client(cfg)
@@ -7814,12 +9540,12 @@ def bt_ensure(cfg: dict, log_fn) -> Tuple[bool, str]:
                        + "）没有应答，而设置里「自动拉起 aria2」是关闭的："
                          "自己开一个 aria2c，或把这个开关打开后重试")
     import aria2_daemon
-    binp = aria2_daemon.find_binary(str(cfg.get("aria2_bin") or ""), APP_DIR)
+    binp = aria2_daemon.find_binary(str(cfg.get("aria2_bin") or ""), APP_DIR, is_native_binary)
     return aria2_daemon.ensure_running(
         rpc_url=str(cfg.get("aria2_rpc") or "http://127.0.0.1:6800/jsonrpc"),
         binary=binp,
         download_dir=str(cfg.get("download_dir") or DEFAULT_DOWNLOAD_DIR),
-        app_dir=APP_DIR,
+        app_dir=STATE_DIR,
         ping=ac.ping,
         log=log_fn,
     )
@@ -7849,6 +9575,16 @@ def _bt_hsize(v) -> str:
             return f"{b:.0f} {unit}" if unit == "B" else f"{b:.1f} {unit}"
         b /= 1024.0
     return "0 B"
+
+
+def _pot_daemon_stop():
+    """退出前收掉程序自己拉起的那个 node POT 服务端；用户自己开的（owned=False）不碰。"""
+    try:
+        import pot_daemon
+        if pot_daemon.owned().get("owned"):
+            pot_daemon.shutdown()
+    except Exception:
+        pass
 
 
 def bt_pick_primary(paths: List[str]) -> str:
@@ -7937,6 +9673,10 @@ class TaskQueue:
         self.paused = False  # 全局暂停：不再启动新任务
         self._wake_timer = None
         self._wake_at = 0.0
+        self._window_timer = None
+        self._window_wake_at = 0.0
+        self._window_logged = ""  # 上一次为「窗关着」记过的那句话，避免每次泵都刷一行
+        self._window_logged_q: Dict[str, str] = {}  # 队列级同理：{队列名: 上次记过的那句}
 
     def _task_host(self, url: str) -> str:
         return url_host(url)
@@ -7958,6 +9698,79 @@ class TaskQueue:
         self._wake_at = 0.0
         self._wake_timer = None
         self._pump()
+
+    def _arm_window_wake(self, hhmm: str):
+        """定时窗到点自己再来泵一次。
+
+        不走 _wake_later：那条给站点冷却用，上限 900 秒，而窗口可能是六小时后才开，
+        按它排就永远醒在错误的时间上。这里按真实剩余时间排一次性闹钟（最多一圈 24 小时）。
+        """
+        if not hhmm:
+            return
+        left = _hm_until(hhmm, datetime.now().strftime("%H:%M")) * 60 + 5
+        until = time.time() + left
+        if self._window_timer is not None and self._window_wake_at <= until and self._window_timer.is_alive():
+            return  # 已经有个更早的闹钟在跑，让它先响
+        if self._window_timer is not None:
+            self._window_timer.cancel()
+        self._window_wake_at = until
+        t = threading.Timer(left, self._window_fire)
+        t.daemon = True
+        self._window_timer = t
+        t.start()
+
+    def _window_fire(self):
+        self._window_timer = None
+        self._window_wake_at = 0.0
+        self._pump()
+
+    def window_status(self) -> dict:
+        """界面横幅要说清的三件事：现在能不能跑、不能跑到几点能跑、每条命名队列各自的窗与压着的条数。"""
+        d = self.cfg.data
+        open_, note, nxt, left = window_open(d.get("run_window") or "")
+        out = {
+            "open": open_,
+            "note": note,
+            "resume_at": nxt,
+            "wait_minutes": left,
+            "global_window": str(d.get("run_window") or "").strip(),
+            "held": len(self.pending) if not open_ else 0,
+            "queues": [],
+        }
+        qwins = d.get("queue_windows") or {}
+        names = list(dict.fromkeys(
+            list(d.get("named_queues") or [])
+            + sorted(KNOWN_QUEUE_NAMES)
+            + self.queue_names()
+            + [str(k) for k in qwins.keys()]
+        ))
+        for name in names:
+            text = str(qwins.get(name) or "").strip()
+            if not text:
+                # 没填窗的队列也要列出来：设置页要按这张表逐行给输入框，漏一行用户就没法给它填
+                out["queues"].append({"name": name, "open": True, "windows": "", "note": "",
+                                      "resume_at": "", "wait_minutes": 0, "held": 0})
+                continue
+            ok, qnote, nx, lf = window_open(text)
+            held = 0
+            if not ok:
+                held = sum(
+                    1 for t in self.tasks.values()
+                    if (t.queue_name or "default") == name
+                    and t.status == TaskStatus.QUEUED.value
+                )
+            out["queues"].append({
+                "name": name, "open": ok, "windows": text, "note": qnote,
+                "resume_at": nx, "wait_minutes": lf, "held": held,
+            })
+        return out
+
+    def queue_names(self) -> List[str]:
+        """当前任务里真实用过的队列名（含 default）。界面要列的那张表比设置里那份全。"""
+        names = set()
+        for t in self.tasks.values():
+            names.add(t.queue_name or "default")
+        return sorted(names)
 
     def _host_running_count(self, host: str) -> int:
         if not host:
@@ -8027,6 +9840,12 @@ class TaskQueue:
                 continue
             seen.add(key)
             tid = str(uuid.uuid4())
+            # 期望校验值：入队时可能已经规范化过（api_download），这里再规范化一次是幂等的，
+            # 为的是别的入队口（订阅规则、嗅探、MCP）交来一串不像摘要的东西时别把它带进任务里。
+            want_hex, want_algo, hash_err = normalize_hash_expect(
+                options.get("expect_hash"), options.get("hash_algo") or "auto")
+            if hash_err:
+                self.log.log(f"这条期望校验值没被采用：{hash_err}", "warning")
             task = DownloadTask(
                 id=tid,
                 url=u,
@@ -8035,6 +9854,8 @@ class TaskQueue:
                 pinned=bool(options.get("pinned")),
                 priority=int(options.get("priority") or 0),
                 queue_name=queue_name,
+                expect_hash=want_hex,
+                hash_algo=want_algo,
             )
             if task.pinned:
                 task.priority = max(task.priority, 1000)
@@ -8084,6 +9905,17 @@ class TaskQueue:
         with self.lock:
             if self.paused:
                 return
+            d = self.cfg.data
+            g_open, g_note, g_next, _gl = window_open(d.get("run_window") or "")
+            if not g_open:
+                # 全局窗关着：一条新的都不开，已经在跑的不动（掐断正在下的文件不是「定时跑队列」的意思）
+                key = f"global:{g_next}"
+                if self._window_logged != key:
+                    self._window_logged = key
+                    self.engine.log(f"[queue] 队列定时窗：{g_note}，{g_next} 自动开始", "info")
+                self._arm_window_wake(g_next)
+                return
+            self._window_logged = ""
             self.max_concurrent = int(self.cfg.data.get("concurrent", 3) or 3)
             max_per_host = int(self.cfg.data.get("max_per_host", 2) or 2)
             try:
@@ -8095,6 +9927,8 @@ class TaskQueue:
             adaptive = bool(self.cfg.data.get("adaptive_throttle", True))
             wake_in = 0.0
             skipped = []
+            held = []
+            qwins = d.get("queue_windows") or {}
             while self.running < self.max_concurrent and self.pending:
                 tid = self.pending.pop(0)
                 task = self.tasks.get(tid)
@@ -8107,6 +9941,21 @@ class TaskQueue:
                     TaskStatus.LATER.value,
                 ):
                     continue
+                qtext = str(qwins.get(task.queue_name or "default") or "")
+                if qtext:
+                    q_open, _qn, q_next, _ql = window_open(qtext)
+                    if not q_open:
+                        held.append(tid)
+                        self._arm_window_wake(q_next)
+                        qname = task.queue_name or "default"
+                        # 泵一趟会把同一条队列的每个任务都过一遍，所以按「队列 + 开门钟点」去重：
+                        # 一条队列一次窗只记一行，不然是排队多少刷多少
+                        qkey = f"{qname}:{q_next}"
+                        if self._window_logged_q.get(qname) != qkey:
+                            self._window_logged_q[qname] = qkey
+                            self.engine.log(
+                                f"[queue] 队列「{qname}」定时窗：{q_next} 之前不开新任务", "info")
+                        continue
                 host = self._task_host(task.url)
                 cap = HOST_THROTTLE.cap_for(host, max_per_host) if adaptive else max_per_host
                 if host and cap > 0 and self._host_running_count(host) >= cap:
@@ -8136,9 +9985,9 @@ class TaskQueue:
                 except Exception:
                     task.resume_hint = "新下载"
                 threading.Thread(target=self._run, args=(task,), daemon=True).start()
-            # 因同域限制暂缓的任务放回队列头部之后
-            if skipped:
-                self.pending = skipped + self.pending
+            # 因同域限制暂缓的任务放回队列头部之后；被定时窗压着的排更前，开窗那一刻先跑它们
+            if held or skipped:
+                self.pending = held + skipped + self.pending
             if wake_in > 0:
                 self._wake_later(wake_in)
 
@@ -8240,7 +10089,8 @@ class TaskQueue:
             # 下面逐个查文件时只会得到一句「下载目录里找不到种子里的 N 个文件」，白白吓人
             self.log.log("自动分类：这条勾了「只做种」，不改落点（规则只管新下载的内容存到哪）")
         else:
-            out_dir, task.category, _cat_why = bt_target_dir(ref, cfg, out_dir, self.log.log)
+            out_dir, task.category, _cat_why = bt_target_dir(ref, cfg, out_dir, self.log.log,
+                                                             url=task.url)
         ac = _bt_client(cfg)
         meta_wait = max(30, int(cfg.get("torrent_meta_timeout") or 180))
         meta_deadline = time.time() + meta_wait
@@ -8264,7 +10114,7 @@ class TaskQueue:
                     return False, "", f"种子文件不存在：{tp}"
                 gid = ac.add_torrent(str(tp), out_dir, extra_opts=extra)
         except Exception as e:
-            return False, "", f"提交给 aria2 失败：{e}"
+            return False, "", f"提交给 aria2 失败：{aria2_err_cn(e, cfg)}"
         task.gid = gid
         if seed_only:
             return self._torrent_seed_only(task, ac, cfg, gid, out_dir)
@@ -8284,7 +10134,7 @@ class TaskQueue:
             try:
                 st = ac.tell_status(watch, BT_KEYS)
             except Exception as e:
-                return False, "", f"读取 aria2 状态失败：{e}"
+                return False, "", f"读取 aria2 状态失败：{aria2_err_cn(e, cfg)}"
             status = str(st.get("status") or "")
             total = int(st.get("totalLength") or 0)
             done = int(st.get("completedLength") or 0)
@@ -8500,6 +10350,13 @@ class TaskQueue:
         opts = getattr(task, "_opts", {}) or {}
         cfg = dict(self.cfg.data)
         out_dir = opts.get("download_dir") or cfg.get("download_dir") or str(DEFAULT_DOWNLOAD_DIR)
+        # 自动分类的「链接规则」在这里生效（磁力那一页由 bt_target_dir 自己管，两边都跑会套两层目录）
+        if not parse_torrent_ref(task.url or ""):
+            nd, cat, _why = url_target_dir(
+                task.url or "", cfg, out_dir, self.engine.log,
+                manual=_opts_dir_is_manual(opts.get("download_dir"), cfg.get("download_dir")))
+            if cat:
+                out_dir, task.category = nd, cat
         if not task.started_at:
             task.started_at = datetime.now().isoformat(timespec="seconds")
         # 直播：抓取聊天弹幕
@@ -8569,6 +10426,12 @@ class TaskQueue:
             hdrs["User-Agent"] = opts.get("user_agent") or cfg.get("user_agent")
         if opts.get("cookie") or cfg.get("cookie"):
             hdrs["Cookie"] = opts.get("cookie") or cfg.get("cookie")
+        # 公开优先判过「这条匿名就能开」之后，手工粘的那串 Cookie 也不该跟着发出去：
+        # yt-dlp 那侧由 _cookie_source / _ydl_opts 收着，CDN 直链与 aria2 这一支只读这份请求头。
+        if hdrs.get("Cookie") and (
+            self.engine.cookie_off(cfg, normalize_url(task.url)) or self.engine.cookie_off(cfg, task.url)
+        ):
+            hdrs.pop("Cookie", None)
         if hdrs:
             cfg["http_headers"] = hdrs
         from telegram_mt import parse_tgmt
@@ -8736,6 +10599,13 @@ class TaskQueue:
             except Exception as e:
                 self.engine.log(f"[{task.id[:8]}] 直播收尾失败: {e}", "warning")
 
+        # 清单上限只服务这一次收尾：取走即清，免得引擎那张表里留残值
+        listed_max = self.engine.pop_listed_max(task.id)
+        raw_bytes = False
+        try:
+            raw_bytes = self.engine.pop_raw_bytes(task.id)
+        except Exception:
+            pass
         # 转存/上报之前先确认「文件真的能用」：被反爬拦下时工具会正常退出并留下网页或空壳
         # 种子的主成品可能是压缩包或镜像，ffprobe 认不出的东西不该被判成「下载坏了」
         if ok and path and cfg.get("verify_download", True) and (
@@ -8750,6 +10620,42 @@ class TaskQueue:
                 ok = False
                 task.error_msg = f"下载完成但文件不可用：{bad}（文件已保留，未转存网盘）"
                 self.engine.log(f"[{task.id[:8]}] {task.error_msg}", "error")
+            elif not task.is_live:
+                # 直播这条路格式恒为 best（画质那一档对直播本来就不生效），回读只会怪错对象，跳过
+                try:
+                    task.verify_note = tier_readback(
+                        path,
+                        opts.get("video_quality", cfg.get("video_quality", "best")),
+                        listed_max,
+                        audio_only=bool(opts.get("audio_only", cfg.get("audio_only", False))),
+                    )
+                except Exception as e:  # 回读是附加信息，出问题也不该影响任务结论
+                    self.engine.log(f"[{task.id[:8]}] 成品回读异常（跳过）: {e}", "warning")
+                if task.verify_note:
+                    self.engine.log(f"[{task.id[:8]}] 成品回读：{task.verify_note}", "warning")
+
+        # 校验值核对放在 verify_download 这道闸门之外：体检说「文件能播」，
+        # 摘要说的是「是不是这一份文件」，两件事各有各的开关，磁力任务也想要后一句。
+        # 只在任务成功时算 —— 已经判失败的没必要再读一遍几个 G。
+        if ok and path and task.expect_hash:
+            hview = dict(cfg)
+            hview["format"] = opts.get("format") or cfg.get("format") or "mkv"
+            hsteps = [] if raw_bytes else hash_rewrite_steps(hview, task.kind)
+            try:
+                state, got, note = hash_readback(
+                    path, task.expect_hash, task.hash_algo, hsteps,
+                )
+            except Exception as e:  # 和回读同一口径：核对本身出问题不牵连任务结论
+                state, got, note = "", "", ""
+                self.engine.log(f"[{task.id[:8]}] 校验值核对异常（跳过）: {e}", "warning")
+            task.hash_state = state
+            task.file_hash = got
+            if note:
+                task.verify_note = f"{task.verify_note}；{note}" if task.verify_note else note
+                self.engine.log(f"[{task.id[:8]}] {note}", "warning")
+            elif state == "ok":
+                self.engine.log(f"[{task.id[:8]}] 校验值核对：{_HASH_LABELS.get(task.hash_algo, task.hash_algo)}"
+                                f" 一致（{got[:16]}…）")
 
         # NAS / 网盘转存（成功或用户结束直播且有文件）
         if path and Path(path).is_file():
@@ -8799,9 +10705,10 @@ class TaskQueue:
                     "status": task.status,
                     "filepath": path or "",
                     "error": "" if ok else task.error_msg,
+                    "verify_note": task.verify_note,
                 }
             )
-            # Telegram 通知
+            # 通知（进 outbox 落盘，没送出去的重试）
             try:
                 if ok:
                     tg_notifier.notify_done(task.title or task.url, task.url, path or "")
@@ -8827,7 +10734,7 @@ class TaskQueue:
         with self.lock:
             self.running = 0
 
-    def end_live_tasks(self, ids: List[str] = None) -> int:
+    def end_live_tasks(self, ids: List[str] = None, reason: str = "用户结束录制") -> int:
         """结束直播录制：停止下载、收尾文件、停止聊天、暂停对应监控防自动再录"""
         count = 0
         idset = set(ids or [])
@@ -8862,7 +10769,7 @@ class TaskQueue:
                     except ValueError:
                         pass
                 t.status = TaskStatus.STOPPED.value
-                t.error_msg = "用户结束录制"
+                t.error_msg = reason
                 t.speed = ""
                 t.eta = ""
                 paused_urls.append(t.url or "")
@@ -9055,6 +10962,9 @@ class TaskQueue:
             opts = dict(getattr(t, "_opts", {}) or {})
             opts.update(extra_opts)
             t._opts = opts  # type: ignore
+            if any(k in extra_opts for k in COOKIE_LAYER_KEYS):
+                # 人明确动了 Cookie 这一层：公开优先那次判定作废，按新配置重新判
+                self.engine.drop_cookie_pref(t.url)
         t.status = TaskStatus.QUEUED.value
         t.progress = 0
         t.error_msg = ""
@@ -9100,6 +11010,470 @@ STATIC.mkdir(exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
 
 
+# -------------------- 访问保护（登录）：只拦非本机来的连接 --------------------
+# 8765 是裸 HTTP：谁能连上这个端口，谁就能改设置、翻下载目录、用已存好的平台 cookie。
+# 口径（界面上那句话与代码同一套）：
+#   - 开关默认关，开着也只在「来源不是 127.0.0.1/::1」时才要登录 —— 本机浏览器、MCP 桥、
+#     自检、扩展的既有用法一律不受影响；
+#   - 第二道门是机器令牌（X-MDL-Token）：给需要跨主机/走反向代理的自动调用用，
+#     但它只开数据接口，改口令、开关这类动作仍得从界面来；
+#   - 口令只存 PBKDF2 加盐哈希，SECRET_KEY（会话签名用）首次用到时生成并写进 config.json，
+#     所以重启后浏览器不用重登。
+AUTH_COOKIE = "mdl_session"
+AUTH_TOKEN_HEADER = "x-mdl-token"
+AUTH_COOKIE_VERSION = 1
+AUTH_PBKDF2_ROUNDS = 240_000
+AUTH_REFRESH_SLICE = 300          # 会话滑动续期的最小间隔：5 分钟内的请求不重设 cookie
+AUTH_FAIL_WINDOW = 3600           # 隔了一小时再试，之前的失败次数不作数
+AUTH_PUBLIC_PATHS = ("/", "/index.html", "/favicon.ico", "/api/auth/status", "/api/auth/login")
+_auth_lock = threading.Lock()
+_auth_state: Dict[str, Any] = {"fails": {}, "locked": {}}
+
+
+def _is_loopback_host(host: str) -> bool:
+    h = str(host or "").strip().lower()
+    if h.startswith("::ffff:"):
+        h = h[7:]
+    if h in ("", "localhost", "::1"):
+        return True
+    return h == "127.0.0.1" or h.startswith("127.")
+
+
+def _auth_client_ip(request: Request) -> str:
+    # 只认 TCP 真实来源，故意不看 X-Forwarded-For：这个值同时用来判「本机免登录」，
+    # 信了请求头就等于把门交给任何一个会写 header 的人。
+    client = getattr(request, "client", None)
+    return str(getattr(client, "host", "") or "")
+
+
+def _auth_cfg_int(key: str, default: int, lo: int, hi: int) -> int:
+    try:
+        v = int(cfg.data.get(key))
+    except (TypeError, ValueError):
+        v = default
+    return max(lo, min(hi, v))
+
+
+def _auth_idle_seconds() -> int:
+    return _auth_cfg_int("web_auth_session_hours", 12, 1, 720) * 3600
+
+
+def _auth_remember_seconds() -> int:
+    return _auth_cfg_int("web_auth_remember_days", 30, 1, 365) * 86400
+
+
+def _auth_lock_seconds() -> int:
+    return _auth_cfg_int("web_auth_lock_minutes", 15, 1, 1440) * 60
+
+
+def _auth_secret_key(rotate: bool = False) -> str:
+    """会话签名用的 256-bit 密钥：第一次用到时生成并落盘，重启后登录态不丢。"""
+    with _auth_lock:
+        cur = str(cfg.data.get("secret_key") or "").strip()
+        if cur and not rotate:
+            return cur
+        cur = secrets.token_hex(32)
+        cfg.data["secret_key"] = cur
+        cfg.save()
+        return cur
+
+
+def _auth_machine_token_value() -> str:
+    """只读当下存着的那串：读状态、比对令牌都不该顺手生成并落盘。"""
+    return str(cfg.data.get("web_auth_machine_token") or "").strip()
+
+
+def _auth_machine_token(rotate: bool = False) -> str:
+    """确保有一串机器令牌（界面上点「重置」才走这里）；比对用的一律用上面那个只读版。"""
+    with _auth_lock:
+        cur = _auth_machine_token_value()
+        if cur and not rotate:
+            return cur
+        cur = secrets.token_hex(24)
+        cfg.data["web_auth_machine_token"] = cur
+        cfg.save()
+        return cur
+
+
+def _auth_hash_password(pw: str) -> str:
+    salt = os.urandom(16)
+    dk = hashlib.pbkdf2_hmac("sha256", pw.encode("utf-8"), salt, AUTH_PBKDF2_ROUNDS)
+    return ("pbkdf2_sha256$%d$%s$%s" % (AUTH_PBKDF2_ROUNDS,
+                                        base64.b64encode(salt).decode(),
+                                        base64.b64encode(dk).decode()))
+
+
+def _auth_verify_password(pw: str, stored: str) -> bool:
+    parts = str(stored or "").split("$")
+    if len(parts) != 4 or parts[0] != "pbkdf2_sha256":
+        return False
+    try:
+        rounds = int(parts[1])
+        salt = base64.b64decode(parts[2])
+        want = base64.b64decode(parts[3])
+    except Exception:
+        return False
+    got = hashlib.pbkdf2_hmac("sha256", pw.encode("utf-8"), salt, max(1, rounds))
+    return hmac.compare_digest(got, want)
+
+
+def _auth_password_set() -> bool:
+    return bool(str(cfg.data.get("web_auth_password_hash") or "").strip())
+
+
+def _auth_enforcing() -> bool:
+    # 开了开关却还没设口令时不拦人：那时没人能登进来，拦了等于把服务锁死。
+    # 这种情况在 /api/auth/status 里明说「保护还没生效」。
+    return bool(cfg.data.get("web_auth_enabled")) and _auth_password_set()
+
+
+def _auth_sign(body: str) -> str:
+    return hmac.new(_auth_secret_key().encode(), body.encode(), hashlib.sha256).hexdigest()[:40]
+
+
+def _auth_new_cookie(remember: bool) -> Tuple[str, int]:
+    now = int(time.time())
+    idle = _auth_idle_seconds()
+    hard = max(idle, _auth_remember_seconds()) if remember else idle
+    payload = {"v": AUTH_COOKIE_VERSION, "iat": now, "last": now, "exp": now + hard,
+               "rm": 1 if remember else 0}
+    body = base64.urlsafe_b64encode(
+        json.dumps(payload, separators=(",", ":")).encode()).decode().rstrip("=")
+    return f"{body}.{_auth_sign(body)}", hard
+
+
+def _auth_parse_cookie(val: str) -> Tuple[bool, str, dict]:
+    """(有效?, 原因, payload)。原因：ok / empty / bad / expired / idle。"""
+    raw = str(val or "")
+    if "." not in raw:
+        return False, "empty", {}
+    body, sig = raw.rsplit(".", 1)
+    if not hmac.compare_digest(sig, _auth_sign(body)):
+        return False, "bad", {}
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
+    except Exception:
+        return False, "bad", {}
+    if int(payload.get("v") or 0) != AUTH_COOKIE_VERSION:
+        return False, "bad", {}
+    now = int(time.time())
+    if now > int(payload.get("exp") or 0):
+        return False, "expired", payload
+    if now - int(payload.get("last") or 0) > _auth_idle_seconds():
+        return False, "idle", payload
+    return True, "ok", payload
+
+
+def _auth_authorized(request: Request) -> bool:
+    """这个请求自己有没有过门的凭据（不含「开关关着」这一层）。"""
+    if _is_loopback_host(_auth_client_ip(request)):
+        return True
+    tok = str(request.headers.get(AUTH_TOKEN_HEADER) or "").strip()
+    saved = _auth_machine_token_value()
+    if tok and saved and hmac.compare_digest(tok, saved):
+        return True
+    ok, _, _ = _auth_parse_cookie(request.cookies.get(AUTH_COOKIE, ""))
+    return ok
+
+
+def _auth_token_only(request: Request) -> bool:
+    """这个请求是不是「只靠机器令牌进来的」：本机直连或带有效会话都不算。"""
+    if _is_loopback_host(_auth_client_ip(request)):
+        return False
+    ok, _, _ = _auth_parse_cookie(request.cookies.get(AUTH_COOKIE, ""))
+    if ok:
+        return False
+    tok = str(request.headers.get(AUTH_TOKEN_HEADER) or "").strip()
+    saved = _auth_machine_token_value()
+    return bool(tok) and bool(saved) and hmac.compare_digest(tok, saved)
+
+
+def _auth_gate_reason(request: Request) -> str:
+    """""/api/* 这个请求拦不拦：返回 ""（放行）或拒绝原因。"""
+    if not _auth_enforcing():
+        return ""
+    path = request.url.path
+    if path in AUTH_PUBLIC_PATHS or path.startswith("/static/"):
+        return ""
+    if _is_loopback_host(_auth_client_ip(request)):
+        return ""
+    tok = str(request.headers.get(AUTH_TOKEN_HEADER) or "").strip()
+    if tok and hmac.compare_digest(tok, _auth_machine_token_value()) and not path.startswith("/api/auth/"):
+        return ""
+    ok, why, _ = _auth_parse_cookie(request.cookies.get(AUTH_COOKIE, ""))
+    return "" if ok else why
+
+
+AUTH_DENIED_TEXT = {
+    "empty": "要登录：请在弹出的窗口里输入访问口令",
+    "bad": "登录状态已失效（口令改过或本机密钥换了），请重新登录",
+    "expired": "登录状态过期了，请重新登录",
+    "idle": "这台浏览器空闲太久，请重新登录",
+}
+
+
+def _auth_denied(request: Request, why: str) -> JSONResponse:
+    return JSONResponse(status_code=401,
+                        content={"detail": AUTH_DENIED_TEXT.get(why, "要登录"),
+                                 "auth_required": True, "reason": why})
+
+
+def _auth_state_load():
+    global _auth_state
+    try:
+        if AUTH_STATE_FILE.exists():
+            with open(AUTH_STATE_FILE, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            with _auth_lock:
+                _auth_state = {"fails": dict(raw.get("fails") or {}),
+                               "locked": dict(raw.get("locked") or {})}
+    except Exception as e:
+        log_mgr.log(f"读取登录锁定状态失败（按无锁定处理）: {e}", "warning")
+
+
+def _auth_state_save():
+    # 临时文件 + os.replace：被硬杀也不能把「谁正在被锁」忘掉，否则重启就给了爆破者新一轮机会
+    with _auth_lock:
+        snap = json.dumps({"fails": _auth_state["fails"], "locked": _auth_state["locked"]},
+                          ensure_ascii=False, indent=2)
+    tmp = Path(str(AUTH_STATE_FILE) + ".tmp")
+    try:
+        tmp.write_text(snap, encoding="utf-8")
+        os.replace(tmp, AUTH_STATE_FILE)
+    except Exception as e:
+        log_mgr.log(f"保存登录锁定状态失败: {e}", "warning")
+
+
+def _auth_locked_seconds(ip: str, now: Optional[float] = None) -> int:
+    now = now or time.time()
+    with _auth_lock:
+        until = float(_auth_state["locked"].get(ip) or 0)
+    return max(0, int(round(until - now)))
+
+
+def _auth_note_fail(ip: str) -> dict:
+    """记一次失败口令。返回这次的计数情况，调用方据此决定回什么、要不要发通知。"""
+    now = time.time()
+    limit = _auth_cfg_int("web_auth_max_fails", 5, 1, 50)
+    with _auth_lock:
+        rec = dict(_auth_state["fails"].get(ip) or {})
+        had_fails = bool(rec)
+        if now - float(rec.get("last") or 0) > AUTH_FAIL_WINDOW:
+            rec = {}
+        rec["n"] = int(rec.get("n") or 0) + 1
+        rec["first"] = float(rec.get("first") or now)
+        rec["last"] = now
+        _auth_state["fails"][ip] = rec
+        n = int(rec["n"])
+        just_locked, lock_secs = False, 0
+        if n >= limit and ip not in _auth_state["locked"]:
+            lock_secs = _auth_lock_seconds()
+            _auth_state["locked"][ip] = now + lock_secs
+            _auth_state["fails"].pop(ip, None)
+            just_locked = True
+    _auth_state_save()
+    return {"just_locked": just_locked, "lock_seconds": lock_secs, "fails": n,
+            "had_fails": had_fails, "limit": limit}
+
+
+def _auth_clear_fails(ip: str):
+    with _auth_lock:
+        _auth_state["fails"].pop(ip, None)
+        _auth_state["locked"].pop(ip, None)
+    _auth_state_save()
+
+
+def _auth_locks_payload() -> List[dict]:
+    now = time.time()
+    out = []
+    with _auth_lock:
+        for ip, until in sorted(_auth_state["locked"].items()):
+            left = float(until) - now
+            if left <= 0:
+                continue
+            out.append({"ip": ip, "left": int(round(left))})
+        for ip, rec in sorted(_auth_state["fails"].items()):
+            if now - float(rec.get("last") or 0) > AUTH_FAIL_WINDOW:
+                continue
+            out.append({"ip": ip, "left": 0, "fails": int(rec.get("n") or 0)})
+    return out
+
+
+def _auth_notify(text: str):
+    # 走「失败/告警」这条通知开关：没开任何通道时静默跳过，绝不因为通知炸了把登录接口带崩
+    try:
+        _notify_enqueue("fail", "登录保护", text)
+    except Exception as e:
+        log_mgr.log(f"登录保护事件进通知队列失败: {e}", "warning")
+
+
+_auth_state_load()
+
+
+@app.middleware("http")
+async def web_auth_middleware(request: Request, call_next):
+    why = _auth_gate_reason(request)
+    if why:
+        return _auth_denied(request, why)
+    response = await call_next(request)
+    # 会话滑动续期：还活跃就不该在半路被踢，但也不必每个请求都重设 cookie
+    if _auth_enforcing() and request.url.path not in AUTH_PUBLIC_PATHS \
+            and not request.url.path.startswith("/api/auth/"):
+        raw = request.cookies.get(AUTH_COOKIE, "")
+        ok, _, payload = _auth_parse_cookie(raw)
+        if ok and not payload.get("rm") and time.time() - int(payload.get("last") or 0) > AUTH_REFRESH_SLICE:
+            value, max_age = _auth_new_cookie(False)
+            response.set_cookie(AUTH_COOKIE, value, max_age=max_age, httponly=True,
+                                samesite="lax", path="/")
+    return response
+
+
+class LoginBody(BaseModel):
+    password: str = ""
+    remember: bool = False
+
+
+class PasswordBody(BaseModel):
+    password: str = ""
+    current: str = ""
+
+
+class UnlockBody(BaseModel):
+    ip: Optional[str] = None
+
+
+@app.get("/api/auth/status")
+def api_auth_status(request: Request):
+    ip = _auth_client_ip(request)
+    left = _auth_locked_seconds(ip)
+    return {
+        "enabled": bool(cfg.data.get("web_auth_enabled")),
+        "enforcing": _auth_enforcing(),
+        "password_set": _auth_password_set(),
+        "loopback": _is_loopback_host(ip),
+        "client_ip": ip,
+        # 当前这个请求是不是「免登录的本机/带令牌/已登录」状态，界面据此决定要不要弹登录窗
+        "authorized": _auth_authorized(request),
+        "locked": bool(left),
+        "lock_left": left,
+        "locks": _auth_locks_payload(),
+        "session_hours": _auth_cfg_int("web_auth_session_hours", 12, 1, 720),
+        "remember_days": _auth_cfg_int("web_auth_remember_days", 30, 1, 365),
+        "max_fails": _auth_cfg_int("web_auth_max_fails", 5, 1, 50),
+        "lock_minutes": _auth_cfg_int("web_auth_lock_minutes", 15, 1, 1440),
+        "machine_token_set": bool(str(cfg.data.get("web_auth_machine_token") or "").strip()),
+        # 令牌只在「已经过了门」的请求里回给界面（本机也算），否则这个公开接口就把它白送出去了
+        "machine_token": _auth_machine_token_value() if _auth_authorized(request) else "",
+        "note": ("" if not cfg.data.get("web_auth_enabled") else
+                 ("保护已生效：只有非本机来的连接要登录" if _auth_enforcing() else
+                  "开关开了但口令还没设，保护暂时没生效")),
+    }
+
+
+@app.post("/api/auth/login")
+def api_auth_login(body: LoginBody, request: Request):
+    ip = _auth_client_ip(request)
+    left = _auth_locked_seconds(ip)
+    if left:
+        log_mgr.log(f"登录被拒（这台设备正在锁定期内）：{ip}，还锁 {left} 秒", "warning")
+        raise HTTPException(423, f"连续错太多次，已锁到 {left} 秒之后")
+    if not _auth_password_set():
+        raise HTTPException(400, "还没设访问口令：先在「设置 → 访问保护」里设一个")
+    pw = str(body.password or "")
+    if not pw or not _auth_verify_password(pw, str(cfg.data.get("web_auth_password_hash"))):
+        r = _auth_note_fail(ip)
+        if r["just_locked"]:
+            log_mgr.log(f"口令连续错 {r['limit']} 次，锁定 {ip} 共 {r['lock_seconds'] // 60} 分钟", "error")
+            _auth_notify(f"⛔ 口令连续错满 {r['limit']} 次，{r['lock_seconds'] // 60} 分钟内不能再试\n来源：{ip}")
+            raise HTTPException(423, f"口令连续错满 {r['limit']} 次，已锁 {r['lock_seconds'] // 60} 分钟")
+        log_mgr.log(f"登录失败：口令不对（{ip}，第 {r['fails']} 次）", "warning")
+        raise HTTPException(401, f"口令不对，还能试 {max(0, r['limit'] - r['fails'])} 次")
+    value, max_age = _auth_new_cookie(bool(body.remember))
+    had_fails = bool(_auth_state["fails"].get(ip))
+    _auth_clear_fails(ip)
+    resp = JSONResponse(content={"ok": True, "remember": bool(body.remember),
+                                 "expires_in": max_age,
+                                 "detail": "登录成功"})
+    resp.set_cookie(AUTH_COOKIE, value, max_age=max_age, httponly=True, samesite="lax", path="/")
+    log_mgr.log(f"登录成功（{ip}{'，已记住这台设备' if body.remember else ''}）")
+    if had_fails:
+        _auth_notify(f"口令试错之后终于登进来了\n来源：{ip}")
+    return resp
+
+
+@app.post("/api/auth/logout")
+def api_auth_logout(request: Request):
+    resp = JSONResponse(content={"ok": True})
+    resp.delete_cookie(AUTH_COOKIE, path="/")
+    return resp
+
+
+@app.post("/api/auth/password")
+def api_auth_password(body: PasswordBody, request: Request):
+    """设/改访问口令。改了就用新的 SECRET_KEY 重签会话，旧浏览器一律重新登录。"""
+    pw = str(body.password or "")
+    if len(pw) < 6:
+        raise HTTPException(400, "口令至少 6 个字符")
+    if len(pw.encode("utf-8")) > 256:
+        raise HTTPException(400, "口令太长了（上限 256 字节）")
+    if _auth_password_set():
+        cur = str(body.current or "")
+        if not _auth_verify_password(cur, str(cfg.data.get("web_auth_password_hash"))):
+            _auth_note_fail(_auth_client_ip(request))
+            raise HTTPException(401, "当前口令不对，没改")
+    cfg.data["web_auth_password_hash"] = _auth_hash_password(pw)
+    cfg.save()
+    _auth_secret_key(rotate=True)
+    log_mgr.log("访问口令已更新（这台服务上的旧登录状态全部作废）")
+    return {"ok": True, "password_set": True}
+
+
+@app.get("/api/auth/machine_token")
+def api_auth_machine_token_get(request: Request):
+    return {"machine_token": _auth_machine_token_value() if _auth_authorized(request) else "",
+            "header": AUTH_TOKEN_HEADER,
+            "detail": ("把环境变量 MEDIADOWNLOADER_MCP_TOKEN 设成这串，"
+                       "或直接让 MCP 桥读本机的 config.json")}
+
+
+@app.post("/api/auth/machine_token")
+def api_auth_machine_token_rotate(request: Request):
+    if not _auth_authorized(request):
+        raise HTTPException(401, AUTH_DENIED_TEXT["empty"])
+    tok = _auth_machine_token(rotate=True)
+    log_mgr.log("机器令牌已重置（旧的立即失效，MCP 桥那边要换新的）")
+    return {"ok": True, "machine_token": tok, "header": AUTH_TOKEN_HEADER}
+
+
+@app.post("/api/auth/unlock")
+def api_auth_unlock(body: UnlockBody):
+    ip = str(body.ip or "").strip()
+    if ip:
+        _auth_clear_fails(ip)
+        log_mgr.log(f"已解锁登录锁定：{ip}")
+    else:
+        with _auth_lock:
+            n = len(_auth_state["locked"])
+            _auth_state["locked"].clear()
+            _auth_state["fails"].clear()
+        _auth_state_save()
+        log_mgr.log(f"已清空全部登录锁定与失败计数（原来有 {n} 个在锁）")
+    return {"ok": True, "locks": _auth_locks_payload()}
+
+
+def _auth_config_mask(data: dict) -> dict:
+    """口令哈希 / SECRET_KEY / 机器令牌不回显：哈希能被离线爆破，后两条是能直接开门的东西。"""
+    out = dict(data)
+    out["web_auth_password_set"] = bool(str(data.get("web_auth_password_hash") or "").strip())
+    out["secret_key_set"] = bool(str(data.get("secret_key") or "").strip())
+    # CookieCloud 的密钥是拿来看密文的口令，不是哈希，只能原样存，那就一份也别往外发
+    out["cookiecloud_key_set"] = bool(str(data.get("cookiecloud_key") or "").strip())
+    for k in ("secret_key", "web_auth_password_hash", "web_auth_machine_token", "cookiecloud_key"):
+        out[k] = ""
+    return out
+
+
+
 class AddUrlsBody(BaseModel):
     urls: List[str]
     video_quality: str = "best"
@@ -9126,6 +11500,7 @@ class AddUrlsBody(BaseModel):
     ytdlp_extra_args: Optional[str] = None  # 不传 = 跟随设置里的「自定义 yt-dlp 参数」
     download_section: Optional[str] = None  # 框选片段，如 *00:01:00-00:02:30 或 1:00-2:30
     is_live: bool = False  # 直播录制
+    live_max_minutes: Optional[int] = None  # 直播：录满这么多分钟自动结束并保存，0 = 不限，不传 = 跟随设置
     download_later: bool = False  # 稍后下载（入队但不立即开始）
     pinned: bool = False
     priority: int = 0
@@ -9133,6 +11508,8 @@ class AddUrlsBody(BaseModel):
     torrent_seed_ratio: Optional[float] = None  # 磁力/种子：传到这个比率就停种，0=不按比率
     torrent_seed_time: Optional[int] = None     # 磁力/种子：做满这么多秒就停种，0=不按时长
     torrent_seed_only: bool = False             # 磁力/种子：本地已经有这份文件，只挂做种、不再下一遍
+    expect_hash: Optional[str] = None           # 成品校验值核对：期望的 MD5/SHA 摘要，留空=不核对
+    hash_algo: str = "auto"                     # 算法；auto = 由这串的长度反推
 
 
 class ConfigBody(BaseModel):
@@ -9140,6 +11517,9 @@ class ConfigBody(BaseModel):
     video_quality: Optional[str] = None
     audio_quality: Optional[str] = None
     format: Optional[str] = None
+    video_encoder: Optional[str] = None
+    video_cpu_codec: Optional[str] = None
+    video_cpu_preset: Optional[str] = None
     embed_sub: Optional[bool] = None
     audio_only: Optional[bool] = None
     subtitle_langs: Optional[str] = None
@@ -9150,6 +11530,7 @@ class ConfigBody(BaseModel):
     cookie_source: Optional[str] = None
     cookie_browser: Optional[str] = None
     cookie_file: Optional[str] = None
+    cookie_public_first: Optional[bool] = None  # 公开优先：匿名先试、被登录墙那类挡住才带 Cookie
     ffmpeg_path: Optional[str] = None
     filename_template: Optional[str] = None
     speed_limit: Optional[str] = None
@@ -9172,6 +11553,7 @@ class ConfigBody(BaseModel):
     sub_interval_min: Optional[int] = None
     sub_auto_download: Optional[bool] = None
     live_from_start: Optional[bool] = None
+    live_max_minutes: Optional[int] = None
     platform_cookies: Optional[dict] = None
     risk_delay_sec: Optional[float] = None
     risk_max_per_host: Optional[int] = None
@@ -9204,6 +11586,10 @@ class ConfigBody(BaseModel):
     live_stream_fallback: Optional[bool] = None
     global_speed_limit: Optional[str] = None
     speed_windows: Optional[str] = None
+    # 队列定时窗：这两个字段必须在这里挂着，ConfigBody 用 exclude_none 收身，
+    # 没声明的键会在 model_dump 那一步被丢掉，表现就是「设置存了但没生效」
+    run_window: Optional[str] = None
+    queue_windows: Optional[dict] = None
     max_per_host: Optional[int] = None
     adaptive_throttle: Optional[bool] = None
     plugins_enabled: Optional[bool] = None
@@ -9226,6 +11612,7 @@ class ConfigBody(BaseModel):
     bt_prioritize_piece: Optional[bool] = None
     bt_auto_rules: Optional[list] = None
     bt_auto_fallback: Optional[str] = None
+    clipboard_watch: Optional[bool] = None
     http_impersonate: Optional[bool] = None
     po_provider_enabled: Optional[bool] = None
     po_provider_url: Optional[str] = None
@@ -9288,6 +11675,12 @@ class ConfigBody(BaseModel):
     music_block_reupload: Optional[bool] = None
     music_include_reference: Optional[bool] = None
     music_quality_spec: Optional[dict] = None
+    # 访问保护：只放开这四个可调项，口令哈希 / SECRET_KEY / 机器令牌都走 /api/auth/* 专用接口
+    web_auth_enabled: Optional[bool] = None
+    web_auth_session_hours: Optional[int] = None
+    web_auth_remember_days: Optional[int] = None
+    web_auth_max_fails: Optional[int] = None
+    web_auth_lock_minutes: Optional[int] = None
 
 
 class SubAddBody(BaseModel):
@@ -9780,6 +12173,9 @@ def api_subtitle_qc(body: dict):
         src_texts, [c["text"] for c in dst], target_lang=target,
         glossary=glossary, max_units=width, max_lines=max_lines,
     )
+    # 时间轴那三维不吃「另一路」，所以对照缺失时它照样算得出来
+    media_secs, media_path, why_no_media = _qc_media_seconds(srt, _media)
+    tl = qc_timeline(dst, media_seconds=media_secs, target_lang=target, why_no_media=why_no_media)
     out_rows = []
     for r in rows[:QC_ROWS_CAP]:
         c = dst[r["i"] - 1]
@@ -9808,6 +12204,10 @@ def api_subtitle_qc(body: dict):
         "rows": out_rows,
         "truncated": len(rows) > QC_ROWS_CAP,
         "hint": hint,
+        "media": _ui_path(media_path) if media_path else "",
+        "media_seconds": media_secs,
+        "timeline": tl,
+        "timeline_text": qc_timeline_text(tl),
         "message": (f"{len(rows)} 句可疑（{qc_stats_text(rows)}）" if rows
                     else f"{len(dst)} 句都过了，没发现可疑行"),
     }
@@ -10632,7 +13032,7 @@ def api_ai_hardsub(body: dict):
     """硬字幕烧录：把字幕画进画面，输出 <原名>.hardsub.mp4（源文件不动）。"""
     body = body or {}
     media = resolve_media_path(body.get("path") or "")
-    ff = ffmpeg_mgr.find()
+    ff = ffmpeg_mgr.find(ffmpeg_mgr.manual_path)
     if not ff:
         raise HTTPException(400, "没找到 FFmpeg，先去「组件与依赖」装好再烧字幕")
     if not _ffprobe_info(media).get("width"):
@@ -10683,66 +13083,87 @@ def api_ai_hardsub(body: dict):
             tmp.write_text(_burn_ass_text(sub, fontsize, align, font, 2.4), encoding="utf-8")
             # mp4 装不下 opus/vorbis 这类音轨，直接 copy 会让 ffmpeg 报错 —— 按源编码决定要不要重编音频
             acopy = (info.get("acodec") or "").lower() in ("aac", "mp3", "mp2", "ac3")
-            cmd = [
+            head = [
                 ff, "-hide_banner", "-nostdin", "-loglevel", "error", "-y",
                 "-progress", "pipe:1", "-nostats", "-i", str(media),
                 "-vf", f"ass=filename={tmp.name}",
-                "-c:v", "libx264", "-preset", "medium", "-crf", str(crf), "-pix_fmt", "yuv420p",
             ]
-            cmd += ["-c:a", "copy"] if acopy else ["-c:a", "aac", "-b:a", "192k"]
-            cmd += ["-movflags", "+faststart", str(out)]
+            acmd = ["-c:a", "copy"] if acopy else ["-c:a", "aac", "-b:a", "192k"]
+            chain = _video_encode_chain(crf)
+            nxt = "，不行依次换 " + " → ".join(x["label"] for x in chain[1:]) if len(chain) > 1 else ""
             log_mgr.log(
                 f"开始烧字幕: {media.name} ← {sub.name}"
-                f"（{fontsize} 号 · 字幕{'居中' if align == 5 else '靠上' if align == 8 else '靠下'} · crf {crf}）"
+                f"（{fontsize} 号 · 字幕{'居中' if align == 5 else '靠上' if align == 8 else '靠下'}"
+                f" · crf {crf} · 用 {chain[0]['label']}{nxt}）"
             )
-            proc = subprocess.Popen(
-                cmd, cwd=str(media.parent), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, encoding="utf-8", errors="replace",
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-            with HARDSUB_LOCK:
-                if key in HARDSUB_JOBS:
-                    HARDSUB_JOBS[key]["proc"] = proc
-                    HARDSUB_JOBS[key]["total"] = total
-            last_log, tail = time.time(), []
-            while True:
-                ln = proc.stdout.readline()
-                if not ln:
-                    break
-                ln = ln.strip()
-                # ffmpeg 9 的 -progress 用的是 out_time=，写成 out_time_str= 会一条都读不到
-                if ln.startswith(("out_time=", "out_time_str=")):
-                    elapsed = ln.split("=", 1)[1].split(".")[0]
-                    with HARDSUB_LOCK:
-                        if key in HARDSUB_JOBS:
-                            HARDSUB_JOBS[key]["elapsed"] = elapsed
-                    if total and time.time() - last_log > 20:
-                        last_log = time.time()
-                        h, mi, s = (int(x or 0) for x in elapsed.split(":"))
-                        done = h * 3600 + mi * 60 + s
-                        log_mgr.log(f"烧字幕中 {media.name}: {done}/{int(total)}s（{done * 100 // max(1, int(total))}%）")
-                elif ln and len(ln) < 300 and not re.match(r"^\w+=", ln):
-                    tail.append(ln)
-                    del tail[:-30]
-            code = proc.wait()
-            with HARDSUB_LOCK:
-                rec = HARDSUB_JOBS.get(key) or {}
-                stopped = bool(rec.get("stopping"))
-                rec.pop("proc", None)
-            if stopped:
-                out.unlink(missing_ok=True)
+
+            def attempt(enc):
+                """拿一个编码器烧一遍，返回 (ffmpeg 退出码, 是否被停止, 末尾报错行)。"""
+                nonlocal proc
+                cmd = head + list(enc["args"]) + acmd + ["-movflags", "+faststart", str(out)]
+                proc = subprocess.Popen(
+                    cmd, cwd=str(media.parent), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, encoding="utf-8", errors="replace",
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
                 with HARDSUB_LOCK:
-                    rec.update(status="stopped", message="已停止，半成品已删除")
-                log_mgr.log(f"已停止烧字幕: {media.name}，半成品已删", "warning")
-                return
-            if code != 0 or not out.is_file():
+                    if key in HARDSUB_JOBS:
+                        HARDSUB_JOBS[key]["proc"] = proc
+                        HARDSUB_JOBS[key]["total"] = total
+                last_log, tail = time.time(), []
+                while True:
+                    ln = proc.stdout.readline()
+                    if not ln:
+                        break
+                    ln = ln.strip()
+                    # ffmpeg 9 的 -progress 用的是 out_time=，写成 out_time_str= 会一条都读不到
+                    if ln.startswith(("out_time=", "out_time_str=")):
+                        elapsed = ln.split("=", 1)[1].split(".")[0]
+                        with HARDSUB_LOCK:
+                            if key in HARDSUB_JOBS:
+                                HARDSUB_JOBS[key]["elapsed"] = elapsed
+                        if total and time.time() - last_log > 20:
+                            last_log = time.time()
+                            h, mi, s = (int(x or 0) for x in elapsed.split(":"))
+                            done = h * 3600 + mi * 60 + s
+                            log_mgr.log(f"烧字幕中 {media.name}: {done}/{int(total)}s（{done * 100 // max(1, int(total))}%）")
+                    elif ln and len(ln) < 300 and not re.match(r"^\w+=", ln):
+                        tail.append(ln)
+                        del tail[:-30]
+                code = proc.wait()
+                with HARDSUB_LOCK:
+                    rec = HARDSUB_JOBS.get(key) or {}
+                    stopped = bool(rec.get("stopping"))
+                    rec.pop("proc", None)
+                return code, stopped, tail, rec
+
+            used = None
+            for idx, enc in enumerate(chain):
+                code, stopped, tail, rec = attempt(enc)
+                if stopped:
+                    out.unlink(missing_ok=True)
+                    with HARDSUB_LOCK:
+                        rec.update(status="stopped", message="已停止，半成品已删除")
+                    log_mgr.log(f"已停止烧字幕: {media.name}，半成品已删", "warning")
+                    return
+                if code == 0 and out.is_file():
+                    used = enc
+                    break
+                # 半成品不能留着让下一次以为烧完了 —— 换编码器是从头再来一遍
                 out.unlink(missing_ok=True)
-                raise RuntimeError(" / ".join(tail[-3:])[-260:] or f"ffmpeg 退出码 {code}")
+                why = " / ".join(tail[-3:])[-260:] or f"ffmpeg 退出码 {code}"
+                rest = chain[idx + 1:]
+                if rest:
+                    log_mgr.log(f"烧字幕用 {enc['label']} 没成（{why[:140]}），换 {rest[0]['label']} 重来", "warning")
+                else:
+                    raise RuntimeError(why or "ffmpeg 失败")
             size_mb = out.stat().st_size / 1048576.0
             with HARDSUB_LOCK:
                 if key in HARDSUB_JOBS:
-                    HARDSUB_JOBS[key].update(status="done", message=f"已生成 {out.name}（{size_mb:.0f} MB）")
-            log_mgr.log(f"烧字幕完成: {out.name}（{size_mb:.0f} MB）")
+                    HARDSUB_JOBS[key].update(
+                        status="done",
+                        message=f"已生成 {out.name}（{size_mb:.0f} MB · {used['label']}）")
+            log_mgr.log(f"烧字幕完成: {out.name}（{size_mb:.0f} MB · 用 {used['label']}）")
         except Exception as e:
             with HARDSUB_LOCK:
                 if key in HARDSUB_JOBS:
@@ -10769,6 +13190,16 @@ def api_update_whisper(body: dict = None):
 
     threading.Thread(target=job, daemon=True).start()
     return {"ok": True, "message": f"Whisper (faster-whisper + 模型 {model}) 更新已在后台开始"}
+
+
+@app.get("/api/health")
+def api_health():
+    """存活探针：只读内存里的队列计数，供容器 HEALTHCHECK / 负载均衡每几十秒打一次。
+
+    别用 /api/status 当探针——它会真的去跑 ffmpeg --version、导入 yt_dlp、递归扫 Whisper 目录，
+    定期探活会把 CPU 全烧在工具检测上。
+    """
+    return {"ok": True, "running": queue.running, "paused": queue.paused, "pending": len(queue.pending)}
 
 
 @app.get("/api/status")
@@ -10806,13 +13237,21 @@ def api_status():
 
 @app.post("/api/po_token/check")
 def api_po_token_check():
-    """强制探一次 bgutil PO Token 服务，并回给生效中的 YouTube 客户端链。"""
+    """强制探一次 bgutil PO Token 服务（不通会试着用本机 node 拉起 tools/ 里那份），
+    并回给生效中的 YouTube 客户端链。"""
     st = po_token_health(force=True)
     chain, note = engine._yt_player_chain(cfg.data, "https://www.youtube.com/watch?v=x")
+    try:
+        import pot_daemon
+
+        daemon = {**pot_daemon.status(APP_DIR), **pot_daemon.owned()}
+    except Exception:
+        daemon = {}
     return {
         "ok": True,
         **st,
         "enabled": bool(cfg.data.get("po_provider_enabled")),
+        "daemon": daemon,
         "chain": chain,
         "note": note,
         "fingerprints": list(TLS_FINGERPRINTS),
@@ -10871,17 +13310,28 @@ def api_update_n_m3u8dl():
     return {"ok": True, "message": "N_m3u8DL-RE 更新已在后台开始，请稍后刷新状态"}
 
 
+@app.post("/api/update/aria2")
+def api_update_aria2():
+    def job():
+        res = update_aria2(log=lambda m, level="info": log_mgr.log(m, level))
+        log_mgr.log(f"aria2c 安装结果: {res}")
+
+    threading.Thread(target=job, daemon=True).start()
+    return {"ok": True, "message": "aria2c 安装已在后台开始（约 2 MB），完成后刷新「组件与依赖」"}
+
+
 def path_dirs() -> List[str]:
     """工具落地的目录：命令行里要能直接敲 ffmpeg / yt-dlp / fpcalc，就得都在 PATH 上。"""
     out = [str(TOOLS_DIR)]
     chroma = APP_DIR / "chromaprint"
-    if (chroma / "fpcalc.exe").exists() or chroma.exists():
+    if (chroma / "fpcalc.exe").exists() or (chroma / "fpcalc").exists() or chroma.exists():
         out.append(str(chroma))
     return out
 
 
 def _path_split(cur: str) -> List[str]:
-    return [p for p in str(cur or "").split(";") if p.strip()]
+    """按当前平台的 PATH 分隔符拆。Linux/macOS 是「:」，写死「;」会把整条 PATH 当成一项。"""
+    return [p for p in str(cur or "").split(os.pathsep) if p.strip()]
 
 
 def _same_dir(a: str, b: str) -> bool:
@@ -10893,11 +13343,11 @@ def _path_add(cur: str, dirs: Sequence[str]) -> str:
     for d in dirs:
         if not any(_same_dir(p, d) for p in parts):
             parts.append(str(d))
-    return ";".join(parts)
+    return os.pathsep.join(parts)
 
 
 def _path_remove(cur: str, dirs: Sequence[str]) -> str:
-    return ";".join(p for p in _path_split(cur) if not any(_same_dir(p, d) for d in dirs))
+    return os.pathsep.join(p for p in _path_split(cur) if not any(_same_dir(p, d) for d in dirs))
 
 
 def user_path_read() -> tuple:
@@ -10943,17 +13393,23 @@ def _broadcast_env_change() -> None:
 
 def env_path_status() -> dict:
     dirs = path_dirs()
+    exe = ".exe" if sys.platform == "win32" else ""
     tools = {
-        "ffmpeg": TOOLS_DIR / "ffmpeg.exe",
-        "ffprobe": TOOLS_DIR / "ffprobe.exe",
-        "yt-dlp": TOOLS_DIR / "yt-dlp.exe",
-        "N_m3u8DL-RE": TOOLS_DIR / "N_m3u8DL-RE.exe",
-        "fpcalc": APP_DIR / "chromaprint" / "fpcalc.exe",
+        "ffmpeg": TOOLS_DIR / f"ffmpeg{exe}",
+        "ffprobe": TOOLS_DIR / f"ffprobe{exe}",
+        "yt-dlp": TOOLS_DIR / f"yt-dlp{exe}",
+        "N_m3u8DL-RE": TOOLS_DIR / f"N_m3u8DL-RE{exe}",
+        "fpcalc": APP_DIR / "chromaprint" / f"fpcalc{exe}",
     }
+    present = [n for n, p in tools.items() if is_native_binary(p)]
+    if not exe:
+        # Linux/macOS 上工具常由 apt 装进系统 PATH，随包文件本来就不存在；
+        # 只查 TOOLS_DIR 会把明明能跑的 ffmpeg 报成缺失。
+        present += [n for n in tools if n not in present and shutil.which(n)]
     st = {
         "platform": sys.platform,
         "dirs": dirs,
-        "present": [n for n, p in tools.items() if p.exists()],
+        "present": present,
         "writable": sys.platform == "win32",
         "in_path": [],
         "export": "export PATH=\"" + ":".join(dirs) + ":$PATH\"",
@@ -11052,19 +13508,29 @@ def _component_rows(lv: dict, manifest: dict) -> list:
     ff_ok = bool(ffmpeg_mgr.find(ffmpeg_mgr.manual_path))
     ytd = str(engine.check_ytdlp() or "")
     nm = str(n_m3u8dl_version() or "")
+    a2 = str(aria2_local_version() or "")
     w = whisper_status()
+    exe = ".exe" if sys.platform == "win32" else ""
     items = [
-        {"key": "ffmpeg", "label": "FFmpeg / FFprobe（合并、转码、嵌封面字幕）",
-         "tool": "ffmpeg.exe", "pkg": "",
+        {"key": "ffmpeg", "cn": "视频合并 / 转码",
+         "label": "FFmpeg / FFprobe（合并、转码、嵌封面字幕）",
+         "tool": f"ffmpeg{exe}", "pkg": "",
          "active": ff or "未安装", "ok": ff_ok,
          "update": "/api/update/ffmpeg"},
-        {"key": "ytdlp", "label": "yt-dlp（各站点解析规则，最常需要更新）",
-         "tool": "yt-dlp.exe", "pkg": "yt-dlp",
+        {"key": "ytdlp", "cn": "站点解析工具",
+         "label": "yt-dlp（各站点解析规则，最常需要更新）",
+         "tool": f"yt-dlp{exe}", "pkg": "yt-dlp",
          "active": ytd, "ok": "not found" not in ytd.lower(), "update": "/api/update/ytdlp"},
-        {"key": "n_m3u8dl", "label": "N_m3u8DL-RE（HLS 分片 / 直播录制）",
-         "tool": "N_m3u8DL-RE.exe", "pkg": "",
+        {"key": "n_m3u8dl", "cn": "HLS 分片 / 直播录制",
+         "label": "N_m3u8DL-RE（HLS 分片 / 直播录制）",
+         "tool": f"N_m3u8DL-RE{exe}", "pkg": "",
          "active": nm or "未安装", "ok": bool(nm), "update": "/api/update/n_m3u8dl"},
-        {"key": "faster-whisper", "label": "faster-whisper（本地转写，含模型体积较大）",
+        {"key": "aria2", "cn": "磁力 / 种子下载",
+         "label": "aria2c（磁力 / 种子下载，本机没有它那一页就跑不动）",
+         "tool": f"aria2c{exe}", "pkg": "",
+         "active": a2 or "未安装", "ok": bool(a2), "update": "/api/update/aria2"},
+        {"key": "faster-whisper", "cn": "本地转写（含模型）",
+         "label": "faster-whisper（本地转写，含模型体积较大）",
          "tool": "", "pkg": "faster-whisper",
          "active": str(w.get("label") or "未安装"),
          "ok": bool(w.get("faster_whisper") or w.get("cli")),
@@ -11074,8 +13540,11 @@ def _component_rows(lv: dict, manifest: dict) -> list:
         if p["name"] == "faster-whisper":
             continue  # 上面那条走 /api/update/whisper，还要顺带拉模型
         v = pkg_update.installed_version(p["name"])
-        items.append({"key": p["name"], "label": p["label"], "tool": "", "pkg": p["name"],
-                      "active": v or "未安装", "ok": bool(v), "update": "/api/update/pkg"})
+        row = {"key": p["name"], "label": p["label"], "cn": str(p.get("cn") or ""),
+               "tool": "", "pkg": p["name"],
+               "active": v or "未安装", "ok": bool(v), "update": "/api/update/pkg"}
+        _pot_row_extra(row, cfg.data)
+        items.append(row)
     for it in items:
         it["bundled"] = _bundled_version(manifest, it)
         it["latest"] = ""
@@ -11244,6 +13713,11 @@ def _comp_update_one(key: str, mirror: str, log: Callable) -> tuple:
     if key == "n_m3u8dl":
         res = str(update_n_m3u8dl(log=log) or "")
         return res.startswith("成功"), res
+    if key == "aria2":
+        res = str(update_aria2(log=log) or "")
+        # 非 Windows 没有官方预编译包，那句「用 apt 装」是指引不是失败，别算成红项
+        return (not res.startswith("下载失败") and not res.startswith("解压")
+                and not res.startswith("装好了，但拉起失败")), res
     if key == "faster-whisper":
         res = str(update_whisper(log=log, model="base") or "")
         return not res.startswith("failed"), res
@@ -11254,7 +13728,7 @@ def _comp_update_one(key: str, mirror: str, log: Callable) -> tuple:
 def _comp_update_all(keys: List[str], mirror: str) -> None:
     labels = {p["name"]: p["label"] for p in pkg_update.PIP_PACKAGES}
     labels.update({"ffmpeg": "FFmpeg", "ytdlp": "yt-dlp", "n_m3u8dl": "N_m3u8DL-RE",
-                   "faster-whisper": "faster-whisper"})
+                   "faster-whisper": "faster-whisper", "aria2": "aria2c"})
     try:
         for i, key in enumerate(keys, 1):
             with _COMP_ALL_LOCK:
@@ -11291,7 +13765,7 @@ def api_components_update_all(body: dict = None):
     body = body or {}
     keys = [str(k).strip() for k in (body.get("keys") or []) if str(k).strip()]
     known = {p["name"] for p in pkg_update.PIP_PACKAGES} | {
-        "ffmpeg", "ytdlp", "n_m3u8dl", "faster-whisper"}
+        "ffmpeg", "ytdlp", "n_m3u8dl", "faster-whisper", "aria2"}
     bad = [k for k in keys if k not in known]
     if bad:
         raise HTTPException(400, f"这些条目不能从这里更新：{'、'.join(bad[:6])}")
@@ -11367,15 +13841,56 @@ def api_extension_info():
 
 @app.get("/api/config")
 def api_get_config():
-    return cfg.data
+    return _auth_config_mask(cfg.data)
 
 
 @app.post("/api/config")
-def api_set_config(body: ConfigBody):
-    data = body.model_dump(exclude_none=True)
+def api_set_config(body: ConfigBody, request: Request = None):
+    # 界面只交「刚改的那几项」：整包回存会把这一页打开之后别的入口改过的键一起盖回去
+    return _apply_config(body.model_dump(exclude_none=True), request)
+
+
+def _apply_config(data: dict, request: Request = None) -> dict:
+    """一份配置写入的唯一通路：校验、落盘、副作用、日志都在这儿。
+    `POST /api/config` 与 `POST /api/config/reset` 共用，所以「恢复默认」走的是同一条闸门，
+    不是另一套宽松写法。"""
+    if not data:
+        # 一项都没交就别落盘、也别在日志里记一句「0 项变更」：那是空请求，不是改动
+        return {"ok": True, "data": cfg.data, "ydl_arg_notes": []}
+    if any(k.startswith("web_auth_") for k in data) and request is not None and _auth_token_only(request):
+        # 令牌是「让自动脚本能读能写下载」的，不该顺手把这道门本身关掉或改口径
+        raise HTTPException(403, "机器令牌只开数据接口：改访问保护的设置要从界面登录")
+    for k, allowed, label in (("video_encoder", VIDEO_ENCODER_MODES, "视频编码器"),
+                              ("video_cpu_codec", VIDEO_CPU_CODECS, "CPU 编码器"),
+                              ("video_cpu_preset", VIDEO_CPU_PRESETS, "编码档位")):
+        if k in data:
+            v = str(data[k] or "").strip().lower()
+            if v not in allowed:
+                raise HTTPException(400, f"{label}只认 {' / '.join(allowed)}，收到的是「{str(data[k])[:24]}」")
+            data[k] = v
     if "concurrent" in data:
         data["concurrent"] = max(1, min(10, int(data["concurrent"])))
         queue.max_concurrent = data["concurrent"]
+    for k, lo, hi, label in (("web_auth_session_hours", 1, 720, "会话空闲时长（小时）"),
+                             ("web_auth_remember_days", 1, 365, "记住设备天数"),
+                             ("web_auth_max_fails", 1, 50, "连错几次就锁"),
+                             ("web_auth_lock_minutes", 1, 1440, "锁定时长（分钟）")):
+        if k in data:
+            try:
+                v = int(data[k])
+            except (TypeError, ValueError):
+                raise HTTPException(400, f"{label}要写整数，收到的是「{str(data[k])[:16]}」")
+            if not lo <= v <= hi:
+                raise HTTPException(400, f"{label}只能写 {lo}～{hi}，现在是 {v}")
+            data[k] = v
+    if data.get("web_auth_enabled"):
+        # 先设口令再开开关：口令还没设就开保护，非本机的连接会谁也登不进来，等于自己把门锁死
+        if not _auth_password_set():
+            raise HTTPException(400, "先在「访问保护」里设好访问口令，再打开这个开关")
+        # 改这几项不该静默生效：把当下的会话时长/锁定口径记一行，出问题时日志里能看到是哪一轮改的
+        log_mgr.log(f"访问保护已开启：非本机连接要登录，会话空闲 {data.get('web_auth_session_hours', cfg.data.get('web_auth_session_hours'))} 小时"
+                    f"，连错 {data.get('web_auth_max_fails', cfg.data.get('web_auth_max_fails'))} 次锁 "
+                    f"{data.get('web_auth_lock_minutes', cfg.data.get('web_auth_lock_minutes'))} 分钟")
     if "torrent_seed_ratio" in data:
         # 做种参数直接决定 aria2 什么时候停上传：负值会让任务一建好就被判「已达标」而立刻停种
         data["torrent_seed_ratio"] = max(0.0, min(20.0, float(data["torrent_seed_ratio"])))
@@ -11386,6 +13901,9 @@ def api_set_config(body: ConfigBody):
     if "bt_tracker_max" in data:
         # announce 是串行问的，条数没有上限会把「等元数据」拖到几十秒；0 表示不注入
         data["bt_tracker_max"] = max(0, min(200, int(data["bt_tracker_max"])))
+    if "live_max_minutes" in data:
+        # 0 = 不限时长，和每房间设置同一口径；上限也用它，超出的值到了录制那边也会被截断
+        data["live_max_minutes"] = max(0, min(_LIVE_MAX_MINUTES, int(data["live_max_minutes"])))
     if "bt_auto_rules" in data:
         # 规则是「一条名字决定一批文件落到哪」的东西：写歪一条就把整批下载带偏，所以当场核对、不默默收下
         cleaned, bad = bt_rules_clean(data["bt_auto_rules"])
@@ -11418,8 +13936,46 @@ def api_set_config(body: ConfigBody):
         if len(rows) > 30:
             raise HTTPException(400, f"限速时段最多 30 行，现在有 {len(rows)} 行")
         data["speed_windows"] = str(data["speed_windows"] or "")[:4000]
+    if "run_window" in data:
+        rows, bad = parse_run_windows(str(data["run_window"] or ""))
+        if bad:
+            raise HTTPException(400, "队列定时窗存不下：" + "；".join(bad[:5]))
+        data["run_window"] = "\n".join(f"{a}-{b}" for a, b in rows)[:2000]
+    if "queue_windows" in data:
+        # 队列名是用户自己起的：认不出来的名字当场顶回去，否则存进去一条永远对不上任何任务的窗，
+        # 表现就是「设了没用」，界面上还看不出来
+        raw_map = data["queue_windows"] or {}
+        if not isinstance(raw_map, dict):
+            raise HTTPException(400, '队列定时窗要写成 {"night": "22:00-06:00"} 这样一张表')
+        known = set(cfg.data.get("named_queues") or []) | KNOWN_QUEUE_NAMES | set(queue.queue_names())
+        cleaned: dict = {}
+        errs: List[str] = []
+        for k, v in raw_map.items():
+            name = str(k or "").strip()
+            text = str(v or "").strip()
+            if not name or not text:
+                continue
+            if name not in known:
+                errs.append(f"没有这条命名队列「{name[:20]}」")
+                continue
+            rows, bad = parse_run_windows(text)
+            if bad:
+                errs.append(f"「{name}」" + "；".join(bad[:2]))
+                continue
+            cleaned[name] = "\n".join(f"{a}-{b}" for a, b in rows)
+        if errs:
+            raise HTTPException(400, "队列定时窗存不下：" + "；".join(errs[:5]))
+        data["queue_windows"] = cleaned
     if "bt_prioritize_piece" in data:
         data["bt_prioritize_piece"] = bool(data["bt_prioritize_piece"])
+    if "clipboard_watch" in data:
+        # 只把「开 / 关」记一行，读到的内容一个字都不落日志 —— 这行是给事后追责用的：
+        # 谁在什么时候开始让程序盯剪贴板，应该看得出来，但盯到了什么不该留在盘上。
+        on = bool(data["clipboard_watch"])
+        if on != bool(cfg.data.get("clipboard_watch")):
+            log_mgr.log("剪贴板监听已打开：发现链接只在界面上问一句，加入 / 忽略由你决定" if on
+                        else "剪贴板监听已关闭：程序不再读系统剪贴板")
+        data["clipboard_watch"] = on
     if "proxy_mode" in data:
         data["proxy_mode"] = (
             data["proxy_mode"] if data["proxy_mode"] in PROXY_MODES else "auto"
@@ -11445,9 +14001,119 @@ def api_set_config(body: ConfigBody):
             ydl_arg_notes = _ydl_extra_opts(data["ytdlp_extra_args"])[1]
     cfg.data.update(data)
     cfg.save()
+    if any(k in data for k in COOKIE_LAYER_KEYS):
+        drop_all_cookie_prefs()
     # 只记变更项数量：配置值里有 Bot Token / Secret / Cookie 等敏感内容，一律不落日志
     log_mgr.log(f"[界面] 保存设置（{len(data)} 项变更）")
+    if "run_window" in data or "queue_windows" in data:
+        # 改完窗立刻重新泵一次：刚被定时窗压住的排队任务该马上放出去，不该等下一条事件
+        queue._pump()
     return {"ok": True, "data": cfg.data, "ydl_arg_notes": ydl_arg_notes}
+
+
+# 这几项不是「一项设置」，是这门锁本身和它的钥匙：一键恢复默认绝不该顺手把它们抹掉
+CONFIG_RESET_FORBIDDEN = ("secret_key", "web_auth_password_hash", "web_auth_machine_token",
+                          "cookiecloud_key")
+# 名字看着就像密钥的都别把值发出去（默认值表是给人对着看的，值本身不需要）
+_CFG_SECRET_NAME_RE = re.compile(r"(?i)(key|token|secret|password|sendkey|passwd)")
+
+
+def _cfg_copy(v):
+    """默认值表里的表（dict / list）要拷一份再交给写入通路，别把 DEFAULTS 自己改脏。"""
+    if isinstance(v, dict):
+        return dict(v)
+    if isinstance(v, list):
+        return list(v)
+    return v
+
+
+# 这几项一恢复就把「指向这台机器」的东西抹了，和密钥一样：动手前值得留一份备份
+CONFIG_RESET_BACKUP_KEYS = ("download_dir", "cookie_file", "cookie_source", "ffmpeg_path",
+                             "aria2_bin", "platform_cookies")
+
+
+def _cfg_backup_config() -> str:
+    """给 config.json 留一份 .bak-<时间>，回的是文件名（没成或压根没这文件就回空串）。
+
+    备份没成不该把恢复这件事整个卡住：那样用户看到的是「按钮按不动」，不如照常执行并把没留成备份记一行。
+    """
+    try:
+        if not CONFIG_FILE.is_file():
+            return ""
+        dst = _edit_backup_path(CONFIG_FILE)
+        shutil.copyfile(CONFIG_FILE, dst)
+        return dst.name
+    except OSError as e:
+        log_mgr.log(f"[界面] 恢复默认前想留一份配置备份没成：{e}（恢复照常执行）", level="warning")
+        return ""
+
+
+def _cfg_defaultable() -> List[str]:
+    """能默认、能恢复默认的键：既在 DEFAULTS 里，又在 ConfigBody 里声明过。
+
+    只按 DEFAULTS 列会把界面根本写不进去的键也列出来，表现就是「点了恢复默认，什么都没发生」
+    —— ConfigBody 没声明的键在 model_dump 那一步就掉了，这条线必须有断言钉着。
+    """
+    fields = set(ConfigBody.model_fields)
+    return [k for k in cfg.DEFAULTS if k in fields and k not in CONFIG_RESET_FORBIDDEN]
+
+
+@app.get("/api/config/defaults")
+def api_config_defaults():
+    """默认值表，连同每一项现在和默认差在哪。密钥类只报「已填」，值不发出去。"""
+    cur = _auth_config_mask(cfg.data)
+    items = []
+    for k in _cfg_defaultable():
+        d = cfg.DEFAULTS.get(k)
+        v = cur.get(k, d)
+        secret = bool(_CFG_SECRET_NAME_RE.search(k))
+        same = v == d
+        items.append({"key": k, "default": "" if secret else d, "value": "" if secret else v,
+                      "secret": secret, "filled": bool(str(v or "").strip()) if isinstance(d, str) else True,
+                      "differs": not same})
+    return {"ok": True, "items": items, "count": len(items),
+            "differs": sum(1 for i in items if i["differs"]),
+            "forbidden": list(CONFIG_RESET_FORBIDDEN)}
+
+
+class ConfigResetBody(BaseModel):
+    keys: Optional[List[str]] = None
+    all: bool = False
+
+
+@app.post("/api/config/reset")
+def api_reset_config(body: ConfigResetBody, request: Request = None):
+    """把指定几项（或所有能默认的都）拧回 DEFAULTS 里的值，走的还是 `_apply_config` 那条闸门。"""
+    if request is not None and _auth_token_only(request):
+        raise HTTPException(403, "机器令牌只开数据接口：把设置拧回默认要从界面登录")
+    allowed = set(_cfg_defaultable())
+    want = [str(k) for k in (body.keys or []) if str(k)]
+    if body.all:
+        want = [i["key"] for i in api_config_defaults()["items"] if i["differs"]]
+    if not want:
+        raise HTTPException(400, "没说要恢复哪一项")
+    bad = [k for k in want if k not in allowed]
+    ok_keys = [k for k in want if k in allowed]
+    if not ok_keys:
+        raise HTTPException(400, "这几项恢复不了：" + " / ".join(
+            f"{k}（{'这门锁本身，不在默认值表里' if k in CONFIG_RESET_FORBIDDEN else '界面写不进去的键'}）"
+            for k in bad[:6]))
+    # 恢复默认会把密钥、指向本机路径这类「界面上回不去」的值一起抹掉，动手前先留一份 config.json.bak-<时间>。
+    # 命名照字幕编辑台那套（同目录、同一秒加序号），按龄清理的「编辑备份」那一组本来就收这种文件，不会堆到天荒地老。
+    backup = ""
+    if len(ok_keys) > 1 or any(_CFG_SECRET_NAME_RE.search(k) or k in CONFIG_RESET_BACKUP_KEYS
+                               for k in ok_keys):
+        backup = _cfg_backup_config()
+    data = {k: _cfg_copy(cfg.DEFAULTS.get(k)) for k in ok_keys}
+    out = _apply_config(data, request)
+    names = " / ".join(ok_keys[:6]) + ("…" if len(ok_keys) > 6 else "")
+    log_mgr.log(f"[界面] 恢复默认：{len(ok_keys)} 项（{names}）"
+                + (f"，改动前的配置留在 {backup}" if backup else "")
+                + (f"，另有 {len(bad)} 项没动（不在可默认名单里）" if bad else ""))
+    out["restored"] = ok_keys
+    out["refused"] = bad
+    out["backup"] = backup
+    return out
 
 
 @app.post("/api/config/speed_windows/check")
@@ -11463,6 +14129,22 @@ def api_speed_windows_check(body: dict):
             "rows": [{"span": f"{a}-{b}", "speed": s, "label": lab} for a, b, s, lab in rows],
             "errors": bad[:20], "now": datetime.now().strftime("%H:%M"),
             "current": sl, "current_note": note}
+
+
+@app.post("/api/config/run_window/check")
+def api_run_window_check(body: dict):
+    """定时窗格式体检：认出哪些时段、这一刻开不开门、下一次几点开门。这一步不写配置。"""
+    raw = (body or {}).get("text")
+    if raw is None:
+        raw = cfg.data.get("run_window") or ""
+    raw = str(raw)
+    rows, bad = parse_run_windows(raw)
+    is_open, note, nxt, left = window_open(raw)
+    return {"ok": not bad, "count": len(rows),
+            "rows": [{"span": f"{a}-{b}"} for a, b in rows],
+            "errors": bad[:20], "now": datetime.now().strftime("%H:%M"),
+            "open": is_open, "note": note, "resume_at": nxt, "wait_minutes": left,
+            "live": queue.window_status()}
 
 
 # 设置页「按平台代理」表要列出的音乐源（其余源走默认档，不逐个列）
@@ -11567,6 +14249,23 @@ def download_preflight(urls: List[str], opts: dict) -> Tuple[List[str], List[str
     mt = [u for u in urls if u.lower().startswith("tgmt://")]
     bt = [u for u in urls if parse_torrent_ref(u)]
     plain = [u for u in urls if u not in mt and u not in bt]
+    # 期望校验值：写法收不干净就当场回错 —— 带着它跑完几分钟再来一句「对不上」，
+    # 那句既不是下载坏了也不是算法问题，只是复制漏了字符，但界面上看不出来源。
+    want_hex, want_algo, hash_err = normalize_hash_expect(
+        opts.get("expect_hash"), opts.get("hash_algo"))
+    if hash_err:
+        errs.append("「期望校验值」这一项没收进来：" + hash_err + "——改对了再入队，或留空（留空就是不核对）")
+    opts["expect_hash"] = want_hex
+    opts["hash_algo"] = want_algo
+    if want_hex and plain:
+        hv = dict(opts)
+        hv["format"] = opts.get("format") or cfg.data.get("format") or "mkv"
+        steps = hash_rewrite_steps(hv, "link")
+        if steps:
+            warns.append("这批里有链接下载：这一路还勾着「" + "、".join(steps)
+                         + "」这几步，除非它按 CDN 直链原样落盘，成品会被本机重写一遍，"
+                         "摘要与上游那份原文件本来就不会相同 —— 真对不上时先看卡片上那句说的是哪一种，"
+                         "别直接当成下载坏了（磁力/种子与直链原样那种才是可比的）")
     if plain and "not found" in str(engine.check_ytdlp() or "").lower():
         errs.append("本机没有可用的 yt-dlp（解析各站点靠它）：到「设置 → 组件与依赖」点 yt-dlp 那行的「安装」，装好再入队")
     if plain and not ffmpeg_mgr.find(ffmpeg_mgr.manual_path):
@@ -11652,6 +14351,13 @@ def api_download(body: AddUrlsBody):
         _arg_delta, arg_notes = _ydl_extra_opts(arg_text)
         for _n in arg_notes:
             log_mgr.log("自定义 yt-dlp 参数：" + _n, "warning")
+    if body.is_live:
+        # 录制时长上限只对直播生效：负数当作「不限」，过大的值截到上限，与每房间设置同一口径
+        try:
+            lm = int(opts.get("live_max_minutes") or 0)
+        except (TypeError, ValueError):
+            lm = 0
+        opts["live_max_minutes"] = max(0, min(_LIVE_MAX_MINUTES, lm))
     ids = queue.add_urls(urls, opts)
     merged = max(0, len(urls) - len(ids))
     log_mgr.log(f"加入 {len(ids)} 个任务" + (f"（合并 {merged} 条重复）" if merged else "")
@@ -11667,6 +14373,7 @@ def api_tasks(sort: str = "queue"):
         "running": queue.running,
         "paused": queue.paused,
         "pending": len(queue.pending),
+        "window": queue.window_status(),
     }
 
 
@@ -11940,6 +14647,11 @@ def api_browse(body: BrowseBody = None):
         root.destroy()
         return {"ok": True, "path": path or ""}
     except Exception as e:
+        # 容器/服务器上没有桌面，弹不出选择框（python:slim 镜像甚至不带 tkinter 模块）。
+        # 原先直接回一句 TclError 原文，界面看着像坏了；这里分档说明并给出替代动作。
+        low = f"{type(e).__name__}: {e}".lower()
+        if sys.platform != "win32" and ("display" in low or "tkinter" in low or "no module named" in low):
+            raise HTTPException(503, "当前是无界面运行（容器/服务器没有桌面），无法弹出系统选择框：下载目录请直接在输入框里填写，例如 /data/Downloads")
         raise HTTPException(500, f"无法打开系统对话框: {e}")
 
 
@@ -11951,11 +14663,195 @@ def api_clear_finished():
     return {"ok": True}
 
 
-# 档位名与界面「视频画质 / 音频质量」的选项一一对应，上限口径抄自 _resolve_format：
-# 视频取 height<=上限里最高的分流，音频取码率<=上限里最高的分流，估出来的体积才对得上实际下到的流
-_VIDEO_TIERS = (("best", 0), ("4K", 2160), ("1440p", 1440), ("1080p", 1080),
-                ("720p", 720), ("480p", 480), ("360p", 360))
+# 档位名与界面「视频画质 / 音频质量」的选项一一对应：
+# 视频取 height<=上限里最高的分流，音频取码率<=上限里最高的分流，估出来的体积才对得上实际下到的流。
+# 视频这边直接从 VIDEO_QUALITY_HEIGHTS 派生（原来是手抄一份，_resolve_format 一改这里就漂）。
+_VIDEO_TIERS = (("best", 0),) + tuple(VIDEO_QUALITY_HEIGHTS.items())
 _AUDIO_TIERS = (("best", 0), ("320k", 320), ("256k", 256), ("192k", 192), ("128k", 128))
+
+# 编码族的展示顺序：AVC 兼容性最好放最前，4K 通常只有 VP9/AV1 分流
+_CODEC_FAMILIES = (("AVC", "avc", ("avc", "h264")),
+                   ("VP9", "vp9", ("vp9", "vp09")),
+                   ("AV1", "av1", ("av01", "av1")),
+                   ("HEVC", "hevc", ("hev", "h265", "hevc")),
+                   ("VP8", "", ("vp8", "vp08")))
+
+
+def _codec_family(vcodec) -> Tuple[str, str]:
+    """返回 (展示名, _resolve_format 认的 prefer_codec 值)；认不出来给两个空串，让档位退回只写高度。"""
+    vc = str(vcodec or "").lower()
+    if not vc or vc == "none":
+        return "", ""
+    for label, pref, keys in _CODEC_FAMILIES:
+        if any(k in vc for k in keys):
+            return label, pref
+    return "", ""
+
+
+def _po_gate_tip(po: dict, cfg: dict) -> str:
+    """PO Token 那一步的下一步该往哪走 —— 开关开没开、服务通不通、插件装没装是三件事。
+
+    以前一律写成「启用 PO Token 服务」，可对方已经把开关打开了，看到的还是这句话，
+    于是只能对着一个已经拧开的开关发呆。
+    """
+    c = cfg or {}
+    url = str(c.get("po_provider_url") or PO_DEFAULT_URL)
+    if not c.get("po_provider_enabled"):
+        return ("打开「设置 → PO Token 服务门控」并填服务地址：4K/AV1 分流普遍要票，"
+                "当前这个开关是关的，需要票的播放器客户端一律不试")
+    plugin = "" if po.get("installed") else "，而且 yt-dlp 那边的 bgutil POT 插件也没装（票要靠它取）"
+    return (f"PO Token 的开关已经打开，但 {url} 上没人应答（{po.get('detail') or '服务没响应'}）—— "
+            f"造票的那个服务在 tools/{POT_SERVER_DIR_NAME}/ 里，程序探测到端口空着会拿本机 node 把它拉起来，"
+            f"本机 PATH 没有 node 才起不来{plugin}；起不来时高清就退到「换网络出口 + 带 Cookie」")
+
+
+def _yt_widen_attempt(cfg: dict) -> list:
+    """被裁时值不值得再用 `all` 客户端解一次 —— 值得的前提是票取得到。
+
+    10-13 实测，同一条 10-09 下过 AV1 8K 的视频（LTGkt3GrGNY）：
+      票在  → all 回 38 条 / 最高 4320p / 独立视频轨 23 条（含 av01）
+      票停  → all 掉回 11 条 / 1080p / 零分流
+      default、web_safari、tv、tv_embedded、webclient → 两种情况下都只有 1080p 渐进流
+    所以「票」和「会吃票的客户端」两样都要，缺一样高清就不在响应里 —— 光开开关不试 all
+    看不到 4K，光试 all 没有票也看不到 4K。
+    """
+    try:
+        c = cfg or {}
+        if not c.get("po_provider_enabled"):
+            return []
+        return [list(YT_WIDE_CLIENTS)] if po_token_health(cfg_override=c).get("ok") else []
+    except Exception:
+        return []
+
+
+def _yt_has_dash(formats: list) -> bool:
+    """这份格式清单里有没有独立视频轨（DASH 分流）。没有 = 被裁成影音同条。"""
+    return any((f.get("vcodec") or "none") != "none" and (f.get("acodec") or "none") == "none"
+               for f in formats or [])
+
+
+def _yt_max_h(formats: list) -> int:
+    out = 0
+    for f in formats or []:
+        h = f.get("height") or 0
+        if not h:
+            # resolution 是 "1920x1080" 这种宽x高，取后半个；先匹配到的那个数是宽度
+            m = re.search(r"\d{3,4}\s*[x×]\s*(\d{3,4})", str(f.get("resolution") or ""))
+            h = int(m.group(1)) if m else 0
+        out = max(out, int(h))
+    return out
+
+
+def _anon_list_clipped(info: dict, url: str) -> bool:
+    """匿名那一次「算解析开了」吗 —— 只有 YouTube 需要额外这条判断。
+
+    带不带 Cookie 在 YouTube 上是两条客户端链（Cookie 会让 yt-dlp 跳过 android/ios），
+    所以一次「成功但只有 1080p 渐进流」的匿名清单不能被当成答案：那正是 1.3.2 修掉的那种
+    静默降质，若照此收下并缓存 180 秒，用户点了 4K 只会拿到 1080p，还被判定为成功。
+    有独立视频轨（DASH）就算这份清单是完整的；播放列表没有 formats，不参与这个判断。
+    """
+    if not info or not isinstance(info, dict):
+        return True
+    if info.get("_type") == "playlist" or "entries" in info:
+        return False
+    low = (url or "").lower()
+    if not any(x in low for x in ("youtube.com", "youtu.be", "youtube-nocookie.com")):
+        return False
+    fmts = info.get("formats") or []
+    if not fmts:
+        return True
+    return not _yt_has_dash(fmts)
+
+
+def _pot_row_extra(row: dict, cfg: dict, po: Optional[dict] = None) -> dict:
+    """给「组件与依赖」的 PO Token 那行补真实状态：装了插件不等于取得到票。"""
+    if str(row.get("pkg") or "") != POT_PROVIDER_PKG:
+        return row
+    c = cfg or {}
+    p = dict(po if isinstance(po, dict) else (po_token_health(cfg_override=c) or {}))
+    # 门控关着时那份缓存里的 installed 可能是上次留下的旧值，插件层现查（一次 find_spec，很便宜）
+    p["installed"] = _pot_plugin_installed()
+    row["ok"] = bool(p.get("installed") and c.get("po_provider_enabled") and p.get("ok"))
+    row["note"] = _pot_component_note(p, c)
+    row["skip_all"] = True  # 「一键更新」不该在没跑服务端的机器上替人装插件
+    return row
+
+
+def _pot_component_note(po: dict, cfg: dict) -> str:
+    """「组件与依赖」里 PO Token 那一行怎么解释自己 —— 插件和服务是两层，缺哪层说哪层。
+
+    这一行点「安装」只装得到插件那层（pip 包）；服务端在 tools/ 里、要本机 node 才起得来，
+    所以绿灯只在两层都通时亮。绿了之后要说清它换来的是什么（有票的客户端能解到分流），
+    不要再说成「它不解决 4K」—— 10-13 实测正是这一层通了之后 4320p 才回到清单里。
+    """
+    c = cfg or {}
+    p = po or {}
+    url = str(c.get("po_provider_url") or PO_DEFAULT_URL)
+    if not p.get("installed"):
+        return ("这里点「安装」装的是插件层（pip 包）。服务端层在 tools/"
+                f"{POT_SERVER_DIR_NAME}/ 里，程序会用本机 node 把它拉起来；"
+                "两层都齐了这一行才转绿")
+    if not c.get("po_provider_enabled"):
+        return f"插件已装，但「设置 → PO Token 服务门控」是关的：关着就不去取票，{url} 通不通都一样"
+    if not p.get("ok"):
+        return (f"插件已装，缺的是服务端：{url} 上没人应答（{p.get('detail') or '服务没响应'}）—— "
+                f"程序会拿本机 node 起 tools/{POT_SERVER_DIR_NAME}/，本机 PATH 里没有 node 就起不来")
+    return ("插件和服务两层都通了，票取得到。4K 要「票 + 会吃票的客户端（all）」两样一起，"
+            "清单被裁成影音同条时解析会自动换成 all 重解一遍")
+
+
+def _po_ready_tip(po: dict, cfg: dict) -> str:
+    """PO Token 那一层没问题、高清却仍不在清单里时的说法。
+
+    别让人对着风控提示又回去拧那个已经开好的开关 —— 这一层不缺，缺的要说清是哪一层。
+    """
+    url = str((cfg or {}).get("po_provider_url") or PO_DEFAULT_URL)
+    return (f"PO Token 这一层是通的（插件已装，{url} 在线取票），带票的 all 客户端也已试过，"
+            "清单里仍没有更高的档位 —— 这一次是真的只发到这儿了，可动的只有换网络出口 / 换 Cookie")
+
+
+def _format_gate_note(platform: str, formats: list, clients, cfg: dict, url: str = "") -> dict:
+    """YouTube 只回渐进流时的「格式被上游裁剪」判定。
+
+    4K/1440p 在 YouTube 上只有 DASH 分流（AV1/VP9），风控拦下时响应里一条分流都没有，
+    只剩 itag 137 以下的 mp4 渐进流，最高 1080p。界面必须把这件事说清楚，否则用户以为
+    是本程序把高清过滤掉了。
+    """
+    if str(platform or "").lower() != "youtube" or not formats:
+        return {}
+    videos = [f for f in formats if f.get("is_video")]
+    if not videos:
+        return {}
+    separated = [f for f in videos if not f.get("has_audio")]
+    max_h = max([int(f.get("height") or 0) for f in videos] or [0])
+    if separated or max_h > 1080:
+        return {}
+    tips = []
+    try:
+        has_ck = bool(engine._cookie_source(cfg or {}, url)[0])
+    except Exception:
+        has_ck = False
+    if not has_ck:
+        tips.append("带 Cookie 再解析：设置 → Cookie → 「从浏览器读取」，或把 cookies.txt 放进 cookies\\")
+    try:
+        po = po_token_health(cfg_override=cfg) or {}
+    except Exception:
+        po = {}
+    if not po.get("ok"):
+        tips.append(_po_gate_tip(po, cfg or {}))
+    else:
+        tips.append(_po_ready_tip(po, cfg or {}))
+    tips.append("换网络出口：同一个 IP 被 YouTube 计数后只发低清流，界面里的「更新 yt-dlp」也值得一并试")
+    return {
+        "limited": True,
+        "max_height": max_h,
+        "format_count": len(formats),
+        "clients": list(clients or []),
+        "text": (f"本次只拿到 {len(formats)} 条流，最高 {max_h}p，且全部是视频＋声音同一条的渐进流 —— "
+                 "这是 YouTube 对这个出口做了风控（不是本程序把高清档过滤掉了）："
+                 "1440p/4K 只走 DASH 分流，被拦时响应里根本不含这些流。"),
+        "tips": tips,
+    }
 
 
 def _estimate_tier_sizes(formats):
@@ -12034,7 +14930,110 @@ def api_analyze(body: AnalyzeBody):
             "formats": [],
             "thumbnail": info.get("thumbnail") or "",
         }
-    # 单视频：整理可用格式 + 按清晰度推荐
+    return _analyze_single_formats(info, body.url)
+
+
+def _quality_presets(formats: list) -> List[dict]:
+    """按高度生成推荐清晰度档位，同一高度再按编码族拆开。
+
+    只有一个族时补的那条「族名为空」的重复档位要去掉：界面上会出现两个「1080p」，
+    点哪个下下来的都是同一条流，用户以为选了码率。
+    """
+    by_height: dict = {}
+    for f in formats:
+        h = int(f.get("height") or 0)
+        if not f.get("is_video") or h <= 0:
+            continue
+        by_height.setdefault(h, []).append(f)
+    presets = []
+    for h, cands in by_height.items():
+        # 同一清晰度优先用有真实 filesize 的 DASH/渐进流：单流可断点续传、比 HLS 分片快；
+        # 只有 HLS 才提供该清晰度时（部分受限视频）再退回 m3u8
+        cands.sort(
+            key=lambda x: (
+                1 if x.get("filesize") else 0,
+                float(x.get("tbr") or 0) if x.get("tbr") != "" else 0,
+            ),
+            reverse=True,
+        )
+        fams: dict = {}
+        for f in cands:
+            fams.setdefault(_codec_family(f.get("vcodec"))[0], []).append(f)
+        ordered = [lab for lab, _p, _k in _CODEC_FAMILIES if fams.get(lab)]
+        ordered += [lab for lab in fams if lab and lab not in ordered]
+        if not ordered:
+            # 这一高度的编码族全认不出来（少见站点）：留一条不带族名的档位，别整个高度消失
+            ordered = [""]
+        show_codec = len(ordered) > 1
+        for lab in ordered:
+            f = (fams.get(lab) or cands)[0]
+            fid = f.get("format_id") or ""
+            if not fid:
+                continue
+            if f.get("has_audio"):
+                fmt_expr = fid
+            else:
+                fmt_expr = f"{fid}+bestaudio/bestaudio/{fid}"
+            presets.append({
+                "label": f"{h}p · {lab}" if (show_codec and lab) else f"{h}p",
+                "height": h,
+                "format_id": fid,
+                "format_expr": fmt_expr,
+                "ext": f.get("ext") or "",
+                "vcodec": f.get("vcodec") or "",
+                "codec_family": lab or "",
+                "prefer_codec": _codec_family(f.get("vcodec"))[1] or "auto",
+                "tbr": f.get("tbr") or "",
+                "filesize": f.get("filesize") or 0,
+                "filesize_est": f.get("filesize_est") or 0,
+            })
+    _fam_order = {lab: i for i, (lab, _p, _k) in enumerate(_CODEC_FAMILIES)}
+    presets.sort(key=lambda x: (-x["height"], _fam_order.get(x["codec_family"], 99)))
+    # 最佳 / 仅音频
+    presets.insert(0, {
+        "label": "最佳画质",
+        "height": 0,
+        "format_id": "best",
+        "format_expr": "bv*+ba/b",
+        "ext": "",
+        "vcodec": "",
+        "codec_family": "",
+        "prefer_codec": "auto",
+        "tbr": "",
+        "filesize": 0,
+        "filesize_est": 0,
+    })
+    presets.append({
+        "label": "仅音频",
+        "height": -1,
+        "format_id": "bestaudio",
+        "format_expr": "ba/bestaudio",
+        "ext": "m4a",
+        "vcodec": "none",
+        "codec_family": "",
+        "prefer_codec": "auto",
+        "tbr": "",
+        "filesize": 0,
+        "filesize_est": 0,
+    })
+    return presets
+
+
+def _audio_abrs(formats: list) -> List[float]:
+    """分流音频轨里真实存在的码率（降序 kbps），界面好告诉用户「320k 这档源里没有，会落到 X」。
+
+    只有独立音轨才算：渐进流（影音同一条）的 tbr 里含画面码率，拿来当音质档位会显示成
+    「3879 kbps」这种数，选了也没用。
+    """
+    got = sorted({
+        float(f["tbr"]) for f in formats if f.get("is_audio")
+        and isinstance(f.get("tbr"), (int, float)) and f["tbr"] > 0
+    }, reverse=True)
+    return [round(a, 1) for a in got[:8]]
+
+
+def _analyze_single_formats(info: dict, url: str) -> dict:
+    """单视频的解析结果：格式清单 + 画质/编码/音质三排选项都从这里来。"""
     formats = []
     try:
         dur_s = float(info.get("duration") or 0)
@@ -12086,77 +15085,25 @@ def api_analyze(body: AnalyzeBody):
         )
     formats.sort(key=lambda x: (x.get("height") or 0, float(x.get("tbr") or 0) if x.get("tbr") != "" else 0), reverse=True)
 
-    # 按高度生成推荐清晰度（视频轨 + bestaudio）
-    by_height = {}
-    for f in formats:
-        h = int(f.get("height") or 0)
-        if not f.get("is_video") or h <= 0:
-            continue
-        by_height.setdefault(h, []).append(f)
-    quality_presets = []
-    for h, cands in by_height.items():
-        # 同一清晰度优先用有真实 filesize 的 DASH/渐进流：单流可断点续传、比 HLS 分片快；
-        # 只有 HLS 才提供该清晰度时（部分受限视频）再退回 m3u8
-        cands.sort(
-            key=lambda x: (
-                1 if x.get("filesize") else 0,
-                float(x.get("tbr") or 0) if x.get("tbr") != "" else 0,
-            ),
-            reverse=True,
-        )
-        f = cands[0]
-        fid = f.get("format_id") or ""
-        if not fid:
-            continue
-        if f.get("has_audio"):
-            fmt_expr = fid
-        else:
-            fmt_expr = f"{fid}+bestaudio/bestaudio/{fid}"
-        quality_presets.append({
-            "label": f"{h}p",
-            "height": h,
-            "format_id": fid,
-            "format_expr": fmt_expr,
-            "ext": f.get("ext") or "",
-            "vcodec": f.get("vcodec") or "",
-            "tbr": f.get("tbr") or "",
-            "filesize": f.get("filesize") or 0,
-            "filesize_est": f.get("filesize_est") or 0,
-        })
-    quality_presets.sort(key=lambda x: x["height"], reverse=True)
-    # 最佳 / 仅音频
-    quality_presets.insert(0, {
-        "label": "最佳画质",
-        "height": 0,
-        "format_id": "best",
-        "format_expr": "bv*+ba/b",
-        "ext": "",
-        "vcodec": "",
-        "tbr": "",
-        "filesize": 0,
-    })
-    quality_presets.append({
-        "label": "仅音频",
-        "height": -1,
-        "format_id": "bestaudio",
-        "format_expr": "ba/bestaudio",
-        "ext": "m4a",
-        "vcodec": "none",
-        "tbr": "",
-        "filesize": 0,
-    })
+    quality_presets = _quality_presets(formats)
+    audio_abrs = _audio_abrs(formats)
 
     return {
         "title": info.get("title"),
         "uploader": info.get("uploader") or info.get("channel"),
         "duration": info.get("duration_string") or str(info.get("duration", "")),
         "type": info.get("_type", "video"),
-        "webpage_url": info.get("webpage_url") or body.url,
+        "webpage_url": info.get("webpage_url") or url,
         "thumbnail": info.get("thumbnail") or "",
         "formats": formats[:120],
         "quality_presets": quality_presets,
         "tier_sizes": _estimate_tier_sizes(formats),
-        "platform": detect_platform(info.get("webpage_url") or body.url),
+        "platform": detect_platform(info.get("webpage_url") or url),
+        "audio_abrs": audio_abrs,
+        "format_gate": _format_gate_note(
+            detect_platform(info.get("webpage_url") or url),
+            formats, info.get("_md_clients"), cfg.data,
+            info.get("webpage_url") or url),
         "entries": [],
         "description": (info.get("description") or "")[:500],
     }
@@ -12565,6 +15512,9 @@ _DIAG_COOKIE_PLAIN = {
     "cookie_file", "cookie_source", "cookie_browser", "cookie_exists", "cookies_dir",
     # 这层存的是每个平台的 Cookie 文件路径和取用方式，藏起来就没法排查登录态了
     "platform_cookies",
+    # CookieCloud 这几项只是「开没开、按哪种算法、过滤哪些域、服务器在哪」；
+    # 键名里带 cookie 会被整片收掉，但 uuid / key 仍然按名单藏（那两个才等于凭据）
+    "cookiecloud_enabled", "cookiecloud_server", "cookiecloud_scheme", "cookiecloud_domains",
 }
 # 整份都是凭据的容器：里面每个叶子值都藏，不再逐个看键名（那层的键是平台名，不是 secret 名）
 _DIAG_HIDE_ALL = {"music_platform_cookies", "musicdl_cookies", "platform_cookie_content"}
@@ -13053,6 +16003,7 @@ def api_set_platform_cookie(body: PlatformCookieBody):
     cfg.save()
     # 动过这一平台的 Cookie 来源，之前那枚「被判定为需要登录」就不再说明当前状态了
     _login_flag_clear(plat)
+    drop_all_cookie_prefs()   # 同理，「这条匿名就够」的旧判定也不能接着替新配置做决定
     return {"ok": True, "item": entry}
 
 
@@ -13072,6 +16023,7 @@ async def api_upload_platform_cookie(platform: str, content: str = ""):
     cfg.data["platform_cookies"] = pc
     cfg.save()
     _login_flag_clear(plat)
+    drop_all_cookie_prefs()
     return {"ok": True, "path": str(path)}
 
 
@@ -13092,6 +16044,7 @@ def api_save_cookie_text(body: CookieTextBody):
     cfg.data["platform_cookies"] = pc
     cfg.save()
     _login_flag_clear(plat)
+    drop_all_cookie_prefs()
     return {"ok": True, "path": str(path)}
 
 
@@ -13110,6 +16063,1415 @@ def api_clear_cookie_flag(body: CookieFlagClearBody):
     log_mgr.log(f"清除 {PLATFORM_LABELS.get(plat, plat)} 的 Cookie 登录态标记"
                 + ("（本来就没有标记）" if not had else ""))
     return {"ok": True, "cleared": had}
+
+
+# --------------------------------------------------------------- CookieCloud 同步
+# 浏览器装 CookieCloud 插件，把登录 Cookie 加密推到自己架的服务器上；这台机器把它拉下来
+# 写成 cookies/cookies.txt 与 cookies/<平台>_cookies.txt —— 下载链路本来就读这些文件，
+# 拉完不用再改别的设置。接口与算法照 easychen/CookieCloud 的 api/app.js，不自己发明：
+#   取   GET  {server}/get/{uuid}   → {"encrypted": "...", "crypto_type": "legacy"}
+#   存   POST {server}/update       ← {"uuid": "...", "encrypted": "...", "crypto_type": "..."}
+# 密钥材料 = md5(f"{uuid}-{同步密钥}") 的前 16 个字符，两种写法都从它出发：
+#   legacy            那 16 个字符当「口令」，按 OpenSSL EVP_BytesToKey(MD5) 派生 32 字节 key
+#                     + 16 字节 iv；密文是 base64("Salted__" + 8 字节随机盐 + 数据)，Pkcs7 填充。
+#   aes-128-cbc-fixed 那 16 个字符直接当 AES-128 的 key，IV 固定 16 个 0，密文纯 base64。
+# 官方插件至今只写 legacy（fixed 是服务端那侧加的），所以「自动」= 先按云端报的写法解，
+# 解不开再换另一种；写出去时「自动」沿用上次解开的写法，没见过云端就按 legacy。
+COOKIECLOUD_SCHEMES = ("auto", "legacy", "aes-128-cbc-fixed")
+COOKIECLOUD_WRITE_SCHEMES = ("legacy", "aes-128-cbc-fixed")
+COOKIECLOUD_TIMEOUT = 20
+_CC_UUID_RE = re.compile(r"^[0-9A-Za-z._-]{4,128}$")
+
+
+def _cc_now() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _cc_cfg() -> dict:
+    d = cfg.data
+    return {
+        "enabled": bool(d.get("cookiecloud_enabled")),
+        "server": str(d.get("cookiecloud_server") or "").strip(),
+        "uuid": str(d.get("cookiecloud_uuid") or "").strip(),
+        "key": str(d.get("cookiecloud_key") or ""),
+        "scheme": str(d.get("cookiecloud_scheme") or "auto").strip().lower(),
+        "domains": str(d.get("cookiecloud_domains") or "").strip(),
+    }
+
+
+def _cc_ready(cc: dict, need_key: bool = True) -> None:
+    """缺哪一层就点名哪一层，别笼统回一句「配置不完整」。"""
+    if not cc["enabled"]:
+        raise HTTPException(400, "CookieCloud 同步没打开（设置 → Cookie 与登录 → CookieCloud 同步）")
+    if not cc["server"]:
+        raise HTTPException(400, "没填 CookieCloud 服务器地址：插件设置里那个「同步地址」，端口和子目录一起抄过来")
+    if not re.match(r"^https?://", cc["server"], re.I):
+        raise HTTPException(400, f"服务器地址要带 http:// 或 https://，现在填的是「{cc['server'][:48]}」")
+    if not cc["uuid"]:
+        raise HTTPException(400, "没填 UUID：插件设置里的「用户标识 UUID」，它和密钥一起才解得开云端那一份")
+    if not _CC_UUID_RE.match(cc["uuid"]):
+        raise HTTPException(400, "UUID 里只该有字母、数字和 - _ .，现在这串不是（它要拼进请求路径）")
+    if need_key and not cc["key"]:
+        raise HTTPException(400, "没填同步密钥：这份只存在本机 config.json 里，界面不回显、日志里也不写")
+
+
+def _cc_endpoint(server: str, tail: str) -> str:
+    return server.rstrip("/") + "/" + tail.lstrip("/")
+
+
+def _cc_domain_filter(raw: str) -> List[str]:
+    out: List[str] = []
+    for tok in re.split(r"[\n,;]", raw or ""):
+        t = tok.strip().lower().lstrip(".")
+        if t and t not in out:
+            out.append(t)
+    return out
+
+
+def _cc_host(url: str) -> str:
+    """只报主机和端口：netloc 里可能夹着 user:pass，那和密钥一样不能抄进日志与状态。"""
+    u = urlsplit(url or "")
+    try:
+        h = (u.hostname or "").lower()
+        return f"{h}:{u.port}" if h and u.port else h
+    except Exception:
+        return str(u.netloc or "")[:40]
+
+
+def _cc_proxy_note(url: str) -> str:
+    """连不上时把「这次是怎么走的」说清楚：策略给的代理、系统代理、还是直连。"""
+    try:
+        px = http_proxies(url)
+    except Exception:
+        px = None
+    if isinstance(px, dict):
+        addr = px.get("https") or px.get("http")
+        return "按网络策略强制直连" if addr is None else f"按网络策略走代理 {addr}"
+    host = (urlsplit(url).hostname or "").lower()
+    if host == "localhost" or host == "::1" or host.startswith("127."):
+        # 自建 CookieCloud 常跑在 127.0.0.1， requests 对回环地址本来就绕过系统代理，别说成「走了代理」
+        return "本机地址，直连"
+    sp, src = system_proxy_detail()
+    return f"跟随{src}的 {sp}" if sp else "直连（策略和系统里都没有代理）"
+
+
+def _cc_http(url: str, payload: Optional[dict] = None) -> Tuple[int, dict, str]:
+    """CookieCloud 的一次请求：payload=None 走 GET，给了就走 POST(json)。回 (状态码, JSON, 错话)。"""
+    kw = {
+        "timeout": COOKIECLOUD_TIMEOUT,
+        "proxies": http_proxies(url),
+        "verify": not bool(cfg.data.get("nocheckcertificate", True)),
+        "headers": {"User-Agent": "MediaDownloader-web/CookieCloud"},
+    }
+    try:
+        r = requests.post(url, json=payload, **kw) if payload is not None else requests.get(url, **kw)
+    except Exception as e:
+        return 0, {}, f"连不上 {_cc_host(url)}：{type(e).__name__} {str(e)[:120]}（{_cc_proxy_note(url)}）"
+    # 自己按 UTF-8 解：requests 遇到没带 charset 的响应会猜 ISO-8859-1，中文错话会变成乱码
+    try:
+        body = r.content.decode("utf-8").strip()
+    except Exception:
+        body = (r.text or "").strip()
+    try:
+        data = json.loads(body)
+        return r.status_code, data if isinstance(data, dict) else {"_json": data}, ""
+    except Exception:
+        return r.status_code, ({"_text": body[:200]} if body else {}), ""
+
+
+def _cc_key_str(uuid_: str, key: str) -> str:
+    return hashlib.md5(f"{uuid_}-{key}".encode("utf-8")).hexdigest()[:16]
+
+
+def _cc_aes():
+    try:
+        from Crypto.Cipher import AES
+        return AES
+    except Exception:
+        raise HTTPException(500, "本机没有 pycryptodome，解不了 CookieCloud 的密文"
+                                 "（pip install pycryptodome；便携包里它随 musicdl 一起装）")
+
+
+def _cc_evpkdf(passphrase: bytes, salt: bytes, want: int = 48) -> bytes:
+    """OpenSSL EVP_BytesToKey（MD5）：D1=MD5(pw+salt)，Dn=MD5(D(n-1)+pw+salt)，取前 want 字节。"""
+    out, last = b"", b""
+    while len(out) < want:
+        last = hashlib.md5(last + passphrase + salt).digest()
+        out += last
+    return out[:want]
+
+
+def _cc_pkcs7(buf: bytes, block: int = 16, unpad: bool = False) -> bytes:
+    if unpad:
+        if not buf:
+            raise ValueError("密文是空的")
+        pad = buf[-1]
+        if pad < 1 or pad > block or buf[-pad:] != bytes([pad]) * pad:
+            raise ValueError("Pkcs7 填充不对（多半是口令不对）")
+        return buf[:-pad]
+    pad = block - len(buf) % block
+    return buf + bytes([pad]) * pad
+
+
+def _cc_decrypt_blob(blob: str, kk: str, scheme: str) -> dict:
+    AES = _cc_aes()
+    # CryptoJS 写的是一整行 base64，别的工具（openssl -a 之类）会折行 —— 先抹掉空白再解
+    raw = base64.b64decode(re.sub(r"\s+", "", str(blob or "")), validate=True)
+    if scheme == "aes-128-cbc-fixed":
+        if not raw or len(raw) % 16:
+            raise ValueError("密文长度不是整块")
+        plain = _cc_pkcs7(AES.new(kk.encode("utf-8"), AES.MODE_CBC, b"\x00" * 16).decrypt(raw), unpad=True)
+    else:
+        if len(raw) < 32 or raw[:8] != b"Salted__":
+            raise ValueError("不是 CryptoJS 的 Salted__ 写法")
+        dk = _cc_evpkdf(kk.encode("utf-8"), raw[8:16])
+        plain = _cc_pkcs7(AES.new(dk[:32], AES.MODE_CBC, dk[32:48]).decrypt(raw[16:]), unpad=True)
+    return json.loads(plain.decode("utf-8"))
+
+
+def _cc_try_order(want: str, known: str) -> List[str]:
+    if want in COOKIECLOUD_WRITE_SCHEMES:
+        return [want]
+    order = [known] if known in COOKIECLOUD_WRITE_SCHEMES else []
+    return order + [s for s in COOKIECLOUD_WRITE_SCHEMES if s not in order]
+
+
+def _cc_decrypt(encrypted: str, cc: dict, known: str = "") -> Tuple[dict, str]:
+    kk = _cc_key_str(cc["uuid"], cc["key"])
+    tried = []
+    for scheme in _cc_try_order(cc["scheme"], known):
+        try:
+            return _cc_decrypt_blob(encrypted, kk, scheme), scheme
+        except Exception as e:
+            tried.append(f"{scheme}：{str(e)[:70] or type(e).__name__}")
+    raise HTTPException(502, "云端那一份解不开（" + "；".join(tried) + "）。"
+                             f"要么 UUID / 同步密钥不对，要么云端不是这两种写法存的；现在选的加密方式是「{cc['scheme']}」。")
+
+
+def _cc_encrypt(payload: dict, cc: dict, scheme: str) -> str:
+    AES = _cc_aes()
+    text = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    kk = _cc_key_str(cc["uuid"], cc["key"]).encode("utf-8")
+    if scheme == "aes-128-cbc-fixed":
+        ct = AES.new(kk, AES.MODE_CBC, b"\x00" * 16).encrypt(_cc_pkcs7(text))
+        return base64.b64encode(ct).decode("ascii")
+    salt = secrets.token_bytes(8)
+    dk = _cc_evpkdf(kk, salt)
+    ct = AES.new(dk[:32], AES.MODE_CBC, dk[32:48]).encrypt(_cc_pkcs7(text))
+    return base64.b64encode(b"Salted__" + salt + ct).decode("ascii")
+
+
+def _cc_rows_from_cloud(data: dict) -> Tuple[List[dict], List[str]]:
+    """云端 cookie_data → 归一化的 Cookie 行。正常形状是 {域: [cookie]}，第三方客户端有
+    写成一条扁平列表的，两种都收；认不出的只记一句说明，不猜。"""
+    notes: List[str] = []
+    items: List[dict] = []
+    cd = data.get("cookie_data")
+    if isinstance(cd, dict):
+        for key, val in cd.items():
+            if isinstance(val, list):
+                items.extend([c for c in val if isinstance(c, dict)])
+            elif isinstance(val, dict):
+                items.extend([c for c in val.values() if isinstance(c, dict)])
+            else:
+                notes.append(f"云端 {str(key)[:24]} 那一项不是列表，跳过了")
+    elif isinstance(cd, list):
+        items.extend([c for c in cd if isinstance(c, dict)])
+    elif cd is not None:
+        notes.append("云端 cookie_data 既不是对象也不是数组，读不出条目")
+    rows: List[dict] = []
+    for c in items:
+        name = str(c.get("name") or "").strip()
+        dom = str(c.get("domain") or "").strip().lower()
+        if not name or not dom:
+            continue
+        exp = c.get("expirationDate")
+        if exp is None:
+            exp = c.get("expires")
+        try:
+            expiry = int(float(exp)) if exp not in (None, "", 0, False) else 0
+        except Exception:
+            expiry = 0
+        rows.append({"name": name, "value": str(c.get("value") or ""), "domain": dom,
+                     "path": str(c.get("path") or "/") or "/", "secure": bool(c.get("secure")),
+                     "expires": max(0, expiry)})
+    ls = data.get("local_storage_data")
+    if isinstance(ls, dict) and ls:
+        notes.append(f"云端还带了 {len(ls)} 个站的 localStorage，下载用不上，没写盘")
+    return rows, notes
+
+
+def _cc_filter_rows(rows: List[dict], want: List[str]) -> List[dict]:
+    if not want:
+        return rows
+    # 和插件同一口径：域名里含这个词就算命中（.youtube.com 命中 youtube.com）
+    return [r for r in rows if any(w in r["domain"] for w in want)]
+
+
+def _cc_platform_for(domain: str) -> str:
+    d = (domain or "").lower().lstrip(".")
+    for name, hints in PLATFORM_RULES:
+        for hint in hints:
+            h = hint.lower().rstrip("/")
+            if d == h or d.endswith("." + h):
+                return name
+    return "default"
+
+
+def _cc_netscape_lines(rows: List[dict]) -> List[str]:
+    """只有 Cookie 那几行（不含头部注释）—— 判断「内容变没变」比的是这些。
+    头部那行同步时间每秒都在跳，拿整份文本比就等于每次拉取都算改过、每次都堆一份备份。"""
+    dedup: Dict[tuple, dict] = {}
+    for r in rows:
+        dedup[(r["domain"], r["path"], r["name"])] = r
+    lines: List[str] = []
+    for key, r in sorted(dedup.items()):
+        lines.append("\t".join([r["domain"], "TRUE" if r["domain"].startswith(".") else "FALSE",
+                                r["path"], "TRUE" if r["secure"] else "FALSE",
+                                str(int(r["expires"] or 0)), r["name"], r["value"]]))
+    return lines
+
+
+def _cc_netscape_text(rows: List[dict], note: str) -> str:
+    """Netscape/Mozilla 格式：domain flag path secure expiry name value（制表符分隔）。"""
+    lines = ["# Netscape HTTP Cookie File", f"# {note}",
+             "# domain\tincludeSubDomains\tpath\tsecure\texpiry\tname\tvalue"]
+    lines += _cc_netscape_lines(rows)
+    return "\n".join(lines) + "\n"
+
+
+def _cc_parse_netscape(text: str) -> List[dict]:
+    """把本机的 cookies.txt 读回成行。#HttpOnly_ 开头那几条是真 Cookie，不能当注释扔了。"""
+    rows: List[dict] = []
+    for line in (text or "").splitlines():
+        s = line.strip()
+        if s.startswith("#HttpOnly_"):
+            s = s[len("#HttpOnly_"):]
+        if not s or s.startswith("#"):
+            continue
+        cols = s.split("\t") if "\t" in s else s.split()
+        if len(cols) < 7:
+            continue
+        try:
+            expiry = int(float(cols[4]))
+        except Exception:
+            expiry = 0
+        rows.append({"name": cols[5].strip(), "value": "\t".join(cols[6:]).strip(),
+                     "domain": cols[0].strip().lower(), "path": cols[2].strip() or "/",
+                     "secure": cols[3].strip().upper() == "TRUE", "expires": max(0, expiry)})
+    return rows
+
+
+def _cc_dedup(rows: List[dict]) -> List[dict]:
+    out: Dict[tuple, dict] = {}
+    for r in rows:
+        out[(r["domain"], r["path"], r["name"])] = r
+    return list(out.values())
+
+
+def _cc_body_same(path: Path, rows: List[dict]) -> bool:
+    """文件里那些 Cookie 行与要写的这一批是否一模一样 —— 头部那行同步时间不算。
+
+    以前这里比的是整份文本，而文本第二行写着「CookieCloud 同步写入 <时刻>」：同一个时刻之内
+    拉两次才算没变，隔了一秒就必然「变了」，于是每次真拉取都多一份没人看的备份，
+    还把「内容一样就不动」这条口径变成了看机器快慢。两边都过一遍同一个渲染再比，
+    比的是格式化后的 Cookie 行，不是内存里的 dict。
+    """
+    if not path.is_file():
+        return False
+    try:
+        old = _cc_parse_netscape(path.read_text(encoding="utf-8", errors="ignore"))
+    except Exception:
+        return False
+    return _cc_netscape_lines(old) == _cc_netscape_lines(rows)
+
+
+def _cc_write_file(path: Path, rows: List[dict], label: str = "") -> dict:
+    """覆盖前留 .bak-<时间>；Cookie 行一模一样就不动，免得每次拉取都堆一份没人看的备份。"""
+    rows = _cc_dedup(rows)  # 先去重，头部注释里报的条数才和文件里真有的一致
+    note = (f"CookieCloud 同步写入 {_cc_now()}，共 {len(rows)} 条；"
+            f"手工改过的话下次拉取会被盖上（覆盖前留 {path.name}.bak-<时间>）")
+    text = _cc_netscape_text(rows, note)
+    info = {"file": path.name, "path": str(path), "label": label,
+            "count": len(_cc_parse_netscape(text))}
+    existed = path.is_file()
+    if _cc_body_same(path, rows):
+        info["changed"] = False
+        info["backup"] = ""
+        return info
+    backup = ""
+    if existed:
+        bak = _edit_backup_path(path)
+        shutil.copy2(path, bak)
+        backup = bak.name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8", newline="\n")
+    info["changed"] = True
+    info["backup"] = backup
+    return info
+
+
+def _cc_pull_rows(cc: dict) -> dict:
+    """取云端那一份、解密、按域名过滤。测试连接与拉取共用这段，都不写盘。"""
+    _cc_ready(cc)
+    url = _cc_endpoint(cc["server"], "/get/" + cc["uuid"])
+    code, data, err = _cc_http(url)
+    if err:
+        raise HTTPException(502, err)
+    if code == 404:
+        raise HTTPException(404, f"服务器上没有这个 UUID 的数据（{_cc_host(url)} 回 404）："
+                                 "先在浏览器插件里按一次「上传」")
+    if code != 200:
+        raise HTTPException(502, f"服务器回了 HTTP {code}：{str(data.get('_text') or data)[:160]}")
+    blob = str(data.get("encrypted") or "")
+    if not blob:
+        raise HTTPException(502, "服务器没回 encrypted 字段，不像 CookieCloud 的 /get 接口"
+                                 f"（回的是：{str(data.get('_text') or json.dumps(data, ensure_ascii=False))[:120]}）")
+    known = str(data.get("crypto_type") or "").strip().lower()
+    parsed, scheme = _cc_decrypt(blob, cc, known)
+    rows, notes = _cc_rows_from_cloud(parsed)
+    want = _cc_domain_filter(cc["domains"])
+    kept = _cc_dedup(_cc_filter_rows(rows, want))
+    return {"rows": rows, "kept": kept, "notes": notes, "scheme": scheme, "server_scheme": known,
+            "domains": sorted({r["domain"] for r in kept}), "update_time": str(parsed.get("update_time") or ""),
+            "cloud_domains": sorted({r["domain"] for r in rows}), "filtered_out": len(rows) - len(kept),
+            "want": want}
+
+
+def _cc_local_rows() -> Tuple[List[dict], List[str]]:
+    """本机这几个 Netscape 文件读回来（全局 cookies.txt + 每个平台的文件），推给云端用。"""
+    paths: List[Path] = []
+    gf = str(cfg.data.get("cookie_file") or DEFAULT_COOKIE_FILE).strip()
+    if gf:
+        paths.append(Path(gf))
+    for name, _hints in PLATFORM_RULES:
+        paths.append(platform_cookie_path(name))
+    for entry in (cfg.data.get("platform_cookies") or {}).values():
+        f = str((entry or {}).get("file") or "").strip() if isinstance(entry, dict) else ""
+        if f:
+            paths.append(Path(f))
+    rows: List[dict] = []
+    used: List[str] = []
+    for p in paths:
+        rp = str(p)
+        if rp in used or not p.is_file():
+            continue
+        used.append(rp)
+        try:
+            rows.extend(_cc_parse_netscape(p.read_text(encoding="utf-8", errors="ignore")))
+        except Exception:
+            continue
+    return _cc_dedup(rows), used
+
+
+def _cc_state() -> dict:
+    try:
+        raw = json.loads(COOKIECLOUD_STATE_FILE.read_text(encoding="utf-8"))
+        return raw if isinstance(raw, dict) else {}
+    except Exception:
+        return {}
+
+
+def _cc_state_save(patch: dict) -> dict:
+    st = _cc_state()
+    st.update(patch)
+    try:
+        tmp = Path(str(COOKIECLOUD_STATE_FILE) + ".tmp")
+        tmp.write_text(json.dumps(st, ensure_ascii=False, indent=1), encoding="utf-8", newline="\n")
+        os.replace(tmp, COOKIECLOUD_STATE_FILE)
+    except Exception as e:
+        log_mgr.log(f"[CookieCloud] 同步状态没写下去（{type(e).__name__}），界面上的时间戳这次不会更新", "warning")
+    return st
+
+
+def _cc_payload() -> dict:
+    cc = _cc_cfg()
+    st = _cc_state()
+    return {
+        "enabled": cc["enabled"], "server": cc["server"], "uuid": cc["uuid"],
+        "key": "", "key_set": bool(cc["key"]),
+        "scheme": cc["scheme"], "schemes": list(COOKIECLOUD_SCHEMES),
+        "scheme_labels": {"auto": "自动 · 先按云端报的写法，解不开再换另一种",
+                          "legacy": "legacy · CryptoJS/OpenSSL（官方插件那种）",
+                          "aes-128-cbc-fixed": "aes-128-cbc-fixed · 固定 IV"},
+        "domains": cc["domains"], "cookies_dir": str(COOKIES_DIR),
+        "cookie_file": str(cfg.data.get("cookie_file") or DEFAULT_COOKIE_FILE),
+        "state": st, "scheme_seen": str(st.get("scheme_seen") or ""),
+        "platforms": [{"platform": k, "label": v, "file": str(platform_cookie_path(k))}
+                      for k, v in PLATFORM_LABELS.items() if k != "default"],
+    }
+
+
+class CookieCloudAccountBody(BaseModel):
+    server: Optional[str] = None
+    uuid: Optional[str] = None
+    key: Optional[str] = None
+    clear_key: bool = False
+    scheme: Optional[str] = None
+    domains: Optional[str] = None
+    enabled: Optional[bool] = None
+
+
+@app.get("/api/cookiecloud")
+def api_cookiecloud_get():
+    return _cc_payload()
+
+
+@app.post("/api/cookiecloud/account")
+def api_cookiecloud_account(body: CookieCloudAccountBody, request: Request = None):
+    """这几项只从这条口子写：机器令牌不该顺手把「往外送 Cookie」的开关和地址改掉。"""
+    if request is not None and _auth_token_only(request):
+        raise HTTPException(403, "机器令牌只开数据接口：CookieCloud 的服务器、UUID、密钥要从界面登录了再改")
+    data = body.model_dump(exclude_none=True)
+    upd: Dict[str, Any] = {}   # 只往带 cookiecloud_ 前缀的键上写，写成裸键的话配置根本存不住
+    if "scheme" in data:
+        scheme = str(data.get("scheme") or "").strip().lower()
+        if scheme not in COOKIECLOUD_SCHEMES:
+            raise HTTPException(400, f"加密方式只认 {' / '.join(COOKIECLOUD_SCHEMES)}，"
+                                     f"收到的是「{str(data['scheme'])[:24]}」")
+        upd["cookiecloud_scheme"] = scheme
+    if "server" in data:
+        server = str(data["server"] or "").strip()
+        if server and not re.match(r"^https?://[^/]", server, re.I):
+            raise HTTPException(400, "服务器地址要带 http:// 或 https://，后面还得跟上域名")
+        # 存的时候就归一化：尾巴多打的斜杠收掉，界面回显与实际请求的是同一个串
+        upd["cookiecloud_server"] = server.rstrip("/")
+    if "uuid" in data:
+        uid = str(data["uuid"] or "").strip()
+        if uid and not _CC_UUID_RE.match(uid):
+            raise HTTPException(400, "UUID 里只该有字母、数字和 - _ .")
+        upd["cookiecloud_uuid"] = uid
+    if "domains" in data:
+        upd["cookiecloud_domains"] = str(data["domains"] or "").strip()
+    if "enabled" in data:
+        upd["cookiecloud_enabled"] = bool(data["enabled"])
+    had_key = bool(str(cfg.data.get("cookiecloud_key") or "").strip())
+    key_note = "密钥没动" if had_key else "密钥还没填"
+    if bool(data.pop("clear_key", False)):
+        cfg.data["cookiecloud_key"] = ""
+        key_note = "密钥已清掉"
+    else:
+        new_key = str(data.pop("key", "") or "")
+        if new_key:
+            cfg.data["cookiecloud_key"] = new_key
+            key_note = "密钥已更新" if had_key else "密钥已填上"
+    cfg.data.update(upd)
+    cfg.save()
+    who = _cc_host(str(cfg.data.get("cookiecloud_server") or "")) or "地址没填"
+    log_mgr.log(f"[CookieCloud] 设置已保存：{'开' if cfg.data.get('cookiecloud_enabled') else '关'} · "
+                f"服务器 {who} · 加密 {cfg.data.get('cookiecloud_scheme')} · {key_note}")
+    return _cc_payload()
+
+
+def _cc_redact(text: str) -> str:
+    """requests 的异常原话里带着 /get/<UUID>，这把 UUID 和密钥是一对，别把它抄进状态和日志。"""
+    uid = str(cfg.data.get("cookiecloud_uuid") or "").strip()
+    out = str(text or "")
+    return out.replace(uid, "‹UUID›") if len(uid) >= 4 else out
+
+
+def _cc_run(kind: str, label: str, fn) -> dict:
+    """三个动作共用一条失败记录：失败了也要把时间和原话存进状态，界面上那句「上次测试」不能只报好消息。"""
+    try:
+        out = fn()
+    except HTTPException as e:
+        reason = _cc_redact(e.detail)
+        _cc_state_save({f"last_{kind}_at": _cc_now(), f"last_{kind}_ok": False,
+                        f"last_{kind}_error": reason[:180]})
+        log_mgr.log(f"[CookieCloud] {label}没成：{reason[:160]}", "warning")
+        raise
+    except Exception as e:  # noqa: BLE001
+        reason = _cc_redact(f"{type(e).__name__}: {e}")
+        _cc_state_save({f"last_{kind}_at": _cc_now(), f"last_{kind}_ok": False,
+                        f"last_{kind}_error": reason[:180]})
+        log_mgr.log(f"[CookieCloud] {label}出错了：{reason[:140]}", "error")
+        raise
+    _cc_state_save({f"last_{kind}_at": _cc_now(), f"last_{kind}_ok": True,
+                    f"last_{kind}_error": ""})   # 成功了要把上一次的错话擦掉，不然界面显示「通过：连不上…」
+    return out
+
+
+@app.post("/api/cookiecloud/test")
+def api_cookiecloud_test():
+    return _cc_run("test", "测试连接", _cc_do_test)
+
+
+def _cc_do_test() -> dict:
+    """只问一次、解一次，一个文件都不写：这条过了就说明地址、UUID、密钥、算法四样都对得上。"""
+    cc = _cc_cfg()
+    got = _cc_pull_rows(cc)
+    cloud_domains = len({r["domain"] for r in got["rows"]})
+    msg = (f"连上了：云端 {len(got['rows'])} 条 Cookie / {cloud_domains} 个域（加密 {got['scheme']}"
+           + (f"，服务器标的写法是 {got['server_scheme']}" if got["server_scheme"] else "") + "）")
+    if got["want"]:
+        msg += f"；按填的 {len(got['want'])} 条域名过滤后本机要收 {len(got['kept'])} 条"
+    _cc_state_save({"scheme_seen": got["scheme"]})
+    log_mgr.log(f"[CookieCloud] 测试连接通过：云端 {len(got['rows'])} 条 / {cloud_domains} 个域，"
+                f"加密 {got['scheme']}（这一趟没写盘）")
+    return {"ok": True, "message": msg, "notes": got["notes"][:4], "cloud_rows": len(got["rows"]),
+            "keep_rows": len(got["kept"]), "cloud_domains": cloud_domains, "domains": len(got["domains"]),
+            "update_time": got["update_time"], "scheme": got["scheme"]}
+
+
+@app.post("/api/cookiecloud/pull")
+def api_cookiecloud_pull():
+    return _cc_run("pull", "拉取", _cc_do_pull)
+
+
+def _cc_do_pull() -> dict:
+    """云端 → 本机：写 cookie_file 那份和匹配到的平台文件；一个 Cookie 都没命中的平台文件不动。"""
+    cc = _cc_cfg()
+    got = _cc_pull_rows(cc)
+    rows = got["kept"]
+    if not rows:
+        raise HTTPException(400, f"云端那一份按域名过滤后一条都不剩（云端 {len(got['rows'])} 条，"
+                                 f"被滤掉 {got['filtered_out']} 条）——把「域名过滤」清空或改成云端真有的域再来")
+    targets: List[Tuple[Path, List[dict], str]] = [
+        (Path(str(cfg.data.get("cookie_file") or DEFAULT_COOKIE_FILE)), rows, "全局 Cookie 文件")]
+    by_plat: Dict[str, List[dict]] = {}
+    for r in rows:
+        p = _cc_platform_for(r["domain"])
+        if p != "default":
+            by_plat.setdefault(p, []).append(r)
+    for p, rs in sorted(by_plat.items()):
+        targets.append((platform_cookie_path(p), _cc_dedup(rs), PLATFORM_LABELS.get(p, p)))
+    written: List[dict] = []
+    for path, rs, label in targets:
+        info = _cc_write_file(path, rs, label)
+        if info["changed"] and label != "全局 Cookie 文件":
+            for p in by_plat:
+                if path == platform_cookie_path(p):
+                    _login_flag_clear(p)
+        written.append(info)
+    now = _cc_now()
+    changed = [w for w in written if w["changed"]]
+    if changed:
+        # Cookie 文件刚被换过内容：这条链接「匿名就够」的旧判定是配好之前的 Cookie 判出来的，不作废就会一直关掉刚同步来的那份
+        drop_all_cookie_prefs()
+    _cc_state_save({"pull_rows": len(rows),
+                    "pull_domains": len(got["domains"]), "scheme_seen": got["scheme"],
+                    "pull_files": [{"file": w["file"], "count": w["count"], "at": now} for w in written]})
+    log_mgr.log(f"[CookieCloud] 拉取：云端 {len(got['rows'])} 条 → 收下 {len(rows)} 条"
+                f"（{len(got['domains'])} 个域，加密 {got['scheme']}），写了 {len(changed)} 个文件："
+                + ("、".join(f"{w['file']}({w['count']} 条)" for w in changed) if changed else "内容一样，没动"))
+    for w in changed:
+        if w["backup"]:
+            log_mgr.log(f"[CookieCloud] {w['file']} 覆盖前的原样备份为 {w['backup']}")
+    for n in got["notes"][:3]:
+        log_mgr.log(f"[CookieCloud] {n}", "warning")
+    return {"ok": True, "message": f"{now} 拉下 {len(rows)} 条 / {len(got['domains'])} 个域，"
+                                   f"写了 {len(changed)} 个文件"
+                                   + ("" if changed else "（本机这几份本来就是这个内容，一个文件都没动）"),
+            "files": written, "notes": got["notes"][:4], "cloud_rows": len(got["rows"]),
+            "filtered_out": got["filtered_out"], "scheme": got["scheme"], "update_time": got["update_time"]}
+
+
+@app.post("/api/cookiecloud/push")
+def api_cookiecloud_push():
+    return _cc_run("push", "推送", _cc_do_push)
+
+
+def _cc_do_push() -> dict:
+    """本机 → 云端：整份覆盖服务器上那个 UUID 的数据，所以只由界面上确认过的按钮触发。"""
+    cc = _cc_cfg()
+    _cc_ready(cc)
+    rows, files = _cc_local_rows()
+    if not rows:
+        raise HTTPException(400, f"本机没有可推的 Cookie 文件（读的是 "
+                                 f"{str(cfg.data.get('cookie_file') or DEFAULT_COOKIE_FILE)} 和 "
+                                 "cookies\\<平台>_cookies.txt，一个都没读到内容）")
+    st = _cc_state()
+    seen = str(st.get("scheme_seen") or "")
+    scheme = cc["scheme"] if cc["scheme"] in COOKIECLOUD_WRITE_SCHEMES else (
+        seen if seen in COOKIECLOUD_WRITE_SCHEMES else "legacy")
+    groups: Dict[str, List[dict]] = {}
+    for r in rows:
+        groups.setdefault(r["domain"], []).append({
+            "name": r["name"], "value": r["value"], "domain": r["domain"], "path": r["path"],
+            "secure": r["secure"], "hostOnly": not r["domain"].startswith("."),
+            "session": not r["expires"], "expirationDate": r["expires"] or None,
+        })
+    payload = {"cookie_data": groups, "local_storage_data": {}, "update_time": datetime.now().isoformat()}
+    blob = _cc_encrypt(payload, cc, scheme)
+    url = _cc_endpoint(cc["server"], "/update")
+    code, data, err = _cc_http(url, {"uuid": cc["uuid"], "encrypted": blob, "crypto_type": scheme})
+    if err:
+        raise HTTPException(502, err)
+    action = str(data.get("action") or "").strip().lower()
+    if code != 200:
+        raise HTTPException(502, f"服务器没收下（HTTP {code}）：{str(data.get('_text') or data)[:160]}")
+    if action and action != "done":
+        raise HTTPException(502, f"服务器回了 action={action}，没写成（它自己的日志里应该有原因）")
+    now = _cc_now()
+    _cc_state_save({"push_rows": len(rows),
+                    "push_domains": len(groups), "scheme_seen": scheme,
+                    "push_files": [Path(f).name for f in files]})
+    log_mgr.log(f"[CookieCloud] 推送：本机 {len(rows)} 条 / {len(groups)} 个域（来自 {len(files)} 个文件）"
+                f"已覆盖云端那一份，写法 {scheme}" + ("，服务器回 action=done" if action == "done" else ""))
+    return {"ok": True, "message": f"{now} 推了 {len(rows)} 条 / {len(groups)} 个域（{scheme}），云端那一份已被覆盖",
+            "rows": len(rows), "domains": len(groups), "scheme": scheme,
+            "from_files": [Path(f).name for f in files]}
+
+
+# ==================== 按龄清理（#31） ====================
+# 三条口径是这一路的地基，动代码前先想清楚：
+# 1) 下载成品不硬删 —— 先挪进 <下载目录>/_cleanup_trash/，在回收目录里待够 cleanup_trash_days
+#    天才真删。日志归档是唯一直接删的一组（它记的就是这台机器自己跑过什么）。
+# 2) 过期与否只认文件 mtime —— 历史里的时间、文件名里的日期都可能是下载器按元数据写死的，
+#    mtime 才是「这个文件最后一次被动过」的真实时间。
+# 3) 自动那一趟永远只碰日志归档、编辑备份和到期的回收目录 —— 下载目录里的东西必须用户看过
+#    名单、点过「按名单删除」才动手，而 run 只认刚生成、还没过期的那份名单指纹。
+CL_TRASH_DIRNAME = "_cleanup_trash"
+CL_SCAN_CAP = 20000      # 一趟最多翻这么多文件：目录被挪到别处、深到没边时不把进程拖死
+CL_LIST_CAP = 200        # 名单一次最多逐条列这么多，其余的只报条数和体积
+CL_AUTO_HOUR = 3         # 每天这一趟自动跑（本地时区）
+CL_AUTO_MIN = 5
+CL_PLAN_TTL = 600        # 「先看名单」到「按名单删除」之间的有效期（秒）
+CL_IN_PROGRESS_EXTS = (".part", ".ytdl", ".temp", ".aria2")   # 归 /api/cleanup-parts，这里不抢它的活
+CL_SUBTITLE_EXTS = (".srt", ".vtt", ".ass", ".ssa", ".lrc", ".nfo")
+CL_VIDEO_EXTS = (".mp4", ".mkv", ".webm", ".flv", ".ts", ".mov", ".avi", ".m4s")
+CL_GROUPS = ("logs", "backups", "downloads", "trash")
+CL_GROUP_LABELS = {"logs": "日志归档", "backups": "编辑备份", "downloads": "下载成品", "trash": "回收目录到期"}
+# 自动那一趟能碰的组。downloads 不在里面 —— 这一条就是「自动只清程序自己造的垃圾」的落点。
+CL_AUTO_GROUPS = ("logs", "backups", "trash")
+CL_SKIP_DIRS = {"__pycache__", ".git", "node_modules", "runtime", "dist", "tools", CL_TRASH_DIRNAME}
+CL_LOG_ARCHIVE_RE = re.compile(r"^app-\d{4}-\d{2}-\d{2}\.log$")
+_CL_PLAN: Dict[str, Any] = {"hash": "", "at": 0.0, "days": {}}   # 名单指纹只在内存里：重启即失效，删不动
+_CL_LOCK = threading.Lock()
+
+
+def _cl_norm(p: Any) -> str:
+    """路径的比较用键：正反斜杠、结尾分隔符、大小写都不该让两个名字看起来像两个文件。"""
+    return str(p).replace("/", "\\").rstrip("\\").lower()
+
+
+def _cl_int(key: str, default: int) -> int:
+    try:
+        v = int(float(cfg.data.get(key, default)))
+    except Exception:
+        return default
+    return max(0, min(3650, v))
+
+
+def _cl_cfg() -> dict:
+    return {
+        "enabled": bool(cfg.data.get("cleanup_enabled")),
+        "log_days": _cl_int("cleanup_log_days", 7),
+        "backup_days": _cl_int("cleanup_backup_days", 0),
+        "download_days": _cl_int("cleanup_download_days", 0),
+        "trash_days": _cl_int("cleanup_trash_days", 30),
+    }
+
+
+def _cl_download_root() -> Path:
+    return Path(str(cfg.data.get("download_dir") or DEFAULT_DOWNLOAD_DIR))
+
+
+def _cl_trash_root() -> Path:
+    return _cl_download_root() / CL_TRASH_DIRNAME
+
+
+def _cl_media_exts() -> set:
+    """下载目录里按「成品」认的扩展名。音频口径跟 scan_library 取同一份，别自己另写一套。"""
+    try:
+        from music_search import MUSIC_AUDIO_EXTS
+        audio = {e for e in MUSIC_AUDIO_EXTS if e != ".webm"}
+    except Exception:
+        audio = {".mp3", ".m4a", ".flac", ".opus", ".ogg", ".wav", ".aac", ".m4b", ".wma"}
+    return set(CL_VIDEO_EXTS) | audio | set(CL_SUBTITLE_EXTS)
+
+
+def _cl_walk(root: Path, match, skip: set) -> tuple:
+    """按名字挑文件。返回 (命中, 翻过的文件数, 是否被上限截断)。
+
+    用 os.walk 而不是 rglob，是为了能在中途数到上限就收口，也让每一层都能把要跳过的目录
+    从 dirnames 里摘掉；os.walk 默认不跟随符号链接的目录，这一路也因此不会顺着链接跑出根外。
+    """
+    hits: List[Path] = []
+    seen = 0
+    trunc = False
+    try:
+        if not root.is_dir():
+            return hits, seen, trunc
+    except Exception:
+        return hits, seen, trunc
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d.lower() not in skip and not d.startswith(".")]
+        for fn in filenames:
+            seen += 1
+            if seen > CL_SCAN_CAP:
+                trunc = True
+                break
+            p = Path(dirpath) / fn
+            try:
+                if p.is_symlink():
+                    continue
+            except Exception:
+                continue
+            try:
+                if match(fn, p):
+                    hits.append(p)
+            except Exception:
+                continue
+        if trunc:
+            break
+    return hits, seen, trunc
+
+
+def _cl_busy() -> tuple:
+    """正在下、排队中、暂停/稍后、以及还在做种的任务占住的路径。
+
+    返回 (精确路径集合, 目录前缀集合)。做种中的那一整条目录都要护住：种子目录下每个文件
+    的 mtime 都可能很旧，按龄看它们全该删，而它们其实正被占用。
+    """
+    exact, prefixes = set(), set()
+    try:
+        tasks = list(queue.tasks.values())
+    except Exception:
+        return exact, prefixes
+    hold = {TaskStatus.QUEUED.value, TaskStatus.DOWNLOADING.value,
+            TaskStatus.PAUSED.value, TaskStatus.LATER.value}
+    for t in tasks:
+        try:
+            busy = str(getattr(t, "status", "")) in hold or bool(getattr(t, "seeding", False))
+            if not busy:
+                continue
+            for v in (getattr(t, "filepath", ""), getattr(t, "result_dir", "")):
+                s = str(v or "").strip()
+                if not s:
+                    continue
+                exact.add(_cl_norm(s))
+                prefixes.add(_cl_norm(s))
+                for e in CL_IN_PROGRESS_EXTS:
+                    exact.add(_cl_norm(s + e))
+        except Exception:
+            continue
+    return exact, prefixes
+
+
+def _cl_blocked(p: Path, exact: set, prefixes: set) -> bool:
+    k = _cl_norm(p)
+    if k in exact:
+        return True
+    for pre in prefixes:
+        if k == pre or k.startswith(pre + "\\"):
+            return True
+    return False
+
+
+def _cl_row(group: str, p: Path, st, now: float, base: Path) -> dict:
+    try:
+        rel = str(p.relative_to(base))
+    except Exception:
+        rel = p.name
+    return {
+        "id": hashlib.md5(str(p).encode("utf-8")).hexdigest()[:12],
+        "group": group,
+        "label": CL_GROUP_LABELS.get(group, group),
+        "path": str(p),
+        "name": p.name,
+        "rel": rel,
+        "bytes": int(getattr(st, "st_size", 0) or 0),
+        "mtime": int(getattr(st, "st_mtime", 0) or 0),
+        "mtime_str": datetime.fromtimestamp(getattr(st, "st_mtime", 0) or 0).strftime("%Y-%m-%d %H:%M"),
+        "age_days": round(max(0.0, (now - getattr(st, "st_mtime", now)) / 86400.0), 1),
+        # 前端要说清这条是「挪进回收目录」还是「直接删」：只有日志那组是后者
+        "hard": group in ("logs", "trash"),
+    }
+
+
+def _cl_manifest_path() -> Path:
+    return _cl_trash_root() / "manifest.json"
+
+
+def _cl_manifest() -> List[dict]:
+    """回收目录的账本：每条记原位置、挪走的时间、体积。真删与还原都按这本账走。
+
+    过期判定用的是 moved_at（挪进来的时间），不是文件 mtime —— 一条去年下完的片子今天
+    被挪进回收目录，它在这里的 30 天才从今天算起。
+    """
+    try:
+        raw = json.loads(_cl_manifest_path().read_text(encoding="utf-8"))
+        rows = raw.get("entries") if isinstance(raw, dict) else raw
+        return [r for r in (rows or []) if isinstance(r, dict)]
+    except Exception:
+        return []
+
+
+def _cl_manifest_save(entries: List[dict]):
+    try:
+        tmp = Path(str(_cl_manifest_path()) + ".tmp")
+        tmp.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps({"entries": entries}, ensure_ascii=False, indent=1),
+                       encoding="utf-8", newline="\n")
+        os.replace(tmp, _cl_manifest_path())
+    except Exception as e:
+        log_mgr.log(f"[清理] 回收目录的账本没写下去（{type(e).__name__}），"
+                    "界面上这些条目的原位置与到期时间这次会不准", "warning")
+
+
+def _cl_collect(group: str, days: int, now: float, busy: tuple) -> dict:
+    """一组里过期的那些文件（还没截断成名单，全量都在 rows 里）。"""
+    info = {"rows": [], "scanned": 0, "truncated": False, "busy_skipped": 0, "bytes": 0,
+            "days": days, "label": CL_GROUP_LABELS.get(group, group), "note": ""}
+    if days <= 0:
+        info["note"] = "这一档天数填的 0：不碰"
+        return info
+    cutoff = now - days * 86400.0
+    exact, prefixes = busy
+    out: List[Path] = []
+    seen = 0
+    trunc = False
+    if group == "logs":
+        for base in (APP_DIR, STATE_DIR):
+            hits, s, t = _cl_walk(base, lambda fn, p: bool(CL_LOG_ARCHIVE_RE.match(fn)), CL_SKIP_DIRS)
+            out += hits
+            seen += s
+            trunc = trunc or t
+    elif group == "backups":
+        for base in (_cl_download_root(), COOKIES_DIR, APP_DIR):
+            hits, s, t = _cl_walk(base, lambda fn, p: ".bak-" in fn.lower(), CL_SKIP_DIRS)
+            out += hits
+            seen += s
+            trunc = trunc or t
+    elif group == "downloads":
+        exts = _cl_media_exts()
+
+        def _m(fn, p):
+            e = Path(fn).suffix.lower()
+            return e in exts and e not in CL_IN_PROGRESS_EXTS and not fn.startswith(".")
+        out, seen, trunc = _cl_walk(_cl_download_root(), _m, CL_SKIP_DIRS)
+    else:   # trash：按账本里的 moved_at 判过期，账本外（手工丢进去的）按 mtime 兜底
+        trash = _cl_trash_root()
+        by_path = {}
+        for r in _cl_manifest():
+            moved = str(r.get("moved") or "")
+            if moved:
+                by_path[_cl_norm(trash / moved)] = r
+        hits, seen, trunc = _cl_walk(trash, lambda fn, p: fn != "manifest.json" and p.is_file(), set())
+        rows = []
+        for p in hits:
+            try:
+                st = p.stat()
+            except Exception:
+                continue
+            ent = by_path.get(_cl_norm(p))
+            ts = float(ent.get("moved_at") or 0) if ent else 0.0
+            if ts <= 0:
+                ts = st.st_mtime
+            if ts < cutoff:
+                row = _cl_row(group, p, st, now, trash)
+                if ent:
+                    row["orig"] = str(ent.get("orig") or "")
+                row["mtime"] = int(ts)      # 展示的是进回收目录的时间，不是文件原本的 mtime
+                row["mtime_str"] = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+                row["age_days"] = round(max(0.0, (now - ts) / 86400.0), 1)
+                rows.append(row)
+        rows.sort(key=lambda r: (-r["bytes"], r["name"]))
+        info["rows"] = rows
+        info["scanned"] = seen
+        info["truncated"] = trunc
+        info["bytes"] = sum(r["bytes"] for r in rows)
+        return info
+    rows, skipped, dedup = [], 0, set()
+    for p in out:
+        k = _cl_norm(p)
+        if k in dedup:      # STATE_DIR == APP_DIR 是常态：同一份归档会被两个根各数一次
+            continue
+        dedup.add(k)
+        try:
+            st = p.stat()
+        except Exception:
+            continue
+        if st.st_mtime >= cutoff:
+            continue
+        if group == "downloads" and _cl_blocked(p, exact, prefixes):
+            skipped += 1
+            continue
+        rows.append(_cl_row(group, p, st, now, _cl_download_root() if group == "downloads" else STATE_DIR))
+    rows.sort(key=lambda r: (-r["bytes"], r["name"]))
+    info["rows"] = rows
+    info["scanned"] = seen
+    info["truncated"] = trunc
+    info["busy_skipped"] = skipped
+    info["bytes"] = sum(r["bytes"] for r in rows)
+    return info
+
+
+def _cl_hash_of(groups: dict) -> str:
+    parts = []
+    for g in CL_GROUPS:
+        parts.append(g + ":" + ",".join(r["id"] for r in groups[g]["rows"]))
+    return hashlib.md5("|".join(parts).encode("utf-8")).hexdigest()[:16]
+
+
+def _cl_plan(now: float = None) -> dict:
+    """算一遍四组的名单。只读：不删、不挪、不改缓存，所以「先看名单」没有副作用。"""
+    now = time.time() if now is None else now
+    c = _cl_cfg()
+    busy = _cl_busy()
+    days = {"logs": c["log_days"], "backups": c["backup_days"],
+            "downloads": c["download_days"], "trash": c["trash_days"]}
+    groups: Dict[str, Any] = {}
+    total_n = total_b = 0
+    for g in CL_GROUPS:
+        info = _cl_collect(g, days[g], now, busy)
+        rows = info["rows"]
+        groups[g] = {
+            "group": g, "label": info["label"], "days": info["days"], "note": info["note"],
+            "count": len(rows), "bytes": info["bytes"], "scanned": info["scanned"],
+            "truncated": info["truncated"], "busy_skipped": info["busy_skipped"],
+            "hard": g in ("logs", "trash"),
+            "rows": rows[:CL_LIST_CAP],
+            "hidden": max(0, len(rows) - CL_LIST_CAP),
+        }
+        total_n += len(rows)
+        total_b += info["bytes"]
+    h = _cl_hash_of(groups)
+    if h != _CL_PLAN.get("hash"):
+        _CL_PLAN.update({"hash": h, "at": now, "days": dict(days)})
+    return {"ok": True, "hash": h, "issued_at": now,
+            "issued_str": datetime.fromtimestamp(now).strftime("%Y-%m-%d %H:%M:%S"),
+            "ttl": CL_PLAN_TTL, "enabled": c["enabled"], "days": days,
+            "groups": groups, "total_count": total_n, "total_bytes": total_b,
+            "auto_groups": list(CL_AUTO_GROUPS), "trash_dir": str(_cl_trash_root())}
+
+
+def _cl_forget_library(paths: List[str]) -> int:
+    """把已经不在原位的成品从 library_cache.json 里摘掉，免得媒体库继续显示一份挪走的东西。
+
+    下次 /api/library?refresh=1 或手动扫描本来就会按磁盘重建，这里只是让「删完立刻回看」
+    不出现幽灵行。
+    """
+    keys = {_cl_norm(p) for p in paths}
+    try:
+        items = json.loads(LIBRARY_CACHE.read_text(encoding="utf-8"))
+        if not isinstance(items, list):
+            return 0
+    except Exception:
+        return 0
+    kept, dropped = [], 0
+    for it in items:
+        p = _cl_norm(it.get("path") if isinstance(it, dict) else "")
+        if p and (p in keys or any(p.startswith(k + "\\") for k in keys)):
+            dropped += 1
+            continue
+        kept.append(it)
+    if dropped:
+        try:
+            LIBRARY_CACHE.write_text(json.dumps(kept, ensure_ascii=False, indent=1), encoding="utf-8")
+        except Exception:
+            pass
+    return dropped
+
+
+def _cl_trash_dest(src: Path, rel: str) -> Path:
+    """回收目录里保住相对路径，还原时一眼能看出它原来在库里的哪一层；重名往后加序号。"""
+    trash = _cl_trash_root()
+    dest = trash / rel
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    i = 1
+    while dest.exists():
+        dest = dest.with_name(f"{Path(rel).name}.clash{i}")
+        i += 1
+    return dest
+
+
+def _cl_apply(groups: List[str], expect_hash: str = "", by: str = "manual") -> dict:
+    """按名单动手。groups 只认组名，不接受客户端传来的路径 —— 路径一律由服务端重算。"""
+    bad = [g for g in groups if g not in CL_GROUPS]
+    if bad:
+        raise HTTPException(400, f"不认识的清理组：{' / '.join(bad)}")
+    if not groups:
+        raise HTTPException(400, "没说要清哪一组")
+    if by != "auto":
+        # 手工这一趟必须带刚生成的名单指纹：没看过名单（或看完又拖过了 10 分钟）就删不了
+        if not expect_hash:
+            raise HTTPException(400, "先点「先看名单」看过要删的东西，再回来点删除")
+        if _CL_PLAN.get("hash") != expect_hash:
+            raise HTTPException(409, "名单指纹对不上：要么还没生成过名单，要么这中间磁盘上的东西变了，重新看一遍")
+        if time.time() - float(_CL_PLAN.get("at") or 0) > CL_PLAN_TTL:
+            raise HTTPException(409, f"名单已经过了有效期（{CL_PLAN_TTL // 60} 分钟），重新看一遍再删")
+    plan = _cl_plan()
+    if expect_hash and plan["hash"] != expect_hash:
+        raise HTTPException(409, "名单在这一趟运行前变了（有新文件到期或旧文件被移走），请重新看过再删")
+    busy = _cl_busy()
+    exact, prefixes = busy
+    moved: List[dict] = []
+    deleted: List[dict] = []
+    errors: List[str] = []
+    gone: List[str] = []          # 挪出原位的文件，攒到最后一次性从媒体库缓存里摘掉
+    skipped_busy = 0
+    entries = _cl_manifest()
+    by_key = {_cl_norm(_cl_trash_root() / str(r.get("moved") or "")): r for r in entries}
+    touched_manifest = False
+    for g in groups:
+        for r in plan["groups"][g]["rows"]:
+            p = Path(r["path"])
+            try:
+                if not p.exists():
+                    continue
+                if _cl_blocked(p, exact, prefixes):
+                    skipped_busy += 1
+                    continue
+                if g in ("logs", "trash"):
+                    ent = by_key.get(_cl_norm(p))
+                    if g == "trash":
+                        entries = [x for x in entries if x is not ent]
+                        touched_manifest = True
+                    p.unlink()
+                    deleted.append({"group": g, "name": r["name"], "bytes": r["bytes"],
+                                    "orig": str((ent or {}).get("orig") or "")})
+                    continue
+                rel = _cl_rel_for(p)
+                dest = _cl_trash_dest(p, rel)
+                shutil.move(str(p), str(dest))
+                ent = {"id": hashlib.md5(str(dest).encode("utf-8")).hexdigest()[:12],
+                       "group": g, "orig": str(p), "moved": str(dest.relative_to(_cl_trash_root())),
+                       "moved_at": time.time(), "bytes": r["bytes"], "name": r["name"]}
+                entries.append(ent)
+                touched_manifest = True
+                moved.append({"group": g, "name": r["name"], "bytes": r["bytes"],
+                              "orig": str(p), "moved": ent["moved"]})
+                gone.append(str(p))
+            except Exception as e:
+                errors.append(f"{r['name']}：{type(e).__name__} {str(e)[:90]}")
+    if touched_manifest:
+        _cl_manifest_save(entries)
+    if gone:
+        _cl_forget_library(gone)
+    if any(g == "trash" for g in groups):
+        _cl_prune_empty_trash()
+    now = datetime.now()
+    st = _cl_state()
+    hidden = sum(plan["groups"][g]["hidden"] for g in groups)
+    done = {"by": by, "at": now.strftime("%Y-%m-%d %H:%M:%S"), "groups": list(groups),
+            "moved": len(moved), "deleted": len(deleted), "bytes":
+                sum(x["bytes"] for x in moved) + sum(x["bytes"] for x in deleted),
+            "errors": len(errors), "hidden": hidden}
+    patch = {"last_run": done, ("last_auto" if by == "auto" else "last_manual"): done,
+             "auto_date": now.strftime("%Y-%m-%d") if by == "auto" else st.get("auto_date", "")}
+    _cl_state_save(patch)
+    mb = done["bytes"] / 1048576.0
+    log_mgr.log(f"[清理] {'自动' if by == 'auto' else '手动'}一趟（{'/'.join(groups)}）："
+                f"挪进回收目录 {len(moved)} 个、直接删 {len(deleted)} 个，"
+                f"腾出 {mb:.1f} MB"
+                + (f"，护住正在下/做种的 {skipped_busy} 个" if skipped_busy else "")
+                + (f"，另有 {hidden} 个同规则但没进这份名单" if hidden else "")
+                + (f"，{len(errors)} 个没动成（{errors[0]}）" if errors else ""))
+    return {"ok": True, "by": by, "groups": list(groups), "moved": moved, "deleted": deleted,
+            "count": len(moved) + len(deleted), "bytes": done["bytes"],
+            "hidden": hidden, "skipped_busy": skipped_busy, "errors": errors[:8],
+            "trash_dir": str(_cl_trash_root()),
+            "message": f"{'自动' if by == 'auto' else ''}清理：{len(moved)} 个挪进回收目录、"
+                       f"{len(deleted)} 个直接删，腾出 {mb:.1f} MB"
+                       + (f"（{skipped_busy} 个正在下或在做种，护住了）" if skipped_busy else "")
+                       + (f"；还有 {hidden} 个同规则的没列进名单，下一轮再清" if hidden else "")}
+
+
+def _cl_rel_for(p: Path) -> str:
+    """进回收目录时用的相对路径：下载目录下的保持相对，其余按「组/文件名」放。"""
+    try:
+        return str(p.relative_to(_cl_download_root()))
+    except Exception:
+        pass
+    for base, tag in ((COOKIES_DIR, "cookies"), (STATE_DIR, "state"), (APP_DIR, "app")):
+        try:
+            return str(Path(tag) / p.relative_to(base))
+        except Exception:
+            continue
+    return p.name
+
+
+def _cl_prune_empty_trash():
+    """真删过后把空壳目录收掉，回收目录里只留账本。"""
+    trash = _cl_trash_root()
+    if not trash.is_dir():
+        return
+    for dirpath, dirnames, filenames in sorted(os.walk(trash), key=lambda x: -len(x[0])):
+        if dirpath == str(trash):
+            continue
+        try:
+            if not os.listdir(dirpath):
+                os.rmdir(dirpath)
+        except Exception:
+            pass
+
+
+def _cl_state() -> dict:
+    try:
+        raw = json.loads(CLEANUP_STATE_FILE.read_text(encoding="utf-8"))
+        return raw if isinstance(raw, dict) else {}
+    except Exception:
+        return {}
+
+
+def _cl_state_save(patch: dict) -> dict:
+    st = _cl_state()
+    st.update(patch)
+    try:
+        tmp = Path(str(CLEANUP_STATE_FILE) + ".tmp")
+        tmp.write_text(json.dumps(st, ensure_ascii=False, indent=1), encoding="utf-8", newline="\n")
+        os.replace(tmp, CLEANUP_STATE_FILE)
+    except Exception as e:
+        log_mgr.log(f"[清理] 清理状态没写下去（{type(e).__name__}），界面上「上次跑」的时间这次不会更新", "warning")
+    return st
+
+
+def _cl_restore_trash() -> List[dict]:
+    """回收目录里还能还原的条目（账本里有原位置的）。"""
+    trash = _cl_trash_root()
+    out = []
+    for r in _cl_manifest():
+        moved = str(r.get("moved") or "")
+        if not moved:
+            continue
+        p = trash / moved
+        if not p.is_file():
+            continue
+        out.append({"id": r.get("id", ""), "name": str(r.get("name") or p.name),
+                    "bytes": int(r.get("bytes") or 0), "group": str(r.get("group") or ""),
+                    "orig": str(r.get("orig") or ""), "moved": moved,
+                    "moved_at": float(r.get("moved_at") or 0),
+                    "moved_str": datetime.fromtimestamp(float(r.get("moved_at") or 0)).strftime("%Y-%m-%d %H:%M")
+                                 if r.get("moved_at") else "",
+                    "path": str(p)})
+    return out
+
+
+def _cl_restore(ids: List[str]) -> dict:
+    """从回收目录放回原位。原位置已经有文件就不覆盖 —— 那份可能是重新下过的新东西。"""
+    want = {str(i) for i in (ids or []) if str(i)}
+    if not want:
+        raise HTTPException(400, "没说要还原哪几条")
+    entries = _cl_manifest()
+    trash = _cl_trash_root()
+    restored, refused, errors = [], [], []
+    left = []
+    for r in entries:
+        if r.get("id") in want:
+            p = trash / str(r.get("moved") or "")
+            orig = Path(str(r.get("orig") or ""))
+            if not p.is_file():
+                errors.append(f"{r.get('name')}：回收目录里已经找不到这个文件")
+                left.append(r)
+                continue
+            if not orig.parent.is_dir() or orig.exists():
+                refused.append({"name": str(r.get("name") or p.name), "orig": str(orig),
+                                "why": "原位置已经有同名文件（没覆盖）" if orig.exists()
+                                       else "原位置的目录已经不存在"})
+                left.append(r)
+                continue
+            try:
+                shutil.move(str(p), str(orig))
+                restored.append({"name": orig.name, "path": str(orig)})
+            except Exception as e:
+                errors.append(f"{r.get('name')}：{type(e).__name__} {str(e)[:90]}")
+                left.append(r)
+                continue
+            continue
+        left.append(r)
+    if len(left) != len(entries):
+        _cl_manifest_save(left)
+    if restored or refused or errors:
+        parts = [f"{len(restored)} 个回到原位"] if restored else []
+        if refused:
+            parts.append(f"{len(refused)} 个原位置被占（没动）")
+        if errors:
+            parts.append(f"{len(errors)} 个没成")
+        log_mgr.log("[清理] 还原：" + "，".join(parts))
+    return {"ok": True, "restored": restored, "refused": refused, "errors": errors[:8],
+            "count": len(restored),
+            "message": f"放回原位 {len(restored)} 个"
+                       + (f"，{len(refused)} 个原位置已经有同名文件（没覆盖）" if refused else "")
+                       + (f"，{len(errors)} 个没成" if errors else "")}
+
+
+def _cl_next_wake_ts(now_ts: float = None) -> float:
+    """下一个 CL_AUTO_HOUR:CL_AUTO_MIN 的时间戳。
+
+    跨夏令时那一圈可能差一个小时：一天只跑一趟家务活，差一小时不影响它跑不跑。
+    """
+    now_ts = time.time() if now_ts is None else now_ts
+    lt = time.localtime(now_ts)
+    target = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, CL_AUTO_HOUR, CL_AUTO_MIN, 0, 0, 0, -1))
+    if now_ts >= target:
+        target += 86400
+    return target
+
+
+def _cl_auto_pass(by: str = "auto") -> dict:
+    """自动那一趟：只走 CL_AUTO_GROUPS，天数填 0 的组自动跳过。"""
+    c = _cl_cfg()
+    if not c["enabled"]:
+        return {"ok": True, "skipped": "开关没开", "count": 0}
+    days = {"logs": c["log_days"], "backups": c["backup_days"], "trash": c["trash_days"]}
+    groups = [g for g in CL_AUTO_GROUPS if days.get(g, 0) > 0]
+    if not groups:
+        return {"ok": True, "skipped": "日志/备份/回收目录三档天数都填的 0", "count": 0}
+    return _cl_apply(groups, by=by)
+
+
+def _cl_auto_due() -> bool:
+    """今天那个点已过、而今天这一趟还没跑过，才补。"""
+    if not _cl_cfg()["enabled"]:
+        return False
+    now = time.time()
+    lt = time.localtime(now)
+    today_target = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday,
+                                CL_AUTO_HOUR, CL_AUTO_MIN, 0, 0, 0, -1))
+    if now < today_target:
+        return False
+    today = datetime.now().strftime("%Y-%m-%d")
+    st = _cl_state()
+    if str(st.get("auto_date") or "") == today:
+        return False
+    return not str((st.get("last_auto") or {}).get("at") or "").startswith(today)
+
+
+def _cl_fire():
+    with _CL_LOCK:
+        _CL_TIMER["timer"] = None
+        _CL_TIMER["wake_at"] = 0.0
+    try:
+        _cl_auto_pass()
+    except Exception as e:
+        log_mgr.log(f"[清理] 自动那一趟没跑成（{type(e).__name__}）：{str(e)[:120]}", "warning")
+    _cl_arm()
+
+
+_CL_TIMER: Dict[str, Any] = {"timer": None, "wake_at": 0.0, "lock": threading.Lock()}
+
+
+def _cl_arm():
+    """按真实剩余时间排一次性闹钟，响过再排下一次（跟定时窗那个闹钟一个写法）。"""
+    with _CL_TIMER["lock"]:
+        until = _cl_next_wake_ts()
+        t = _CL_TIMER["timer"]
+        if t is not None and _CL_TIMER["wake_at"] <= until and t.is_alive():
+            return
+        if t is not None:
+            t.cancel()
+        _CL_TIMER["wake_at"] = until
+        nt = threading.Timer(max(5.0, until - time.time()), _cl_fire)
+        nt.daemon = True
+        _CL_TIMER["timer"] = nt
+        nt.start()
+
+
+def start_cleanup_scheduler():
+    """开机排闹钟，并补上「进程在每天那个点之后才起来」漏掉的一趟。"""
+    _cl_arm()
+    try:
+        if _cl_auto_due():
+            log_mgr.log("[清理] 今天那一趟自动清理还没跑，开机补一次")
+            _cl_auto_pass()
+    except Exception as e:
+        log_mgr.log(f"[清理] 开机补跑没跑成（{type(e).__name__}）：{str(e)[:120]}", "warning")
+
+
+def _cl_payload() -> dict:
+    c = _cl_cfg()
+    st = _cl_state()
+    trash = _cl_trash_root()
+    # 账本自己不算「回收目录里的文件」：不然空目录会报成 1 个
+    n = sum(1 for p in trash.rglob("*") if p.is_file() and p.name != "manifest.json") if trash.is_dir() else 0
+    return {
+        "enabled": c["enabled"], "log_days": c["log_days"], "backup_days": c["backup_days"],
+        "download_days": c["download_days"], "trash_days": c["trash_days"],
+        "auto_groups": list(CL_AUTO_GROUPS), "list_cap": CL_LIST_CAP, "plan_ttl": CL_PLAN_TTL,
+        "auto_hour": f"{CL_AUTO_HOUR:02d}:{CL_AUTO_MIN:02d}",
+        "download_dir": str(_cl_download_root()), "trash_dir": str(trash),
+        "trash_count": n, "state": st, "last_auto": st.get("last_auto") or {},
+        "last_manual": st.get("last_manual") or {},
+        "labels": CL_GROUP_LABELS,
+    }
+
+
+class CleanupAccountBody(BaseModel):
+    enabled: Optional[bool] = None
+    log_days: Optional[int] = None
+    backup_days: Optional[int] = None
+    download_days: Optional[int] = None
+    trash_days: Optional[int] = None
+
+
+class CleanupRunBody(BaseModel):
+    hash: str = ""
+    groups: List[str] = []
+
+
+class CleanupRestoreBody(BaseModel):
+    ids: List[str] = []
+
+
+@app.get("/api/cleanup")
+def api_cleanup_get():
+    return _cl_payload()
+
+
+@app.get("/api/cleanup/trash")
+def api_cleanup_trash():
+    """回收目录里现在有什么、各来自哪儿（界面上的「回收目录」列表）。"""
+    rows = _cl_restore_trash()
+    return {"ok": True, "trash_dir": str(_cl_trash_root()), "count": len(rows),
+            "bytes": sum(r["bytes"] for r in rows), "rows": rows[:CL_LIST_CAP],
+            "hidden": max(0, len(rows) - CL_LIST_CAP)}
+
+
+@app.post("/api/cleanup/account")
+def api_cleanup_account(body: CleanupAccountBody, request: Request = None):
+    """清理参数只从这条口子写：机器令牌不该顺手把「会删文件」的开关打开。"""
+    if request is not None and _auth_token_only(request):
+        raise HTTPException(403, "机器令牌只开数据接口：按龄清理的开关和天数要从界面登录了再改")
+    data = body.model_dump(exclude_none=True)
+    upd: Dict[str, Any] = {}
+    if "enabled" in data:
+        upd["cleanup_enabled"] = bool(data["enabled"])
+    for k, key in (("log_days", "cleanup_log_days"), ("backup_days", "cleanup_backup_days"),
+                   ("download_days", "cleanup_download_days"), ("trash_days", "cleanup_trash_days")):
+        if k in data:
+            try:
+                v = int(float(data[k]))
+            except Exception:
+                raise HTTPException(400, f"{CL_GROUP_LABELS.get(k, k)}的天数要填整数（0 表示这一档不碰）")
+            if v < 0 or v > 3650:
+                raise HTTPException(400, f"{k} 只认 0–3650 天，收到的是 {v}")
+            upd[key] = v
+    if not upd:
+        raise HTTPException(400, "没说要改哪一项")
+    cfg.data.update(upd)
+    cfg.save()
+    _cl_arm()   # 天数、开关刚改过，闹钟按新时间重排
+    if "cleanup_enabled" in upd:
+        log_mgr.log(f"[清理] 按龄自动清理{'已打开' if upd['cleanup_enabled'] else '已关掉'}"
+                    f"（日志 {int(cfg.data.get('cleanup_log_days', 7))} 天 / 备份 "
+                    f"{int(cfg.data.get('cleanup_backup_days', 0))} 天 / 下载 "
+                    f"{int(cfg.data.get('cleanup_download_days', 0))} 天 / 回收目录 "
+                    f"{int(cfg.data.get('cleanup_trash_days', 30))} 天）")
+    return {"ok": True, **_cl_payload()}
+
+
+@app.post("/api/cleanup/preview")
+def api_cleanup_preview():
+    """干跑：只算名单，不删不挪。返回的指纹是给「按名单删除」用的。"""
+    plan = _cl_plan()
+    log_mgr.log(f"[清理] 看名单：日志 {plan['groups']['logs']['count']} 个 / 备份 "
+                f"{plan['groups']['backups']['count']} 个 / 下载成品 {plan['groups']['downloads']['count']} 个 / "
+                f"回收目录到期 {plan['groups']['trash']['count']} 个，"
+                f"合计 {plan['total_bytes'] / 1048576.0:.1f} MB（一个都没动）")
+    return plan
+
+
+@app.post("/api/cleanup/run")
+def api_cleanup_run(body: CleanupRunBody):
+    with _CL_LOCK:
+        return _cl_apply([g for g in (body.groups or []) if g], expect_hash=str(body.hash or ""))
+
+
+@app.post("/api/cleanup/restore")
+def api_cleanup_restore(body: CleanupRestoreBody):
+    return _cl_restore(list(body.ids or []))
 
 
 class MusicCookieBody(BaseModel):
@@ -13413,10 +17775,10 @@ def api_music_search(body: dict):
 
 @app.post("/api/music/playlist")
 def api_music_playlist(body: dict):
-    """解析歌单 URL（musicdl parseplaylist）。"""
+    """解析歌单或单曲链接（musicdl parseplaylist，单曲走各自的元数据接口）。"""
     url = (body.get("url") or body.get("playlist_url") or "").strip()
     if not url.startswith("http"):
-        raise HTTPException(400, "无效歌单链接")
+        raise HTTPException(400, "无效的歌单或单曲链接")
     sources = body.get("sources")
     out_dir = str(cfg.data.get("download_dir") or DEFAULT_DOWNLOAD_DIR)
     cookies = music_cookie_string(str(body.get("cookies") or ""))
@@ -14405,8 +18767,12 @@ def api_music_fingerprint(body: dict):
     # 下面三种失败原先只落在后台线程的日志里，界面上弹的是「正在指纹识别」，看着像成功
     from music_search import find_fpcalc
     if not find_fpcalc():
-        msg = ("未找到 fpcalc（Chromaprint），指纹识别未启动：随包的 chromaprint\\fpcalc.exe 缺失，"
-               "请重新解压便携包，或自行安装 Chromaprint 后把它加入 PATH")
+        if sys.platform == "win32":
+            msg = ("未找到 fpcalc（Chromaprint），指纹识别未启动：随包的 chromaprint" + os.sep + "fpcalc.exe 缺失，"
+                   "请重新解压便携包，或自行安装 Chromaprint 后把它加入 PATH")
+        else:
+            msg = ("未找到 fpcalc（Chromaprint），指纹识别未启动：随包的 chromaprint/fpcalc 缺失，"
+                   "请自行安装 Chromaprint 后把它加入 PATH（Debian/Ubuntu：apt install libchromaprint-tools）")
         log_mgr.log(f"指纹识别未启动（{Path(path).name}）：{msg}", "warning")
         return {"ok": False, "message": msg}
     if not api_key:
@@ -14914,6 +19280,18 @@ _LIVE_QUALITIES = ("", "best", "4K", "1440p", "1080p", "720p", "480p", "360p")
 _LIVE_MAX_MINUTES = 1440
 
 
+def _live_effective_minutes(*vals) -> int:
+    """录制时长上限：任务/房间自己设了非零值就按它，否则退回软件设置里的默认值。返回 0 表示不限时长。"""
+    for v in vals:
+        try:
+            n = int(v or 0)
+        except (TypeError, ValueError):
+            continue
+        if n > 0:
+            return min(n, _LIVE_MAX_MINUTES)
+    return 0
+
+
 def _hhmm(v) -> str:
     """时段写成 HH:MM 才算数，其余一律当没填"""
     mt = re.match(r"^(\d{1,2}):(\d{2})$", str(v or "").strip())
@@ -15156,6 +19534,7 @@ def api_live_monitor_scan():
                     "allow_playlist": False,
                     "format": m.get("fmt") or cfg.data.get("format", "mkv"),
                     "video_quality": m.get("video_quality") or cfg.data.get("video_quality", "best"),
+                    "live_max_minutes": int(m.get("max_minutes") or 0),
                 })
                 if ids:
                     m["rec_task"] = ids[0]
@@ -15168,8 +19547,9 @@ def api_live_monitor_scan():
                         _room_cfg.append("容器 " + str(m["fmt"]))
                     if m.get("video_quality"):
                         _room_cfg.append("画质 " + str(m["video_quality"]))
-                    if m.get("max_minutes"):
-                        _room_cfg.append(f"最长 {m['max_minutes']} 分钟")
+                    _cap = _live_effective_minutes(m.get("max_minutes"), cfg.data.get("live_max_minutes"))
+                    if _cap:
+                        _room_cfg.append(f"最长 {_cap} 分钟")
                     if m.get("auto_transcode"):
                         _room_cfg.append("录完转 " + str(
                             (TRANSCODE_PRESETS.get(m["auto_transcode"]) or {}).get("label", m["auto_transcode"])))
@@ -15185,7 +19565,8 @@ def api_live_monitor_scan():
                 m["status"] = "冷却中(防重复开录)"
                 m["last_live"] = True
                 try:
-                    tg_notifier.send(f"🔴 直播开播，已开始录制\n{m.get('title') or url}\n{url}")
+                    _notify_enqueue("live", "直播开播",
+                                    f"🔴 直播开播，已开始录制\n{m.get('title') or url}\n{url}")
                 except Exception:
                     pass
             elif is_live_now and already:
@@ -15227,25 +19608,32 @@ def _live_active_status(t) -> bool:
         TaskStatus.DOWNLOADING.value, TaskStatus.QUEUED.value, TaskStatus.PAUSED.value)
 
 
+def _live_used_seconds(t) -> float:
+    """这一场已经录了多久。还没记开始时间（排在队里没开跑）时算 0，避免一入队就被收掉。"""
+    if t is None or not (t.started_at or "").strip():
+        return 0.0
+    try:
+        return max(0.0, (datetime.now() - datetime.fromisoformat(t.started_at)).total_seconds())
+    except Exception:
+        return 0.0
+
+
 def _live_recording_tick():
     """每房间设置的执行环节：录满最长时长就收，这一场结束就按设置自动转码。
     和扫描分开跑，因为「开播」只决定要不要开录，收尾要看的是任务本身的状态。"""
-    for m in _load_live_monitors():
+    monitors = _load_live_monitors()
+    gcap = cfg.data.get("live_max_minutes")
+    for m in monitors:
         tid = m.get("rec_task") or ""
         if not tid:
             continue
         t = queue.tasks.get(tid)
-        mm = int(m.get("max_minutes") or 0)
+        mm = _live_effective_minutes(m.get("max_minutes"), gcap)
         if mm > 0 and _live_active_status(t):
-            used = 0.0
-            try:
-                used = (datetime.now() - datetime.fromisoformat(t.started_at)).total_seconds()
-            except Exception:
-                used = 0.0
-            if used >= mm * 60:
+            if _live_used_seconds(t) >= mm * 60:
                 try:
-                    queue.end_live_tasks([tid])
-                    log_mgr.log(f"本房间已录满 {mm} 分钟，自动结束录制：{(t.title or t.url)[:60]}")
+                    queue.end_live_tasks([tid], reason=f"已录满 {mm} 分钟，自动结束并保存")
+                    log_mgr.log(f"本房间已录满 {mm} 分钟，自动结束录制并保存成品：{(t.title or t.url)[:60]}")
                 except Exception as e:
                     log_mgr.log(f"录满自动结束失败: {e}", "warning")
                 # 录满就维持「暂停」：这条直播还没下播时不该立刻又开录下一场，
@@ -15269,6 +19657,19 @@ def _live_recording_tick():
             else:
                 fields["rec_transcode"] = ""
             _patch_live_monitor(m.get("id"), **fields)
+    # 手动「开始录制」的那几场没有房间设置可挂，只看任务自己带的时长和全局默认
+    tied = {m.get("rec_task") for m in monitors if m.get("rec_task")}
+    for t in list(queue.tasks.values()):
+        if not t.is_live or t.id in tied or not _live_active_status(t):
+            continue
+        mm = _live_effective_minutes((getattr(t, "_opts", {}) or {}).get("live_max_minutes"), gcap)
+        if mm <= 0 or _live_used_seconds(t) < mm * 60:
+            continue
+        try:
+            queue.end_live_tasks([t.id], reason=f"已录满 {mm} 分钟，自动结束并保存")
+            log_mgr.log(f"已录满 {mm} 分钟，自动结束录制并保存成品：{(t.title or t.url)[:60]}")
+        except Exception as e:
+            log_mgr.log(f"录满自动结束失败: {e}", "warning")
 
 
 # -------------------- 直播监控定时扫描 --------------------
@@ -15340,15 +19741,14 @@ def wecom_get_token() -> str:
         return ""
 
 
-def wecom_send(text: str, flag: str = "") -> bool:
+def wecom_send_detail(text: str) -> tuple:
+    """发一条企业微信文本消息，返回 (成功, 失败原因)。"""
     if not cfg.data.get("wecom_enabled"):
-        return False
-    if flag and not cfg.data.get(flag, True):
-        return False
+        return False, "企业微信没启用"
     token = wecom_get_token()
     agent_id = cfg.data.get("wecom_agent_id")
     if not token or not agent_id:
-        return False
+        return False, ("CorpID / Secret 换不到 access_token" if not token else "AgentId 没填")
     try:
         r = requests.post(
             f"https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token={token}",
@@ -15364,11 +19764,21 @@ def wecom_send(text: str, flag: str = "") -> bool:
         data = r.json() or {}
         if data.get("errcode") != 0:
             log_mgr.log(f"企业微信发送失败: {data}", "warning")
-            return False
-        return True
+            # 缓存的 token 过期时（40014/42001/41001）别把它带进下一次重试：
+            # 那样 outbox 的每一次重试都会撞上同一个已经作废的票，一直失败到被丢弃。
+            if data.get("errcode") in (40014, 42001, 41001):
+                _wecom_token_cache["token"], _wecom_token_cache["expires"] = "", 0
+            return False, f"errcode {data.get('errcode')}：{(data.get('errmsg') or '')[:120]}"
+        return True, ""
     except Exception as e:
         log_mgr.log(f"企业微信异常: {e}", "warning")
+        return False, f"请求没发出去：{e}"
+
+
+def wecom_send(text: str, flag: str = "") -> bool:
+    if flag and not cfg.data.get(flag, True):
         return False
+    return wecom_send_detail(text)[0]
 
 
 @app.post("/api/storage/test")
@@ -15418,43 +19828,21 @@ def api_wecom_test():
     return {"ok": True}
 
 
-# 把企业微信挂到 TelegramNotifier 的完成/失败/订阅通知（并行发送，各用自己的开关）
-_orig_notify_done = TelegramNotifier.notify_done
-_orig_notify_fail = TelegramNotifier.notify_fail
-_orig_notify_sub = TelegramNotifier.notify_sub
+# 通知 outbox 的读数与操作。发送本身在后台线程里跑，这两个 POST 只改表 + 踢一脚，
+# 所以界面点「立即重试」不会对着一个 15 秒超时的请求转圈。
+@app.get("/api/notify/outbox")
+def api_notify_outbox():
+    return _outbox_payload()
 
 
-def _notify_done_with_wecom(self, title: str, url: str = "", path: str = ""):
-    _orig_notify_done(self, title, url, path)
-    try:
-        wecom_send(f"✅ 下载完成\n{title or url}\n{path or url}", "wecom_notify_done")
-    except Exception:
-        pass
+@app.post("/api/notify/outbox/retry")
+def api_notify_outbox_retry():
+    return dict(_outbox_payload(), queued=_outbox_mark_due())
 
 
-def _notify_fail_with_wecom(self, title: str, url: str = "", err: str = ""):
-    _orig_notify_fail(self, title, url, err)
-    try:
-        wecom_send(f"❌ 下载失败\n{title or url}\n{(err or '')[:200]}", "wecom_notify_fail")
-    except Exception:
-        pass
-
-
-def _notify_sub_with_wecom(self, sub_title: str, new_count: int, samples: List[str] = None):
-    _orig_notify_sub(self, sub_title, new_count, samples)
-    try:
-        extra = "\n".join(f"· {x}" for x in (samples or [])[:5])
-        wecom_send(
-            f"📢 订阅更新: {sub_title}\n新增 {new_count} 条\n{extra}",
-            "wecom_notify_sub",
-        )
-    except Exception:
-        pass
-
-
-TelegramNotifier.notify_done = _notify_done_with_wecom
-TelegramNotifier.notify_fail = _notify_fail_with_wecom
-TelegramNotifier.notify_sub = _notify_sub_with_wecom
+@app.post("/api/notify/outbox/clear")
+def api_notify_outbox_clear():
+    return {"ok": True, "removed": _outbox_clear_all()}
 
 
 # -------------------- B站收藏 / 关注 / 稍后再看 --------------------
@@ -15846,6 +20234,7 @@ def api_bili_qr_poll(body: BiliQrPollBody):
             pc["bilibili"] = {"source": "file", "file": str(path), "browser": "chrome"}
             cfg.data["platform_cookies"] = pc
             cfg.save()
+            drop_all_cookie_prefs()   # 刚拿到登录态：之前「这条匿名就被挡」的判定要重新算
             return {"ok": True, "code": 0, "message": "登录成功，Cookie 已保存", "status": "success"}
         msg_map = {86101: "等待扫码", 86090: "已扫码，请在手机确认", 86038: "二维码已过期"}
         return {
@@ -16465,14 +20854,14 @@ def start_live_monitor_scheduler():
                 if items:
                     # 有监控时才扫，避免空转日志
                     api_live_monitor_scan()
+                # 录满自动收 + 录完自动转码：手动开的录制没有监控可挂，所以每轮都要跑
+                try:
+                    _live_recording_tick()
+                except Exception as e:
                     try:
-                        # 录满自动收 + 录完自动转码，都跟着这一轮跑
-                        _live_recording_tick()
-                    except Exception as e:
-                        try:
-                            log_mgr.log(f"直播录制收尾检查异常: {e}", "warning")
-                        except Exception:
-                            pass
+                        log_mgr.log(f"直播录制收尾检查异常: {e}", "warning")
+                    except Exception:
+                        pass
             except Exception as e:
                 try:
                     log_mgr.log(f"直播监控定时扫描异常: {e}", "warning")
@@ -18006,6 +22395,188 @@ def verify_media_file(path) -> str:
     return ""
 
 
+def tier_readback(path, want_q, listed_max: int = 0, audio_only: bool = False) -> str:
+    """成品回读：文件真实高度对一下用户选的档位，对不上就说清是谁的问题。返回空串=不用多说。
+
+    为什么单独做这一步：在 10-13 之前，「成功」只代表进程退出码 0 加文件能播。
+    那次 4K 静默降成 1080p 就是从这儿漏过去的 —— 卡片写着「成功」，谁也没看出
+    实际下到的是清单末尾那条 1080p 渐进流。话术必须点名是谁的问题，
+    只说「没到 4K」等于把上游不给和本地选错混成一句。
+    """
+    if audio_only:
+        return ""
+    want_h = quality_height_cap(want_q)
+    if not want_h:
+        return ""          # 选的是 best：没有上限可比，实得多少算多少
+    try:
+        got_h = int((_ffprobe_info(Path(path)) or {}).get("height") or 0) if path else 0
+    except Exception:
+        got_h = 0
+    if not got_h:
+        return ""          # 读不到高度（没 ffprobe、成品其实是音频）不瞎判
+    # 编码按 16 对齐会多出一几十行（2176 / 1088 这类），差一点不算偏差，否则天天误报
+    if abs(got_h - want_h) <= max(16, int(want_h * 0.05)):
+        return ""
+    listed = int(listed_max or 0)
+    if got_h > want_h:
+        return (f"所选 {want_q}，成品 {got_h}p：高度上限没拦住"
+                "（自定义参数或站点只给这一条流的时候会这样，体积也比预期大）")
+    if listed >= want_h:
+        return (f"所选 {want_q}，成品只有 {got_h}p：清单里明明有 {listed}p，"
+                "差在选择/合并这一段，不是上游不给")
+    if listed > got_h:
+        return (f"所选 {want_q}，成品 {got_h}p：上游清单最高只到 {listed}p，"
+                f"而它比实得的还高一档，这一档没下满")
+    if listed > 0:
+        return f"所选 {want_q}，成品 {got_h}p：上游清单最高就到这儿，这一档它给不了"
+    return f"所选 {want_q}，成品 {got_h}p：解析清单已过期，判不出上游给到哪儿"
+
+
+# ---------- 成品校验值核对（期望 MD5/SHA 比对）----------
+# 只认 hashlib 已有的这四个：界面那侧允许 sha256 / SHA-256 / SHA2-256 各种写法，
+# 由 normalize_hash_algo 收成同一个名字，长度对不上就是「不是这个算法」。
+_HASH_ALGOS = {"md5": 32, "sha1": 40, "sha256": 64, "sha512": 128}
+_HASH_LABELS = {"md5": "MD5", "sha1": "SHA-1", "sha256": "SHA-256", "sha512": "SHA-512"}
+# 站点页面和磁力参数常写成 sha-256=xxx / MD5: xxx，收进来先把这层前缀剥掉
+_HASH_PREFIX_RE = re.compile(r"^(?:md5|sha[-_]?(?:1|2(?:[-_]?2)?(?:56|12)|512)|checksum|哈希|校验值|摘要)\s*[:=/]\s*", re.I)
+# 只写 sha / sha2 这种半截名字时不猜：交给长度反推，猜错会得到一句假警报
+_HASH_ALGO_MAP = {
+    "md5": "md5",
+    "sha1": "sha1",
+    "sha256": "sha256", "sha2256": "sha256",
+    "sha512": "sha512", "sha2512": "sha512",
+}
+
+
+def normalize_hash_algo(text) -> str:
+    """SHA-256 / sha256 / sha2-256 → sha256；认不出或写 auto → 空串（按长度反推）。"""
+    key = re.sub(r"[^0-9a-z]", "", str(text or "").lower())
+    if not key or key == "auto":
+        return ""
+    return _HASH_ALGO_MAP.get(key, "")
+
+
+def normalize_hash_expect(value, algo="auto") -> Tuple[str, str, str]:
+    """界面/接口交来的期望校验值 → (小写 hex, 算法, 一句问题说明)。hex 为空 = 没让核对。
+
+    算法可以明说，也可以由长度反推（32/40/64/128 各对应一家）。两边都给了却对不上时报错，
+    不静默按其中一边算 —— 那是复制漏了字符最常见的样子，硬算只会得到一句「对不上」，
+    把人往「下载坏了」那条路上带去。
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return "", "", ""
+    raw = _HASH_PREFIX_RE.sub("", raw).strip()
+    cleaned = re.sub(r"[\s;:\-]", "", raw).lower()
+    if not cleaned:
+        return "", "", "期望校验值是空的"
+    if not re.fullmatch(r"[0-9a-f]+", cleaned):
+        bad = next(ch for ch in cleaned if ch not in "0123456789abcdef")
+        return "", "", (f"期望校验值里有不是十六进制的字符（「{bad}」，整串 {len(cleaned)} 位）："
+                        "摘要只有 0-9 和 a-f，Base64 那种写法（sha256=xxxx= 这样）这里收不了，请先换成十六进制")
+    by_len = {v: k for k, v in _HASH_ALGOS.items()}.get(len(cleaned), "")
+    named = normalize_hash_algo(algo)
+    if named and len(cleaned) != _HASH_ALGOS[named]:
+        return "", "", (f"算法选了 {_HASH_LABELS[named]}，那串应该是 {_HASH_ALGOS[named]} 位十六进制字符，"
+                        f"可这串只有 {len(cleaned)} 位：多半是复制的时候漏了头或尾"
+                        + (f"，看着更像 {_HASH_LABELS[by_len]}" if by_len else ""))
+        return "", "", (f"算法选了 {_HASH_LABELS[named]}（要 {_HASH_ALGOS[named]} 位），"
+                        f"可这串是 {len(cleaned)} 位，更像 {_HASH_LABELS[by_len]}："
+                        "要么算法点错了，要么复制的时候漏了字符")
+    final = named or by_len
+    if not final:
+        return "", "", (f"认不出这串期望校验值：{len(cleaned)} 个十六进制字符，而 "
+                        + "、".join(f"{_HASH_LABELS[a]} 是 {_HASH_ALGOS[a]} 位" for a in _HASH_ALGOS)
+                        + "；请点明算法，或换成完整的一串")
+    return cleaned, final, ""
+
+
+def _hash_short(hexed: str) -> str:
+    """摘要缩写给人看：头 8 尾 6，中间一个省略号。全长贴进界面会把卡片挤成一长条。"""
+    h = str(hexed or "")
+    if len(h) <= 16:
+        return h
+    return f"{h[:8]}…{h[-6:]}"
+
+
+def hash_media_file(path, algo: str) -> str:
+    """对成品算一次摘要（1MB 分块，几个 G 的片也不会整份读进内存）。读不出来返回空串。"""
+    if algo not in _HASH_ALGOS:
+        return ""
+    try:
+        h = hashlib.new(algo)
+        with Path(path).open("rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+    except Exception:
+        return ""
+    return h.hexdigest()
+
+
+def hash_rewrite_steps(cfg_like: dict, kind: str = "link") -> List[str]:
+    """这一单下完还会不会有人改动成品字节 —— 决定期望校验值可不可比。
+
+    这条链默认就会动字节：容器按所选档位无损 remux 一遍、封面/元数据/章节/字幕往轨道里塞、
+    SponsorBlock 剪片头、按时间点选段，每一步都重写文件。所以拿发布方给的 MD5 去对
+    站内解析下来的成品，对不上是应该的，不是下载坏了。磁力/种子是 aria2 原样落盘，不算重写。
+    """
+    if kind == "torrent":
+        return []
+    c = cfg_like or {}
+    steps: List[str] = []
+    fmt = str(c.get("format") or "").strip().lower()
+    if fmt in ("mp3", "m4a", "flac", "wav", "opus", "aac", "ogg"):
+        steps.append(f"抽成音频（{fmt}）")
+    elif fmt in ("mp4", "mkv", "webm"):
+        steps.append(f"封装成 {fmt}")
+    if c.get("audio_only"):
+        steps.append("仅下载音频")
+    if c.get("embed_thumb"):
+        steps.append("内嵌封面")
+    if c.get("embed_meta"):
+        steps.append("内嵌元数据")
+    if c.get("embed_chapters"):
+        steps.append("内嵌章节")
+    if c.get("embed_sub"):
+        steps.append("内嵌字幕")
+    if str(c.get("sponsorblock") or "off").lower() != "off":
+        steps.append("按 SponsorBlock 处理广告段")
+    if str(c.get("download_section") or "").strip():
+        steps.append("按时间点选段")
+    if c.get("use_hls_engine"):
+        steps.append("HLS 专用引擎合并")
+    if c.get("local_ai_transcribe") or c.get("local_ai_translate"):
+        steps.append("本地转写/翻译写字幕")
+    return steps
+
+
+def hash_readback(path, want_hex: str, algo: str, steps: List[str]) -> Tuple[str, str, str]:
+    """成品摘要对一遍期望值 → (结论 ok/bad/unknown, 实算摘要, 那句要上屏的话)。
+
+    一致时返回空串（不占卡片一行，只在运行日志留一句），
+    对不上才说话，并且分两种说：本机刚重写过成品的，怪不到下载头上。
+    """
+    want = str(want_hex or "").lower()
+    if not want or algo not in _HASH_ALGOS:
+        return "", "", ""
+    got = hash_media_file(path, algo)
+    if not got:
+        return ("unknown", "",
+                f"想按 {_HASH_LABELS[algo]} 核对校验值，但成品读不出来（被移走或没有读权限），这一项没法判")
+    label = _HASH_LABELS[algo]
+    if got == want:
+        return "ok", got, ""
+    both = f"期望 {label} {_hash_short(want)}，成品实算 {_hash_short(got)}"
+    if steps:
+        return ("bad", got,
+                f"校验值对不上：{both}。这一单下完在本机还过了「{'、'.join(steps)}」这几步，"
+                "成品是被重写过一遍的文件，和上游那份原文件的摘要本来就不会相同 —— "
+                "这一项要对磁力/种子或原样落盘的直链才有意义（或者先把这几步关掉再下）")
+    return ("bad", got,
+            f"校验值对不上：{both}：这份文件不是期望的那一支"
+            "（上游给错、下载被截断、算法点错都算在这条里）；文件已保留，没删")
+
+
 def scan_library(root=None) -> List[dict]:
     base = Path(root or cfg.data.get("download_dir") or DEFAULT_DOWNLOAD_DIR)
     if not base.is_dir():
@@ -18015,7 +22586,10 @@ def scan_library(root=None) -> List[dict]:
     audio_ext = {e for e in MUSIC_AUDIO_EXTS if e != ".webm"}   # webm 在本页按视频处理
     media_ext = {".mp4", ".mkv", ".webm", ".flv", ".ts", ".mov", ".avi"} | audio_ext
     items = []
-    files = [p for p in base.rglob("*") if p.is_file() and p.suffix.lower() in media_ext and not p.name.startswith(".")]
+    # 回收目录里的东西不算成品：那是按龄清理挪出去等真删的，媒体库继续列它就是幽灵行
+    files = [p for p in base.rglob("*")
+             if p.is_file() and p.suffix.lower() in media_ext and not p.name.startswith(".")
+             and CL_TRASH_DIRNAME not in p.parts]
     files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
     for p in files[:500]:
         try:
@@ -18210,7 +22784,7 @@ def parse_rss_feed(feed_url: str, proxy: str = "") -> dict:
 
 TRANSCODE_PRESETS = {
     "mp4": {
-        "label": "转 MP4 (H.264 + AAC)",
+        "label": "转 MP4（重编码 + AAC，编码器见设置）",
         "args": ["-c:v", "libx264", "-preset", "fast", "-crf", "23", "-c:a", "aac", "-b:a", "192k"],
         "ext": ".mp4",
     },
@@ -18252,6 +22826,12 @@ def api_transcode_presets():
     }
 
 
+@app.get("/api/video/encoders")
+def api_video_encoders(refresh: bool = False):
+    """本机每个候选编码器起不起得来、起不来为什么，以及按当前设置排出来的降级链。"""
+    return _video_encoders_payload(bool(refresh))
+
+
 class TranscodeBody(BaseModel):
     path: str
     preset: str = "mp4"
@@ -18260,42 +22840,72 @@ class TranscodeBody(BaseModel):
 
 def _run_transcode(src_path: str, preset_id: str, delete_source: bool = False):
     """按预设转码一个文件，返回 (是否成功, 成品路径, 错误文字)。
-    界面按钮和直播录完的自动转码都走这里，免得两条路的口径不一样。"""
+    界面按钮和直播录完的自动转码都走这里，免得两条路的口径不一样。
+
+    预设里写死的那串 libx264 会换成设置里排出来的编码器链，一个不行换下一个；
+    `-c copy` 和抽音频那几条预设不重编视频，原样走，不受这项设置影响。
+    """
     src = Path(src_path)
     if not src.is_file():
         return False, "", "文件不存在: " + str(src)
     preset = TRANSCODE_PRESETS.get(preset_id) or TRANSCODE_PRESETS["mp4"]
-    ff = ffmpeg_mgr.find()
+    ff = ffmpeg_mgr.find(ffmpeg_mgr.manual_path)
     if not ff:
         return False, "", "未找到 FFmpeg"
     out = src.with_suffix(preset["ext"])
     if out.resolve() == src.resolve():
         out = src.with_name(src.stem + "_out" + preset["ext"])
-    cmd = [ff, "-y", "-i", str(src)] + list(preset["args"]) + [str(out)]
+    base = list(preset["args"])
+
+    def _attempt(args: List[str], mult: float = 1.0) -> tuple:
+        cmd = [ff, "-y", "-i", str(src)] + list(args) + [str(out)]
+        budget = int(3600 * max(1.0, float(mult)))
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=budget,
+                               encoding="utf-8", errors="replace",
+                               creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
+        except subprocess.TimeoutExpired:
+            out.unlink(missing_ok=True)
+            return False, f"转码跑了 {budget} 秒被掐断（编码器太慢可以把档位调快）"
+        if r.returncode == 0 and out.is_file():
+            return True, ""
+        # 半成品不留：换编码器是从头编一遍，留着上一次的残件只会让人误判
+        out.unlink(missing_ok=True)
+        return False, (r.stderr or r.stdout or "")[-500:]
+
+    def _with_encoder(enc: dict) -> List[str]:
+        # copy 失败要重编时按 mp4 预设那套参数走（音频也重编成 AAC），只换视频编码器那一段
+        return _swap_encoder(list(TRANSCODE_PRESETS["mp4"]["args"]), enc["args"])
+
     try:
-        r = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=3600,
-            encoding="utf-8", errors="replace",
-            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
-        )
-        if r.returncode != 0 or not out.is_file():
-            err = (r.stderr or r.stdout or "")[-500:]
-            if preset_id == "flv_to_mp4":
-                # copy 失败说明流本身不合规格，退回重编码再试一次
-                cmd2 = [
-                    ff, "-y", "-i", str(src),
-                    "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-                    "-c:a", "aac", "-b:a", "192k", str(out),
-                ]
-                r2 = subprocess.run(
-                    cmd2, capture_output=True, text=True, timeout=3600,
-                    encoding="utf-8", errors="replace",
-                    creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
-                )
-                if r2.returncode != 0 or not out.is_file():
-                    return False, "", "转码失败: " + (r2.stderr or "")[-300:]
-            else:
-                return False, "", "转码失败: " + err
+        if _preset_needs_encoder(base):
+            chain = _video_encode_chain(23)
+            log_mgr.log(f"开始转码: {src.name}（{preset['label']} · 用 {chain[0]['label']}）")
+            err, done = "", False
+            for idx, enc in enumerate(chain):
+                ok, err = _attempt(_swap_encoder(base, enc["args"]), enc["timeout_mult"])
+                if ok:
+                    done = True
+                    if idx:
+                        log_mgr.log(f"转码改用了 {enc['label']}: {out.name}")
+                    break
+                rest = chain[idx + 1:]
+                if rest:
+                    why1 = " ".join((err or "").split())[-140:]
+                    log_mgr.log(f"转码用 {enc['label']} 没成（{why1}），换 {rest[0]['label']} 重来", "warning")
+            if not done:
+                return False, "", "转码失败: " + (err or "")[-300:]
+        else:
+            ok, err = _attempt(base)
+            if not ok and preset_id == "flv_to_mp4":
+                # copy 失败说明流本身不合规格，退回重编码再试一次（编码器同样听设置的）
+                chain = _video_encode_chain(23)
+                for enc in chain:
+                    ok, err = _attempt(_with_encoder(enc), enc["timeout_mult"])
+                    if ok:
+                        break
+            if not ok:
+                return False, "", "转码失败: " + (err or "")[-300:]
         if delete_source and out.is_file() and src.resolve() != out.resolve():
             try:
                 src.unlink()
@@ -18349,11 +22959,24 @@ def api_aria2_status():
         out["error"] = str(e)
     try:
         import aria2_daemon
-        out["binary"] = aria2_daemon.find_binary(str(cfg.data.get("aria2_bin") or ""), APP_DIR)
+        out["binary"] = aria2_daemon.find_binary(str(cfg.data.get("aria2_bin") or ""), APP_DIR, is_native_binary)
         out["daemon"] = aria2_daemon.owned()
     except Exception as e:
         out["binary_error"] = str(e)
     out["autostart"] = bool(cfg.data.get("aria2_autostart", True))
+    if not out["online"] and out["autostart"]:
+        # 「检测 aria2」点了就该把该拉起的人拉起来；拉不动时把原因带回去，
+        # 界面才不至于只说一句「RPC 无应答」却不知道下一步做什么
+        ok_ensure, why_ensure = bt_ensure(dict(cfg.data), lambda m, level="info": log_mgr.log(m, level))
+        out["ensure"] = {"ok": bool(ok_ensure), "why": str(why_ensure or "")}
+        if ok_ensure:
+            out["online"] = True
+            # 拉起之后重读一次归属：不然是「刚刚明明是我们起的，界面却说不是本程序启的」
+            try:
+                import aria2_daemon
+                out["daemon"] = aria2_daemon.owned()
+            except Exception:
+                pass
     with _BT_WATCH_LOCK:
         out["seeding"] = len(_BT_WATCH)
     return out
@@ -18450,14 +23073,21 @@ def api_torrent_seeding():
     live = {}
     note = ""
     ac = _bt_client(dict(cfg.data))
-    try:
-        for st in ac.tell_active(["gid", "status", "totalLength", "completedLength", "uploadLength",
-                                  "uploadSpeed", "seedingTime", "numSeeders", "numPeers", "bittorrent"]):
-            gid = str(st.get("gid") or "")
-            if gid:
-                live[gid] = st
-    except Exception as e:
-        note = f"读 aria2 活动任务失败：{e}"
+    if not ac.ping():
+        # 页面一打开就轮询这里。RPC 没人应答时先把「自动拉起」这条路走一遍，
+        # 拉不动才把原因写出来 —— 否则界面上永远是一行 urllib 的原文
+        ok_ensure, why_ensure = bt_ensure(dict(cfg.data), lambda m, level="info": log_mgr.log(m, level))
+        if not ok_ensure:
+            note = "读 aria2 活动任务失败：" + str(why_ensure or "")
+    if not note:
+        try:
+            for st in ac.tell_active(["gid", "status", "totalLength", "completedLength", "uploadLength",
+                                      "uploadSpeed", "seedingTime", "numSeeders", "numPeers", "bittorrent"]):
+                gid = str(st.get("gid") or "")
+                if gid:
+                    live[gid] = st
+        except Exception as e:
+            note = f"读 aria2 活动任务失败：{aria2_err_cn(e, dict(cfg.data))}"
 
     def _row_fields(st: dict) -> dict:
         """把 aria2 的一条任务读数摊成界面要的字段。
@@ -18695,7 +23325,7 @@ def api_bt_limit(body: BtLimitBody):
 
 
 class BtRuleTestBody(BaseModel):
-    """试跑自动分类：给名字或给一条磁力/种子链接，两者都有时按链接算。"""
+    """试跑自动分类：给名字、给一条磁力/种子链接，或给一条普通下载链接。"""
     name: str = ""
     url: str = ""
 
@@ -18707,25 +23337,39 @@ def api_torrent_rules_test(body: BtRuleTestBody):
     自动分类是批量生效的：一条规则写歪，之后所有撞上它的种子都落到别处，事后翻目录才发现就晚了。
     所以这里给界面一个当场验证的入口，并且把「用的是哪个名字、名字从哪来」一并回出去——
     磁力在元数据到手前根本没有名字可比，这点必须让用户看见，而不是给个空结果让人猜。
+
+    普通下载链接（http/https）也收：这一类只有「链接规则」问得到，回话里会写明它走的是哪一档，
+    以及为什么它不吃「都不命中时存到」那个兜底目录。
     """
     c = dict(cfg.data)
-    rules = c.get("bt_auto_rules") or []
+    rules = [r for r in (c.get("bt_auto_rules") or []) if isinstance(r, dict)]
     base = str(c.get("download_dir") or DEFAULT_DOWNLOAD_DIR)
     url = str(body.url or "").strip()
     nm = str(body.name or "").strip()
+    probe_url = ""
+    ref = None
+    kind = "name"          # name = 只给了个名字；bt = 磁力/种子；url = 普通下载链接
     if url:
         ref = parse_torrent_ref(url)
-        if not ref:
-            raise HTTPException(400, "这条链接既不是磁力（magnet:）也不是本机 .torrent，规则试不了")
-        name, whence = bt_rule_name(ref, log_mgr.log)
+        if ref:
+            name, whence = bt_rule_name(ref, log_mgr.log)
+            probe_url = url          # 磁力/种子：先问名字规则，没中再问链接规则
+            kind = "bt"
+        elif url.lower().startswith(("http://", "https://")):
+            name, whence = "", "普通下载链接（这一类没有种子名可比，只问链接规则）"
+            probe_url = url
+            kind = "url"
+        else:
+            raise HTTPException(400, "这条既不是磁力（magnet:）、本机 .torrent，也不是 http(s) 链接")
     elif nm:
         name, whence = nm, "界面现填的名字"
     else:
-        raise HTTPException(400, "要试什么？写一个种子名字，或贴一条磁力 / 种子链接")
+        raise HTTPException(400, "要试什么？写一个种子名字，或贴一条磁力 / 种子 / 普通下载链接")
+    is_bt = kind == "bt"
     if not rules:
         return {"ok": True, "matched": None, "name": name, "name_from": whence, "dir": base,
-                "message": "还没配规则：任何种子都先存到默认下载目录"}
-    hit, why = bt_rule_match(name, rules) if name else (None, "")
+                "message": "还没配规则：任何任务都先存到默认下载目录"}
+    hit, why = _rule_decide(name, probe_url, rules)
     if hit:
         sub = str(hit.get("subdir") or "")
         target = str(Path(base) / sub) if sub else base
@@ -18734,17 +23378,50 @@ def api_torrent_rules_test(body: BtRuleTestBody):
                 "message": (f"会存到 {target}" if sub
                             else f"{why}，但这条规则没填子目录 → 仍存默认目录 {base}")}
     fb, _fb_bad = bt_rule_subdir(c.get("bt_auto_fallback"))
-    if not name:
+    has_url_rules = any(str(r.get("scope") or "name") == "url" for r in rules)
+    asked = "名字与链接的规则" if (has_url_rules and is_bt) else (
+        "链接规则" if kind == "url" else "名字规则")
+    if is_bt and not name:
         tail = f"兜到 {Path(base) / fb}" if fb else "仍存默认目录"
         return {"ok": True, "matched": None, "name": "", "name_from": whence,
                 "dir": str(Path(base) / fb) if fb else base,
-                "message": f"这条现在还没有可比的名字（{whence}），{tail}"}
+                "message": f"这条现在还没有可比的名字（{whence}），{asked}都没命中 → {tail}"}
+    if kind == "url":
+        return {"ok": True, "matched": None, "name": name, "name_from": whence, "dir": base,
+                "message": "链接规则一条都没命中 → 存默认目录（「都不命中时存到」那个兜底只管磁力 / 种子）"}
     if fb:
         return {"ok": True, "matched": None, "name": name, "name_from": whence,
                 "dir": str(Path(base) / fb),
-                "message": f"一条规则都没命中 → 按兜底目录存到 {Path(base) / fb}"}
+                "message": f"{asked}都没命中 → 按兜底目录存到 {Path(base) / fb}"}
     return {"ok": True, "matched": None, "name": name, "name_from": whence, "dir": base,
-            "message": "一条规则都没命中，也没配兜底目录 → 存默认目录"}
+            "message": f"{asked}都没命中，也没配兜底目录 → 存默认目录"}
+
+
+@app.get("/api/clipboard")
+def api_clipboard_status():
+    """界面每 2 秒问一次：开关开没开、有没有刚发现还没处理的链接。
+
+    读到的链接只在这里经 loopback 交给本机浏览器，不写日志、不落任何状态文件；
+    开关关着时连待定内容都不交出（默认关必须是真关，不是只停线程）。
+    """
+    enabled = bool(cfg.data.get("clipboard_watch"))
+    with _clip_lock:
+        pend = dict(_clip_state["pending"]) if (_clip_state["pending"] and enabled) else None
+        info = {"checks": _clip_state["checks"], "hits": _clip_state["hits"],
+                "error": _clip_state["error"] if enabled else "",
+                "supported": sys.platform == "win32", "since": _clip_state["since"]}
+    return {"ok": True, "enabled": enabled, "pending": pend, "poll_sec": CLIP_POLL_SEC, **info}
+
+
+@app.post("/api/clipboard/clear")
+def api_clipboard_clear():
+    """用户已经表过态（加入或忽略），这一条就翻篇；不看内容、也不留记录。
+
+    「加入」也只是把链接填回输入框，之后要不要解析、要不要入队仍然归用户按。
+    """
+    with _clip_lock:
+        _clip_state["pending"] = None
+    return {"ok": True}
 
 
 @app.get("/api/queues")
@@ -18831,15 +23508,25 @@ def _sse_state() -> dict:
         "paused": bool(queue.paused),
         "pending": len(queue.pending),
         "throttle": HOST_THROTTLE.snapshot(),
+        "window": queue.window_status(),
     }
 
 
 def _sse_state_sig(state: dict) -> str:
     """结构签名：任务增删、改名、换队列、变状态才算变；进度交给 prog 主题。
-    throttle 的剩余秒数每拍都在掉，所以只带不签。"""
+    throttle 的剩余秒数每拍都在掉，所以只带不签。定时窗同理只签「开没开、压了几条」，
+    还有几分钟到点这种事界面自己按 resume_at 倒数，不必为此每推一帧整张任务表。"""
     slim = [{k: v for k, v in t.items() if k not in SSE_VOLATILE_KEYS} for t in state["tasks"]]
+    w = state.get("window") or {}
+    wkey = {
+        "open": w.get("open"),
+        "resume_at": w.get("resume_at"),
+        "held": w.get("held"),
+        "queues": [{"name": q.get("name"), "open": q.get("open"), "held": q.get("held")}
+                   for q in (w.get("queues") or [])],
+    }
     return json.dumps(
-        {"t": slim, "r": state["running"], "p": state["paused"], "n": state["pending"]},
+        {"t": slim, "r": state["running"], "p": state["paused"], "n": state["pending"], "w": wkey},
         ensure_ascii=False,
         sort_keys=True,
     )
@@ -18999,6 +23686,9 @@ def main():
 
     start_live_monitor_scheduler()
     start_telegram_command_poller()
+    start_notify_outbox()
+    start_clipboard_watch()
+    start_cleanup_scheduler()
     try:
         migrate_rss_to_subs()
     except Exception as e:
@@ -19028,6 +23718,19 @@ def main():
             log_mgr.log(f"启动时自动检测组件更新失败: {e}", "warning")
 
     threading.Thread(target=_boot_component_check, daemon=True).start()
+
+    # PO Token 服务端就在 tools/ 里，门控开着却没人在听时由程序补拉一次。
+    # 放后台线程：node 起来要一两秒，不该压在启动路径上；拉不起来也只是那行状态变灰，不影响别的功能
+    def _boot_pot_server():
+        try:
+            time.sleep(2)
+            if not cfg.data.get("po_provider_enabled"):
+                return
+            po_token_health(force=True)
+        except Exception as e:
+            log_mgr.log(f"启动时拉起 PO Token 服务端失败: {e}", "warning")
+
+    threading.Thread(target=_boot_pot_server, daemon=True).start()
     host = os.environ.get("MEDIADOWNLOADER_HOST") or "127.0.0.1"
     try:
         port = int(os.environ.get("MEDIADOWNLOADER_PORT") or 8765)
@@ -19039,7 +23742,10 @@ def main():
     print(f"  打开浏览器访问: http://{host}:{port}")
     print("=" * 50)
     try:
-        uvicorn.run(app, host=host, port=port, log_level="warning")
+        # timeout_graceful_shutdown 是容器/服务化的必需项：SSE 进度流（/api/events）平时一直挂着，
+        # uvicorn 默认会等到所有连接自己断开才退出，docker stop 于是等满超时被 SIGKILL，
+        # 下面 finally 里的 BT 守护收尾根本轮不到执行。
+        uvicorn.run(app, host=host, port=port, log_level="warning", timeout_graceful_shutdown=5)
     finally:
         _bt_daemon_stop()
 

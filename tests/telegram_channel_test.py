@@ -138,11 +138,11 @@ def spy_get(url, **kw):
 _rq.get = spy_get
 try:
     T._fetch("https://t.me/s/x", None, T.PROXY_DIRECT, (5, 5))
-    T._fetch("https://t.me/s/x", None, "http://127.0.0.1:7897", (5, 5))
+    T._fetch("https://t.me/s/x", None, "http://127.0.0.1:9999", (5, 5))
     T._fetch("https://t.me/s/x", None, "", (5, 5))
     ck("I1 强制直连压过系统代理", cap[0]["proxies"] == {"http": None, "https": None}, str(cap[0]["proxies"]))
-    ck("I2 填了地址两个协议都走", cap[1]["proxies"] == {"http": "http://127.0.0.1:7897",
-                                                        "https": "http://127.0.0.1:7897"})
+    ck("I2 填了地址两个协议都走", cap[1]["proxies"] == {"http": "http://127.0.0.1:9999",
+                                                        "https": "http://127.0.0.1:9999"})
     ck("I3 空值=不干预，跟随系统", cap[2]["proxies"] is None, str(cap[2]["proxies"]))
     ck("I4 带 UA，别被当成脚本直接拒", all("Mozilla" in k["headers"]["User-Agent"] for k in cap))
 finally:

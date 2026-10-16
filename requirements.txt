@@ -20,3 +20,6 @@ telethon>=1.45
 python-socks[asyncio]>=2.4
 # 结束直播录制时要按命令行找回 yt-dlp 派出去拉流的 ffmpeg 子进程并收掉（否则成品一直变大、删不掉）
 psutil>=5.9
+# CookieCloud 同步要 AES-128/256-CBC + OpenSSL EVP_BytesToKey；它一直只是 musicdl 的传递依赖，
+# 现在被 server.py 直接 import 了，就写明白，别跟着 musicdl 的版本走
+pycryptodome>=3.23

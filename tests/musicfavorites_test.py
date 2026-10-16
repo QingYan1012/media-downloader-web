@@ -288,7 +288,7 @@ ck("F9 界面传的参数原样转给下载入口（匹配源/跳过已有/临�
 code, res = http_error(S.api_music_favorites_download,
                        {"match_sources": ["NeteaseMusicClient"], "skip_downloaded": False,
                         "block_reupload": True,
-                        "cookies": "X=1", "proxy": "http://127.0.0.1:7897"})
+                        "cookies": "X=1", "proxy": "http://127.0.0.1:9999"})
 ck("F10 match_sources 与 skip_downloaded 会覆盖到这一次请求",
    DL_CALLS[-1]["match_sources"] == ["NeteaseMusicClient"]
    and DL_CALLS[-1]["skip_downloaded"] is False and DL_CALLS[-1]["cookies"] == "X=1", DL_CALLS[-1])

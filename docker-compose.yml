@@ -1,28 +1,23 @@
-version: "3.8"
 services:
   mediadownloader:
     build: .
+    image: mediadownloader-web:latest
     ports:
-      - "8765:8765"
-    volumes:
-      - ./Downloads:/app/Downloads
-      - ./cookies:/app/cookies
-      - ./tools:/app/tools
-      - ./plugins:/app/plugins
-      - ./config.json:/app/config.json
+      # 程序本身没有登录与鉴权，默认只绑本机回环：局域网/外头要用就走反向代理或 SSH 隧道。
+      # 确实要在局域网直连时，改成 "8765:8765"（会开放到宿主所有网卡）。
+      - "127.0.0.1:8765:8765"
     environment:
       - TZ=Asia/Shanghai
+      # 下载目录（STATE_DIR/Downloads）落到宿主，方便别的 App 直接取用
+      - MEDIADOWNLOADER_STATE_DIR=/data
+    volumes:
+      # 一个卷装全部可变状态：config.json、history、cookies、订阅、日志、aria2 会话与做种记录
+      - mediadownloader_data:/data
+      - ./Downloads:/data/Downloads
+    # 磁力/BT 做种要吃入站连接；不映射也能出流量，只是邻居连不进来、速度差
+    # ports:
+    #   - "6881:6881/udp"
     restart: unless-stopped
 
-  # 可选：启用后在设置里填 rpc http://aria2:6800/jsonrpc
-  aria2:
-    image: p3terx/aria2-pro
-    profiles: ["aria2"]
-    environment:
-      - RPC_SECRET=media_dl
-      - RPC_PORT=6800
-    volumes:
-      - ./Downloads:/downloads
-    ports:
-      - "6800:6800"
-    restart: unless-stopped
+volumes:
+  mediadownloader_data:

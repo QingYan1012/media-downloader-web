@@ -1,0 +1,54 @@
+# 构建上下文里这些目录动不动就几 GB（tools 295M、Whisper 6G、Downloads 十几 G），
+# 而且带进去的都是本机 Windows 的东西，Linux 镜像一律不要。
+
+# 1) 工具：镜像用 apt 装 ffmpeg / aria2c / fpcalc，tools/ 里的 *.exe 在 Linux 跑不了，
+#    留着只会让「组件与依赖」误判成已安装。
+tools/
+Whisper/
+chromaprint/
+chromaprint-fpcalc-*.zip
+
+# 2) 本机可变状态与下载产物：容器统一写 /data 卷（MEDIADOWNLOADER_STATE_DIR）。
+#    把 Windows 的 config.json 挂进去，下载目录会停在 H:\... 这种容器里不存在的路径上。
+Downloads/
+cookies/
+torrent_state/
+local_index/
+musicdl_outputs/
+pack_cache/
+browser_sniff_profile/
+dist/
+_preview/
+config.json
+history.json
+subscriptions.json
+live_monitors.json
+music_favorites.json
+rss_feeds.json
+library_cache.json
+
+# 3) 凭据与会话：绝不进镜像层
+.env
+*.session
+*.session-journal
+cookies.txt
+
+# 4) 日志、缓存与只在本机有意义的脚本
+*.log
+*.out
+*.ps1
+*.md5
+*.sha256
+*.zip
+__pycache__/
+*.pyc
+.pytest_cache/
+.git/
+.idea/
+.vscode/
+
+# 5) 不参与运行：自检脚本与仓库文档（README/CHANGELOG 由仓库自己看）
+tests/
+docs/
+README*.md
+CHANGELOG.md

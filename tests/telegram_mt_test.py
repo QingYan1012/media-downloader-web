@@ -143,14 +143,14 @@ try:
     ck("G8 没发码就登录要拦", False, "没拦")
 except RuntimeError as e:
     ck("G8 没发码就登录要拦", "发验证码" in str(e), str(e))
-cfg["tgmt_proxy"] = "http://127.0.0.1:7897"
+cfg["tgmt_proxy"] = "http://127.0.0.1:9999"
 try:
     ses._proxy()
     ck("G9 代理格式错要报错", False, "没报")
 except ValueError as e:
     ck("G9 代理格式错要报错", "host:port" in str(e), str(e))
-cfg["tgmt_proxy"] = "socks5://127.0.0.1:7897"
-ck("G10 代理能解析成 (host, port)", ses._proxy() == ("127.0.0.1", 7897), str(ses._proxy()))
+cfg["tgmt_proxy"] = "socks5://127.0.0.1:9999"
+ck("G10 代理能解析成 (host, port)", ses._proxy() == ("127.0.0.1", 9999), str(ses._proxy()))
 
 print("== H. 报错翻译表覆盖真实异常 ==")
 from telethon import errors  # noqa: E402

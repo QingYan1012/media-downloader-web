@@ -582,6 +582,9 @@
     .srt-qc-row { display: flex; align-items: flex-start; gap: var(--gap-loose); padding: 4px 0; }
     .srt-qc-tags { display: flex; flex-wrap: wrap; gap: var(--gap-tight); min-width: 150px; max-width: 190px; }
     .srt-qc-text { flex: 1; min-width: 0; font-size: 14px; line-height: 1.5; word-break: break-word; }
+    .srt-tl { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 4px 14px; margin: 4px 0; padding: 6px 8px; border: 1px solid var(--el-border-color-lighter); border-radius: 8px; }
+    .srt-tl__item { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 14px; line-height: 1.7; }
+    .srt-tl__k { min-width: 68px; font-weight: 700; color: var(--accent); }
     /* 纵向堆叠容器：同一组里的行更紧，组与组之间用 --row-mt */
     .stack {
       display: flex;
@@ -618,6 +621,32 @@
       min-width: 0;
     }
     .settings-main > .card { margin: 0; }
+    /* 不常用设置整组折叠：收起时连卡片一起不显示，展开状态记在本地 */
+    .settings-fold { display: flex; flex-direction: column; gap: 14px; }
+    .settings-fold.is-closed { display: none; }
+    .fold-hd {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      border: 1px dashed var(--line);
+      border-radius: 12px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .fold-hd .hint { margin: 0; }
+    .fold-hd b { font-size: 14px; }
+    .fold-arrow { font-size: 12px; color: var(--muted); }
+    /* 剪贴板监听发现的那条链接：一整串 URL 要能换行看全，不许把卡片撑破 */
+    .clip-link {
+      font-size: 12px;
+      line-height: 1.5;
+      word-break: break-all;
+      padding: 8px 10px;
+      border: 1px dashed var(--line);
+      border-radius: 10px;
+      background: var(--bg-soft, rgba(125, 125, 125, .06));
+    }
     .settings-wrap > .card {
       min-width: 0;
     }
@@ -727,6 +756,39 @@
     .el-table td.el-table__cell {
       display: table-cell !important;
       vertical-align: middle;
+    }
+    /* 音乐搜索结果这张表：来源一列是「徽标 + 拒因」两行，全局的 middle 让右边按钮排跟着上下漂，
+       所以这一张改顶对齐 —— 每行的第一行文字与第一排按钮在同一条线上。 */
+    .music-table td.el-table__cell {
+      vertical-align: top;
+    }
+    .msrc-line {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      white-space: nowrap;
+    }
+    .msrc-flags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 2px 6px;
+      margin-top: 2px;
+    }
+    .msrc-flag {
+      white-space: nowrap;
+      font-size: var(--fs-ui-sm);
+      line-height: 18px;
+    }
+    .msrc-flag--bad { color: var(--bad); }
+    .msrc-flag--warn { color: var(--warn); }
+    .mrow-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+    .mrow-actions .el-button {
+      margin-left: 0;
+      padding: 3px 8px;
     }
     .fmt-table {
       width: 100%;
@@ -1493,6 +1555,23 @@
     .unmatched-h:first-child { margin-top: 0; }
     .unmatched-l { line-height: 1.8; color: var(--muted); word-break: break-all; }
 
+    .auth-gate {
+      position: fixed; inset: 0; z-index: 3000;
+      background: color-mix(in srgb, var(--bg) 82%, transparent);
+      backdrop-filter: blur(3px);
+      display: flex; align-items: center; justify-content: center; padding: 20px;
+    }
+    .auth-gate__box {
+      width: 100%; max-width: 380px; background: var(--card);
+      border: 1px solid var(--line); border-radius: var(--radius); padding: 20px;
+      box-shadow: 0 18px 44px rgba(15, 23, 42, .18);
+    }
+    .auth-gate__title { font-size: 17px; font-weight: 700; color: var(--ink); }
+    .auth-gate__row { display: flex; align-items: center; justify-content: space-between; margin: 8px 0 10px; }
+    .auth-gate__err { margin-top: 10px; color: var(--bad); font-size: 13px; line-height: 1.6; }
+    .auth-lock-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px dashed var(--line); }
+    .auth-lock-row:last-child { border-bottom: 0; }
+
     @media (max-width: 960px) {
       .form-row { grid-template-columns: 1fr; align-items: start; }
     }
@@ -1591,6 +1670,29 @@
   </svg>
 
   <div id="app">
+    <!-- 登录门：只有「非本机来的连接」才会被挡在这里；本机 127.0.0.1 与带机器令牌的调用永不经过这一层 -->
+    <div v-if="authGate.needed" class="auth-gate">
+      <div class="auth-gate__box">
+        <div class="auth-gate__title">这台下载器设了访问口令</div>
+        <div class="hint" style="margin:6px 0 12px">
+          <span v-if="authGate.reason === 'idle'">这台浏览器空闲太久了，重新输一次口令就行。</span>
+          <span v-else-if="authGate.reason === 'expired' || authGate.reason === 'bad'">登录状态已经过期（或口令改过），重新输一次口令。</span>
+          <span v-else>本机（127.0.0.1）用浏览器打开是不需要登录的，你是从别的地址连进来的。</span>
+        </div>
+        <el-input v-model="authGate.pwd" type="password" show-password size="large"
+                  placeholder="访问口令" :disabled="authGate.busy" @keyup.enter="doLogin"></el-input>
+        <div class="auth-gate__row">
+          <el-checkbox v-model="authGate.remember" size="small">
+            记住这台设备（{{ auth.remember_days || 30 }} 天内不用重登）
+          </el-checkbox>
+          <span class="hint" style="margin:0">{{ auth.session_hours || 12 }} 小时不操作就要重登</span>
+        </div>
+        <el-button type="primary" size="large" style="width:100%;margin-top:4px"
+                   :loading="authGate.busy" @click="doLogin">进入</el-button>
+        <div v-if="authGate.error" class="auth-gate__err">{{ authGate.error }}</div>
+      </div>
+    </div>
+
     <div class="layout">
       <!-- 侧边栏 -->
       <div class="sidebar">
@@ -1680,6 +1782,21 @@
                       <span class="hint">勾选「仅排队」后只加入队列，可在「队列」页暂停、继续或删除</span>
                     </div>
                   </div>
+                </div>
+              </div>
+            </div>
+
+            <div v-if="clipPending" class="bento">
+              <div class="card span-6">
+                <div class="section-title">剪贴板里发现 1 条链接</div>
+                <div class="clip-link">{{ clipPending.link }}</div>
+                <div class="row row--tight row--mt">
+                  <el-button size="small" type="primary" @click="clipAdd">加入</el-button>
+                  <el-button size="small" plain @click="clipIgnore">忽略</el-button>
+                  <span class="hint">
+                    {{ clipPending.kind === 'magnet' ? '磁力链接' : '网页链接' }} · 刚复制到剪贴板。
+                    「加入」只是把这一条填进上面的链接框，程序不会自己解析、也不会自己开始下载。
+                  </span>
                 </div>
               </div>
             </div>
@@ -1811,6 +1928,18 @@
                       <div class="chip" :class="{ active: opts.sponsorblock === 'mark' }" @click="opts.sponsorblock = 'mark'">仅标记</div>
                     </div>
                   </div>
+                  <div class="tile">
+                    <div class="tile-label">期望校验值（可选）</div>
+                    <el-input size="small" v-model="opts.expect_hash"
+                             placeholder="粘 MD5 / SHA-1 / SHA-256 摘要，留空 = 不核对" clearable></el-input>
+                    <div class="chip-row" style="margin-top:6px">
+                      <div class="chip" :class="{ active: opts.hash_algo === 'auto' }" @click="opts.hash_algo = 'auto'">算法自动</div>
+                      <div class="chip" :class="{ active: opts.hash_algo === 'md5' }" @click="opts.hash_algo = 'md5'">MD5</div>
+                      <div class="chip" :class="{ active: opts.hash_algo === 'sha1' }" @click="opts.hash_algo = 'sha1'">SHA-1</div>
+                      <div class="chip" :class="{ active: opts.hash_algo === 'sha256' }" @click="opts.hash_algo = 'sha256'">SHA-256</div>
+                    </div>
+                    <div class="hint">下载完成后对成品算一次摘要与这一串比对：一致就只在运行日志留一句，对不上才在卡片上写一行（提醒，不删文件）。位数能认算法（32=MD5、40=SHA-1、64=SHA-256），点明算法是为了把复制漏字符这种事在入队时就拦下来。可比的是磁力/种子与被识别成 CDN 直链那种<b>原样落盘</b>的成品；解析下载那一路下完还要转封装、嵌封面字幕，成品字节被本机重写过一遍，和发布方给的原文件摘要本来就不同（卡片上那句会说明是哪一种）。</div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1859,6 +1988,14 @@
               </el-tag>
               <span class="hint hint--block">这些域名暂时限制为 1 个并发任务，冷却结束后自动恢复</span>
               <el-button size="small" plain @click="resetThrottle()">全部立即恢复</el-button>
+            </div>
+            <div v-if="windowHeld" class="card row row--mb">
+              <span style="font-size:16px">⏱</span>
+              <b>定时窗外，暂不开新任务</b>
+              <el-tag v-for="r in windowHeld" :key="'wb-' + r.name" type="info" size="small">
+                {{ r.name }} · 等待 {{ r.held }} 条 · {{ r.resume_at }} 自动开始
+              </el-tag>
+              <span class="hint hint--block">按「设置 → 队列定时窗」的时段，已经在下载的任务不受影响，到点自动继续</span>
             </div>
             <div class="row-actions row row--mb row--tight">
               <el-checkbox v-model="selectAll" @change="toggleSelectAll">全选</el-checkbox>
@@ -1922,6 +2059,11 @@
               <div v-if="t.status === 'failed' && t.error_msg"
                    style="color:var(--bad);font-size:13px;margin-top:6px;word-break:break-all;line-height:1.5">
                 {{ friendlyError(t.error_msg) }}
+              </div>
+              <!-- 成品回读：「成功」只说明文件能播；是不是用户点的那一档、是不是期望的那一份，都要回读成品才知道 -->
+              <div v-if="t.verify_note"
+                   style="color:var(--warn);font-size:12px;margin-top:6px;line-height:1.5">
+                成品核对 · {{ t.verify_note }}
               </div>
               <div class="task-meta">
                 <span>
@@ -2042,6 +2184,11 @@
                      style="color:var(--bad);font-size:13px;margin-top:6px;word-break:break-all;line-height:1.5">
                   {{ friendlyError(t.error_msg) }}
                 </div>
+                <!-- 成品回读：「成功」只说明文件能播；是不是用户点的那一档、是不是期望的那一份，都要回读成品才知道 -->
+                <div v-if="t.verify_note"
+                     style="color:var(--warn);font-size:12px;margin-top:6px;line-height:1.5">
+                  成品核对 · {{ t.verify_note }}
+                </div>
                 <div class="task-meta">
                   <span>
                     {{ t.speed || '' }} {{ t.eta ? 'ETA ' + t.eta : '' }}
@@ -2144,17 +2291,21 @@
               <div class="section-title">自动分类</div>
               <div class="row row--tight row--mb">
                 <el-button size="small" plain @click="addBtRule">新增规则</el-button>
-                <span class="hint">按种子里的名字决定存到全局下载目录下的哪个子目录；规则从上往下问，第一条命中就定下来。</span>
+                <span class="hint" title="两种规则排在同一张表里，从上往下问、第一条命中就定下来。磁力 / 种子这一页先问「名字」规则（种子里的标题、磁力链接上的 dn），名字没命中再问「链接」规则；普通下载（YouTube、B 站、直链）没有可比的名字，只问「链接」规则，也不吃下面那个兜底目录。忽略大小写。">按种子里的名字或按链接决定存到全局下载目录下的哪个子目录；规则从上往下问，第一条命中就定下来。</span>
               </div>
-              <div v-if="!settings.bt_auto_rules.length" class="empty-tip">还没有规则：所有磁力 / 种子都直接存到全局下载目录（在「设置」页配置）</div>
+              <div v-if="!settings.bt_auto_rules.length" class="empty-tip">还没有规则：所有磁力 / 种子 / 普通下载都直接存到全局下载目录（在「设置」页配置）</div>
               <div v-for="(r, i) in settings.bt_auto_rules" :key="i" class="row row--tight" style="margin-bottom:8px">
                 <el-switch v-model="r.enabled" size="small" title="启用这条规则；关掉则跳过它继续问下一条"></el-switch>
                 <el-input size="small" v-model="r.name" placeholder="规则名，如 剧集" style="width:130px"></el-input>
+                <el-select size="small" v-model="r.scope" style="width:120px" title="这条问的是名字还是链接">
+                  <el-option label="名字" value="name"></el-option>
+                  <el-option label="链接" value="url"></el-option>
+                </el-select>
                 <el-select size="small" v-model="r.mode" style="width:110px">
-                  <el-option label="名字包含" value="contains"></el-option>
+                  <el-option :label="r.scope === 'url' ? '链接包含' : '名字包含'" value="contains"></el-option>
                   <el-option label="正则表达式" value="regex"></el-option>
                 </el-select>
-                <el-input size="small" v-model="r.pattern" placeholder="要匹配的关键词或正则" style="flex:1;min-width:150px"></el-input>
+                <el-input size="small" v-model="r.pattern" :placeholder="r.scope === 'url' ? '要匹配的链接关键词或正则，如 youtube.com' : '要匹配的关键词或正则'" style="flex:1;min-width:150px"></el-input>
                 <el-input size="small" v-model="r.subdir" placeholder="存到子目录，如 剧集/2026" style="flex:1;min-width:150px"></el-input>
                 <el-button size="small" plain :disabled="i === 0" @click="moveBtRule(i, -1)">上移</el-button>
                 <el-button size="small" plain :disabled="i === settings.bt_auto_rules.length - 1" @click="moveBtRule(i, 1)">下移</el-button>
@@ -2163,10 +2314,10 @@
               <div class="row row--tight row--mt">
                 <span>都不命中时存到</span>
                 <el-input size="small" v-model="settings.bt_auto_fallback" placeholder="留空 = 仍存默认下载目录" clearable style="width:220px"></el-input>
-                <span class="hint">没写文件名的磁力链接在拿到种子元数据前没有名字可比，也会被这一档接住。</span>
+                <span class="hint">没写文件名的磁力链接在拿到种子元数据前没有名字可比，也会被这一档接住。这一档只管磁力 / 种子：普通下载没命中链接规则就照旧存默认目录，不然只加一条链接规则就把整个下载目录改了地方。</span>
               </div>
               <div class="row row--tight row--mt">
-                <el-input size="small" v-model="btRuleTestName" placeholder="试一个种子名字，或贴一条磁力 / 种子链接" style="flex:1;min-width:220px"></el-input>
+                <el-input size="small" v-model="btRuleTestName" placeholder="试一个种子名字，或贴一条磁力 / 种子 / 普通下载链接" style="flex:1;min-width:220px" @paste="onPaste($event, 'text')"></el-input>
                 <el-button size="small" plain :loading="btRuleTesting" @click="testBtRule">试匹配</el-button>
                 <el-button size="small" type="primary" @click="saveSettings()">保存设置</el-button>
               </div>
@@ -2174,6 +2325,7 @@
               <div class="hint hint--block" style="margin-top:6px">
                 子目录写的是下载目录下面的相对路径（可以多级），带盘符或 .. 的会被当场顶回去。
                 规则只决定之后新提交的任务存在哪：已经在下载或已经在做种的任务不会搬迁，勾了「只做种」的也不改落点——那份成品本来就在本地。
+                下载页那一格「保存目录」如果填的是别的目录，以手动的为准、规则不改落点（日志里仍会写它本可以命中哪条）。
               </div>
             </div>
 
@@ -2210,6 +2362,7 @@
               </el-form>
               <div class="row row--tight">
                 <el-button size="small" plain :loading="aria2Checking" @click="checkAria2">检测 aria2</el-button>
+                <el-button size="small" type="primary" plain :loading="aria2Installing" @click="installAria2">安装 / 更新 aria2c</el-button>
                 <el-button size="small" type="primary" @click="saveSettings()">保存设置</el-button>
               </div>
               <div class="hint hint--block" style="margin-top:6px">{{ aria2Info || '点击「检测 aria2」确认 RPC 是否可连接、aria2c 在哪' }}</div>
@@ -2221,16 +2374,20 @@
           <div v-show="page === 'info'">
             <div class="card">
               <div class="section-title">解析媒体链接</div>
-              <el-input
-                v-model="analyzeUrl"
-                placeholder="粘贴 YouTube / B站 / 抖音 / 小红书 等链接（可多行批量）"
-                clearable
-                size="large"
-                @keyup.enter="analyzeFromInfoPage"></el-input>
-              <div class="action-row">
+              <div class="row">
+                <el-input
+                  v-model="analyzeUrl"
+                  placeholder="粘贴 YouTube / B站 / 抖音 / 小红书 等链接（可多行批量）"
+                  clearable
+                  size="large"
+                  style="flex:1;min-width:240px"
+                  @paste="onPaste($event, 'url')"
+                  @keyup.enter="analyzeFromInfoPage"></el-input>
                 <el-button size="large" type="primary" :loading="analyzing" @click="analyzeFromInfoPage">
                   <svg class="btn-ico"><use href="#i-search"></use></svg>{{ analyzing ? '解析中…' : '确定解析' }}
                 </el-button>
+              </div>
+              <div class="action-row">
                 <el-button size="large" @click="pasteAnalyzeUrl">粘贴</el-button>
                 <el-button size="large" @click="analyzeUrl=''; mediaInfo=null">清空</el-button>
               </div>
@@ -2253,11 +2410,22 @@
                   </div>
                 </div>
               </div>
+              <div v-if="mediaInfo.format_gate && mediaInfo.format_gate.limited" class="warn-box" style="margin-top:14px">
+                <div style="font-weight:600;margin-bottom:4px">清晰度上限说明</div>
+                <div>{{ mediaInfo.format_gate.text }}</div>
+                <ul style="margin:6px 0 0;padding-left:20px">
+                  <li v-for="(t, ti) in mediaInfo.format_gate.tips" :key="ti">{{ t }}</li>
+                </ul>
+                <div class="row row--tight" style="margin-top:8px">
+                  <el-button size="small" plain @click="page='settings'">去设置</el-button>
+                  <span class="hint">改完再点一次「确定解析」即可（解析结果缓存 3 分钟，改设置后重解析会重新取流）</span>
+                </div>
+              </div>
               <div v-if="mediaInfo.quality_presets && mediaInfo.quality_presets.length" style="margin-top:18px">
                 <div class="section-title">按清晰度选择（基于实际 format）</div>
                 <div class="row row--flush">
                   <el-button
-                    v-for="(qp, qi) in mediaInfo.quality_presets"
+                    v-for="(qp, qi) in shownQualityPresets"
                     :key="qi"
                     :type="selectedQuality===qp.label ? 'primary' : 'default'"
                     size="small"
@@ -2267,6 +2435,17 @@
                     style="opacity:.55;margin-left:4px"
                   >{{ qp.filesize ? formatSize(qp.filesize) : '≈' + formatSize(qp.filesize_est) }}</span></el-button>
                 </div>
+                <div class="chip-row" style="margin-top:10px" v-if="infoCodecOptions.length > 1">
+                  <span class="hint">画面编码</span>
+                  <div v-for="c in infoCodecOptions" :key="c.value" class="chip" :class="{ active: infoCodec===c.value }" @click="infoCodec=c.value">{{ c.label }}</div>
+                  <span class="hint">同一清晰度有多种编码时逐条列出；点哪条就按那条的 format_id 下</span>
+                </div>
+                <div class="chip-row" style="margin-top:6px" v-if="(mediaInfo.audio_abrs || []).length">
+                  <span class="hint">音频质量</span>
+                  <div v-for="q in audioQualities" :key="q" class="chip" :class="{ active: opts.audio_quality===q }" @click="opts.audio_quality=q">{{ q }}</div>
+                  <span class="hint">选非「最佳」时改按码率上限挑音频轨（源里最高约 {{ infoAudioTop }}）；源里没有那一档会自动回到最佳码率，不会下失败</span>
+                </div>
+                <div v-else class="hint" style="margin-top:6px">这个源没有独立音轨：画面和声音在同一条流里，音质跟着清晰度走，没有可选项。</div>
                 <div v-if="tierSizeText" class="hint hint--block" style="margin-top:8px">{{ tierSizeText }}</div>
                 <div class="hint" style="margin-top:8px">选择任一清晰度即按对应 format_id 下载（纯视频轨会自动合并 bestaudio）</div>
               </div>
@@ -2431,6 +2610,77 @@
                         </span>
                       </div>
                     </div>
+                  </div>
+                  <div v-if="srtQc.timeline" style="margin-bottom:6px">
+                    <div class="hint hint--block">
+                      时间轴三维 · {{ srtQc.timeline.message }}
+                      <template v-if="srtQc.media">（媒体 {{ srtQc.media.split('/').pop() }}，共 {{ fmtClock(srtQc.media_seconds) }}）</template>
+                      <template v-else>（这份字幕旁边没找到配对的媒体文件，覆盖率与片尾那两项算不了 —— 是缺输入，不是质检没开）</template>
+                    </div>
+                    <div class="srt-tl">
+                      <div class="srt-tl__item">
+                        <span class="srt-tl__k">覆盖率</span>
+                        <template v-if="srtQc.timeline.coverage.available">
+                          <span>{{ (srtQc.timeline.coverage.ratio * 100).toFixed(0) }}%</span>
+                          <span class="hint">{{ srtQc.timeline.coverage.spoken }} 秒有字幕 / 媒体 {{ srtQc.timeline.coverage.media }} 秒</span>
+                          <el-tag v-if="srtQc.timeline.coverage.level === 'low'" size="small" type="warning">大段没有字幕</el-tag>
+                        </template>
+                        <template v-else>
+                          <el-tag size="small" type="info">这一项没算</el-tag>
+                          <span class="hint">{{ srtQc.timeline.coverage.note }}</span>
+                        </template>
+                      </div>
+                      <div class="srt-tl__item">
+                        <span class="srt-tl__k">最大间隙</span>
+                        <span>{{ srtQc.timeline.gaps.max }} 秒</span>
+                        <span class="hint" v-if="srtQc.timeline.gaps.before && srtQc.timeline.gaps.leading !== srtQc.timeline.gaps.max">第 {{ srtQc.timeline.gaps.before }} 句之前</span>
+                        <span class="hint" v-else-if="srtQc.timeline.gaps.max">第一条字幕之前</span>
+                        <span class="hint" v-if="srtQc.timeline.gaps.tail.available">片尾空档 {{ srtQc.timeline.gaps.tail.seconds }} 秒不计入（容忍带 {{ srtQc.timeline.gaps.band }} 秒）</span>
+                        <span class="hint" v-else>片尾那一段没分出来（缺媒体时长）</span>
+                        <el-tag v-if="srtQc.timeline.gaps.count_over" size="small" type="warning">超 {{ srtQc.timeline.gaps.warn }} 秒的有 {{ srtQc.timeline.gaps.count_over }} 处</el-tag>
+                        <span class="hint" v-if="srtQc.timeline.gaps.overlaps">重叠 {{ srtQc.timeline.gaps.overlaps }} 处（滚动式字幕本来就这样，不当问题）</span>
+                      </div>
+                      <div class="srt-tl__item">
+                        <span class="srt-tl__k">字符速率</span>
+                        <template v-if="srtQc.timeline.speed.available">
+                          <span>中位 {{ srtQc.timeline.speed.median_cps }} · 上限 {{ srtQc.timeline.speed.limit }} 字每秒</span>
+                          <el-tag v-if="srtQc.timeline.speed.over_count" size="small" type="warning">超上限 {{ srtQc.timeline.speed.over_count }} 句</el-tag>
+                          <el-tag v-if="srtQc.timeline.speed.short_count" size="small" type="warning">显示不足 {{ srtQc.timeline.speed.short_count }} 句太短</el-tag>
+                          <el-tag v-if="srtQc.timeline.speed.reversed_count" size="small" type="danger">时间轴倒挂 {{ srtQc.timeline.speed.reversed_count }} 句</el-tag>
+                          <span class="hint" v-if="srtQc.timeline.speed.flash_count">滚动式闪光条 {{ srtQc.timeline.speed.flash_count }} 条没参与统计</span>
+                        </template>
+                        <template v-else><el-tag size="small" type="info">这一项没算</el-tag><span class="hint">整份字幕里没有可读的句子</span></template>
+                      </div>
+                      <div class="srt-tl__item">
+                        <span class="srt-tl__k">语气词 / 复读</span>
+                        <span>{{ srtQc.timeline.noise.filler_count }} 句 / {{ srtQc.timeline.noise.halluc_count }} 句</span>
+                        <el-button v-if="(srtQc.timeline.noise.drop || []).length" size="small" @click="qcDropNoise">按名单删掉这 {{ srtQc.timeline.noise.drop.length }} 句</el-button>
+                        <span class="hint">只列名单、没有替你删：歌词副歌本来就会重复</span>
+                      </div>
+                    </div>
+                    <div v-if="srtQc.timeline.noise.fillers.length || srtQc.timeline.noise.halluc.length" class="hint hint--block" style="margin-top:4px">
+                      <template v-for="(h,hi) in srtQc.timeline.noise.halluc" :key="'h'+hi">第 {{ h.from }}～{{ h.to }} 句是同一句连读 {{ h.count }} 遍：{{ h.text }}<br></template>
+                      <template v-for="(f,fi) in srtQc.timeline.noise.fillers.slice(0,8)" :key="'f'+fi">第 {{ f.i }} 句整句只是语气词：{{ f.text }}<br></template>
+                      <template v-if="srtQc.timeline.noise.fillers.length > 8"><span class="hint">其余 {{ srtQc.timeline.noise.fillers.length - 8 }} 句在同一份名单里</span></template>
+                    </div>
+                    <div v-if="srtQc.timeline.gaps.over.length" style="max-height:120px;overflow:auto;border:1px solid var(--el-border-color-lighter);border-radius:8px;padding:4px 8px;margin-top:4px">
+                      <div v-for="q in srtQc.timeline.gaps.over" :key="'gp'+q.before" class="srt-qc-row">
+                        <el-button size="small" :title="'跳到第 ' + q.before + ' 句'" @click="qcJumpTo(q)">{{ q.leading ? '第一条之前' : '第 ' + q.before + ' 句之前' }}</el-button>
+                        <span class="srt-qc-tags"><el-tag size="small" type="warning">空了 {{ q.seconds }} 秒</el-tag><el-tag v-if="q.leading" size="small" type="info">片头</el-tag><el-tag v-if="q.in_tail_band" size="small" type="info">在片尾容忍带里</el-tag></span>
+                        <span class="srt-qc-text">{{ q.leading ? '片子一开始就该有字幕，第一条却等到 ' + q.start + ' 秒才出现' : q.at + ' 秒说完，下一句 ' + q.start + ' 秒才出现' }}</span>
+                      </div>
+                      <div class="hint" v-if="srtQc.timeline.gaps.count_over > srtQc.timeline.gaps.over.length">其余 {{ srtQc.timeline.gaps.count_over - srtQc.timeline.gaps.over.length }} 处更小的空档没列在这里</div>
+                    </div>
+                    <div v-if="srtQc.timeline.speed.over.length" style="max-height:120px;overflow:auto;border:1px solid var(--el-border-color-lighter);border-radius:8px;padding:4px 8px;margin-top:4px">
+                      <div v-for="q in srtQc.timeline.speed.over" :key="'sp'+q.i" class="srt-qc-row">
+                        <el-button size="small" :title="'跳到第 ' + q.i + ' 句'" @click="qcJumpTo(q)">第 {{ q.i }} 句</el-button>
+                        <span class="srt-qc-tags"><el-tag size="small" type="warning">{{ q.cps }} 字每秒</el-tag></span>
+                        <span class="srt-qc-text">{{ q.text }}<br><span class="hint">{{ q.units }} 个字挤在 {{ q.dur }} 秒里</span></span>
+                      </div>
+                      <div class="hint" v-if="srtQc.timeline.speed.over_count > srtQc.timeline.speed.over.length">其余 {{ srtQc.timeline.speed.over_count - srtQc.timeline.speed.over.length }} 句读速慢一些的没列在这里</div>
+                    </div>
+                    <div class="hint hint--block" style="margin-top:4px">{{ srtQc.timeline.gaps.note }}</div>
+                    <div class="hint hint--block">{{ srtQc.timeline.speed.note }}</div>
                   </div>
                   <div style="max-height:320px;overflow:auto;border:1px solid var(--el-border-color-lighter);border-radius:8px;padding:4px 8px" ref="srtEditBox">
                     <div v-for="(r,i) in srtEdit.rows" :key="r._k" :data-si="i" class="srt-edit-row" :class="{ 'srt-edit-row--sel': i === srtEdit.sel }">
@@ -2631,7 +2881,9 @@
                     <td>{{ row.time }}</td>
                     <td :title="row.title">{{ row.title }}</td>
                     <td>
-                      <el-tag size="small" :type="statusType(row.status)">{{ statusLabel(row.status) }}</el-tag>
+                      <!-- 成品核对的句子（画质回读与校验值都写在这一句里）存进历史时一并带上：表格不再加一列，鼠标停在状态标上就能看到 -->
+                      <el-tag size="small" :type="statusType(row.status)"
+                              :title="row.verify_note || ''">{{ statusLabel(row.status) }}</el-tag>
                     </td>
                     <td :title="row.url">{{ row.url }}</td>
                     <td :title="row.error" style="color:var(--bad)">
@@ -2663,7 +2915,7 @@
               <el-button size="small" plain @click="openLogDir">打开日志文件夹</el-button>
               <el-button size="small" plain title="把版本、运行状态、设置（密钥与 Cookie 内容不打包）、队列和近期日志打成一个 zip，用于发给别人排查"
                        @click="exportDiagnostics">导出诊断包</el-button>
-              <span class="hint" style="margin-left:auto">本页最多显示最近 200 条；日志写在程序所在文件夹的
+              <span class="hint" style="margin-left:auto">本页最多显示最近 200 条（记的是写操作、失败与点通知跳过来的那一下，光翻页面不占行）；日志写在程序所在文件夹的
                 <code>{{ logLoc.file }}</code>，跨天归档成 app-日期.log，超过 7 天自动删除<template v-if="logLoc.dir">（当前在
                 <code>{{ logLoc.dir }}</code>，已归档 {{ logLoc.archives.length }} 份）</template></span>
             </div>
@@ -2730,7 +2982,7 @@
             <div class="card">
               <div class="section-title">音乐搜索 / 歌单（musicdl）</div>
               <div class="hint" style="margin-bottom:10px">
-                适配 musicdl 2.x：多源并行搜索、歌单解析、Cookie、精确下载。请遵守版权，仅下载有权使用的内容。
+                适配 musicdl 2.x：多源并行搜索、歌单与单曲链接解析、Cookie、精确下载。请遵守版权，仅下载有权使用的内容。
               </div>
               <div class="row row--top row--mb">
                 <el-select v-model="musicSearchType" style="width:120px" size="large">
@@ -2760,12 +3012,12 @@
                 </span>
               </div>
               <div class="row row--tight row--mb">
-                <el-input size="small" v-model="musicPlaylistUrl" placeholder="歌单链接 music.163.com / y.qq.com / …" clearable style="width:360px"></el-input>
+                <el-input size="small" v-model="musicPlaylistUrl" placeholder="歌单或单曲链接 music.163.com / y.qq.com / open.spotify.com / …" clearable style="width:360px" @paste="onPaste($event, 'url')"></el-input>
                 <el-select v-model="musicPlaylistMode" size="small" style="width:170px" @change="saveMusicPlaylistMode">
                   <el-option label="快速列出曲目（默认）" value="fast"></el-option>
                   <el-option label="逐曲获取高音质地址" value="quality"></el-option>
                 </el-select>
-                <el-button size="small" :loading="musicSearching" @click="parseMusicPlaylist">解析歌单</el-button>
+                <el-button size="small" :loading="musicSearching" @click="parseMusicPlaylist">解析歌单 / 单曲</el-button>
               </div>
               <div class="source-row">
                 <span class="hint">搜索源：</span>
@@ -2809,7 +3061,7 @@
                   <el-option label="仅源内去重" value="source"></el-option>
                   <el-option label="不去重" value="off"></el-option>
                 </el-select>
-                <span class="hint" title="Spotify 这类只列出曲名的条目，下载时按曲名去这些源取音频地址；行上的「换源」也到这些源里重新找同一首歌。候选与上方「搜索源」一致，都能选；标了「取址慢」的源要经第三方转链，每首约十秒且时常失败，所以不进默认。完全没指定时才回落到默认 5 个源，并在日志写明">匹配源</span>
+                <span class="hint" title="不管是粘贴整张歌单还是单曲链接，Spotify 和网易云这类只带回曲名、歌手、时长而给不了音频地址的条目，都靠这里下载时按曲名去这些源取音频地址；行上的「换源」也到这些源里重新找同一首歌。这里勾的源会全部搜一遍，再把过闸的候选放在一起取分最高的那条（分一样时按勾选顺序，先勾的赢）—— 不会因为第一个源先撞上了就跳过后面的。候选与上方「搜索源」一致，都能选；标了「取址慢」的源要经第三方转链，每首约十秒且时常失败，所以不进默认。完全没指定时才回落到默认 5 个源，并在日志写明">匹配源</span>
                 <el-select v-model="musicStrategy.match_sources" multiple collapse-tags collapse-tags-tooltip size="small" style="width:230px" placeholder="留空则用默认 5 个源">
                   <el-option v-for="s in musicMatchSourceOptions" :key="s.value" :label="s.label" :value="s.value"></el-option>
                 </el-select>
@@ -2852,13 +3104,17 @@
                   <el-button type="primary" size="small" :disabled="!musicSelected.length" @click="downloadMusicSelected"><svg class="btn-ico"><use href="#i-download"></use></svg>下载选中项 ({{ musicSelected.length }})</el-button>
                 </div>
               </div>
-              <div v-if="!musicResults.length" class="empty-tip">请输入关键词搜索，或粘贴歌单链接后解析</div>
+              <div v-if="!musicResults.length" class="empty-tip">请输入关键词搜索，或粘贴歌单 / 单曲链接后解析</div>
               <div v-if="musicSourceErrors.length" class="warn-box">
                 <div style="font-weight:600;margin-bottom:2px">本次以下源无结果：</div>
                 <div v-for="[k, v] in musicSourceErrors" :key="k">· {{ k }} —— {{ v }}</div>
               </div>
               <div v-if="musicNeedsMatch" class="hint" style="margin-bottom:8px">
                 本清单有 {{ musicNeedsMatch }} 首仅列出曲名 —— 勾选下载时才会按曲名在上方已勾选的源中匹配音频地址，无法匹配的会记录到日志并跳过。
+              </div>
+              <div v-if="musicHasScore" class="hint" style="margin-bottom:8px">
+                来源列那个数字 = 这一条与你输入的关键词有多对得上（{{ musicScoreLine }} 以上算对得上，红的是被阈值挡下来的，鼠标停在数字上看曲名/歌手两维的分与被挡的原因）。
+                它不判「是不是同一版录音」—— 那要有时长可比，换源和查重用的才是那套管。
               </div>
               <div v-if="player.url && player.from === 'search'" style="margin:10px 0;padding:10px;background:var(--surface);border-radius:8px">
                 <div class="row row--tight" style="margin-bottom:6px">
@@ -2874,7 +3130,7 @@
                   </div>
                 </div>
               </div>
-              <el-table v-if="musicResults.length" :data="pagers.music.paged" size="small" stripe @selection-change="onMusicSelection" @sort-change="onMusicSortChange">
+              <el-table v-if="musicResults.length" :data="pagers.music.paged" size="small" stripe class="music-table" @selection-change="onMusicSelection" @sort-change="onMusicSortChange">
                 <el-table-column type="selection" width="42" :selectable="(row) => !row.reference_only"></el-table-column>
                 <el-table-column prop="title" label="标题" min-width="160" sortable="custom" :sort-orders="['ascending', 'descending']">
                   <template #default="{ row }">
@@ -2882,17 +3138,25 @@
                     <span v-if="row.dup_count > 1" class="hint" :title="`歌单里这首歌排了 ${row.dup_count} 遍，已合并成一行，下载只下一遍`"> ×{{ row.dup_count }}</span>
                   </template>
                 </el-table-column>
-                <el-table-column prop="artists" label="艺人" width="120" sortable="custom" :sort-orders="['ascending', 'descending']"></el-table-column>
-                <el-table-column prop="album" label="专辑" width="100" sortable="custom" :sort-orders="['ascending', 'descending']"></el-table-column>
-                <el-table-column label="来源" width="150">
+                <el-table-column prop="artists" label="艺人" width="120" sortable="custom" :sort-orders="['ascending', 'descending']" show-overflow-tooltip></el-table-column>
+                <el-table-column prop="album" label="专辑" width="110" sortable="custom" :sort-orders="['ascending', 'descending']" show-overflow-tooltip></el-table-column>
+                <el-table-column label="来源" width="190">
                   <template #default="{ row }">
-                    <span :title="row.reference_only ? refHint(row) : ''">{{ row.source }}</span>
-                    <span v-if="row.alt_sources && row.alt_sources.length" class="hint" :title="(row.alt_sources||[]).join(', ')"> +{{ row.alt_sources.length }}</span>
-                    <span v-if="row.needs_match" style="color:var(--warn);font-size:13px" title="仅列出曲名，下载时才在已勾选的源中匹配音频地址"> 待匹配</span>
-                    <span v-else-if="row.unofficial && !row.reupload_suspect" style="color:var(--warn);font-size:13px" :title="row.real_source + (row.origin_reasons && row.origin_reasons.length ? '：' + row.origin_reasons.join('；') : '')"> 转链</span>
-                    <span v-if="row.reupload_suspect" style="color:var(--bad);font-size:13px" :title="(row.real_source ? row.real_source + '：' : '') + '取回的成品与标注对不上：' + (row.origin_reasons || []).join('；')"> 疑似搬运版</span>
+                    <div class="msrc-line">
+                      <span :title="row.reference_only ? refHint(row) : ''">{{ row.source }}</span>
+                      <el-tag v-if="row.score !== null && row.score !== undefined" size="small" effect="plain"
+                              :type="row.score_reject ? 'danger' : (row.score >= (row.match_accept || 85) ? 'success' : 'warning')"
+                              :title="matchHint(row)">{{ row.score }}</el-tag>
+                      <span v-if="row.alt_sources && row.alt_sources.length" class="hint" :title="(row.alt_sources||[]).join(', ')">+{{ row.alt_sources.length }}</span>
+                    </div>
+                    <div class="msrc-flags">
+                      <span v-if="row.score_reject" class="msrc-flag msrc-flag--bad" :title="row.score_reject">不像</span>
+                      <span v-if="row.needs_match" class="msrc-flag msrc-flag--warn" title="仅列出曲名，下载时才在已勾选的源中匹配音频地址">待匹配</span>
+                      <span v-else-if="row.unofficial && !row.reupload_suspect" class="msrc-flag msrc-flag--warn" :title="row.real_source + (row.origin_reasons && row.origin_reasons.length ? '：' + row.origin_reasons.join('；') : '')">转链</span>
+                      <span v-if="row.reupload_suspect" class="msrc-flag msrc-flag--bad" :title="(row.real_source ? row.real_source + '：' : '') + '取回的成品与标注对不上：' + (row.origin_reasons || []).join('；')">疑似搬运版</span>
+                    </div>
                     <div v-if="row.switch_note" class="hint" title="新来路的地址已当场探测过，品质、时长以换到的那条为准">{{ row.switch_note }}</div>
-                    <div v-if="row.switch_fail" style="color:var(--bad);font-size:13px" :title="row.switch_fail"> 换源未成功</div>
+                    <div v-if="row.switch_fail" class="msrc-flag msrc-flag--bad" :title="row.switch_fail">换源未成功</div>
                   </template>
                 </el-table-column>
                 <el-table-column prop="duration" label="时长" width="70"></el-table-column>
@@ -2909,17 +3173,19 @@
                 </el-table-column>
                 <el-table-column label="操作" width="260">
                   <template #default="{ row }">
-                    <el-button v-if="row.reference_only" size="small" plain @click="openRefLink(row)">官方页面</el-button>
-                    <template v-else>
-                      <el-button v-if="!row.needs_match" size="small" plain @click="previewMusicRow(row, pagers.music.paged)">试听</el-button>
-                      <el-button v-if="!row.needs_match" size="small" plain @click="probeMusicRow(row)">大小</el-button>
-                      <el-button v-if="row.id && !row.is_local" size="small" plain :loading="musicSwitching.includes(row.id)"
-                                 title="到「匹配源」里的其他平台重新找这一首，换成那条的音频地址；只有判定确实是同一首歌才会换" @click="switchMusicSource([row])">换源</el-button>
-                      <el-button size="small" plain @click="downloadMusicRow(row)">下载</el-button>
-                      <el-button size="small" plain :disabled="!!row.is_local"
-                                 :title="row.is_local ? '本地已有的成品不进收藏清单：这一单是要能整单下的' : '收进下方「自建收藏清单」，攒成一单以后整单下'"
-                                 @click="addMusicFav([row])">收藏</el-button>
-                    </template>
+                    <div class="mrow-actions">
+                      <el-button v-if="row.reference_only" size="small" plain @click="openRefLink(row)">官方页面</el-button>
+                      <template v-else>
+                        <el-button v-if="!row.needs_match" size="small" plain @click="previewMusicRow(row, pagers.music.paged)">试听</el-button>
+                        <el-button v-if="!row.needs_match" size="small" plain @click="probeMusicRow(row)">大小</el-button>
+                        <el-button v-if="row.id && !row.is_local" size="small" plain :loading="musicSwitching.includes(row.id)"
+                                   title="到「匹配源」里的其他平台重新找这一首，换成那条的音频地址；只有判定确实是同一首歌才会换" @click="switchMusicSource([row])">换源</el-button>
+                        <el-button size="small" plain @click="downloadMusicRow(row)">下载</el-button>
+                        <el-button size="small" plain :disabled="!!row.is_local"
+                                   :title="row.is_local ? '本地已有的成品不进收藏清单：这一单是要能整单下的' : '收进下方「自建收藏清单」，攒成一单以后整单下'"
+                                   @click="addMusicFav([row])">收藏</el-button>
+                      </template>
+                    </div>
                   </template>
                 </el-table-column>
               </el-table>
@@ -3034,7 +3300,7 @@
                 </div>
               </div>
               <div class="row row--tight">
-                <el-input size="small" v-model="tgChannel" clearable style="width:250px" @keyup.enter="listTgChannel"
+                <el-input size="small" v-model="tgChannel" clearable style="width:250px" @paste="onPaste($event, 'url')" @keyup.enter="listTgChannel"
                           :placeholder="tgMode === 'anon' ? '频道：@name / t.me/name / t.me/s/name' : '频道：@name / t.me/name / t.me/c/内部id / -100…'"></el-input>
                 <el-select v-model="tgTypes" multiple collapse-tags size="small" style="width:200px">
                   <el-option v-for="t in tgTypeOptions" :key="t.value" :label="t.label" :value="t.value"></el-option>
@@ -3115,7 +3381,12 @@
           <div v-show="page === 'search'">
             <div class="card">
               <div class="section-title">聚合搜索</div>
-              <el-input v-model="searchQuery" placeholder="输入关键词，例如 sorry" size="large" clearable @keyup.enter="doSearch"></el-input>
+              <div class="row">
+                <el-input v-model="searchQuery" placeholder="输入关键词，例如 sorry" size="large" clearable style="flex:1;min-width:240px" @paste="onPaste($event, 'text')" @keyup.enter="doSearch"></el-input>
+                <el-button size="large" type="primary" :loading="searching" @click="doSearch">
+                  <svg class="btn-ico"><use href="#i-search"></use></svg>{{ searching ? '搜索中…' : '开始搜索' }}
+                </el-button>
+              </div>
               <div class="stack row--mt">
                 <div class="chip-row">
                   <div class="chip" :class="{ active: searchPlatform==='all' }" @click="searchPlatform='all'">全部平台</div>
@@ -3135,11 +3406,6 @@
                   <div class="chip" :class="{ active: searchSort==='views' }" @click="setSearchSort('views')">播放量</div>
                   <div class="chip" :class="{ active: searchSort==='newest' }" @click="setSearchSort('newest')">发布时间</div>
                 </div>
-              </div>
-              <div class="row row--mt">
-                <el-button size="large" type="primary" :loading="searching" @click="doSearch">
-                  <svg class="btn-ico"><use href="#i-search"></use></svg>{{ searching ? '搜索中…' : '开始搜索' }}
-                </el-button>
               </div>
             </div>
             <div v-if="!searchResults.length && !searching && !searchNotes.length" class="empty-tip">请输入关键词搜索 YouTube / B站</div>
@@ -3201,7 +3467,7 @@
                 </el-select>
               </div>
               <div v-if="favTab==='yt_pl'" class="row row--mb row--tight">
-                <el-input size="small" v-model="ytPlaylistUrl" placeholder="粘贴 YouTube 播放列表链接 list=..." style="width:420px" clearable @keyup.enter="loadYtPlaylist"></el-input>
+                <el-input size="small" v-model="ytPlaylistUrl" placeholder="粘贴 YouTube 播放列表链接 list=..." style="width:420px" clearable @paste="onPaste($event, 'url')" @keyup.enter="loadYtPlaylist"></el-input>
                 <el-button size="small" type="primary" @click="loadYtPlaylist"><svg class="btn-ico"><use href="#i-list"></use></svg>加载列表</el-button>
               </div>
               <p v-if="favMeta.truncated" class="hint hint--block">该列表共 {{ favMeta.total }} 条，平台接口本次只返回前 {{ favItems.length }} 条；排序与翻页只对已加载的部分生效。</p>
@@ -3594,15 +3860,22 @@
                 <el-button size="large" @click="endAllLive">结束全部录制</el-button>
                 <el-button size="large" @click="stopAll">停止全部任务</el-button>
                 <el-checkbox v-model="settings.live_from_start">尽可能从开头录制（YouTube）</el-checkbox>
+                <span class="row row--tight" style="margin-left:auto">
+                  <span class="hint">录满自动保存</span>
+                  <el-input-number v-model="settings.live_max_minutes" size="small" :min="0" :max="1440" :step="30"
+                                    :precision="0" controls-position="right" style="width:118px"></el-input-number>
+                  <span class="hint">分钟</span>
+                </span>
               </div>
               <p class="hint hint--block">
                 支持 B站 / YouTube / Twitch 等。直播间需<strong>正在直播</strong>。录制时同步采集聊天/弹幕（B站弹幕、Twitch IRC、YouTube live_chat）。可添加「监控房间」自动检测开播。
+                录满设的分钟数会自动结束这一场并把成品收尾保存。这一格就是「设置 → 订阅与直播 → 直播默认最长录制」同一个值，在哪边改都算数；填 0 = 不限时长，录到手动结束。
               </p>
             </div>
 
             <div class="card">
               <div class="section-title">直播间监控（自动检测开播）</div>
-              <el-input v-model="liveMonitorUrl" placeholder="直播间链接，开播后自动开始录制" size="large" clearable></el-input>
+              <el-input v-model="liveMonitorUrl" placeholder="直播间链接，开播后自动开始录制" size="large" clearable @paste="onPaste($event, 'url')"></el-input>
               <div class="row row--mt">
                 <el-button size="large" type="primary" @click="addLiveMonitor"><svg class="btn-ico"><use href="#i-plus"></use></svg>添加监控</el-button>
                 <el-button size="large" @click="scanLiveMonitors">立即检测开播</el-button>
@@ -3665,7 +3938,7 @@
                                      :precision="0" controls-position="right" style="width:100%"></el-input-number>
                   </div>
                 </div>
-                <div class="hint" style="margin-top:6px">0 = 不限时长；录满后自动结束这一场，房间仍继续监控下次开播。转码在录制结束后后台进行，原文件保留。</div>
+                <div class="hint" style="margin-top:6px">0 = 跟随「设置」里的默认最长录制时长（当前{{ liveDefaultMinutesText }}）；录满后自动结束这一场并保存成品，房间仍继续监控下次开播。转码在录制结束后后台进行，原文件保留。</div>
                 <div class="row row--tight" style="margin-top:14px">
                   <div style="flex:1">
                     <div class="tile-label">监控时段（开始）</div>
@@ -3703,6 +3976,7 @@
                 <el-progress v-if="isLiveRunning(t)" :percentage="Math.min(100, Math.round(t.progress||0))" :stroke-width="8" style="margin-top:8px"></el-progress>
                 <div class="hint" style="margin-top:6px">
                   <span v-if="t.elapsed_sec != null && isLiveRunning(t)" style="font-weight:600;color:var(--accent);margin-right:8px">已录制 {{ formatDuration(t.elapsed_sec) }}</span>
+                  <span v-if="liveAutoSaveText(t)" style="color:var(--ok);margin-right:8px">{{ liveAutoSaveText(t) }}</span>
                   <span v-if="t.filepath" style="color:var(--ok);margin-right:8px">文件: {{ fileBasename(t.filepath) }}</span>
                   <span v-if="t.error_msg && (t.status==='failed'||t.status==='stopped')" style="color:var(--bad)">{{ friendlyError(t.error_msg) }}</span>
                   <span v-if="isLiveRunning(t)">{{ t.speed }} · {{ t.url }}</span>
@@ -4040,6 +4314,37 @@
                         </span>
                       </div>
                     </el-form-item>
+                    <el-form-item label="队列定时窗">
+                      <el-input size="small"
+                        v-model="settings.run_window"
+                        type="textarea"
+                        :rows="3"
+                        placeholder="一行一条，格式：开始-结束&#10;09:00-12:00&#10;22:00-06:00&#10;留空 = 任何时候都能开新任务；井号行是注释"
+                      ></el-input>
+                      <div class="hint hint--block">
+                        只在上表填的时段内启动新任务，<b>已经在下载的不打断</b>，到点自己继续，不用手动。<br>
+                        开始晚于结束按跨零点计算（如 22:00-06:00）。与「限速时段」各管各的：那边管跑多快，这边管跑不跑。<br>
+                        下面每条命名队列还能各自再套一层窗，套了窗的队列只看自己那层，全局那层不再管它。
+                      </div>
+                      <div v-for="q in queueRows" :key="'rw-' + q.name" class="row row--tight" style="margin-top:4px;width:100%">
+                        <span style="width:104px;font-size:12px">{{ q.name }}</span>
+                        <el-input size="small" style="max-width:240px"
+                          v-model="settings.queue_windows[q.name]"
+                          placeholder="本队列的窗，留空只看全局"
+                          @change="checkRunWindows(true)"></el-input>
+                        <span v-if="q.windows && !q.open" class="hint">· 关着，压着 {{ q.held }} 条，{{ q.resume_at }} 自动开始</span>
+                        <span v-else-if="q.windows" class="hint">· 开着</span>
+                      </div>
+                      <div class="row row--tight" style="margin-top:6px">
+                        <el-button size="small" plain @click="checkRunWindows()">检查格式</el-button>
+                        <span v-if="runWinStat" class="hint">
+                          · 认出 {{ runWinStat.count }} 段，{{ runWinStat.now }}
+                          {{ runWinStat.open ? '现在能开新任务' : '现在关着，' + runWinStat.resume_at + ' 自动开' }}
+                          <template v-if="runWinStat.errors.length">
+                            ；{{ runWinStat.errors.length }} 行看不懂：{{ runWinStat.errors.slice(0, 2).join(' / ') }}</template>
+                        </span>
+                      </div>
+                    </el-form-item>
                     <el-form-item label="自定义 yt-dlp 参数">
                       <el-input size="small" v-model="settings.ytdlp_extra_args" placeholder="例如 --socket-timeout 60 -N 4，留空则不附加" clearable></el-input>
                       <div class="hint hint--block">按 yt-dlp 的命令行写法填写，解析与下载都会带上这些参数。能执行外部命令、改动成品存放位置、或让任务只解析不下载的参数会被拒绝；与界面设置冲突的项（如 -f 指定格式）会点名后忽略，仍以界面所选的档位为准。</div>
@@ -4106,7 +4411,213 @@
                     </el-form-item>
                   </el-form>
                 </div>
+                
+                <div class="card">
+                  <div class="section-title">保存位置</div>
+                  <div class="path-row">
+                    <el-input size="small" v-model="settings.download_dir" clearable placeholder="项目/Downloads 或 NAS 挂载路径"></el-input>
+                    <el-button size="small" @click="browsePath('folder', 'settings.download_dir')">浏览文件夹</el-button>
+                    <el-button size="small" @click="openDownloadFolder">打开目录</el-button>
+                  </div>
+                  <div class="hint" style="margin-top:6px">可直接填写 NAS 映射盘（例如 Z:\Videos）或挂载点（/mnt/nas/media）</div>
+                  <div style="margin-top:12px">
+                    <div class="section-title">文件名模板</div>
+                    <el-input size="small" v-model="settings.filename_template" placeholder="%(title).80B [%(id)s].%(ext)s" clearable></el-input>
+                    <div class="hint">yt-dlp 模板，例如 %(uploader)s/%(title)s.%(ext)s</div>
+                  </div>
+                </div>
+                
+                <div class="card">
+                  <div class="section-title">界面外观</div>
+                  <div class="row row--mb">
+                    <span class="row-label">主题色</span>
+                    <div class="chip" v-for="t in UI_THEMES" :key="t.key"
+                         :class="{ active: (settings.ui_theme || 'blue') === t.key }" @click="setTheme(t.key)">
+                      <i class="theme-dot theme-dot--inline" :data-td="t.key"></i>{{ t.name }}
+                    </div>
+                  </div>
+                  <div class="row row--spread">
+                    <span class="row-label">深色模式</span>
+                    <el-switch :model-value="settings.dark_mode" @change="toggleDark"></el-switch>
+                  </div>
+                  <div class="hint hint--block">主题色与深浅色即时预览，点「保存设置」后长期保留</div>
+                </div>
+                
+                <div class="card">
+                  <div class="section-title">订阅与直播</div>
+                  <el-form label-position="top" @submit.prevent>
+                    <el-form-item label="订阅扫描间隔（分钟）">
+                      <el-input-number size="small" v-model="settings.sub_interval_min" :min="15" :max="1440"></el-input-number>
+                    </el-form-item>
+                    <el-form-item label="发现新内容自动下载">
+                      <el-switch v-model="settings.sub_auto_download"></el-switch>
+                    </el-form-item>
+                    <el-form-item label="直播尽可能从开头录制">
+                      <el-switch v-model="settings.live_from_start"></el-switch>
+                    </el-form-item>
+                    <el-form-item label="直播默认最长录制（分钟）">
+                      <el-input-number size="small" v-model="settings.live_max_minutes" :min="0" :max="1440" :step="30" :precision="0" controls-position="right"></el-input-number>
+                      <div class="hint" style="margin-top:4px">0 = 不限时长。手动「开始录制」和未单独设过时长的监控房间，录满这个时长就自动结束并保存成品。</div>
+                    </el-form-item>
+                    <el-form-item label="首选失败时自动换协议">
+                      <el-switch v-model="settings.live_stream_fallback"></el-switch>
+                    </el-form-item>
+                  </el-form>
+                  <div class="hint" style="margin:10px 0 6px">各平台直播流偏好（推荐默认值；失败时可自动回退）</div>
+                  <el-form label-position="top" @submit.prevent>
+                    <el-form-item label="B站">
+                      <el-select size="small" v-model="settings.live_stream_pref_bilibili" style="width:240px">
+                        <el-option label="HTTP-FLV（推荐，低延迟）" value="flv"></el-option>
+                        <el-option label="HLS（更稳定）" value="hls"></el-option>
+                        <el-option label="自动 best" value="auto"></el-option>
+                      </el-select>
+                    </el-form-item>
+                    <el-form-item label="YouTube">
+                      <el-select size="small" v-model="settings.live_stream_pref_youtube" style="width:240px">
+                        <el-option label="DASH 分轨（推荐，画质）" value="dash"></el-option>
+                        <el-option label="HLS" value="hls"></el-option>
+                        <el-option label="自动 best" value="auto"></el-option>
+                      </el-select>
+                    </el-form-item>
+                    <el-form-item label="抖音 / TikTok">
+                      <el-select size="small" v-model="settings.live_stream_pref_douyin" style="width:240px">
+                        <el-option label="HLS（推荐）" value="hls"></el-option>
+                        <el-option label="HTTP-FLV" value="flv"></el-option>
+                        <el-option label="自动 best" value="auto"></el-option>
+                      </el-select>
+                    </el-form-item>
+                    <el-form-item label="Twitch">
+                      <el-select size="small" v-model="settings.live_stream_pref_twitch" style="width:240px">
+                        <el-option label="HLS（推荐）" value="hls"></el-option>
+                        <el-option label="自动 best" value="auto"></el-option>
+                      </el-select>
+                    </el-form-item>
+                    <el-form-item label="其它平台">
+                      <el-select size="small" v-model="settings.live_stream_pref_default" style="width:240px">
+                        <el-option label="自动 best" value="auto"></el-option>
+                        <el-option label="HLS" value="hls"></el-option>
+                        <el-option label="HTTP-FLV" value="flv"></el-option>
+                        <el-option label="DASH 分轨" value="dash"></el-option>
+                      </el-select>
+                    </el-form-item>
+                  </el-form>
+                </div>
 
+                <div class="card">
+                  <div class="section-title">剪贴板监听</div>
+                  <div class="row row--tight">
+                    <el-switch v-model="settings.clipboard_watch" title="开着时每 2 秒读一次本机剪贴板的文本，认出磁力 / 网页链接就在下载页问一句"></el-switch>
+                    <span>发现链接时到「下载」页问一句要不要用</span>
+                  </div>
+                  <div class="hint hint--block" style="margin-top:6px">
+                    默认关。开着时由本机程序读系统剪贴板里的文本（页面关着也照读，回来还能看见那一条），
+                    认出磁力 / 网页链接只弹一张「加入 / 忽略」的卡片 ——
+                    <b>不自动入队、不自动解析、不自动下载</b>：「加入」只是把这一条填进链接框，按不按下一步归你。
+                  </div>
+                  <div class="hint hint--block">
+                    读到的内容不写进运行日志、不落任何状态文件，界面上也只给抽出来的那一条链接；
+                    同一条内容只问一次，点「忽略」后不会反复弹。关掉开关程序就不再碰剪贴板（开关本身开 / 关各记一行日志）。
+                  </div>
+                  <div v-if="clipNote" class="hint hint--block" style="margin-top:6px">{{ clipNote }}</div>
+                </div>
+                
+                <div class="card">
+                  <div class="section-title">扫码登录与 Cookie</div>
+                  <div class="hint hint--block" style="margin-bottom:10px">
+                    这几处登录记的都是本机 Cookie：扫码成功或粘贴保存后只写进本机配置文件，不写进运行日志，也不会被打进分享包。
+                    B站扫码后收藏 / 稍后再看 / 关注即可使用；网易云音乐、QQ 音乐、酷狗这三个音乐源要先登录才会去找无损那一档，没 Cookie 时只取免费音质。
+                  </div>
+                  <div class="tile" style="margin-bottom:10px">
+                    <div class="row row--spread row--mb"><b>B站</b></div>
+                    <div class="row">
+                      <el-button size="small" type="primary" @click="startBiliQr" :loading="biliQrLoading"><svg class="btn-ico"><use href="#i-search"></use></svg>获取二维码</el-button>
+                      <el-button size="small" @click="pollBiliQr" :disabled="!biliQrKey">检查扫码状态</el-button>
+                    </div>
+                    <div v-if="biliQrImage || biliQrUrl" class="row row--mt row--loose row--top">
+                      <img v-if="biliQrImage" :src="biliQrImage" alt="B站登录二维码" style="width:200px;height:200px;border:1px solid var(--line);border-radius:12px;background:#fff;padding:8px" />
+                      <canvas v-else ref="biliQrCanvas" width="200" height="200" style="border:1px solid var(--line);border-radius:12px;background:#fff"></canvas>
+                      <div style="font-size:14px;max-width:360px">
+                        <div style="font-weight:600;margin-bottom:6px">请使用哔哩哔哩 App 扫码</div>
+                        <div class="hint">{{ biliQrMsg || '扫码后请点击「检查扫码状态」' }}</div>
+                      </div>
+                    </div>
+                  </div>
+                  <div v-for="p in musicCookieItems" :key="p.platform" class="tile" style="margin-bottom:10px">
+                    <div class="row row--spread row--mb">
+                      <b>{{ p.label }}</b>
+                      <el-tag size="small" :type="p.configured && !p.missing.length ? 'success' : (p.configured ? 'warning' : 'info')">
+                        {{ p.configured && !p.missing.length ? '已登录' : (p.configured ? '缺关键字段' : '未配置') }}
+                      </el-tag>
+                    </div>
+                    <div v-if="p.configured" class="hint" style="margin-bottom:6px">
+                      {{ p.via || '粘贴' }}于 {{ p.at }}，已含字段 {{ p.keys.join('、') }}
+                    </div>
+                    <div v-if="p.missing.length" class="hint" style="margin-bottom:6px;color:var(--warn)">
+                      缺 {{ p.missing.join(' 或 ') }}，这个源拿不到会员音质
+                    </div>
+                    <div v-if="p.platform === 'netease'" class="row row--mb">
+                      <el-button size="small" type="primary" @click="startNeteaseQr" :loading="ncQrLoading"><svg class="btn-ico"><use href="#i-search"></use></svg>扫码获取</el-button>
+                      <el-button size="small" @click="pollNeteaseQr" :disabled="!ncQrKey">检查扫码状态</el-button>
+                    </div>
+                    <div v-if="p.platform === 'netease' && (ncQrImage || ncQrUrl)" class="row row--mt row--loose row--top">
+                      <img v-if="ncQrImage" :src="ncQrImage" alt="网易云音乐登录二维码" style="width:160px;height:160px;border:1px solid var(--line);border-radius:12px;background:#fff;padding:8px" />
+                      <div style="font-size:14px;max-width:360px">
+                        <div style="font-weight:600;margin-bottom:6px">请使用网易云音乐 App 扫码</div>
+                        <div class="hint">{{ ncQrMsg || '扫码后在手机上确认，页面会自动检测到登录结果' }}</div>
+                      </div>
+                    </div>
+                    <el-input v-model="musicCookieText[p.platform]" type="textarea" :rows="2"
+                              :placeholder="p.how" size="small"></el-input>
+                    <div class="row row--mt row--tight">
+                      <el-button size="small" @click="saveMusicCookie(p)">保存 Cookie</el-button>
+                      <el-button size="small" v-if="p.configured" @click="clearMusicCookie(p)">清除</el-button>
+                    </div>
+                  </div>
+                </div>
+                
+                <div class="card">
+                  <div class="section-title">多平台 Cookie</div>
+                  <div class="hint" style="margin-bottom:10px">为各平台单独配置 Cookie，下载时按链接自动选用（收藏夹、高画质等场景更稳定）</div>
+                  <div v-if="cookieIssueCount" class="hint hint--block" style="margin-bottom:10px;color:var(--warn)">
+                    本次运行里有 {{ cookieIssueCount }} 个平台的下载被判定为需要登录，下面这些平台标了红字。
+                    重新导入该平台的 Cookie 会自动清掉标记；确认登录态没问题也可以直接按「清除标记」。
+                  </div>
+                  <div v-for="p in platformCookies" :key="p.platform" class="tile" style="margin-bottom:10px">
+                    <div class="row row--spread row--mb">
+                      <b>{{ p.label }}</b>
+                      <el-tag v-if="p.login_issue" size="small" type="danger" effect="plain"
+                              :title="p.login_issue.at + ' 的一次下载被判定为需要登录'">疑似需登录</el-tag>
+                      <el-tag v-else size="small" :type="p.configured ? 'success' : 'info'">{{ p.configured ? '已配置' : '未配置' }}</el-tag>
+                    </div>
+                    <div v-if="p.login_issue" class="hint hint--block" style="margin-bottom:8px;color:var(--warn)">
+                      {{ p.login_issue.at }} 的一次下载被判定为需要登录{{ p.login_issue.host ? '（' + p.login_issue.host + '）' : '' }}：{{
+                        p.login_issue.action || '到「设置 → 多平台 Cookie」配这一平台的 Cookie' }}
+                    </div>
+                    <div class="chip-row" style="margin-bottom:8px">
+                      <div class="chip" :class="{ active: p.source==='none' }" @click="p.source='none'">不使用</div>
+                      <div class="chip" :class="{ active: p.source==='browser' }" @click="p.source='browser'">浏览器</div>
+                      <div class="chip" :class="{ active: p.source==='file' }" @click="p.source='file'">文件</div>
+                    </div>
+                    <div v-if="p.source==='browser'" style="margin-bottom:8px">
+                      <el-select size="small" v-model="p.browser" style="width:160px">
+                        <el-option v-for="b in browserOptions" :key="b.value" :label="b.label" :value="b.value"></el-option>
+                      </el-select>
+                    </div>
+                    <div v-if="p.source==='file'">
+                      <div class="path-row" style="margin-bottom:6px">
+                        <el-input v-model="p.file" :placeholder="p.default_path" size="small"></el-input>
+                        <el-button size="small" @click="browsePlatformCookie(p)">浏览</el-button>
+                      </div>
+                      <el-input v-model="p._text" type="textarea" :rows="2" placeholder="或粘贴 Netscape 格式 Cookie 文本后单击保存文本" size="small"></el-input>
+                      <el-button size="small" style="margin-top:6px" @click="savePlatformCookieText(p)">保存文本</el-button>
+                    </div>
+                    <div class="row row--flush" style="margin-top:8px">
+                      <el-button size="small" type="primary" plain @click="savePlatformCookie(p)">保存此平台</el-button>
+                      <el-button v-if="p.login_issue" size="small" @click="clearCookieFlag(p)">清除标记</el-button>
+                    </div>
+                  </div>
+                </div>
+                
                 <div class="card">
                   <div class="section-title">Telegram 通知</div>
                   <el-tabs>
@@ -4192,7 +4703,7 @@
                     <el-button size="small" type="primary" @click="testTelegram" :loading="tgTesting"><svg class="btn-ico"><use href="#i-send"></use></svg>发送测试消息</el-button>
                   </div>
                 </div>
-
+                
                 <div class="card">
                   <div class="section-title">企业微信通知</div>
                   <el-tabs>
@@ -4285,80 +4796,81 @@
                     <el-button size="small" type="primary" @click="testWecom" :loading="wecomTesting"><svg class="btn-ico"><use href="#i-send"></use></svg>发送测试消息</el-button>
                   </div>
                 </div>
-
+                
                 <div class="card">
-                  <div class="section-title">B站扫码登录</div>
-                  <div class="hint" style="margin-bottom:8px">扫码成功后写入 Cookie，收藏/稍后再看/关注即可使用</div>
-                  <div class="row">
-                    <el-button size="small" type="primary" @click="startBiliQr" :loading="biliQrLoading"><svg class="btn-ico"><use href="#i-search"></use></svg>获取二维码</el-button>
-                    <el-button size="small" @click="pollBiliQr" :disabled="!biliQrKey">检查扫码状态</el-button>
+                  <div class="section-title">访问保护（登录）</div>
+                  <div class="hint hint--block" style="margin-bottom:10px">
+                    这个端口本来是裸的：能连上它的任何人都能改设置、翻下载目录、用你已存好的平台 cookie。
+                    开启后<b>只有从非本机地址来的连接要登录</b>——自己用 127.0.0.1 打开、MCP 桥、浏览器扩展都不受影响，不用输口令。
+                    <span v-if="auth.note"><b>{{ auth.note }}</b></span>
                   </div>
-                  <div v-if="biliQrImage || biliQrUrl" class="row row--mt row--loose row--top">
-                    <img v-if="biliQrImage" :src="biliQrImage" alt="B站登录二维码" style="width:200px;height:200px;border:1px solid var(--line);border-radius:12px;background:#fff;padding:8px" />
-                    <canvas v-else ref="biliQrCanvas" width="200" height="200" style="border:1px solid var(--line);border-radius:12px;background:#fff"></canvas>
-                    <div style="font-size:14px;max-width:360px">
-                      <div style="font-weight:600;margin-bottom:6px">请使用哔哩哔哩 App 扫码</div>
-                      <div class="hint">{{ biliQrMsg || '扫码后请点击「检查扫码状态」' }}</div>
-                    </div>
+                  <div class="row row--tight" style="margin-bottom:8px">
+                    <el-switch v-model="settings.web_auth_enabled" @change="saveAuthKnobs"></el-switch>
+                    <span class="hint">
+                      {{ settings.web_auth_enabled ? '已开启：非本机来的连接要输口令' : '未开启：谁连上这个端口都能直接用' }}
+                      · 口令{{ auth.password_set ? '已设' : '还没设（没设口令时开了也不拦人，见下面先设口令）' }}
+                    </span>
+                    <el-button size="small" text @click="loadAuthStatus()">刷新</el-button>
+                  </div>
+                  <div class="row row--tight" style="margin-bottom:8px">
+                    <span class="hint" style="margin:0">
+                      这台设备：来源 <code>{{ auth.client_ip || '未知' }}</code>（{{ auth.loopback ? '本机，不拦' : '非本机' }}）
+                      · 登录状态 {{ auth.authorized ? '过得去' : '过不去（会被弹登录窗）' }}
+                    </span>
+                  </div>
+                  <div class="row row--tight row--mt">
+                    <el-input size="small" v-model="authForm.current" type="password" show-password
+                              :placeholder="auth.password_set ? '当前口令（改口令要填）' : '现在不用填'" style="width:170px"></el-input>
+                    <el-input size="small" v-model="authForm.password" type="password" show-password
+                              placeholder="新口令，至少 6 个字符" style="width:190px"></el-input>
+                    <el-button size="small" type="primary" :loading="authBusy" @click="applyAuthPassword">
+                      {{ auth.password_set ? '改口令' : '设口令' }}
+                    </el-button>
+                    <span class="hint">口令只存加盐哈希（PBKDF2），程序里读不回来；改了口令后旧浏览器的登录状态全部作废，要重登一次。</span>
+                  </div>
+                  <div class="row row--tight row--mt">
+                    <span class="hint" style="margin:0">会话空闲</span>
+                    <el-input-number size="small" v-model="settings.web_auth_session_hours" :min="1" :max="720" controls-position="right" style="width:110px"></el-input-number>
+                    <span class="hint" style="margin:0">小时要重登 · 记住设备</span>
+                    <el-input-number size="small" v-model="settings.web_auth_remember_days" :min="1" :max="365" controls-position="right" style="width:110px"></el-input-number>
+                    <span class="hint" style="margin:0">天 · 连错</span>
+                    <el-input-number size="small" v-model="settings.web_auth_max_fails" :min="1" :max="50" controls-position="right" style="width:96px"></el-input-number>
+                    <span class="hint" style="margin:0">次锁</span>
+                    <el-input-number size="small" v-model="settings.web_auth_lock_minutes" :min="1" :max="1440" controls-position="right" style="width:96px"></el-input-number>
+                    <span class="hint" style="margin:0">分钟</span>
+                    <el-button size="small" :loading="authBusy" @click="saveAuthKnobs">保存这几项</el-button>
+                  </div>
+                  <div class="hint hint--block">
+                    「记住这台设备」是登录窗口里那个勾：最长有效天数取上面这个值，不勾就是空闲 {{ settings.web_auth_session_hours }} 小时这一档。
+                    登录用的签名密钥（SECRET_KEY）第一次用到时自动生成并写进 config.json，所以重启程序后浏览器不用重登。
+                    锁定与失败计数存在 login_state.json，重启后仍在，不会白给爆破者一轮新机会。
+                  </div>
+                  <div class="row row--tight row--mt">
+                    <span class="hint" style="margin:0">机器令牌（自动调用的第二道门）</span>
+                    <el-input size="small" v-model="auth.machine_token" :type="authTokenShown ? 'text' : 'password'" readonly style="width:280px"></el-input>
+                    <el-button size="small" @click="authTokenShown = !authTokenShown">{{ authTokenShown ? '隐藏' : '显示' }}</el-button>
+                    <el-button size="small" @click="copyMachineToken">复制</el-button>
+                    <el-button size="small" plain type="danger" @click="rotateMachineToken">重置</el-button>
+                  </div>
+                  <div class="hint hint--block">
+                    给需要跨主机 / 走反向代理的自动脚本用：把请求头 <code>X-MDL-Token</code> 设成这串就能过数据接口的门，
+                    但改口令、开关这类动作它代劳不了（连「把保护关掉」这一项也照样拦）。
+                    这串要点「重置」才生成 —— 光是刷新界面不会写盘。MCP 桥只连 127.0.0.1，按上面的口径本来就不用过门；
+                    它会自动读环境变量 <code>MEDIADOWNLOADER_MCP_TOKEN</code>，没设时直接读本机 config.json 里这串，所以将来改绑法也不用改桥。
+                    重置后旧令牌立刻失效，脚本那边要跟着换。
+                  </div>
+                  <div class="row row--tight row--mt">
+                    <span class="hint" style="margin:0">正在锁定的来源</span>
+                    <span class="hint" style="margin:0" v-if="!(auth.locks || []).length">没有</span>
+                    <template v-for="l in auth.locks" :key="l.ip">
+                      <code>{{ l.ip }}</code>
+                      <span class="hint" style="margin:0">{{ l.left ? '还锁 ' + fmtWait(l.left) : '已错 ' + (l.fails || 0) + ' 次' }}</span>
+                      <el-button size="small" plain @click="unlockIp(l.ip)">解锁</el-button>
+                    </template>
+                    <el-button v-if="(auth.locks || []).length" size="small" plain type="danger" @click="unlockAll()">全部解锁</el-button>
                   </div>
                 </div>
-
-                <div class="card">
-                  <div class="section-title">订阅与直播</div>
-                  <el-form label-position="top" @submit.prevent>
-                    <el-form-item label="订阅扫描间隔（分钟）">
-                      <el-input-number size="small" v-model="settings.sub_interval_min" :min="15" :max="1440"></el-input-number>
-                    </el-form-item>
-                    <el-form-item label="发现新内容自动下载">
-                      <el-switch v-model="settings.sub_auto_download"></el-switch>
-                    </el-form-item>
-                    <el-form-item label="直播尽可能从开头录制">
-                      <el-switch v-model="settings.live_from_start"></el-switch>
-                    </el-form-item>
-                    <el-form-item label="首选失败时自动换协议">
-                      <el-switch v-model="settings.live_stream_fallback"></el-switch>
-                    </el-form-item>
-                  </el-form>
-                  <div class="hint" style="margin:10px 0 6px">各平台直播流偏好（推荐默认值；失败时可自动回退）</div>
-                  <el-form label-position="top" @submit.prevent>
-                    <el-form-item label="B站">
-                      <el-select size="small" v-model="settings.live_stream_pref_bilibili" style="width:240px">
-                        <el-option label="HTTP-FLV（推荐，低延迟）" value="flv"></el-option>
-                        <el-option label="HLS（更稳定）" value="hls"></el-option>
-                        <el-option label="自动 best" value="auto"></el-option>
-                      </el-select>
-                    </el-form-item>
-                    <el-form-item label="YouTube">
-                      <el-select size="small" v-model="settings.live_stream_pref_youtube" style="width:240px">
-                        <el-option label="DASH 分轨（推荐，画质）" value="dash"></el-option>
-                        <el-option label="HLS" value="hls"></el-option>
-                        <el-option label="自动 best" value="auto"></el-option>
-                      </el-select>
-                    </el-form-item>
-                    <el-form-item label="抖音 / TikTok">
-                      <el-select size="small" v-model="settings.live_stream_pref_douyin" style="width:240px">
-                        <el-option label="HLS（推荐）" value="hls"></el-option>
-                        <el-option label="HTTP-FLV" value="flv"></el-option>
-                        <el-option label="自动 best" value="auto"></el-option>
-                      </el-select>
-                    </el-form-item>
-                    <el-form-item label="Twitch">
-                      <el-select size="small" v-model="settings.live_stream_pref_twitch" style="width:240px">
-                        <el-option label="HLS（推荐）" value="hls"></el-option>
-                        <el-option label="自动 best" value="auto"></el-option>
-                      </el-select>
-                    </el-form-item>
-                    <el-form-item label="其它平台">
-                      <el-select size="small" v-model="settings.live_stream_pref_default" style="width:240px">
-                        <el-option label="自动 best" value="auto"></el-option>
-                        <el-option label="HLS" value="hls"></el-option>
-                        <el-option label="HTTP-FLV" value="flv"></el-option>
-                        <el-option label="DASH 分轨" value="dash"></el-option>
-                      </el-select>
-                    </el-form-item>
-                  </el-form>
-                </div>
-
+                
                 <div class="card">
                   <div class="section-title">风控与加速</div>
                   <div class="row row--tight row--mb">
@@ -4398,7 +4910,87 @@
                   </el-form>
                   <div class="hint">建议：分片 4、并发 2–3；订阅扫描间隔 10–30 秒，以免触发平台风控。</div>
                 </div>
-
+                
+                <div class="fold-hd" @click="foldRare = !foldRare">
+                  <span class="fold-arrow">{{ foldRare ? '▾' : '▸' }}</span>
+                  <b>不常用设置</b>
+                  <span class="hint">改一次就够的那几项收在这里（10 项）—— 点这一行展开或收起，展开状态下次打开页面还在。</span>
+                </div>
+                <div class="settings-fold" :class="{ 'is-closed': !foldRare }">
+                <div class="card row--mb">
+                  <div class="section-title">改动怎么存 · 恢复默认</div>
+                  <div class="hint hint--block">
+                    这页上的开关、下拉、数字与单行输入框<b>改完自动存</b>，每次只写改动的那几项 ——
+                    整包回存会把这一页打开之后由别的入口（另一个页签、接口、程序自己）改过的键一起盖回去，而界面看不出来盖掉了什么。
+                    <b>不自动存</b>的是这几栏：限速时段、队列定时窗、自定义 yt-dlp 参数、字幕术语表、tracker 名单与来源、自动分类规则、访问保护开关
+                    —— 半截写法存过去只会被后端顶回，请点它们各自那一行的按钮。
+                  </div>
+                  <div class="row row--tight" style="margin-top:8px">
+                    <span class="hint" style="margin:0">{{ autoSaveNote || '现在没有待保存的改动' }}</span>
+                    <el-button size="small" plain @click="loadConfigDefaults()">重新核对默认值</el-button>
+                    <el-button size="small" type="danger" plain :loading="defBusy === 'all'"
+                               :disabled="!defRows.length" @click="resetAllDefaults()">一键恢复默认</el-button>
+                  </div>
+                  <div class="hint hint--block" style="margin-top:6px">
+                    共 {{ cfgDefs.count }} 项在这页上有控制项，其中 <b>{{ defRows.length }}</b> 项与出厂默认不一样。
+                    默认值只有后端那一份，界面不抄第二份。<b>访问口令、签名密钥、机器令牌与 CookieCloud 同步密钥不在这张表里</b>，恢复默认动不到它们。
+                    恢复的项里只要带密钥或指向本机路径，动手前会先把当前配置存成 <code>config.json.bak-&lt;时间&gt;</code>，反悔了抄回去就行。
+                  </div>
+                  <div v-if="defRows.length" class="env-list" style="margin-top:8px">
+                    <div class="comp-item" v-for="it in defRows" :key="it.key">
+                      <div class="comp-main">
+                        <div style="font-weight:600">{{ cfgLabel(it.key) }}</div>
+                        <div class="comp-ver" style="word-break:break-all">{{ defBrief(it) }}</div>
+                      </div>
+                      <el-button size="small" plain :loading="defBusy === it.key"
+                                 @click="resetKeys([it.key], false)">恢复这一项</el-button>
+                    </div>
+                  </div>
+                </div>
+                  
+                <div class="card">
+                  <div class="section-title">通知补发队列</div>
+                  <div class="hint" style="margin-bottom:10px">
+                    通知先记进 <code>notify_outbox.json</code> 再由后台发出去：某个通道没送成功时按
+                    <b>{{ (outbox.retry_delays || []).join(' → ') }}</b> 秒的间隔重试，重启程序后接着补发。
+                    每条消息按通道各自记账，补发只补没收到的那一个，不会把已送达的再发一遍。
+                  </div>
+                  <div class="row row--tight" style="margin-bottom:8px">
+                    <el-button size="small" :loading="outboxBusy" @click="loadOutbox(true)">刷新</el-button>
+                    <el-button size="small" @click="retryOutbox" :loading="outboxBusy">立即重试</el-button>
+                    <el-button size="small" @click="clearOutbox">清空</el-button>
+                    <span class="hint" style="margin:0">
+                      待发 {{ outbox.counts.pending }} · 已送出 {{ outbox.counts.sent }} · 已丢弃 {{ outbox.counts.dropped }}
+                      <span v-if="outboxText"> · {{ outboxText }}</span>
+                    </span>
+                  </div>
+                  <div class="env-list">
+                    <div class="comp-item" v-for="r in outbox.records" :key="r.id">
+                      <span :style="{ color: r.status === 'sent' ? 'var(--ok)' : (r.status === 'pending' ? 'var(--warn)' : 'var(--bad)'), fontSize: '14px' }">●</span>
+                      <div class="comp-main">
+                        <div :style="{ fontWeight: 600, color: 'var(--ink)' }">
+                          {{ r.kind_label }} · {{ r.title || '（无标题）' }}
+                          <el-tag size="small" :type="r.status === 'sent' ? 'success' : (r.status === 'pending' ? 'warning' : 'danger')" style="margin-left:6px">
+                            {{ r.status === 'sent' ? '已送出' : (r.status === 'pending' ? '待补发' : '已丢弃') }}
+                          </el-tag>
+                        </div>
+                        <div class="comp-ver">
+                          {{ new Date(r.created_at * 1000).toLocaleString() }} · 试了 {{ r.attempts }} 次
+                          <span v-if="(r.channels || []).length"> · 还欠 {{ r.channels.join('、') }}</span>
+                          <span v-if="r.next_in"> · {{ fmtWait(r.next_in) }} 后再试</span>
+                          <span v-if="r.error"> · {{ r.error }}</span>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="comp-item" v-if="!(outbox.records || []).length">
+                      <span style="color:var(--ok);font-size:14px">●</span>
+                      <div class="comp-main">
+                        <div class="comp-ver">队列是空的。一个通知通道都没开时，事件到这里就直接跳过，连盘都不写。</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                  
                 <div class="card">
                   <div class="section-title">数据同步</div>
                   <div class="row">
@@ -4408,22 +5000,7 @@
                   </div>
                   <div class="hint" style="margin-top:8px">用于备份，或在多台电脑之间迁移设置与订阅</div>
                 </div>
-
-                <div class="card">
-                  <div class="section-title">保存位置</div>
-                  <div class="path-row">
-                    <el-input size="small" v-model="settings.download_dir" clearable placeholder="项目/Downloads 或 NAS 挂载路径"></el-input>
-                    <el-button size="small" @click="browsePath('folder', 'settings.download_dir')">浏览文件夹</el-button>
-                    <el-button size="small" @click="openDownloadFolder">打开目录</el-button>
-                  </div>
-                  <div class="hint" style="margin-top:6px">可直接填写 NAS 映射盘（例如 Z:\Videos）或挂载点（/mnt/nas/media）</div>
-                  <div style="margin-top:12px">
-                    <div class="section-title">文件名模板</div>
-                    <el-input size="small" v-model="settings.filename_template" placeholder="%(title).80B [%(id)s].%(ext)s" clearable></el-input>
-                    <div class="hint">yt-dlp 模板，例如 %(uploader)s/%(title)s.%(ext)s</div>
-                  </div>
-                </div>
-
+                  
                 <div class="card">
                   <div class="section-title">NAS / 网盘转存</div>
                   <div class="hint" style="margin-bottom:10px">下载完成后复制/移动到 NAS，或上传 WebDAV（群晖 / 威联通 / Nextcloud / Alist）</div>
@@ -4449,23 +5026,7 @@
                     <el-button size="small" @click="testStorage" :loading="storageTesting">测试连接</el-button>
                   </el-form>
                 </div>
-
-                <div class="card">
-                  <div class="section-title">界面外观</div>
-                  <div class="row row--mb">
-                    <span class="row-label">主题色</span>
-                    <div class="chip" v-for="t in UI_THEMES" :key="t.key"
-                         :class="{ active: (settings.ui_theme || 'blue') === t.key }" @click="setTheme(t.key)">
-                      <i class="theme-dot theme-dot--inline" :data-td="t.key"></i>{{ t.name }}
-                    </div>
-                  </div>
-                  <div class="row row--spread">
-                    <span class="row-label">深色模式</span>
-                    <el-switch :model-value="settings.dark_mode" @change="toggleDark"></el-switch>
-                  </div>
-                  <div class="hint hint--block">主题色与深浅色即时预览，点「保存设置」后长期保留</div>
-                </div>
-
+                  
                 <div class="card">
                   <div class="section-title">额外输出</div>
                   <div class="chip-row">
@@ -4474,89 +5035,7 @@
                     <div class="chip" :class="{ active: settings.write_sub_files }" @click="settings.write_sub_files = !settings.write_sub_files">写出外挂字幕文件</div>
                   </div>
                 </div>
-
-                <div class="card">
-                  <div class="section-title">多平台 Cookie</div>
-                  <div class="hint" style="margin-bottom:10px">为各平台单独配置 Cookie，下载时按链接自动选用（收藏夹、高画质等场景更稳定）</div>
-                  <div v-if="cookieIssueCount" class="hint hint--block" style="margin-bottom:10px;color:var(--warn)">
-                    本次运行里有 {{ cookieIssueCount }} 个平台的下载被判定为需要登录，下面这些平台标了红字。
-                    重新导入该平台的 Cookie 会自动清掉标记；确认登录态没问题也可以直接按「清除标记」。
-                  </div>
-                  <div v-for="p in platformCookies" :key="p.platform" class="tile" style="margin-bottom:10px">
-                    <div class="row row--spread row--mb">
-                      <b>{{ p.label }}</b>
-                      <el-tag v-if="p.login_issue" size="small" type="danger" effect="plain"
-                              :title="p.login_issue.at + ' 的一次下载被判定为需要登录'">疑似需登录</el-tag>
-                      <el-tag v-else size="small" :type="p.configured ? 'success' : 'info'">{{ p.configured ? '已配置' : '未配置' }}</el-tag>
-                    </div>
-                    <div v-if="p.login_issue" class="hint hint--block" style="margin-bottom:8px;color:var(--warn)">
-                      {{ p.login_issue.at }} 的一次下载被判定为需要登录{{ p.login_issue.host ? '（' + p.login_issue.host + '）' : '' }}：{{
-                        p.login_issue.action || '到「设置 → 多平台 Cookie」配这一平台的 Cookie' }}
-                    </div>
-                    <div class="chip-row" style="margin-bottom:8px">
-                      <div class="chip" :class="{ active: p.source==='none' }" @click="p.source='none'">不使用</div>
-                      <div class="chip" :class="{ active: p.source==='browser' }" @click="p.source='browser'">浏览器</div>
-                      <div class="chip" :class="{ active: p.source==='file' }" @click="p.source='file'">文件</div>
-                    </div>
-                    <div v-if="p.source==='browser'" style="margin-bottom:8px">
-                      <el-select size="small" v-model="p.browser" style="width:160px">
-                        <el-option v-for="b in browserOptions" :key="b.value" :label="b.label" :value="b.value"></el-option>
-                      </el-select>
-                    </div>
-                    <div v-if="p.source==='file'">
-                      <div class="path-row" style="margin-bottom:6px">
-                        <el-input v-model="p.file" :placeholder="p.default_path" size="small"></el-input>
-                        <el-button size="small" @click="browsePlatformCookie(p)">浏览</el-button>
-                      </div>
-                      <el-input v-model="p._text" type="textarea" :rows="2" placeholder="或粘贴 Netscape 格式 Cookie 文本后单击保存文本" size="small"></el-input>
-                      <el-button size="small" style="margin-top:6px" @click="savePlatformCookieText(p)">保存文本</el-button>
-                    </div>
-                    <div class="row row--flush" style="margin-top:8px">
-                      <el-button size="small" type="primary" plain @click="savePlatformCookie(p)">保存此平台</el-button>
-                      <el-button v-if="p.login_issue" size="small" @click="clearCookieFlag(p)">清除标记</el-button>
-                    </div>
-                  </div>
-                </div>
-
-                <div class="card">
-                  <div class="section-title">音乐平台登录 Cookie</div>
-                  <div class="hint hint--block" style="margin-bottom:10px">
-                    网易云音乐、QQ 音乐、酷狗这三个源要先登录才会去找无损那一档，没 Cookie 时只取免费音质。
-                    Cookie 只写进本机配置文件，不写进运行日志，也不会被打进分享包。
-                  </div>
-                  <div v-for="p in musicCookieItems" :key="p.platform" class="tile" style="margin-bottom:10px">
-                    <div class="row row--spread row--mb">
-                      <b>{{ p.label }}</b>
-                      <el-tag size="small" :type="p.configured && !p.missing.length ? 'success' : (p.configured ? 'warning' : 'info')">
-                        {{ p.configured && !p.missing.length ? '已登录' : (p.configured ? '缺关键字段' : '未配置') }}
-                      </el-tag>
-                    </div>
-                    <div v-if="p.configured" class="hint" style="margin-bottom:6px">
-                      {{ p.via || '粘贴' }}于 {{ p.at }}，已含字段 {{ p.keys.join('、') }}
-                    </div>
-                    <div v-if="p.missing.length" class="hint" style="margin-bottom:6px;color:var(--warn)">
-                      缺 {{ p.missing.join(' 或 ') }}，这个源拿不到会员音质
-                    </div>
-                    <div v-if="p.platform === 'netease'" class="row row--mb">
-                      <el-button size="small" type="primary" @click="startNeteaseQr" :loading="ncQrLoading"><svg class="btn-ico"><use href="#i-search"></use></svg>扫码获取</el-button>
-                      <el-button size="small" @click="pollNeteaseQr" :disabled="!ncQrKey">检查扫码状态</el-button>
-                    </div>
-                    <div v-if="p.platform === 'netease' && (ncQrImage || ncQrUrl)" class="row row--mt row--loose row--top">
-                      <img v-if="ncQrImage" :src="ncQrImage" alt="网易云音乐登录二维码" style="width:160px;height:160px;border:1px solid var(--line);border-radius:12px;background:#fff;padding:8px" />
-                      <div style="font-size:14px;max-width:360px">
-                        <div style="font-weight:600;margin-bottom:6px">请使用网易云音乐 App 扫码</div>
-                        <div class="hint">{{ ncQrMsg || '扫码后在手机上确认，页面会自动检测到登录结果' }}</div>
-                      </div>
-                    </div>
-                    <el-input v-model="musicCookieText[p.platform]" type="textarea" :rows="2"
-                              :placeholder="p.how" size="small"></el-input>
-                    <div class="row row--mt row--tight">
-                      <el-button size="small" @click="saveMusicCookie(p)">保存 Cookie</el-button>
-                      <el-button size="small" v-if="p.configured" @click="clearMusicCookie(p)">清除</el-button>
-                    </div>
-                  </div>
-                </div>
-
+                  
                 <div class="card">
                   <div class="section-title">全局 Cookie 来源（回退）</div>
                   <div class="choice-grid" style="grid-template-columns: repeat(3, minmax(0, 1fr)); margin-bottom: 12px">
@@ -4586,8 +5065,219 @@
                     </div>
                     <div class="hint">默认：项目目录 cookies/cookies.txt</div>
                   </div>
-                </div>
 
+                  <div class="row row--tight" style="align-items:center;margin-top:10px">
+                    <el-switch v-model="settings.cookie_public_first"></el-switch>
+                    <span style="font-size:14px">公开优先：解析先不带 Cookie 试一次</span>
+                  </div>
+                  <div class="hint" style="margin-top:4px">
+                    关着时与从前一模一样：只要这里配了 Cookie，每一次解析与下载都带上它。<b>开着时</b>每条链接先按「没登录」解析一次，
+                    那一次被<b>登录墙 / 会员 / 年龄限制 / 风控校验页</b>挡住、只给到被裁的清单，或<b>一条流都不给</b>（这台机器实测公开视频也会这样）
+                    才带上 Cookie 再解析一次；判过的结论按链接记 15 分钟，解析开了就<b>连下载也不带 Cookie</b>。
+                    <b>429 限流、连不上、内容不存在这三种失败不会重跑</b> —— 带 Cookie 对它们没有用，多打一次只会把冷却加长。
+                    代价是本来要登录的视频会多一次接口调用；公开就能看到的东西不必把登录态发给平台，是这一档换来的事。
+                    逐平台的 Cookie 覆写照常优先于这里的全局来源，这一档只决定「第一次要不要带」。
+                  </div>
+                </div>
+                  
+                <div class="card">
+                  <div class="section-title">CookieCloud 同步</div>
+                  <div class="row row--tight" style="align-items:center;margin-bottom:10px">
+                    <el-switch v-model="cc.enabled"></el-switch>
+                    <span style="font-size:14px">打开 —— 关着就不会向那个服务器发任何请求，四个按钮也会被挡回去</span>
+                  </div>
+
+                  <el-form label-position="top" @submit.prevent>
+                    <el-form-item label="服务器地址（插件设置里的同步地址，端口和子目录一起抄）">
+                      <el-input size="small" v-model="cc.server" clearable
+                                placeholder="https://cc.example.com 或 http://192.168.1.5:8088/cookie"></el-input>
+                    </el-form-item>
+                    <el-form-item label="UUID（插件里的用户标识）">
+                      <el-input size="small" v-model="cc.uuid" clearable placeholder="32 位那一串，可以带 -"></el-input>
+                    </el-form-item>
+                    <el-form-item label="同步密钥">
+                      <el-input size="small" type="password" v-model="cc.key" show-password clearable
+                                :placeholder="cc.key_set ? '已经设过了；留空就是不改它' : '插件里的同步密钥'"></el-input>
+                      <div class="hint" style="margin-top:4px">
+                        <span v-if="cc.key_set">本机已存有一份密钥，界面不回显、日志里也不会出现。</span>
+                        <span v-else>本机还没有密钥。</span>
+                        <el-button v-if="cc.key_set" size="small" text @click="clearCookieCloudKey">清掉已存的密钥</el-button>
+                      </div>
+                    </el-form-item>
+                    <el-form-item label="加密方式">
+                      <el-select size="small" v-model="cc.scheme" style="width:100%">
+                        <el-option v-for="s in cc.schemes" :key="s" :label="cc.scheme_labels[s] || s" :value="s"></el-option>
+                      </el-select>
+                    </el-form-item>
+                    <el-form-item label="域名过滤（一行一个；空着就是云端有什么都收）">
+                      <el-input size="small" type="textarea" :rows="2" v-model="cc.domains"
+                                placeholder="youtube.com&#10;bilibili.com"></el-input>
+                    </el-form-item>
+                  </el-form>
+
+                  <div class="row row--tight" style="margin-bottom:8px">
+                    <el-button size="small" type="primary" :loading="ccBusy === 'save'" @click="saveCookieCloud"><svg class="btn-ico"><use href="#i-save"></use></svg>保存这几项</el-button>
+                    <el-button size="small" :loading="ccBusy === 'test'" @click="testCookieCloud">测试连接</el-button>
+                    <el-button size="small" :loading="ccBusy === 'pull'" @click="pullCookieCloud">从云端拉取</el-button>
+                    <el-button size="small" :loading="ccBusy === 'push'" @click="pushCookieCloud">本机推给云端</el-button>
+                  </div>
+
+                  <div class="hint" v-if="ccMsg" style="margin-bottom:6px">{{ ccMsg }}</div>
+
+                  <div class="hint" style="margin-bottom:6px">
+                    <span v-if="!cc.enabled">现在是关的：这一轮没有向任何服务器发过请求。</span>
+                    <template v-else>
+                      <span v-if="!cc.server || !cc.uuid || !cc.key_set">
+                        开着但配不全，缺的是{{ (!cc.server ? ' 服务器地址' : '') + (!cc.uuid ? ' 和 UUID' : '') + (!cc.key_set ? ' 和同步密钥' : '') }}；补齐才能测试连接。
+                      </span>
+                      <span v-else>
+                        <template v-if="cc.state.last_test_at">
+                          上次测试 {{ cc.state.last_test_at }}
+                          <b v-if="cc.state.last_test_ok === false" style="color:var(--bad)">没成</b>
+                          <b v-else style="color:var(--ok)">通过</b>
+                          <span v-if="cc.state.last_test_error" style="color:var(--bad)">：{{ cc.state.last_test_error }}</span>
+                        </template>
+                        <template v-if="cc.state.last_pull_at">
+                          · 上次拉取 {{ cc.state.last_pull_at }}
+                          <b v-if="cc.state.last_pull_ok === false" style="color:var(--bad)">没成</b>
+                          <b v-else style="color:var(--ok)">收了 {{ cc.state.pull_rows || 0 }} 条 / {{ cc.state.pull_domains || 0 }} 个域</b>
+                          <span v-if="cc.state.last_pull_error" style="color:var(--bad)">：{{ cc.state.last_pull_error }}</span>
+                        </template>
+                        <template v-if="cc.state.last_push_at">
+                          · 上次推送 {{ cc.state.last_push_at }}
+                          <b v-if="cc.state.last_push_ok === false" style="color:var(--bad)">没成</b>
+                          <b v-else style="color:var(--ok)">推了 {{ cc.state.push_rows || 0 }} 条</b>
+                          <span v-if="cc.state.last_push_error" style="color:var(--bad)">：{{ cc.state.last_push_error }}</span>
+                        </template>
+                        <template v-if="!(cc.state.last_test_at || cc.state.last_pull_at || cc.state.last_push_at)">
+                          还没测过，也没同步过
+                        </template>
+                        · 云端那份的写法 {{ cc.scheme_seen || '还没试过，不知道' }}
+                      </span>
+                    </template>
+                  </div>
+                  <div class="hint" v-if="(cc.state.pull_files || []).length" style="margin-bottom:6px;line-height:1.5">
+                    最近一次拉取写的文件：
+                    <span v-for="f in cc.state.pull_files" :key="f.file">{{ f.file }}（{{ f.count }} 条） </span>
+                  </div>
+
+                  <div class="hint" style="line-height:1.5">
+                    「从云端拉取」写的是上面那份 <b>Cookie 文件</b>（默认 cookies/cookies.txt）和本机各平台的
+                    cookies/&lt;平台&gt;_cookies.txt —— 只有云端真给了该平台 Cookie 的平台文件才动，覆盖前留
+                    <b>.bak-&lt;时间&gt;</b>；下载链路本来就读这些文件，拉完不用再改来源。<br>
+                    「本机推给云端」会把服务器上这个 UUID 的那一份<b>整个盖掉</b>，别的环境再拉就是新的那份。
+                  </div>
+                </div>
+                  
+                <div class="card">
+                  <div class="section-title">按龄清理</div>
+                  <div class="row row--tight" style="align-items:center;margin-bottom:10px">
+                    <el-switch v-model="cl.enabled"></el-switch>
+                    <span style="font-size:14px">打开 —— 每天 {{ cl.auto_hour }} 自动清一次
+                      <b>日志归档、编辑备份、回收目录里到期的</b>这三样</span>
+                  </div>
+
+                  <el-form label-position="top" @submit.prevent>
+                    <div class="row row--tight">
+                      <el-form-item label="日志归档（app-日期.log）超过多少天">
+                        <el-input-number size="small" v-model="cl.log_days" :min="0" :max="3650" :step="1" style="width:130px"></el-input-number>
+                      </el-form-item>
+                      <el-form-item label="编辑备份（.bak-时间）超过多少天">
+                        <el-input-number size="small" v-model="cl.backup_days" :min="0" :max="3650" :step="1" style="width:130px"></el-input-number>
+                      </el-form-item>
+                      <el-form-item label="回收目录里待多少天真删">
+                        <el-input-number size="small" v-model="cl.trash_days" :min="0" :max="3650" :step="1" style="width:130px"></el-input-number>
+                      </el-form-item>
+                      <el-form-item label="下载成品超过多少天（0 = 这一档不碰）">
+                        <el-input-number size="small" v-model="cl.download_days" :min="0" :max="3650" :step="1" style="width:130px"></el-input-number>
+                      </el-form-item>
+                    </div>
+                  </el-form>
+
+                  <div class="row row--tight" style="margin-bottom:8px">
+                    <el-button size="small" type="primary" :loading="clBusy === 'save'" @click="saveCleanup"><svg class="btn-ico"><use href="#i-save"></use></svg>保存这几项</el-button>
+                    <el-button size="small" :loading="clBusy === 'preview'" @click="previewCleanup">先看名单</el-button>
+                    <el-button size="small" type="danger" :disabled="!clPlan || clPlanStale"
+                               :loading="clBusy === 'run'" @click="runCleanup">按名单删除</el-button>
+                    <el-button size="small" :loading="clBusy === 'trash'" @click="loadCleanupTrash">看回收目录</el-button>
+                  </div>
+
+                  <div class="hint" v-if="clMsg" style="margin-bottom:6px">{{ clMsg }}</div>
+
+                  <div class="hint" style="line-height:1.5;margin-bottom:6px">
+                    三条口径：<b>①</b> 天数都按文件 <b>mtime</b>（最后一次被动过的时间）算，不按历史里的记录时间；
+                    <b>②</b> 下载成品与编辑备份<b>不硬删</b> —— 先挪进
+                    <code>{{ cl.trash_dir }}\</code>，在里面待够上面填的天数才真删，回收目录里随时能放回原位（日志归档是直接删）；
+                    <b>③</b> 自动那一趟<b>永远不碰下载目录里的成品</b>，那一档只有你点过「先看名单」、再点「按名单删除」才动手。
+                  </div>
+                  <div class="hint" style="line-height:1.5;margin-bottom:6px">
+                    <span v-if="cl.last_auto.at || cl.last_manual.at">
+                      <template v-if="cl.last_auto.at">上次自动 {{ cl.last_auto.at }}（{{ (cl.last_auto.groups || []).join('/') }}）：
+                        挪走 {{ cl.last_auto.moved }} 个、删掉 {{ cl.last_auto.deleted }} 个
+                        <span v-if="cl.last_auto.errors">，{{ cl.last_auto.errors }} 个没动成</span>。
+                      </template>
+                      <template v-if="cl.last_manual.at"> 上次手动 {{ cl.last_manual.at }}：
+                        挪走 {{ cl.last_manual.moved }} 个、删掉 {{ cl.last_manual.deleted }} 个。</template>
+                    </span>
+                    <span v-else>还没跑过清理。</span>
+                    回收目录里现在 {{ cl.trash_count }} 个文件。
+                  </div>
+                  <div class="hint" style="line-height:1.5;margin-bottom:6px">
+                    正在下载、排队、暂停/稍后，以及还在做种的那些路径都会被护住，名单里不会出现它们。
+                    .part / .ytdl 这类半成品仍归下面那个「清理临时文件」的按钮管。
+                  </div>
+
+                  <div v-if="clPlan" class="hint" style="line-height:1.5;margin-bottom:6px">
+                    名单 {{ clPlan.issued_str }} 生成（{{ clPlan.hash }}），{{ clPlanStale ? '已超过 10 分钟，重新看过才能删' : '十分钟内有效' }}；
+                    合计 {{ clPlan.total_count }} 个 / {{ formatSize(clPlan.total_bytes) }}
+                  </div>
+                  <div v-for="g in (clPlan ? clPlan.groups : {})" :key="g.group"
+                       v-show="g.count"
+                       style="margin-bottom:8px">
+                    <div class="hint" style="margin-bottom:4px">
+                      <b>{{ g.label }}</b>（超过 {{ g.days }} 天）：{{ g.count }} 个 /
+                      {{ formatSize(g.bytes) }} · {{ g.hard ? '直接删' : '挪进回收目录' }}
+                      <span v-if="g.hidden">，其中 {{ g.hidden }} 个同规则的没逐条列出来，这一轮也不动它们</span>
+                      <span v-if="g.busy_skipped">，另护住 {{ g.busy_skipped }} 个正在用</span>
+                      <span v-if="g.truncated" style="color:var(--bad)">，这一组翻到上限就停了（可能还有没看完的）</span>
+                      <el-button size="small" text type="danger" @click="runOneGroup(g.group)">只清这一组</el-button>
+                    </div>
+                    <el-table v-if="g.rows.length" :data="g.rows" size="small" max-height="180">
+                      <el-table-column prop="rel" label="文件" min-width="200" show-overflow-tooltip></el-table-column>
+                      <el-table-column prop="mtime_str" label="最后动过" width="118"></el-table-column>
+                      <el-table-column label="多少天" width="78">
+                        <template #default="s">{{ s.row.age_days }}</template>
+                      </el-table-column>
+                      <el-table-column label="大小" width="88">
+                        <template #default="s">{{ formatSize(s.row.bytes) }}</template>
+                      </el-table-column>
+                    </el-table>
+                  </div>
+
+                  <div v-if="(clTrash.rows || []).length" style="margin-top:6px">
+                    <div class="hint" style="margin-bottom:4px">
+                      回收目录 {{ clTrash.count }} 个 / {{ formatSize(clTrash.bytes) }}
+                      <el-button size="small" text type="primary" @click="restoreAllTrash">全部放回原位</el-button>
+                      <span v-if="clTrash.hidden">，另有 {{ clTrash.hidden }} 个没列出来</span>
+                    </div>
+                    <el-table :data="clTrash.rows" size="small" max-height="200">
+                      <el-table-column prop="name" label="文件" min-width="160" show-overflow-tooltip></el-table-column>
+                      <el-table-column prop="moved_str" label="挪进来" width="118"></el-table-column>
+                      <el-table-column label="原来在" min-width="160" show-overflow-tooltip>
+                        <template #default="s">{{ s.row.orig || '（没有账，不知道原位置）' }}</template>
+                      </el-table-column>
+                      <el-table-column label="大小" width="88">
+                        <template #default="s">{{ formatSize(s.row.bytes) }}</template>
+                      </el-table-column>
+                      <el-table-column label="" width="70">
+                        <template #default="s">
+                          <el-button size="small" text :disabled="!s.row.orig" @click="restoreTrash([s.row.id])">放回</el-button>
+                        </template>
+                      </el-table-column>
+                    </el-table>
+                  </div>
+                </div>
+                  
                 <div class="card">
                   <div class="section-title">FFmpeg 路径（可选）</div>
                   <div class="path-row">
@@ -4595,6 +5285,60 @@
                     <el-button size="small" @click="browsePath('file', 'settings.ffmpeg_path')">选择文件</el-button>
                   </div>
                   <div class="hint">更新 FFmpeg / yt-dlp 会安装到 tools；Whisper 存放于 Whisper 目录</div>
+                </div>
+                  
+                <div class="card">
+                  <div class="section-title">视频编码（转码与烧字幕）</div>
+                  <el-form label-position="top" @submit.prevent>
+                    <el-form-item label="编码器偏好">
+                      <el-select size="small" v-model="settings.video_encoder" style="width:260px">
+                        <el-option label="CPU（最稳，一定可用）" value="cpu"></el-option>
+                        <el-option label="自动（先试显卡，再退回 CPU）" value="auto"></el-option>
+                        <el-option label="NVIDIA 显卡 hevc_nvenc" value="nvidia"></el-option>
+                        <el-option label="Intel 显卡 hevc_qsv" value="intel"></el-option>
+                        <el-option label="AMD 显卡 hevc_amf" value="amd"></el-option>
+                      </el-select>
+                    </el-form-item>
+                    <el-form-item label="CPU 编码器">
+                      <el-select size="small" v-model="settings.video_cpu_codec" style="width:260px">
+                        <el-option label="x264（快，兼容最好）" value="x264"></el-option>
+                        <el-option label="x265（同画质更小，慢不少）" value="x265"></el-option>
+                      </el-select>
+                    </el-form-item>
+                    <el-form-item label="CPU 预设（速度 ↔ 压缩率）">
+                      <el-select size="small" v-model="settings.video_cpu_preset" style="width:160px">
+                        <el-option label="veryfast" value="veryfast"></el-option>
+                        <el-option label="fast" value="fast"></el-option>
+                        <el-option label="medium（默认）" value="medium"></el-option>
+                        <el-option label="slow" value="slow"></el-option>
+                      </el-select>
+                    </el-form-item>
+                  </el-form>
+                  <div class="row row--tight" style="margin-bottom:8px">
+                    <el-button size="small" :loading="encProbeBusy" @click="loadEncoders(true)">探测编码器</el-button>
+                    <span class="hint" style="margin:0">{{ encProbeText }}</span>
+                  </div>
+                  <div class="env-list">
+                    <div class="comp-item" v-for="it in encoders.items" :key="it.encoder">
+                      <span :style="{ color: it.available ? 'var(--ok)' : 'var(--bad)', fontSize: '14px' }">●</span>
+                      <div class="comp-main">
+                        <div :style="{ fontWeight: 600, color: it.available ? 'var(--ink)' : 'var(--bad)' }">{{ it.label }}</div>
+                        <div class="comp-ver">{{ it.available ? '可用' : '不可用' }}<span v-if="it.reason"> · {{ it.reason }}</span></div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="hint" style="margin-top:8px;line-height:1.5">
+                    <b>降级链</b>（按已保存的设置显示）：
+                    <span v-for="(c, i) in encoders.chain" :key="c.encoder">{{ i ? ' → ' : '' }}{{ c.label }}</span>
+                    <span v-if="(encoders.chain || []).length > 1">，前一个真跑失败了就自动换下一个重来，不会把半成品留着。</span>
+                    <span v-else>，只用这一个。</span>
+                  </div>
+                  <div class="hint" style="margin-top:6px;line-height:1.5">
+                    「转码文件」和「烧字幕」走同一条链。默认 CPU / x264 / medium 就是这项功能一直以来的做法，不改设置等于没变化。
+                    显卡编码要驱动支持得够新：<b>探测显示不可用的会跳过，不会硬试</b>。探测每 10 分钟自动过期一次，改了偏好或换了 FFmpeg 就点上面那个按钮。
+                  </div>
+                </div>
+                  
                 </div>
 
                 <div class="row">
@@ -4853,10 +5597,8 @@
               <div id="comp-card" class="card">
                 <div class="section-title">组件与依赖</div>
                 <div class="hint" style="margin-bottom:10px;line-height:1.5">
-                  绿点=就绪，红点=未安装。单击右侧按钮由程序联网获取：工具（FFmpeg / yt-dlp / N_m3u8DL-RE）使用 GitHub 镜像，
-                  Python 依赖使用 pip 镜像；两者均在上方「网络与并发」中设置，失败会自动换源重试。进度见「运行日志」。<br>
-                  版本口径：<b>当前</b> = 程序此刻在用的；<b>随包</b> = 便携包里原本带来的（只有在你更新过、与当前不一致时才显示）；
-                  <b>最新</b> = 上游最新版，点下方「查询上游最新版本」才联网获取（FFmpeg 与 N_m3u8DL-RE 不在 PyPI，查不到最新版）。
+                  绿点=就绪，红点=没装。只有「没装」或「上游有新版」的项会在右边给出按钮，其余显示「已就绪」。
+                  下载走「网络与并发」里设的镜像，失败自动换源；进度看「运行日志」。
                 </div>
                 <div class="row row--tight" style="margin-bottom:10px">
                   <el-switch size="small" v-model="settings.components_auto_check"></el-switch>
@@ -4867,26 +5609,31 @@
                   <span class="hint" style="margin:0">{{ compCheckText }}</span>
                 </div>
                 <div class="env-list">
-                  <div class="comp-item" v-for="it in components" :key="it.key">
+                  <div class="comp-item" v-for="it in components" :key="it.key" :title="it.label">
                     <span :style="{ color: it.ok ? 'var(--ok)' : 'var(--bad)', fontSize: '14px' }">●</span>
                     <div class="comp-main">
-                      <div :style="{ fontWeight: 600, color: it.ok ? 'var(--ink)' : 'var(--bad)' }">{{ it.label }}</div>
-                      <div class="comp-ver">
-                        当前 {{ it.active || '未安装' }}
+                      <div :style="{ fontWeight: 600, color: it.ok ? 'var(--ink)' : 'var(--bad)' }">{{ it.cn || it.label }}</div>
+                      <div v-if="compDetail" class="comp-ver" style="word-break:break-all">
+                        {{ it.pkg || it.tool || it.key }} · 当前 {{ it.active || '未安装' }}
                         <span v-if="it.bundled && verCmp(it.bundled, it.active) !== 0">· 随包 {{ it.bundled }}</span>
-                        <span v-if="it.latest">
-                          · 最新 <span :style="{
-                            color: verCmp(it.latest, it.active) > 0 ? 'var(--warn)' : 'var(--ok)',
-                            fontWeight: verCmp(it.latest, it.active) > 0 ? 600 : 400,
-                          }">{{ it.latest }}{{ verCmp(it.latest, it.active) > 0 ? '（可更新）' : '' }}</span>
-                        </span>
+                        <span v-if="it.latest">· 最新 {{ it.latest }}{{ verCmp(it.latest, it.active) > 0 ? '（可更新）' : '' }}</span>
                         <span v-else-if="it.latest_note">· 最新未查到：{{ it.latest_note }}</span>
                       </div>
+                      <div v-else-if="it.ok && it.latest && verCmp(it.latest, it.active) > 0" class="comp-ver">
+                        上游有新版 {{ it.latest }}（现用 {{ it.active }}）
+                      </div>
+                      <div v-if="it.note" class="comp-ver" style="color:var(--muted)">{{ it.note }}</div>
                     </div>
-                    <el-button size="small" :loading="updatingComp === it.key" @click="updateComponent(it)">
+                    <el-button v-if="compDetail || !it.ok || compUpdatable(it)" size="small"
+                               :loading="updatingComp === it.key" @click="updateComponent(it)">
                       {{ it.ok ? '更新' : '安装' }}
                     </el-button>
+                    <span v-else class="hint" style="margin:0;white-space:nowrap">已就绪</span>
                   </div>
+                </div>
+                <div class="row row--tight" style="margin:6px 0 10px">
+                  <el-button size="small" text @click="compDetail = !compDetail">{{ compDetail ? '收起版本细节' : '看包名与版本号' }}</el-button>
+                  <span class="hint" style="margin:0">「最新」要点「查询上游最新版本」才联网取（FFmpeg、N_m3u8DL-RE 不在 PyPI，查不到）。</span>
                 </div>
                 <div class="btn-grid">
                   <el-button size="small" type="primary" plain :loading="compAll.running || compAllBusy" @click="updateAllComponents()">一键更新</el-button>
@@ -5159,7 +5906,7 @@
           if (rest.length) gs.push({ title: '其他', items: rest });
           return gs;
         });
-        const appVersion = 'v1.3.0 · Element Plus';
+        const appVersion = 'v1.4.0 · Element Plus';
         const pageTitle = computed(() => {
           const m = { home: '下载解析', sniff: '网页嗅探', queue: '下载队列', bt: '磁力 / 种子', info: '媒体信息', search: '聚合搜索', music: '音乐搜索', tg: 'Telegram 频道批量', voice: '语音工具', subs: '订阅追踪', favs: '收藏关注', live: '直播录制', library: '资源库', files: '文件浏览', history: '历史记录', log: '运行日志', settings: '设置' };
           return m[page.value] || '';
@@ -5224,6 +5971,8 @@
           use_hls_engine: false,
           force_format: '',
           ytdlp_extra_args: '',
+          expect_hash: '',
+          hash_algo: 'auto',
           is_live: false,
         });
         const videoQualities = ['best', '4K', '1440p', '1080p', '720p', '480p', '360p'];
@@ -5284,6 +6033,8 @@
         const tasks = ref([]);
         const mediaInfo = ref(null);
         const selectedQuality = ref('');
+        // 解析页的画面编码筛选：'' = 全部，其余取 _resolve_format 认的 prefer_codec 值
+        const infoCodec = ref('');
         // 区间勾选要拿行对象本体去调 el-table，所以留一个表格 ref
         const entryTableRef = ref(null);
         const entrySel = ref([]);
@@ -5315,10 +6066,22 @@
           cookie_source: 'none',
           cookie_browser: 'chrome',
           cookie_file: '',
+          cookie_public_first: false,
           ffmpeg_path: '',
+          video_encoder: 'cpu',
+          video_cpu_codec: 'x264',
+          video_cpu_preset: 'medium',
+          // 访问保护（登录）：默认关，读数由 loadConfig 从 /api/config 覆盖
+          web_auth_enabled: false,
+          web_auth_session_hours: 12,
+          web_auth_remember_days: 30,
+          web_auth_max_fails: 5,
+          web_auth_lock_minutes: 15,
           speed_limit: '',
           global_speed_limit: '',
           speed_windows: '',
+          run_window: '',
+          queue_windows: {},
           ytdlp_extra_args: '',
           max_per_host: 2,
           adaptive_throttle: true,
@@ -5341,6 +6104,7 @@
           bt_prioritize_piece: false,
           bt_auto_rules: [],
           bt_auto_fallback: '',
+          clipboard_watch: false,
           http_impersonate: true,
           yt_player_clients: 'default,web_safari,tv,android,ios',
           po_provider_enabled: false,
@@ -5405,6 +6169,7 @@
           sub_interval_min: 60,
           sub_auto_download: true,
           live_from_start: true,
+          live_max_minutes: 0,
           live_stream_fallback: true,
           live_stream_pref_bilibili: 'flv',
           live_stream_pref_youtube: 'dash',
@@ -5504,6 +6269,12 @@
         const subAutoAdd = ref(true);
         const subIsTg = computed(() => subKindOfUrl(subFirst.value) === 'tg');
         const liveUrl = ref('');
+        // 录制时长不再有页面级的一份拷贝：直播页那一格直接绑 settings.live_max_minutes，
+        // 与「设置 → 订阅与直播」是同一个值，改完由设置的自动保存落盘（页面级影子值会漂移）
+        const liveDefaultMinutesText = computed(() => {
+          const n = Number(settings.value.live_max_minutes || 0);
+          return n > 0 ? `录满 ${n} 分钟自动保存` : '不限时长';
+        });
         const liveMonitorUrl = ref('');
         const liveMonitors = ref([]);
         // 每房间录制口径：容器取视频可用的三种封装（与后端 _LIVE_FMTS 一致），画质沿用首页档位清单
@@ -5549,7 +6320,8 @@
           if (f === 'all') return libraryItems.value;
           return libraryItems.value.filter(x => x.kind === f);
         });
-        const libSort = ref({ key: 'name', dir: 'asc', t: '资源库' });
+        // 默认按修改时间倒序：刚下完的成品排第一，进这一页十有八九是来找刚下那条的
+        const libSort = ref({ key: 'mtime', dir: 'desc', t: '资源库' });
         const LIB_DIR = { name: 'asc', kind: 'asc', res: 'desc', audio: 'desc', duration: 'desc', size: 'desc', mtime: 'desc' };
         const LIB_GETTERS = {
           name: x => x.name || '',
@@ -5671,7 +6443,7 @@
         const transcriptPath = ref('');
         const srtEdit = reactive({ on: false, busy: false, rows: [], srt: '', format: 'srt', mtimeTs: 0, sel: -1, dirty: false });
         // 质检读的是磁盘上的字幕，未保存的行内改动不在检查范围内
-        const srtQc = reactive({ busy: false, rows: [], message: '', hint: '', paired: false, counter: '', lang: '', total: 0, wrap: { width: 16, lines: 3 }, reflect_on: false });
+        const srtQc = reactive({ busy: false, rows: [], message: '', hint: '', paired: false, counter: '', lang: '', total: 0, wrap: { width: 16, lines: 3 }, reflect_on: false, timeline: null, media: '', media_seconds: 0 });
         const pipelineRow = ref(null);
         const pipelineView = ref(null);
         let pipelineTimer = null;
@@ -5821,12 +6593,25 @@
         const searchResults = ref([]);
         const searching = ref(false);
         const platformCookies = ref([]);
+        const cc = ref({
+          enabled: false, server: '', uuid: '', key: '', key_set: false,
+          scheme: 'auto', schemes: ['auto', 'legacy', 'aes-128-cbc-fixed'], scheme_labels: {},
+          domains: '', cookies_dir: '', cookie_file: '', state: {}, scheme_seen: '',
+        });
+        const ccBusy = ref('');
+        const ccMsg = ref('');
         const cookieIssueCount = computed(() => platformCookies.value.filter(p => p.login_issue).length);
         const syncFileInput = ref(null);
         const liveTasks = computed(() => tasks.value.filter(t => t.is_live || (t.title || '').includes('直播')));
         const liveTasksActive = computed(() => liveTasks.value.filter(t => isLiveRunning(t)));
         function isLiveRunning(t) {
           return t && ['downloading', 'queued', 'paused'].includes(t.status);
+        }
+        function liveAutoSaveText(t) {
+          const lim = Number((t && t.live_limit_min) || 0);
+          if (!lim || !isLiveRunning(t)) return '';
+          const left = lim * 60 - Number(t.elapsed_sec || 0);
+          return left > 0 ? `还剩 ${Math.max(1, Math.ceil(left / 60))} 分钟自动保存` : '正在自动保存…';
         }
         function fileBasename(p) {
           if (!p) return '';
@@ -5854,6 +6639,11 @@
         const fileSort = ref('name');
         const urlFileInput = ref(null);
         const musicNeedsMatch = computed(() => musicResults.value.filter(r => r && r.needs_match).length);
+        const musicScoreLine = computed(() => {
+          const hit = musicResults.value.find(r => r && r.match_accept);
+          return hit ? hit.match_accept : 85;
+        });
+        const musicHasScore = computed(() => musicResults.value.some(r => r && r.score !== null && r.score !== undefined));
 
         /* ---- 表头排序：各表共用。点同一列切升/降序，换列回到该列默认方向 ---- */
         const FILE_DIR = { name: 'asc', size: 'desc', mtime: 'desc' };
@@ -6007,6 +6797,15 @@
         const updatingFfmpeg = ref(false);
         const updatingNm3u8 = ref(false);
         const components = ref([]);
+        // 组件与依赖：平时只报「要不要动」，包名与三个版本号收进「看包名与版本号」那一键
+        const compDetail = ref(false);
+        function compUpdatable(it) {
+          return !!it && !!it.ok && !!it.latest && verCmp(it.latest, it.active) > 0;
+        }
+        // 不常用设置整组的展开状态：记在浏览器本地，不占配置文件
+        const foldRare = ref(false);
+        try { foldRare.value = localStorage.getItem('md_fold_rare') === '1'; } catch (_) {}
+        watch(foldRare, v => { try { localStorage.setItem('md_fold_rare', v ? '1' : '0'); } catch (_) {} });
         const compInfo = ref({});
         const updatingComp = ref('');
         const latestBusy = ref(false);
@@ -6110,6 +6909,11 @@
           '/api/tasks/later': '把任务设为稍后下载',
           '/api/tasks/start-later': '启动稍后下载的任务',
           '/api/config': '保存设置',
+          '/api/auth/login': '登录访问保护',
+          '/api/auth/logout': '退出登录',
+          '/api/auth/password': '设置访问口令',
+          '/api/auth/machine_token': '重置机器令牌',
+          '/api/auth/unlock': '解锁登录锁定',
           '/api/components/update-all': '一键更新组件与依赖',
           '/api/components/update-check': '检测组件上游版本',
           '/api/open-folder': '打开下载目录',
@@ -6118,6 +6922,14 @@
           '/api/platforms/cookies': '读取浏览器登录凭证',
           '/api/platforms/cookies/save-text': '粘贴保存登录凭证',
           '/api/platforms/cookies/clear-flag': '清除平台 Cookie 的登录态标记',
+          '/api/cookiecloud/account': '保存 CookieCloud 同步设置',
+          '/api/cookiecloud/test': '测试 CookieCloud 连接',
+          '/api/cookiecloud/pull': '从 CookieCloud 拉取 Cookie',
+          '/api/cookiecloud/push': '把本机 Cookie 推给 CookieCloud',
+          '/api/cleanup/account': '保存按龄清理设置',
+          '/api/cleanup/preview': '按龄清理：先看名单',
+          '/api/cleanup/run': '按龄清理：按名单删除',
+          '/api/cleanup/restore': '按龄清理：从回收目录放回',
           '/api/files/delete': '删除文件',
           '/api/files/clear-archive': '清空已下载记录',
           '/api/files/zip': '打包下载文件',
@@ -6128,6 +6940,7 @@
           '/api/transcode': '转码文件',
           '/api/subtitle/glossary_check': '检查字幕术语表',
           '/api/config/speed_windows/check': '检查限速时段格式',
+          '/api/config/run_window/check': '检查队列定时窗格式',
           '/api/subtitle/qc': '检查字幕翻译质量',
           '/api/subtitle/rewrap': '重排字幕每行字数',
           '/api/sniff': '嗅探网页媒体',
@@ -6160,7 +6973,7 @@
           '/api/favorites/download': '批量下载收藏内容',
           '/api/music/search': '搜索音乐',
           '/api/music/download': '下载音乐',
-          '/api/music/playlist': '解析音乐歌单',
+          '/api/music/playlist': '解析音乐歌单 / 单曲',
           '/api/music/probe': '探测音乐来源',
           '/api/music/check_quality': '核对成品音质',
           '/api/music/lyrics': '获取歌词',
@@ -6224,6 +7037,142 @@
           return hit ? ACTION_NAMES[hit] : '调用 ' + clean.replace(/^\/api\//, '');
         }
 
+        /* 访问保护（登录）：开关、口令、锁定名单都在「设置 → 访问保护」这一张卡里。
+           这里只负责两件事：非本机来的连接被 401 挡下时弹登录窗，以及那张卡要的读数。 */
+        const auth = ref({ enabled: false, enforcing: false, password_set: false, loopback: true,
+                           client_ip: '', authorized: true, locked: false, lock_left: 0, locks: [],
+                           machine_token: '', note: '', session_hours: 12, remember_days: 30,
+                           max_fails: 5, lock_minutes: 15 });
+        const authGate = reactive({ needed: false, reason: '', pwd: '', remember: false, busy: false, error: '' });
+        const authForm = reactive({ current: '', password: '' });
+        const authBusy = ref(false);
+        const authTokenShown = ref(false);
+
+        async function loadAuthStatus(quiet) {
+          try {
+            const r = await api('/api/auth/status', { noLog: true });
+            if (!r) return;
+            auth.value = r;
+            authGate.needed = !!(r.enabled && r.enforcing && !r.authorized);
+            if (!authGate.needed) authGate.error = '';
+            authForm.current = '';
+            authForm.password = '';
+          } catch (e) {
+            if (!quiet) ElementPlus.ElMessage.error('读不到登录保护状态：' + String(e.message || e));
+          }
+        }
+
+        async function doLogin() {
+          const pw = String(authGate.pwd || '');
+          if (!pw) { authGate.error = '先把口令填上'; return; }
+          authGate.busy = true;
+          authGate.error = '';
+          try {
+            await api('/api/auth/login', {
+              method: 'POST', noLog: true,
+              body: JSON.stringify({ password: pw, remember: !!authGate.remember }),
+            });
+            authGate.needed = false;
+            authGate.pwd = '';
+            // 之前所有数据接口都被门挡住了，界面是空的：整页重拉一次比逐个补调用可靠
+            ElementPlus.ElMessage.success('已登录，正在载入界面…');
+            setTimeout(() => location.reload(), 400);
+          } catch (e) {
+            // 423（还在锁定期）与 401（还能试几次）后端都写清了，原样上屏
+            authGate.error = String(e.message || e);
+          } finally {
+            authGate.busy = false;
+          }
+        }
+
+        async function saveAuthKnobs() {
+          authBusy.value = true;
+          try {
+            await api('/api/config', {
+              method: 'POST', uiName: '保存访问保护设置',
+              body: JSON.stringify({
+                web_auth_enabled: !!settings.value.web_auth_enabled,
+                web_auth_session_hours: Number(settings.value.web_auth_session_hours) || 12,
+                web_auth_remember_days: Number(settings.value.web_auth_remember_days) || 30,
+                web_auth_max_fails: Number(settings.value.web_auth_max_fails) || 5,
+                web_auth_lock_minutes: Number(settings.value.web_auth_lock_minutes) || 15,
+              }),
+            });
+            await loadAuthStatus(true);
+            ElementPlus.ElMessage.success('访问保护设置已保存');
+          } catch (e) {
+            // 还没设口令就开开关会被后端顶回来：开关拨回原样，别让界面显示一个没生效的状态
+            settings.value.web_auth_enabled = !settings.value.web_auth_enabled;
+            ElementPlus.ElMessage.error(String(e.message || e));
+          } finally {
+            authBusy.value = false;
+          }
+        }
+
+        async function applyAuthPassword() {
+          const pw = String(authForm.password || '');
+          if (pw.length < 6) {
+            ElementPlus.ElMessage.warning('口令至少 6 个字符');
+            return;
+          }
+          authBusy.value = true;
+          try {
+            await api('/api/auth/password', {
+              method: 'POST', uiName: '设置访问口令',
+              body: JSON.stringify({ password: pw, current: authForm.current || '' }),
+            });
+            authForm.current = '';
+            authForm.password = '';
+            await loadAuthStatus(true);
+            ElementPlus.ElMessage.success('口令已写好（只存加盐哈希，读不回来）。非本机的旧登录状态要重登一次。');
+          } catch (e) {
+            ElementPlus.ElMessage.error(String(e.message || e));
+          } finally {
+            authBusy.value = false;
+          }
+        }
+
+        async function copyMachineToken() {
+          const tok = String((auth.value || {}).machine_token || '');
+          if (!tok) {
+            ElementPlus.ElMessage.warning('还没有机器令牌：点旁边的「重置」生成一个（读状态不会顺手生成，免得每次刷新都写盘）');
+            return;
+          }
+          try {
+            await navigator.clipboard.writeText(tok);
+            ElementPlus.ElMessage.success('令牌已复制（这是能开门的东西，别贴群里）');
+          } catch (e) {
+            authTokenShown.value = true;
+            ElementPlus.ElMessage.warning('这个浏览器不给剪贴板权限（非 HTTPS 常见）：已经显示出来了，手抄一份');
+          }
+        }
+
+        function rotateMachineToken() {
+          ElementPlus.ElMessageBox.confirm('重置后旧令牌立刻失效，用它的脚本要换成新的。',
+            '重置机器令牌', { type: 'warning', confirmButtonText: '重置', cancelButtonText: '先不' })
+            .then(() => api('/api/auth/machine_token', { method: 'POST', uiName: '重置机器令牌' }))
+            .then(r => {
+              auth.value.machine_token = (r && r.machine_token) || '';
+              authTokenShown.value = true;
+              ElementPlus.ElMessage.success('新令牌已生成');
+            })
+            .catch(e => { if (e && e.message) ElementPlus.ElMessage.error(String(e.message || e)); });
+        }
+
+        function unlockIp(ip) {
+          api('/api/auth/unlock', { method: 'POST', uiName: '解锁登录锁定', body: JSON.stringify({ ip }) })
+            .then(r => { auth.value.locks = (r && r.locks) || []; ElementPlus.ElMessage.success('已解锁 ' + ip); })
+            .catch(e => ElementPlus.ElMessage.error(String(e.message || e)));
+        }
+
+        function unlockAll() {
+          ElementPlus.ElMessageBox.confirm('清掉全部锁定与失败计数：正在被锁的来源马上又能接着试口令。',
+            '全部解锁', { type: 'warning', confirmButtonText: '全部解锁', cancelButtonText: '先不清' })
+            .then(() => api('/api/auth/unlock', { method: 'POST', uiName: '清空登录锁定', body: JSON.stringify({}) }))
+            .then(r => { auth.value.locks = (r && r.locks) || []; ElementPlus.ElMessage.success('已清空'); })
+            .catch(e => { if (e && e.message) ElementPlus.ElMessage.error(String(e.message || e)); });
+        }
+
         async function api(path, options = {}) {
           const uiName = options.uiName;      // 同一个接口被不同按钮共用时，日志要写清是哪一下
           const noLog = options.noLog === true;   // 定时轮询的写操作别刷日志，登录那一下后端会记
@@ -6239,6 +7188,11 @@
           });
           if (!res.ok) {
             const err = await res.json().catch(() => ({}));
+            if (res.status === 401 && err && err.auth_required) {
+              // 被登录门挡下（含会话过期）：弹登录窗就行，别把同一句 401 刷成一片红点
+              authGate.needed = true;
+              authGate.reason = String(err.reason || 'empty');
+            }
             if (tracked) logAction((uiName || actionName(path)) + '（失败）', 'warning');
             throw new Error(friendlyError(err.detail || res.statusText));
           }
@@ -6535,7 +7489,8 @@
         const compAll = computed(() => compInfo.value.update_all || {});
         // 待处理 = 没装上的 + 查过最新版且确实有新版的；没点过「查询上游最新版本」时只挑缺的
         const compTargets = computed(() => (components.value || []).filter(
-          (it) => !it.ok || (it.latest && verCmp(it.latest, it.active) > 0)));
+          // skip_all：PO Token 那行缺的是要自己跑的服务端，一键更新替人装插件没意义
+          (it) => !it.skip_all && (!it.ok || (it.latest && verCmp(it.latest, it.active) > 0))));
         const compAllSummary = computed(() => {
           const a = compAll.value;
           const rs = a.results || [];
@@ -6608,6 +7563,8 @@
         async function loadConfig() {
           try {
             const data = await api('/api/config');
+            CFG_KNOWN.clear();
+            for (const k of Object.keys(data)) CFG_KNOWN.add(k);   // 后端实有这些键；界面里多出来的键发过去只会被丢掉
             opts.value.download_dir = data.download_dir || '';
             opts.value.video_quality = data.video_quality || 'best';
             opts.value.audio_quality = data.audio_quality || 'best';
@@ -6634,10 +7591,16 @@
             settings.value.cookie_source = data.cookie_source || 'none';
             settings.value.cookie_browser = data.cookie_browser || 'chrome';
             settings.value.cookie_file = data.cookie_file || '';
+            settings.value.cookie_public_first = !!data.cookie_public_first;
             settings.value.ffmpeg_path = data.ffmpeg_path || '';
+            settings.value.video_encoder = ['auto', 'cpu', 'nvidia', 'intel', 'amd'].includes(data.video_encoder) ? data.video_encoder : 'cpu';
+            settings.value.video_cpu_codec = ['x264', 'x265'].includes(data.video_cpu_codec) ? data.video_cpu_codec : 'x264';
+            settings.value.video_cpu_preset = ['veryfast', 'fast', 'medium', 'slow'].includes(data.video_cpu_preset) ? data.video_cpu_preset : 'medium';
             settings.value.speed_limit = data.speed_limit || '';
             settings.value.global_speed_limit = data.global_speed_limit || '';
             settings.value.speed_windows = data.speed_windows || '';
+            settings.value.run_window = data.run_window || '';
+            settings.value.queue_windows = Object.assign({}, data.queue_windows || {});
             settings.value.ytdlp_extra_args = data.ytdlp_extra_args || '';
             settings.value.max_per_host = data.max_per_host != null ? data.max_per_host : 2;
             settings.value.adaptive_throttle = data.adaptive_throttle !== false;
@@ -6660,12 +7623,14 @@
             settings.value.bt_prioritize_piece = !!data.bt_prioritize_piece;
             settings.value.bt_auto_rules = (Array.isArray(data.bt_auto_rules) ? data.bt_auto_rules : []).map(r => ({
               name: r.name || '',
+              scope: r.scope === 'url' ? 'url' : 'name',
               mode: r.mode === 'regex' ? 'regex' : 'contains',
               pattern: r.pattern || '',
               subdir: r.subdir || '',
               enabled: r.enabled !== false,
             }));
             settings.value.bt_auto_fallback = data.bt_auto_fallback || '';
+            settings.value.clipboard_watch = !!data.clipboard_watch;
             settings.value.http_impersonate = data.http_impersonate !== false;
             settings.value.yt_player_clients = data.yt_player_clients || 'default,web_safari,tv,android,ios';
             settings.value.po_provider_enabled = !!data.po_provider_enabled;
@@ -6723,6 +7688,7 @@
             settings.value.sub_interval_min = data.sub_interval_min || 60;
             settings.value.sub_auto_download = data.sub_auto_download !== false;
             settings.value.live_from_start = data.live_from_start !== false;
+            settings.value.live_max_minutes = Math.max(0, Math.min(1440, Number(data.live_max_minutes || 0)));
             settings.value.live_stream_fallback = data.live_stream_fallback !== false;
             settings.value.live_stream_pref_bilibili = data.live_stream_pref_bilibili || 'flv';
             settings.value.live_stream_pref_youtube = data.live_stream_pref_youtube || 'dash';
@@ -6753,8 +7719,14 @@
             settings.value.risk_cooldown_429 = data.risk_cooldown_429 || 60;
             settings.value.risk_user_agent = data.risk_user_agent || '';
             settings.value.ui_theme = data.ui_theme || 'blue';
+            settings.value.web_auth_enabled = !!data.web_auth_enabled;
+            settings.value.web_auth_session_hours = Math.max(1, Math.min(720, Number(data.web_auth_session_hours) || 12));
+            settings.value.web_auth_remember_days = Math.max(1, Math.min(365, Number(data.web_auth_remember_days) || 30));
+            settings.value.web_auth_max_fails = Math.max(1, Math.min(50, Number(data.web_auth_max_fails) || 5));
+            settings.value.web_auth_lock_minutes = Math.max(1, Math.min(1440, Number(data.web_auth_lock_minutes) || 15));
             applyDark(settings.value.dark_mode);
             applyTheme(settings.value.ui_theme);
+            markSaved();   // 这份是刚从后端读回来的，diff 要从这里起算，不带上打开页面之前的旧改动
           } catch (_) {}
         }
 
@@ -7172,7 +8144,9 @@
           if (m.fmt) parts.push('封装 ' + m.fmt);
           if (m.video_quality) parts.push('画质 ' + m.video_quality);
           const mm = Number(m.max_minutes || 0);
+          const gd = Number(settings.value.live_max_minutes || 0);
           if (mm > 0) parts.push('录满 ' + mm + ' 分钟自动停');
+          else if (gd > 0) parts.push('录满 ' + gd + ' 分钟自动停（默认）');
           if (m.auto_transcode) {
             const p = (transcodePresets.value || []).find(x => x.id === m.auto_transcode);
             parts.push('录完转 ' + (p ? p.label : m.auto_transcode));
@@ -7453,17 +8427,21 @@
           }
           submitting.value = true;
           try {
+            const mm = Math.max(0, Math.min(1440, Number(settings.value.live_max_minutes || 0)));
             await api('/api/download', {
               method: 'POST',
               body: JSON.stringify({
                 urls: [u],
                 ...opts.value,
                 is_live: true,
+                live_max_minutes: mm,
                 skip_downloaded: false,
                 allow_playlist: false,
               }),
             });
-            ElementPlus.ElMessage.success('已加入直播录制队列');
+            ElementPlus.ElMessage.success(mm > 0
+              ? `已加入直播录制队列，录满 ${mm} 分钟自动结束并保存`
+              : '已加入直播录制队列，将录制到手动结束');
             await loadTasks();
             // 留在直播页查看进行中任务
           } catch (e) {
@@ -8312,6 +9290,9 @@
           srtQc.lang = '';
           srtQc.total = 0;
           srtQc.reflect_on = false;
+          srtQc.timeline = null;
+          srtQc.media = '';
+          srtQc.media_seconds = 0;
         }
         async function runSrtQc() {
           if (!srtEdit.srt) {
@@ -8330,6 +9311,9 @@
             srtQc.reflect_on = !!r.reflect_on;
             srtQc.hint = r.hint || '';
             srtQc.message = r.message || '';
+            srtQc.timeline = r.timeline || null;
+            srtQc.media = r.media || '';
+            srtQc.media_seconds = r.media_seconds || 0;
             if (!srtQc.rows.length) ElementPlus.ElMessage.success(r.message || '没有发现可疑句');
           } catch (e) {
             ElementPlus.ElMessage.error(e.message);
@@ -8337,8 +9321,24 @@
             srtQc.busy = false;
           }
         }
+        function qcDropNoise() {
+          // 句序从大到小删，前面的行号才不会被后面的删除顶掉
+          const d = ((srtQc.timeline || {}).noise || {}).drop || [];
+          const idxs = d.map(x => x - 1).filter(x => x >= 0 && x < srtEdit.rows.length).sort((a, b) => b - a);
+          if (!idxs.length) return;
+          ElementPlus.ElMessageBox.confirm(
+            `要删的是质检点名的 ${idxs.length} 句：纯语气词，以及同一句连着复读三遍以上的那几处。`
+            + '删掉只是改界面上这份，按「保存」才会写盘（写盘前照例留备份）。歌词副歌本来就会重复，拿不准就别删。',
+            '按名单删句', { type: 'warning', confirmButtonText: '删', cancelButtonText: '先不删' }
+          ).then(() => {
+            idxs.forEach(i => srtDrop(i));
+            srtEdit.sel = -1;
+            ElementPlus.ElMessage.success(`已删掉 ${idxs.length} 句，还没写盘 —— 核对一下再按「保存」`);
+          }).catch(() => {});
+        }
         function qcJumpTo(q) {
-          const i = (q.i || 1) - 1;
+          // 逐句对照那类报的是 i，时间轴的空档报的是「第 before 句之前」
+          const i = (q.i || q.before || 1) - 1;
           if (i < 0 || i >= srtEdit.rows.length) return;
           srtEdit.sel = i;
           nextTick(() => {
@@ -8350,7 +9350,7 @@
           });
           const m = mediaEl.value;
           if (m) {
-            m.currentTime = q.start || 0;
+            m.currentTime = (srtEdit.rows[i] || {}).start ?? q.start ?? 0;
             if (m.paused) m.play().catch(() => {});
           }
         }
@@ -8510,6 +9510,225 @@
             ElementPlus.ElMessage.error(e.message);
           }
         }
+        async function loadCookieCloud() {
+          try {
+            const d = await api('/api/cookiecloud');
+            cc.value = Object.assign({}, cc.value, d, { key: '' });
+          } catch (_) {}
+        }
+        function ccApply(d) {
+          cc.value = Object.assign({}, cc.value, d || {}, { key: '' });
+        }
+        async function saveCookieCloud() {
+          ccBusy.value = 'save';
+          try {
+            const body = {
+              enabled: cc.value.enabled, server: cc.value.server, uuid: cc.value.uuid,
+              scheme: cc.value.scheme, domains: cc.value.domains,
+            };
+            if ((cc.value.key || '').trim()) body.key = cc.value.key;
+            const d = await api('/api/cookiecloud/account', {
+              method: 'POST', body: JSON.stringify(body), uiName: '保存 CookieCloud 设置',
+            });
+            ccApply(d);
+            ccMsg.value = '已存进本机 config.json。'
+              + (d.key_set ? '密钥也在了，界面上不再显示它。' : '密钥还没填，测试连接会被挡回。');
+            ElementPlus.ElMessage.success('CookieCloud 设置已保存');
+          } catch (e) {
+            ccMsg.value = '没保存下去：' + (e.message || e);
+            ElementPlus.ElMessage.error(e.message || 'CookieCloud 设置保存失败');
+          } finally { ccBusy.value = ''; }
+        }
+        function clearCookieCloudKey() {
+          ElementPlus.ElMessageBox.confirm('清掉本机存的这份密钥：服务器地址和 UUID 都留着，但密钥要重新填才解得开云端那一份。',
+            '清掉密钥', { type: 'warning', confirmButtonText: '清掉', cancelButtonText: '先不' })
+            .then(() => api('/api/cookiecloud/account', {
+              method: 'POST', body: JSON.stringify({ clear_key: true }), uiName: '清掉 CookieCloud 密钥',
+            }))
+            .then(d => {
+              ccApply(d);
+              ccMsg.value = '本机那份密钥已清掉（地址和 UUID 没动）。';
+              ElementPlus.ElMessage.success('密钥已清掉');
+            })
+            .catch(e => { if (e && e.message) ElementPlus.ElMessage.error(String(e.message)); });
+        }
+        async function ccCall(kind, path, uiName, okWord) {
+          ccBusy.value = kind;
+          ccMsg.value = '';
+          try {
+            const d = await api(path, { method: 'POST', uiName });
+            ccMsg.value = (d && d.message) || okWord;
+            if (d && d.notes && d.notes.length) ccMsg.value += '（' + d.notes.join('；') + '）';
+            ElementPlus.ElMessage.success(okWord);
+            await loadCookieCloud();
+            await loadPlatformCookies();
+          } catch (e) {
+            ccMsg.value = '没成功：' + (e.message || e);
+            ElementPlus.ElMessage.error(e.message || (okWord + ' 失败'));
+            // 失败也要把状态重读一遍：后端这次记了「没成 + 原话」，界面上那行时间戳不能停在上一回
+            try { await loadCookieCloud(); await loadPlatformCookies(); } catch (e2) { /* 重读失败不影响上面那句报错 */ }
+          } finally { ccBusy.value = ''; }
+        }
+        function testCookieCloud() {
+          return ccCall('test', '/api/cookiecloud/test', '测试 CookieCloud 连接', '连接测试通过');
+        }
+        function pullCookieCloud() {
+          return ccCall('pull', '/api/cookiecloud/pull', '从 CookieCloud 拉取 Cookie', '已按云端那一份写好本机 Cookie 文件');
+        }
+        async function pushCookieCloud() {
+          try {
+            await ElementPlus.ElMessageBox.confirm(
+              '这会把本机 cookies 目录里那几份拼起来，把服务器上这个 UUID 的那一份整个盖掉 —— 别的设备之后拉到的就是现在这一份。',
+              '本机推给云端', { type: 'warning', confirmButtonText: '盖掉那一份', cancelButtonText: '先不' });
+          } catch (_) { return; }
+          await ccCall('push', '/api/cookiecloud/push', '把本机 Cookie 推给 CookieCloud', '已推给云端');
+        }
+
+        /* 按龄清理（#31）。前端的 clPlanStale 只是把按钮早一分钟变灰，真拦人的是后端那两道：
+           run 必须带上刚生成的名单指纹，而且指纹十分钟内有效 —— 刷新页面、重启服务都会让它失效。 */
+        const cl = ref({ enabled: false, log_days: 7, backup_days: 0, download_days: 0, trash_days: 30,
+                         auto_hour: '03:05', download_dir: '', trash_dir: '', trash_count: 0,
+                         last_auto: {}, last_manual: {}, labels: {} });
+        const clPlan = ref(null);
+        const clPlanStale = ref(true);
+        const clTrash = ref({ rows: [], count: 0, bytes: 0, hidden: 0 });
+        const clBusy = ref('');
+        const clMsg = ref('');
+        let clPlanTimer = null;
+        async function loadCleanup() {
+          try {
+            const d = await api('/api/cleanup');
+            cl.value = { ...cl.value, ...d };
+          } catch (e) { /* 这张卡读不到不影响设置页其它部分 */ }
+        }
+        async function saveCleanup() {
+          clBusy.value = 'save';
+          try {
+            const d = await api('/api/cleanup/account', {
+              method: 'POST', uiName: '保存按龄清理设置',
+              body: JSON.stringify({ enabled: !!cl.value.enabled, log_days: Number(cl.value.log_days) || 0,
+                                     backup_days: Number(cl.value.backup_days) || 0,
+                                     download_days: Number(cl.value.download_days) || 0,
+                                     trash_days: Number(cl.value.trash_days) || 0 }),
+            });
+            cl.value = { ...cl.value, ...d };
+            clMsg.value = '已保存。' + (cl.value.enabled
+              ? `自动那一趟每天 ${cl.value.auto_hour} 跑，只碰日志归档、编辑备份和到期的回收目录。`
+              : '现在是关的：不会自动清任何东西，下面的删除按钮也照样能手工用。');
+            clPlan.value = null;
+            clPlanStale.value = true;   // 天数一改，旧名单就不作数了，重新看
+          } catch (e) {
+            clMsg.value = '保存失败：' + (e.message || e);
+          } finally { clBusy.value = ''; }
+        }
+        async function previewCleanup() {
+          clBusy.value = 'preview';
+          try {
+            const d = await api('/api/cleanup/preview', { method: 'POST', body: '{}',
+                                                          uiName: '按龄清理：先看名单' });
+            clPlan.value = d;
+            clPlanStale.value = false;
+            clearTimeout(clPlanTimer);
+            clPlanTimer = setTimeout(() => { clPlanStale.value = true; },
+                                      (Number(d.ttl) || 600) * 1000);
+            clMsg.value = `名单出来了：合计 ${d.total_count} 个 / ${formatSize(d.total_bytes)}，一个都还没动。`
+              + (d.total_count ? '确认过就点「按名单删除」。' : '没什么可清的。');
+          } catch (e) {
+            clMsg.value = '看名单失败：' + (e.message || e);
+          } finally { clBusy.value = ''; }
+        }
+        function clGroupList() {
+          if (!clPlan.value || !clPlan.value.groups) return [];
+          return Object.keys(clPlan.value.groups).filter(g => clPlan.value.groups[g].count > 0);
+        }
+        async function clRun(groups) {
+          if (!clPlan.value || clPlanStale.value) {
+            clMsg.value = '名单不在或已经过期：先点「先看名单」。';
+            return;
+          }
+          clBusy.value = 'run';
+          try {
+            const d = await api('/api/cleanup/run', {
+              method: 'POST', uiName: '按龄清理：按名单删除',
+              body: JSON.stringify({ hash: clPlan.value.hash, groups }),
+            });
+            clMsg.value = d.message || '清完了';
+            clPlan.value = null;
+            clPlanStale.value = true;
+            clearTimeout(clPlanTimer);
+            await loadCleanup();
+            await loadCleanupTrash();
+          } catch (e) {
+            clMsg.value = '删除失败：' + (e.message || e);
+            if (String(e.message || '').indexOf('名单') >= 0) {
+              clPlan.value = null;
+              clPlanStale.value = true;
+            }
+          } finally { clBusy.value = ''; }
+        }
+        function clDescribe(groups) {
+          if (!clPlan.value) return '';
+          const gs = clPlan.value.groups || {};
+          return groups.map(g => {
+            const x = gs[g] || {};
+            return `【${x.label || g}】${x.count || 0} 个 / ${formatSize(x.bytes || 0)}`
+              + (x.hard ? '（直接删）' : `（先挪进 ${cl.value.trash_dir}）`);
+          }).join('；');
+        }
+        async function runCleanup() {
+          const gs = clGroupList();
+          if (!gs.length) { clMsg.value = '名单里一个都没列出来，没什么可删。'; return; }
+          try {
+            await ElementPlus.ElMessageBox.confirm(
+              clDescribe(gs) + '。日志归档删了就没有了，其余的先挪进回收目录，之后还能放回原位。',
+              '按名单删除', { type: 'warning', confirmButtonText: '按这份名单删', cancelButtonText: '先不删' });
+          } catch (_) { return; }
+          await clRun(gs);
+        }
+        async function runOneGroup(g) {
+          try {
+            await ElementPlus.ElMessageBox.confirm(
+              clDescribe([g]) + '。' + ((clPlan.value.groups[g] || {}).hard
+                ? '这一组是直接删，不经过回收目录。' : '这一组先挪进回收目录，之后能放回原位。'),
+              '只清这一组', { type: 'warning', confirmButtonText: '删这一组', cancelButtonText: '先不删' });
+          } catch (_) { return; }
+          await clRun([g]);
+        }
+        async function loadCleanupTrash() {
+          clBusy.value = 'trash';
+          try {
+            const d = await api('/api/cleanup/trash');
+            clTrash.value = { rows: d.rows || [], count: d.count || 0,
+                              bytes: d.bytes || 0, hidden: d.hidden || 0 };
+            cl.value.trash_dir = d.trash_dir || cl.value.trash_dir;
+          } catch (e) {
+            clMsg.value = '看回收目录失败：' + (e.message || e);
+          } finally { clBusy.value = ''; }
+        }
+        async function restoreTrash(ids) {
+          if (!ids || !ids.length) { clMsg.value = '没勾选要放回去的文件。'; return; }
+          try {
+            await ElementPlus.ElMessageBox.confirm(
+              `把这 ${ids.length} 个从回收目录放回原位置。原位置已经有同名文件的那个不会被动。`,
+              '放回原位', { type: 'info', confirmButtonText: '放回去', cancelButtonText: '先不' });
+          } catch (_) { return; }
+          clBusy.value = 'restore';
+          try {
+            const d = await api('/api/cleanup/restore', {
+              method: 'POST', uiName: '按龄清理：从回收目录放回',
+              body: JSON.stringify({ ids }),
+            });
+            clMsg.value = d.message || '已放回';
+            await loadCleanupTrash();
+            await loadCleanup();
+          } catch (e) {
+            clMsg.value = '放回失败：' + (e.message || e);
+          } finally { clBusy.value = ''; }
+        }
+        function restoreAllTrash() {
+          restoreTrash((clTrash.value.rows || []).filter(r => r.orig).map(r => r.id));
+        }
+
         async function loadMusicCookies() {
           try {
             const data = await api('/api/music/cookies');
@@ -8955,6 +10174,9 @@
                 unofficial: !!n.unofficial,
                 needs_match: false,
                 reupload_suspect: false,
+                // 换源把这一行换成另一条结果了：那个「与关键词的吻合度」是老的行算出来的，
+                // 留着不换就等于挂着一条对不上号的分数。同曲判定另在 switch_note 里写。
+                score: null, score_name: null, score_artist: null, score_time: null, score_reject: '',
                 switch_note: `从 ${x.from || '原平台'} 换成 ${x.to}（同曲判定 ${x.score} 分）`,
               });
             });
@@ -8994,6 +10216,17 @@
           if (row.label) parts.push('厂牌 ' + row.label);
           parts.push('只读，音频不从这一行下');
           return parts.join(' · ');
+        }
+        function matchHint(row) {
+          const line = row.match_accept || 85;
+          const f = (v) => (v === null || v === undefined) ? '未参与' : String(Math.round(v));
+          const parts = [`这一条与你输入的关键词的吻合度：${row.score} / 100（录取线 ${line}）`];
+          parts.push(`曲名 ${f(row.score_name)} · 歌手 ${f(row.score_artist)} · 时长 ${f(row.score_time)}`);
+          if (row.score_reject) parts.push('挡下来的原因：' + row.score_reject);
+          parts.push('这一分管的是「对不对得上你输入的关键词」。要判「与某条标注是不是同一版录音」得有时长可比，'
+                     + '换源与查重走的是那一套管');
+          parts.push('阈值写死在后端 music_search 的 MATCH_* 里，目前不能在界面改');
+          return parts.join('\n');
         }
         function openRefLink(row) {
           const url = String(row.url || '');
@@ -9064,7 +10297,7 @@
         async function parseMusicPlaylist() {
           const url = (musicPlaylistUrl.value || '').trim();
           if (!url.startsWith('http')) {
-            ElementPlus.ElMessage.warning('请粘贴歌单链接');
+            ElementPlus.ElMessage.warning('请粘贴歌单或单曲链接');
             return;
           }
           const quality = musicPlaylistMode.value === 'quality';
@@ -9072,7 +10305,7 @@
           ElementPlus.ElMessage.info({
             message: quality
               ? '高音质模式：musicdl 逐曲取地址，几十首通常要 1-3 分钟，最长等 15 分钟'
-              : '正在列出歌单曲目（yt-dlp 优先，通常几秒）；酷狗/咪咕/Spotify 这类只有 musicdl 认，需要逐曲等',
+              : '正在列出曲目：歌单（yt-dlp 优先，通常几秒）或单曲链接（只取这一首的元数据）；酷狗/咪咕/Spotify 这类只有 musicdl 认，需要逐曲等',
             duration: 8000,
           });
           try {
@@ -9087,17 +10320,18 @@
             const hint = (r.diag && r.diag.hint) || '';
             const engine = (r.diag && r.diag.engine) || '';
             if ((r.count || 0) > 0) {
+              const single = (engine || '').endsWith('-single');
               const note = engine === 'yt-dlp'
                 ? '（yt-dlp 列曲目，下载走链接）'
-                : (engine === 'spotify-list'
-                    ? '（Spotify 只列了曲目，下载时才按曲名去勾选的源里匹配地址）'
+                : (single || engine === 'spotify-list'
+                    ? '（只列了曲目，下载时才按曲名去勾选的源里匹配地址）'
                     : '（musicdl 逐曲取址）');
               const dup = (r.diag && r.diag.dup_merged) || 0;
-              ElementPlus.ElMessage.success(`歌单 ${r.count} 首${note}`
+              ElementPlus.ElMessage.success(`${single ? '单曲' : '歌单'} ${r.count} 首${note}`
                 + (dup ? `，已合并 ${dup} 首重复（同一首歌排了多遍，下载只下一遍）` : ''));
             } else {
               ElementPlus.ElMessage.error({
-                message: `歌单解析失败：${hint || '各源都没返回曲目，详见下方日志'}`,
+                message: `解析失败：${hint || '各源都没返回曲目，详见下方日志'}`,
                 duration: 8000,
               });
             }
@@ -9615,6 +10849,7 @@
             const sort = taskSort.value || 'queue';
             const data = await api('/api/tasks?sort=' + encodeURIComponent(sort));
             applyTaskList(data.tasks || [], data.running, data.paused);
+            if (data.window) queueWindow.value = data.window;
             // 做种面板的数据只在「磁力 / 种子」页停留时按 30 秒顺带刷一次，别跟着 1.5 秒轮询敲 aria2
             if (page.value === 'bt' && Date.now() - lastSeedingAt > 30000) loadSeeding();
           } catch (_) {}
@@ -9649,6 +10884,7 @@
               if (taskSort.value === 'queue') applyTaskList(d.tasks || [], d.running, d.paused);
               if (d.throttle) status.value.throttle = d.throttle;
               if (typeof d.pending === 'number') status.value.pending = d.pending;
+              if (d.window) queueWindow.value = d.window;
             } catch (_) {}
           });
           es.addEventListener('prog', (ev) => {
@@ -9759,6 +10995,64 @@
             ElementPlus.ElMessage.warning('无法读取剪贴板，请手动粘贴');
           }
         }
+
+        /* ---- 剪贴板监听（#206④）：本机服务在盯，页面只是每 2 秒问一句「有没有刚发现的」 ----
+           这里拿到的永远是抽出来的那一条链接，不是剪贴板原文；点「加入」也只填输入框。 */
+        const clipPending = ref(null);
+        const clipOn = ref(false);
+        const clipNote = ref('');
+        let clipTimer = null;
+        async function pollClipboard() {
+          try {
+            const d = await api('/api/clipboard');
+            clipOn.value = !!d.enabled;
+            clipPending.value = d.pending || null;
+            clipNote.value = d.enabled
+              ? (d.error || ('已读 ' + (d.checks || 0) + ' 次，认出 ' + (d.hits || 0) + ' 条链接'
+                           + (d.supported ? '' : '（这台机器不是 Windows，读不了系统剪贴板）')))
+              : '';
+          } catch (_) { /* 问不着就算了，下一轮再问 */ }
+        }
+        function clipAdd() {
+          const link = (clipPending.value || {}).link || '';
+          if (!link) return;
+          urlText.value = (urlText.value ? urlText.value.replace(/\s+$/, '') + '\n' : '') + link;
+          clipPending.value = null;
+          api('/api/clipboard/clear', { method: 'POST', body: '{}' }).catch(() => {});
+          ElementPlus.ElMessage.info('已填进链接框：要不要解析、要不要下载，还是你按');
+        }
+        function clipIgnore() {
+          clipPending.value = null;
+          api('/api/clipboard/clear', { method: 'POST', body: '{}' }).catch(() => {});
+        }
+
+        // 单行框里粘进「分享文案 + 链接」「一行挤好几条」会直接污染查询与解析，所以粘的那一刻就清一遍。
+        // 口径与「粘贴」按钮、与 extractUrls 同一条，不再另写一套正则。
+        function cleanPasted(text, kind) {
+          const src = String(text || '');
+          if (!src.trim()) return '';
+          const firstLine = src.trim().split(/\r?\n/)[0].trim();
+          if (kind === 'text') return firstLine.replace(/\s+/g, ' ');
+          const { urls } = extractUrls(src);
+          return urls[0] || firstLine;
+        }
+
+        // 右键「粘贴」与 Ctrl+V 都派发 paste 事件，所以只挂这一个处理函数。
+        // 值写在事件目标（原生输入框）上，再补发 input 事件回灌 v-model：模板里取到的变量已被解包成字符串，
+        // 拿它当 ref 赋 .value 是空操作。
+        // 也不写成柯里形式 onPaste(box, 'url') 返回值 —— Vue 把带参数的表达式当语句执行，返回的函数会被丢掉。
+        function onPaste(e, kind) {
+          const cd = e.clipboardData || window.clipboardData;
+          const text = cd && cd.getData ? cd.getData('text') : '';
+          const v = cleanPasted(text, kind);
+          if (!v) return;
+          e.preventDefault();
+          e.target.value = v;
+          e.target.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+
+        // 多行列表框（首页媒体链接 / 磁力 / 订阅 / 直播）不挂这里：
+        // 它们的内容在解析时才归一（extractUrls / btParsed），粘进来的原文要留在框里给用户对着看。
 
         // ---------- Telegram 公开频道批量 ----------
         const dateShortcuts = [
@@ -10035,6 +11329,7 @@
         const torrentFileInput = ref(null);
         const torrentUploading = ref(false);
         const aria2Checking = ref(false);
+        const aria2Installing = ref(false);
         const aria2Info = ref('');
         const seedingRows = ref([]);
         const seedingNote = ref('');
@@ -10120,7 +11415,7 @@
         const btRuleTesting = ref(false);
         const btRuleTested = ref('');
         function addBtRule() {
-          settings.value.bt_auto_rules.push({ name: '', mode: 'contains', pattern: '', subdir: '', enabled: true });
+          settings.value.bt_auto_rules.push({ name: '', scope: 'name', mode: 'contains', pattern: '', subdir: '', enabled: true });
         }
         function delBtRule(i) { settings.value.bt_auto_rules.splice(i, 1); }
         function moveBtRule(i, d) {
@@ -10130,15 +11425,19 @@
         }
         async function testBtRule() {
           const v = (btRuleTestName.value || '').trim();
-          if (!v) { ElementPlus.ElMessage.warning('先写一个种子名字，或贴一条磁力 / 种子链接'); return; }
+          if (!v) { ElementPlus.ElMessage.warning('先写一个种子名字，或贴一条磁力 / 种子 / 普通下载链接'); return; }
           btRuleTesting.value = true;
           try {
-            const isRef = /^magnet:/i.test(v) || /\.torrent$/i.test(v) || /^file:\/\//i.test(v);
+            const isUrl = /^magnet:/i.test(v) || /\.torrent$/i.test(v) || /^file:\/\//i.test(v)
+              || /^https?:\/\//i.test(v);   // 普通 http(s) 也交给后端：那一类只有链接规则问得到
             const r = await api('/api/torrent/rules/test', {
               method: 'POST', uiName: '试自动分类规则',
-              body: JSON.stringify(isRef ? { url: v } : { name: v }),
+              body: JSON.stringify(isUrl ? { url: v } : { name: v }),
             });
-            btRuleTested.value = `${r.message}｜比的是「${r.name || '（此刻还没有名字）'}」，来源：${r.name_from}`;
+            // 名字是空的（普通下载链接、没带 dn 的磁力）就别写「比的是「」」：那句只会让人以为出了错
+            btRuleTested.value = r.name
+              ? `${r.message}｜比的是「${r.name}」，来源：${r.name_from}`
+              : `${r.message}｜来源：${r.name_from}`;
           } catch (e) {
             btRuleTested.value = '试匹配没走通：' + String(e.message || e);
           } finally {
@@ -10205,11 +11504,26 @@
             if (r.daemon && r.daemon.owned) bits.push('进程由本程序拉起（PID ' + r.daemon.pid + '）');
             bits.push(r.autostart ? '自动拉起已开' : '自动拉起已关');
             if (r.seeding) bits.push(`做种 ${r.seeding} 项`);
+            // 拉不起来时把后端给的原因原样带上，别让用户对着「无应答」猜
+            if (r.ensure && r.ensure.why) bits.push(r.ensure.why);
             aria2Info.value = bits.join(' · ');
           } catch (e) {
             aria2Info.value = '检测失败：' + String(e.message || e);
           } finally {
             aria2Checking.value = false;
+          }
+        }
+
+        async function installAria2() {
+          aria2Installing.value = true;
+          try {
+            const r = await api('/api/update/aria2', { method: 'POST' });
+            ElementPlus.ElMessage.info(r.message || 'aria2c 安装已在后台开始');
+            setTimeout(() => { checkAria2(); loadStatus(); loadComponents(); }, 15000);
+          } catch (e) {
+            ElementPlus.ElMessage.error(String(e.message || e));
+          } finally {
+            aria2Installing.value = false;
           }
         }
         function btTrackerHead(r) {
@@ -10663,6 +11977,8 @@
             analyzeUrl.value = url;
             // 换一次解析就是一批新条目，勾选和区间都按新列表重置，别拿上一个列表的序号来勾
             entrySel.value = [];
+            infoCodec.value = '';
+            selectedQuality.value = '';
             entryRange.value = { from: 1, to: (mediaInfo.value.entries || []).length || 1 };
             page.value = 'info';
             ElementPlus.ElMessage.success('解析完成');
@@ -10694,7 +12010,8 @@
         async function pasteAnalyzeUrl() {
           try {
             const text = await navigator.clipboard.readText();
-            if (text) analyzeUrl.value = text.trim().split(/\s+/)[0];
+            const v = cleanPasted(text, 'url');
+            if (v) analyzeUrl.value = v;
           } catch (_) {
             ElementPlus.ElMessage.warning('无法读取剪贴板');
           }
@@ -10735,14 +12052,19 @@
         async function downloadQualityPreset(qp) {
           if (!mediaInfo.value || !mediaInfo.value.webpage_url || !qp) return;
           selectedQuality.value = qp.label || '';
-          const expr = qp.format_expr || qp.format_id || 'bv*+ba/b';
-          opts.value.force_format = expr;
+          const audioQ = opts.value.audio_quality || 'best';
+          opts.value.prefer_codec = qp.prefer_codec || 'auto';
+          if (qp.height > 0) opts.value.video_quality = qp.height + 'p';
+          else if (qp.height === 0) opts.value.video_quality = 'best';
           opts.value.audio_only = (qp.label === '仅音频' || qp.height === -1);
           if (opts.value.audio_only) {
             opts.value.format = 'm4a';
           }
+          // 音频档位保持「最佳」时按解析出来的 format_id 精确下（和以往一致）；
+          // 一旦指定了码率上限，改走后端 _resolve_format 的表达式，它才认 abr 过滤（仅音频同理）
+          opts.value.force_format = audioQ === 'best' ? (qp.format_expr || qp.format_id || 'bv*+ba/b') : '';
           urlText.value = mediaInfo.value.webpage_url;
-          ElementPlus.ElMessage.success('已选择：' + (qp.label || expr));
+          ElementPlus.ElMessage.success('已选择：' + (qp.label || '') + (audioQ === 'best' ? '' : ' · 音频 ' + audioQ));
           page.value = 'home';
           await startDownload();
           opts.value.force_format = '';
@@ -10914,6 +12236,9 @@
           const bits = [];
           if (t && t.res_label) bits.push('实际下到的流：' + t.res_label);
           if (t && Number(t.total_bytes) > 0) bits.push('总量 ' + formatSize(t.total_bytes));
+          // 校验值一致时卡片不留一行（免得每次都亮橙色的），但用户确实问过这件事，悬浮里给一句
+          if (t && t.hash_state === 'ok') bits.push('校验值一致 · ' + String(t.hash_algo || '').toUpperCase() + ' ' + String(t.file_hash || '').slice(0, 12) + '…');
+          else if (t && t.hash_state === 'unknown') bits.push('校验值没法判：成品读不出来');
           return bits.join('，');
         }
         function tierRows(info, kind) {
@@ -10944,6 +12269,26 @@
           const name = t => (t === 'best' ? '最佳' : t);
           return out.map(g => g.ts.map(name).join('/') + ' ≈' + formatSize(g.b)).join(' · ');
         }
+        // 解析页的编码筛选：同一清晰度有多种编码时（4K 常见 AV1＋VP9）把它们摊开成可点的芯片；
+        // 「最佳画质」「仅音频」两枚不参与筛选，任何时候都在
+        const infoCodecOptions = computed(() => {
+          const ps = (mediaInfo.value && mediaInfo.value.quality_presets) || [];
+          const seen = [];
+          ps.forEach(p => {
+            if (!p || !(p.height > 0) || !p.codec_family) return;
+            if (!seen.some(s => s.value === p.prefer_codec)) seen.push({ value: p.prefer_codec, label: p.codec_family });
+          });
+          return seen.length > 1 ? [{ value: '', label: '全部编码' }].concat(seen) : [];
+        });
+        const shownQualityPresets = computed(() => {
+          const ps = (mediaInfo.value && mediaInfo.value.quality_presets) || [];
+          if (!infoCodec.value || !infoCodecOptions.value.length) return ps;
+          return ps.filter(p => p && (!(p.height > 0) || p.prefer_codec === infoCodec.value));
+        });
+        const infoAudioTop = computed(() => {
+          const a = (mediaInfo.value && mediaInfo.value.audio_abrs) || [];
+          return a.length ? Math.round(a[0]) + 'k' : '—';
+        });
         // 每档画质的预估体积，显示在解析结果的「按清晰度选择」下面
         const tierSizeText = computed(() => {
           const info = mediaInfo.value;
@@ -11107,27 +12452,462 @@
         }
         watch(() => settings.value.speed_windows, () => checkSpeedWindows(true));
 
-        async function saveSettings(silent) {
+        // 队列定时窗：queueWindow 是后端 window_status() 的原样，横幅和设置页的每队列一行都从它取
+        const queueWindow = ref(null);
+        const windowHeld = computed(() => {
+          const w = queueWindow.value;
+          if (!w) return null;
+          const rows = [];
+          if (w.open === false) rows.push({ name: '全局', resume_at: w.resume_at, held: w.held || 0 });
+          (w.queues || []).forEach((q) => {
+            if (q.windows && q.open === false) rows.push({ name: q.name, resume_at: q.resume_at, held: q.held || 0 });
+          });
+          return rows.length ? rows : null;
+        });
+        const queueRows = computed(() => (queueWindow.value && queueWindow.value.queues) || []);
+
+        const runWinStat = ref(null);
+        let runWinTimer = null;
+        async function refreshRunWindow() {
+          try {
+            const r = await api('/api/config/run_window/check', { method: 'POST', body: '{}', noLog: true });
+            if (r && r.live) queueWindow.value = r.live;
+            return r;
+          } catch (_) { return null; }
+        }
+        function checkRunWindows(silent) {
+          const text = settings.value.run_window || '';
+          if (runWinTimer) clearTimeout(runWinTimer);
+          runWinTimer = setTimeout(async () => {
+            try {
+              const r = await api('/api/config/run_window/check', {
+                method: 'POST', body: JSON.stringify({ text }), noLog: !!silent,
+              });
+              runWinStat.value = text.trim() ? r : null;
+              if (r && r.live) queueWindow.value = r.live;
+              if (silent) return;
+              if (!text.trim()) { ElementPlus.ElMessage.success('留空 = 任何时候都能开新任务'); return; }
+              if (r.errors && r.errors.length) {
+                ElementPlus.ElMessage.warning(`有 ${r.errors.length} 行看不懂：${r.errors[0]}`);
+              } else {
+                ElementPlus.ElMessage.success(
+                  `认出 ${r.count} 段，${r.now} ${r.open ? '现在能开新任务' : '现在关着，' + r.resume_at + ' 自动开'}`);
+              }
+            } catch (e) {
+              /* 格式体检失败不影响保存 */
+            }
+          }, 300);
+        }
+        watch(() => settings.value.run_window, () => checkRunWindows(true));
+
+
+        /* 恢复默认那张表要用的人话名：从本页各行的 label 属性里逐条抄下来的一份，
+           后端那份默认值表只有键名。新加设置行时这里要跟着补一条，
+           自检 settingsave_test.py 会钉住「界面上有控制项的键都要有名」。 */
+const CFG_LABELS = {
+          "acoustid_api_key": "AcoustID 应用 Key",
+          "acoustid_min_score": "最低匹配分数",
+          "adaptive_throttle": "站点自动降速",
+          "ai_polish": "LLM 润色转写",
+          "ai_summarize": "LLM 智能摘要",
+          "anthropic_api_key": "Anthropic API Key",
+          "anthropic_model": "Claude 模型",
+          "aria2_autostart": "自动拉起 aria2",
+          "aria2_bin": "aria2c 路径",
+          "aria2_enabled": "aria2 后端",
+          "aria2_for_large_mb": "大文件自动尝试 aria2",
+          "aria2_rpc": "aria2 RPC",
+          "aria2_secret": "aria2 Secret",
+          "azure_translator_key": "Azure Translator Key",
+          "azure_translator_region": "Azure 区域",
+          "bt_auto_fallback": "都不命中时存到",
+          "bt_dl_limit": "新任务下载限速",
+          "bt_prioritize_piece": "首尾优先",
+          "bt_tracker_auto_update": "自动获取",
+          "bt_tracker_max": "注入条数上限",
+          "bt_tracker_sources": "列表来源地址",
+          "bt_trackers": "自己填写的 tracker",
+          "bt_ul_limit": "新任务上传限速",
+          "clipboard_watch": "剪贴板监听",
+          "components_auto_check": "打开程序时自动查组件更新",
+          "concurrent": "并发数 (1-10)",
+          "concurrent_fragments": "分片并发数 (1-8，越大越快但易触发风控)",
+          "cookie_file": "Cookie 文件路径",
+          "cookie_public_first": "公开优先（解析先不带 Cookie）",
+          "deepl_api_key": "DeepL API Key",
+          "demucs_model": "Demucs 模型",
+          "diarization_enabled": "说话人分离",
+          "diarization_max_speakers": "说话人分离",
+          "download_dir": "默认下载目录",
+          "edge_tts_voice": "Edge-TTS 音色",
+          "ffmpeg_path": "FFmpeg 路径",
+          "filename_template": "文件名模板",
+          "gemini_api_key": "Gemini API Key",
+          "gemini_model": "Gemini 模型",
+          "github_mirror": "GitHub/HF 镜像前缀",
+          "global_speed_limit": "全局限速",
+          "google_translate_api_key": "Google Translate Key",
+          "hf_token": "HuggingFace Token",
+          "http_impersonate": "HTTP TLS 指纹模拟",
+          "live_from_start": "直播尽可能从开头录制",
+          "live_max_minutes": "直播默认最长录制",
+          "live_stream_fallback": "首选失败时自动换协议",
+          "live_stream_pref_bilibili": "B站",
+          "live_stream_pref_default": "其它平台",
+          "live_stream_pref_douyin": "抖音 / TikTok",
+          "live_stream_pref_twitch": "Twitch",
+          "live_stream_pref_youtube": "YouTube",
+          "local_ai_lang": "识别语言",
+          "local_ai_mt_after_transcribe": "转写后机翻",
+          "local_ai_transcribe": "下载完成后自动转写",
+          "local_ai_translate": "Whisper 译为英文",
+          "max_per_host": "同域并发上限",
+          "nocheckcertificate": "跳过 SSL 证书校验",
+          "openai_api_key": "OpenAI API Key",
+          "openai_base_url": "OpenAI Base URL",
+          "openai_model": "OpenAI 模型",
+          "pip_mirror": "PyPI 镜像",
+          "plugins_enabled": "启用 URL 插件",
+          "po_provider_enabled": "PO Token 服务门控",
+          "po_provider_url": "PO Token 服务门控",
+          "proxy": "代理地址",
+          "proxy_mode": "代理策略",
+          "risk_cooldown_429": "遇 429 冷却",
+          "risk_delay_sec": "请求间隔",
+          "risk_user_agent": "自定义 User-Agent",
+          "run_window": "队列定时窗",
+          "serverchan_sendkey": "Server酱 SendKey",
+          "speed_limit": "限速",
+          "speed_windows": "限速时段",
+          "storage_nas_enabled": "启用 NAS 路径",
+          "storage_nas_path": "NAS / 网络路径",
+          "storage_post_action": "完成后动作",
+          "storage_webdav_enabled": "启用 WebDAV",
+          "storage_webdav_pass": "密码",
+          "storage_webdav_path": "远端目录",
+          "storage_webdav_url": "WebDAV URL",
+          "storage_webdav_user": "用户名",
+          "sub_auto_download": "发现新内容自动下载",
+          "sub_first_download_n": "订阅首次下载条数",
+          "sub_interval_min": "订阅扫描间隔",
+          "sub_scan_delay_sec": "订阅扫描间隔延迟",
+          "subtitle_export_set": "机翻产物成套",
+          "subtitle_first": "字幕优先",
+          "subtitle_glossary": "字幕术语表",
+          "subtitle_qc": "字幕翻译质检",
+          "subtitle_qc_reflect": "可疑句反射重写",
+          "subtitle_target_lang": "机翻目标语言",
+          "subtitle_translate_provider": "机翻引擎",
+          "subtitle_wrap": "字幕智能换行",
+          "subtitle_wrap_lines": "字幕智能换行",
+          "subtitle_wrap_width": "字幕智能换行",
+          "telegram_bot_token": "Telegram Bot Token",
+          "telegram_chat_id": "Telegram Chat ID",
+          "telegram_commands_enabled": "Telegram 指令开关",
+          "telegram_enabled": "Telegram 通知开关",
+          "telegram_notify_done": "完成时通知（Telegram）",
+          "telegram_notify_fail": "失败时通知（Telegram）",
+          "telegram_notify_sub": "订阅更新通知（Telegram）",
+          "torrent_meta_timeout": "种子元数据等待",
+          "torrent_seed_ratio": "做种比率",
+          "torrent_seed_time": "做种时长",
+          "translate_auto_fallback": "翻译失败自动换引擎",
+          "video_cpu_codec": "CPU 编码器",
+          "video_cpu_preset": "CPU 预设",
+          "video_encoder": "编码器偏好",
+          "web_auth_enabled": "访问保护开关",
+          "web_auth_lock_minutes": "锁定时长（分钟）",
+          "web_auth_max_fails": "连错几次就锁",
+          "web_auth_remember_days": "记住设备天数",
+          "web_auth_session_hours": "会话空闲时长（小时）",
+          "wecom_agent_id": "企业微信 AgentId",
+          "wecom_corp_id": "企业微信 CorpID",
+          "wecom_corp_secret": "企业微信应用 Secret",
+          "wecom_enabled": "企业微信通知开关",
+          "wecom_notify_done": "完成时通知（企业微信）",
+          "wecom_notify_fail": "失败时通知（企业微信）",
+          "wecom_notify_sub": "订阅更新通知（企业微信）",
+          "wecom_touser": "企业微信接收人",
+          "whisper_compute": "计算精度",
+          "whisper_device": "运算设备",
+          "whisper_model": "模型大小",
+          "yt_player_clients": "YouTube 播放器客户端链",
+          "ytdlp_extra_args": "自定义 yt-dlp 参数"
+        };
+        // 界面叫得出名字的配置项就用名字，叫不出再退回键名
+        const cfgLabel = k => CFG_LABELS[k] || k;
+
+        /* 设置页的写入走「只交改动的那几项」：整包回存会把这一页打开之后由别的入口
+           （另一个页签、接口、程序自己）改过的键一起盖回去，而界面看不出来盖掉了什么。
+           差异从 markSaved() 那份快照起算 —— 快照没建立之前一律不写，不知道差异就不该动手。 */
+        const CFG_SNAPSHOT = { ready: false, data: {} };
+        // 后端 GET /api/config 真给回来的键名。空表 = 还没读过配置，这时什么都不发
+        const CFG_KNOWN = new Set();
+        // 这几项是「半截文本存进去只会被后端顶回 400」的多行框与整表框：填完点它们自己的按钮
+        const AUTO_SAVE_OFF = new Set(['speed_windows', 'run_window', 'queue_windows',
+                                       'ytdlp_extra_args', 'bt_auto_rules', 'bt_trackers',
+                                       'bt_tracker_sources', 'proxy_by_platform',
+                                       'web_auth_enabled', 'subtitle_glossary']);
+        const AUTO_SAVE_MS = 700;
+        let autoSaveTimer = null;
+        const autoSaveNote = ref('');
+
+        function _cfgClone(v) {
+          try { return JSON.parse(JSON.stringify(v === undefined ? null : v)); }
+          catch (_) { return v; }
+        }
+        function markSaved(keys) {
+          if (!keys) {
+            CFG_SNAPSHOT.ready = true;
+            CFG_SNAPSHOT.data = {};
+            for (const k of Object.keys(settings.value || {})) CFG_SNAPSHOT.data[k] = _cfgClone(settings.value[k]);
+            return;
+          }
+          for (const k of keys) CFG_SNAPSHOT.data[k] = _cfgClone(settings.value[k]);
+        }
+        function changedKeys() {
+          if (!CFG_SNAPSHOT.ready) return [];
+          const out = [];
+          for (const k of Object.keys(settings.value || {})) {
+            if (JSON.stringify(_cfgClone(settings.value[k])) !== JSON.stringify(CFG_SNAPSHOT.data[k])) out.push(k);
+          }
+          return out;
+        }
+        // 自动保存只碰「后端认得的键」：不认得的键发过去会被 pydantic 丢掉，留着它们会让待保存提示永远挂着
+        function pendingAutoSave() {
+          return changedKeys().filter(k => !AUTO_SAVE_OFF.has(k) && CFG_KNOWN.has(k));
+        }
+
+        async function saveSettings(silent, only) {
+          if (!CFG_SNAPSHOT.ready) return;   // 还没读回配置就写，等于拿默认值覆盖真配置
+          const keys = (only && only.length) ? only : changedKeys();
+          if (!keys.length) {
+            if (!silent) ElementPlus.ElMessage.info('没有要保存的改动');
+            autoSaveNote.value = '';
+            return;
+          }
+          // 被清空成 null/undefined 的项，后端按「没交这一项」处理（exclude_none），
+          // 发出去是静默失效 —— 当场挑出来点名，并指向真正能把它拧回去的那条「恢复默认」
+          const sent = {}, dropped = [], unknown = [];
+          for (const k of keys) {
+            if (!CFG_KNOWN.has(k)) { unknown.push(k); continue; }   // 后端没这个键，发了也只是被丢掉
+            const v = settings.value[k];
+            if (v === null || v === undefined) dropped.push(k); else sent[k] = v;
+          }
+          if (!Object.keys(sent).length) {
+            if (unknown.length) markSaved(unknown);   // 认不出的键不该每次都再报一遍
+            if (!silent) ElementPlus.ElMessage.warning('这几项被清空了或后端认不出，没存：'
+              + (dropped.concat(unknown).join(' / ')) + ' —— 要回到出厂值请用「恢复默认」');
+            return;
+          }
           try {
             const r = await api('/api/config', {
               method: 'POST',
-              body: JSON.stringify(settings.value),
+              body: JSON.stringify(sent),
             });
+            markSaved(Object.keys(sent));
+            if (unknown.length) markSaved(unknown);
+            const done = Object.keys(sent).length;
+            autoSaveNote.value = '已自动保存 ' + done + ' 项'
+              + (dropped.length ? `；${dropped.length} 项是空值没存（要用「恢复默认」）` : '');
+            if ((dropped.length || unknown.length) && !silent) {
+              ElementPlus.ElMessage.warning('已保存 ' + done + ' 项，其中 '
+                + dropped.concat(unknown).join(' / ')
+                + ' 没存（空值后端不收，或不是配置里的键）—— 要回到出厂值请用「恢复默认」');
+            }
             opts.value.download_dir = settings.value.download_dir;
             await loadStatus();
+            await refreshRunWindow();   // 刚存的定时窗立刻反映到横幅与每队列那一行
+            loadEncoders();             // 降级链按已保存的编码偏好算，存完重拉一次读数（不阻塞保存）
             // 「自定义 yt-dlp 参数」里被拒绝或与界面冲突的项：参数串照旧存着，但要把没生效的点名出来
             const notes = (r && r.ydl_arg_notes) || [];
             if (notes.length && !silent) {
               ElementPlus.ElMessage.warning('已保存，其中 ' + notes.length + ' 项参数没生效：'
                 + notes.slice(0, 3).join('；') + (notes.length > 3 ? ' 等' : ''));
             } else if (!silent) {
-              ElementPlus.ElMessage.success('已保存');
+              ElementPlus.ElMessage.success('已保存 ' + done + ' 项');
             }
           } catch (e) {
+            autoSaveNote.value = '自动保存没成：' + String(e.message || e).slice(0, 60);
             if (!silent) ElementPlus.ElMessage.error(e.message);
             throw e;
           }
         }
+
+        /* 恢复默认：默认值表真源在后端那份 cfg.DEFAULTS 里，界面不抄第二份，只列差异并按键名请求恢复。 */
+        const cfgDefs = ref({ items: [], differs: 0, count: 0 });
+        const defBusy = ref('');
+        async function loadConfigDefaults() {
+          try { cfgDefs.value = await api('/api/config/defaults', { noLog: true }); }
+          catch (e) { ElementPlus.ElMessage.error(String(e.message || e)); }
+        }
+        // 下拉里只列「和默认不一样」的那几项，界面用中文名，叫不出名字才退回键名
+        const defRows = computed(() => (cfgDefs.value.items || []).filter(i => i.differs));
+        function defBrief(it) {
+          const show = v => it.secret ? '(已填写，值不外泄)'
+            : (v === '' || v === null || v === undefined ? '(空)' : String(JSON.stringify(v)).slice(0, 40));
+          return '现 ' + show(it.value) + ' → 默认 ' + show(it.default);
+        }
+        async function resetKeys(keys, all) {
+          if (!all && !keys.length) { ElementPlus.ElMessage.info('先选一项'); return; }
+          // 界面上还有没落地的改动就先写回去：紧随其后的 loadConfig 会拿服务端的值覆盖这一份，
+          // 不先落地就等于把用户刚拧的那一下悄悄吞掉
+          const pend = pendingAutoSave();
+          if (pend.length) { try { await saveSettings(true, pend); } catch (_) {} }
+          if (autoSaveTimer) { clearTimeout(autoSaveTimer); autoSaveTimer = null; }
+          defBusy.value = all ? 'all' : keys[0];
+          try {
+            const r = await api('/api/config/reset', {
+              method: 'POST',
+              body: JSON.stringify(all ? { all: true } : { keys }),
+            });
+            await loadConfig();
+            await loadConfigDefaults();
+            await loadStatus();
+            const back = (r.restored || []).length;
+            ElementPlus.ElMessage.success('已恢复 ' + back + ' 项默认值'
+              + (r.backup ? `（改前的配置留在 ${r.backup}）` : '')
+              + ((r.refused || []).length ? `，${(r.refused || []).length} 项没动（不在可默认名单里）` : ''));
+            autoSaveNote.value = `刚恢复了 ${back} 项`
+              + (r.backup ? `，改前的配置留在 ${r.backup}` : '');
+          } catch (e) {
+            ElementPlus.ElMessage.error(String(e.message || e));
+          } finally { defBusy.value = ''; }
+        }
+        async function resetAllDefaults() {
+          const n = defRows.value.length;
+          if (!n) { ElementPlus.ElMessage.info('当前没有和默认值不一样的项'); return; }
+          // 会清掉的密钥逐个点名：一句「密钥类会被清空」太轻，人是在不知情的情况下丢掉自己抄了三天的 API Key
+          const sec = defRows.value.filter(i => i.secret).map(i => cfgLabel(i.key));
+          try {
+            await ElementPlus.ElMessageBox.confirm(
+              `把和默认值不一样的 <b>${n}</b> 项一起拧回出厂值。`
+              + `<div style="margin-top:6px">下载目录、Cookie 文件、FFmpeg 路径这类指向本机位置的值也回到默认。</div>`
+              + (sec.length
+                  ? `<div style="margin-top:6px;color:var(--bad)">会被清空的密钥（${sec.length} 项）：`
+                    + sec.slice(0, 6).join('、') + (sec.length > 6 ? ' 等' : '') + `。</div>`
+                  : '')
+              + `<div style="margin-top:6px">动手前会先把当前这份配置存成 <code>config.json.bak-&lt;时间&gt;</code>，`
+                + `反悔了把那个文件抄回 config.json 就行。</div>`
+              + `<div style="margin-top:6px">访问保护的<b>口令、签名密钥、机器令牌与 CookieCloud 同步密钥不在这张表里</b>，动不到。</div>`,
+              '一键恢复默认', { dangerouslyUseHTMLString: true,
+                confirmButtonText: `确认恢复 ${n} 项`, cancelButtonText: '取消', type: 'warning' });
+          } catch (_) { return; }
+          await resetKeys([], true);
+        }
+
+        /* 自动保存：改一项，停手 700ms 后只把改动的那几项写回去。
+           写正在飞的时候又改了，这一轮结束后再补一轮，不让改动卡在界面上没落盘。
+           多行框 / 整表框（AUTO_SAVE_OFF）不在这里动手：半截文本存过去只会被后端顶回 400，
+           它们各有「检查格式」与自己的保存按钮，由那一下负责落盘。 */
+        let autoSaveBusy = false;
+        function scheduleAutoSave() {
+          if (!CFG_SNAPSHOT.ready || autoSaveBusy) return;
+          const pend = pendingAutoSave();
+          if (!pend.length) return;
+          if (autoSaveTimer) clearTimeout(autoSaveTimer);
+          autoSaveTimer = setTimeout(async () => {
+            autoSaveTimer = null;
+            autoSaveBusy = true;
+            try { await saveSettings(true, pend); }
+            catch (_) { /* 没说头已经写在 autoSaveNote 里，不再冒到全局 */ }
+            finally {
+              autoSaveBusy = false;
+              scheduleAutoSave();
+            }
+          }, AUTO_SAVE_MS);
+        }
+        watch(settings, () => {
+          if (!CFG_SNAPSHOT.ready) return;
+          const pend = pendingAutoSave();
+          if (pend.length && !autoSaveBusy) {
+            autoSaveNote.value = `${pend.length} 项待保存：`
+              + pend.slice(0, 4).map(cfgLabel).join(' / ')
+              + (pend.length > 4 ? ' 等' : '');
+          }
+          scheduleAutoSave();
+        }, { deep: true });
+
+        /* 视频编码：探测读数走后端 /api/video/encoders，本机起不来的显卡编码器界面上直接说清原因。
+           降级链是后端按「已保存的设置」算的，所以 saveSettings 里会再拉一次。 */
+        const encoders = ref({ items: [], chain: [] });
+        const encProbeBusy = ref(false);
+        const encProbeText = ref('还没探测');
+        async function loadEncoders(refresh) {
+          encProbeBusy.value = true;
+          encProbeText.value = refresh ? '正在逐个起一次 FFmpeg 试…' : encProbeText.value;
+          try {
+            const r = await api('/api/video/encoders' + (refresh ? '?refresh=1' : ''), { noLog: true });
+            encoders.value = r || { items: [], chain: [] };
+            if (!r || r.ok === false) {
+              encProbeText.value = (r && r.message) || '读不到编码器状态';
+              return;
+            }
+            const ok = (r.items || []).filter(i => i.available).map(i => i.label);
+            encProbeText.value = '可用 ' + (ok.join(' / ') || '没有')
+              + (r.probed_at ? '（' + new Date(r.probed_at * 1000).toLocaleTimeString() + ' 探测）' : '');
+          } catch (e) {
+            encoders.value = { items: [], chain: [] };
+            encProbeText.value = '探测失败：' + (e && e.message ? e.message : e);
+          } finally {
+            encProbeBusy.value = false;
+          }
+        }
+        watch(page, p => { if (p === 'settings' && !(encoders.value.items || []).length) loadEncoders(); });
+
+        /* 通知补发队列：后端先把通知写进 notify_outbox.json，再由后台线程按递增间隔重试，
+           所以这里读的是「哪些还欠着、下次什么时候再试」，而不是「刚才发成功了没」。 */
+        const outbox = ref({ records: [], counts: { pending: 0, sent: 0, dropped: 0 }, retry_delays: [] });
+        const outboxBusy = ref(false);
+        const outboxText = ref('');
+        function applyOutbox(r, note) {
+          outbox.value = {
+            records: r.records || [],
+            counts: r.counts || { pending: 0, sent: 0, dropped: 0 },
+            retry_delays: r.retry_delays || [],
+          };
+          outboxText.value = note || '';
+        }
+        async function loadOutbox() {
+          outboxBusy.value = true;
+          try {
+            const r = await api('/api/notify/outbox', { noLog: true });
+            if (r && r.ok !== false) applyOutbox(r);
+            else outboxText.value = (r && r.message) || '读不到补发队列';
+          } catch (e) {
+            outboxText.value = '读不到补发队列：' + (e && e.message ? e.message : e);
+          } finally {
+            outboxBusy.value = false;
+          }
+        }
+        // 后端只把待发的推到「现在就试」并踢醒后台线程，发送本身不在这个请求里等
+        async function retryOutbox() {
+          outboxBusy.value = true;
+          try {
+            const r = await api('/api/notify/outbox/retry', { method: 'POST', noLog: true });
+            if (r && r.ok !== false) applyOutbox(r, '已把 ' + (r.queued || 0) + ' 条排到最前，稍等一下再刷新看结果');
+            else outboxText.value = (r && r.message) || '排不进队';
+          } catch (e) {
+            ElementPlus.ElMessage.error(e.message || e);
+          } finally {
+            outboxBusy.value = false;
+          }
+        }
+        function clearOutbox() {
+          ElementPlus.ElMessageBox.confirm('清空后待补发的通知不会再重试，已送出的记录也会一并抹掉。', '清空通知队列',
+            { type: 'warning', confirmButtonText: '清空', cancelButtonText: '先不清' })
+            .then(() => api('/api/notify/outbox/clear', { method: 'POST', noLog: true }))
+            .then(() => { loadOutbox(); ElementPlus.ElMessage.success('已清空'); })
+            .catch(e => { if (e && e.message) ElementPlus.ElMessage.error(e.message); });
+        }
+        function fmtWait(sec) {
+          const s = Math.max(0, Number(sec) || 0);
+          if (s < 60) return s + ' 秒';
+          if (s < 3600) return Math.round(s / 60) + ' 分钟';
+          return (s / 3600).toFixed(1) + ' 小时';
+        }
+        watch(page, p => { if (p === 'settings' && !(outbox.value.records || []).length) loadOutbox(); });
+        watch(page, p => { if (p === 'settings') loadAuthStatus(true); });
 
         const mirrorOpts = ref({ github: [], pypi: [] });
         const mirrorProbing = ref('');
@@ -11260,7 +13040,7 @@
         }
 
         watch(page, (p) => {
-          logAction('切换到「' + (pageTitle.value || p) + '」');
+          // 翻页面不写日志：一页一行会把真正的写操作与失败记录冲掉（17 页点一圈就是 17 行）
           const c = document.querySelector('.content');
           if (c) {
             c.classList.remove('is-enter');
@@ -11277,7 +13057,7 @@
           if (p === 'sniff') loadCatcatch();
           if (p === 'favs') loadFavTab();
           if (p === 'music') loadMusicFavs();
-          if (p === 'settings') { loadPlatformCookies(); loadMusicCookies(); loadRiskPresets(); loadComponents(); loadNetInfo(); }
+          if (p === 'settings') { loadPlatformCookies(); loadCookieCloud(); loadMusicCookies(); loadRiskPresets(); loadComponents(); loadNetInfo(); loadCleanup(); loadConfigDefaults(); }
           if (p === 'tg') loadTgMtStatus(false);
         });
 
@@ -11299,7 +13079,12 @@
 
           loadLibrary(false);
           loadTranscodePresets();
+          // 顶栏「订阅新增」与侧栏角标在别的页面上也要有数：不预取一次的话，重启后没点进
+          // 订阅页就一直是空的（计数本来就持久化在 subscriptions.json，只是没人去读）
+          loadSubs();
 
+          await loadAuthStatus(true);   // 先问「这台设备要不要登录」，被挡住就直接弹登录窗
+          await loadAuthStatus(true);   // 先问一次门的状态：非本机又没登录时直接弹登录窗，别让后面一路 401
           await loadConfig();
           await loadStatus();
           ensureMusicStatus().catch(() => {});   // 一进页面就知道 musicdl 是否内置，决定「安装」按钮显不显示
@@ -11322,8 +13107,11 @@
             }
             if (page.value === 'live') loadLiveMonitors();
           }, 1500);
+          // 剪贴板监听：服务那边一直在看，页面开着才把「发现了一条」问出来（关着页面也不影响捕获）
+          pollClipboard();
+          clipTimer = setInterval(pollClipboard, 2000);
         });
-        onUnmounted(() => { if (pollTimer) clearInterval(pollTimer); if (pipelineTimer) clearInterval(pipelineTimer); if (burnTimer) clearInterval(burnTimer); if (musicBatchTimer) clearInterval(musicBatchTimer); window.removeEventListener('keydown', onSpaceKey); stopSSE(); });
+        onUnmounted(() => { if (pollTimer) clearInterval(pollTimer); if (clipTimer) clearInterval(clipTimer); if (pipelineTimer) clearInterval(pipelineTimer); if (burnTimer) clearInterval(burnTimer); if (musicBatchTimer) clearInterval(musicBatchTimer); window.removeEventListener('keydown', onSpaceKey); stopSSE(); });
 
         /* ---- 这三张 el-table 原先用 Element 内部排序：一旦分页就只能排当前页，改成全量排序 ---- */
         const FAV_DIR = { title: 'asc', uploader: 'asc', platform: 'asc' };
@@ -11389,7 +13177,7 @@
         });
 
         return {
-          page, navs, navGroups, CREDITS, appVersion, queueStat, subNewTotal, navBadge, navDot, pageTitle, urlText, urlPasteStat, extractUrls, friendlyError, glossaryStat, checkGlossary, speedWinStat, checkSpeedWindows, exportBilingual, exportBilingualSelected, pipelineRow, pipelineView, showPipeline, closePipeline, refreshPipeline, rerunStage, pipeStatusLabel, pipeStatusType, opts, videoQualities, audioQualities, formats, codecOptions,
+          page, navs, navGroups, CREDITS, appVersion, queueStat, subNewTotal, navBadge, navDot, pageTitle, urlText, urlPasteStat, extractUrls, friendlyError, glossaryStat, checkGlossary, speedWinStat, checkSpeedWindows, queueWindow, windowHeld, queueRows, runWinStat, checkRunWindows, exportBilingual, exportBilingualSelected, pipelineRow, pipelineView, showPipeline, closePipeline, refreshPipeline, rerunStage, pipeStatusLabel, pipeStatusType, opts, videoQualities, audioQualities, formats, codecOptions,
           pagers, favSort, onFavSortChange, musicSort, onMusicSortChange, tgSort, onTgSortChange,
           subLangOptions, subLangList, selectAllSubLangs, clearSubLangs, toggleSubLang,
           selectedIds, selectAll, queuePaused, taskSort, sseOn, toggleSelect, toggleSelectAll,
@@ -11398,10 +13186,10 @@
           history, histStats, histSearch, logs, logLevel, logSearch,
           settings, browserOptions, submitting, updatingYtdlp, updatingFfmpeg, updatingNm3u8, updatingWhisper, updateNm3u8, updateWhisper, downloadExtension,
           applyPreset,
-          pasteUrl, startDownload, stopAll, retryFailed, retrySelected, editTaskHeaders, reloadPlugins, pluginsInfo, cleanupParts, clearFinished,
+          pasteUrl, onPaste, cleanPasted, clipPending, clipOn, clipNote, clipAdd, clipIgnore, pollClipboard, startDownload, stopAll, retryFailed, retrySelected, editTaskHeaders, reloadPlugins, pluginsInfo, cleanupParts, clearFinished,
           downloadSpecificFormat, openHistoryFile,
           subs, subUrl, subMode, subIsTg, subAdding, subScanning, subBusy, subKindInfo, subKindMeta, subStatus, setSubAuto, subFirst, subAddCount, subAutoAdd, backfillSub, backfillRange, backfilling, openSubBackfill, closeSubBackfill, runSubBackfill, subPlanSub, subPlan, subPlanLoading, subPlanArch, openSubPlan, closeSubPlan, loadSubPlan, runSubPlanNow, clearSubArchive, ruleSub, ruleSaving, ruleForm, ruleSubIsTg, ruleSubIsMusic, subRuleQualities, subRuleFormats, openSubRules, closeSubRules, saveSubRules,
-          liveUrl, liveTasks, liveTasksActive, liveMonitorUrl, liveMonitors, tgTesting,
+          liveUrl, liveTasks, liveTasksActive, liveDefaultMinutesText, liveAutoSaveText, liveMonitorUrl, liveMonitors, tgTesting,
           isLiveRunning, fileBasename, openLiveFile, clearFinishedLiveTasks,
           sniffUrl, sniffLoading, sniffItems, sniffSelected, sniffDone, sniffDisplayItems, sniffMergeLoading, canSniffMerge, runSniff, sniffSelectAll, sniffSelectNone, sniffDownloadSelected, sniffDownloadOne, sniffDownloadMerge, copyText, browserSniff, browserSniffPort, browserSniffLoading, startBrowserSniff, stopBrowserSniff, clearBrowserSniff, pollBrowserSniff,
           catcatch, catcatchFileInput, loadCatcatch, triggerCatcatchImport, onCatcatchConfig, toggleCatcatchRule, deleteCatcatchRule, clearCatcatchRules,
@@ -11419,10 +13207,10 @@
           loadMusicCookies, saveMusicCookie, clearMusicCookie, startNeteaseQr, pollNeteaseQr,
           mediaEl, transcriptBox, transcript, mediaCueIdx, onMediaTimeUpdate, seekToCue, fmtClock, speakerTagType,
           srtEdit, openSrtEditor, srtCloseEdit, srtDiscard, srtShiftSel, srtMerge, srtDrop, srtSave,
-          srtEditBox, srtQc, runSrtQc, runSrtRewrap, qcJumpTo,
+          srtEditBox, srtQc, runSrtQc, runSrtRewrap, qcJumpTo, qcDropNoise,
           searchQuery, searchPlatform, searchContentType, searchSort, setSearchSort,
           searchTotal, searchTruncated, searchNotes, SEARCH_PLAT_NAMES, searchResults, searching, platformCookies, cookieIssueCount, syncFileInput,
-          musicKeyword, musicResults, musicSearching, musicSourceErrors, musicNeedsMatch, musicdlVersion, musicdlReady, musicPreset, musicStrategy, saveMusicStrategy, musicSearchType, musicIncludeLocal, musicFilenameTemplate, musicEmbedMeta, musicSkipExisting, musicHideUnavailable, musicBlockReupload, musicIncludeReference, musicQualitySpec, musicQualityOptions, musicQualitySummary, refHint, openRefLink, player, playerEl, playerPlaying, playerTime, playerDur, playerVol, playerMuted, playerSeeking, playerSeekVal, playerStep, playerToggle, playerClose, playerSeek, onPlayerTick, onPlayerMeta, onPlayerEnded, musicLrcLines, musicLrcActive, previewMusicRow, probeMusicRow, switchMusicSource, musicSwitching, scanLocalMusic, musicSources, musicSourceOptions, musicMatchSourceOptions, musicPresetOptions, musicSourceOrdered, musicPlaylistUrl, musicPlaylistMode, saveMusicPlaylistMode, musicCookies, musicSelected, aiPipeline, analyzeAudioFile, aiDemucs, aiTts, installVoicePkgs, loadVoiceStatus, toggleRealtime, installingVoice, voiceStatusText, rtRecording, rtTranslate, rtTargetLang, rtLog, searchMusic, batchSearchDownload, applyMusicPreset, parseMusicPlaylist, onMusicSelection, downloadMusicSelected, downloadMusicRow, showAlreadyHave, musicFavItems, musicFavMissing, musicFavSelected, musicFavReadySel, musicFavSwitching, musicFavDownloading, onMusicFavSelection, addMusicFav, removeMusicFav, clearMusicFav, previewMusicFav, switchMusicFav, downloadMusicFav, loadMusicFavs, installMusicdl,
+          musicKeyword, musicResults, musicSearching, musicSourceErrors, musicNeedsMatch, musicScoreLine, musicHasScore, musicdlVersion, musicdlReady, musicPreset, musicStrategy, saveMusicStrategy, musicSearchType, musicIncludeLocal, musicFilenameTemplate, musicEmbedMeta, musicSkipExisting, musicHideUnavailable, musicBlockReupload, musicIncludeReference, musicQualitySpec, musicQualityOptions, musicQualitySummary, refHint, matchHint, openRefLink, player, playerEl, playerPlaying, playerTime, playerDur, playerVol, playerMuted, playerSeeking, playerSeekVal, playerStep, playerToggle, playerClose, playerSeek, onPlayerTick, onPlayerMeta, onPlayerEnded, musicLrcLines, musicLrcActive, previewMusicRow, probeMusicRow, switchMusicSource, musicSwitching, scanLocalMusic, musicSources, musicSourceOptions, musicMatchSourceOptions, musicPresetOptions, musicSourceOrdered, musicPlaylistUrl, musicPlaylistMode, saveMusicPlaylistMode, musicCookies, musicSelected, aiPipeline, analyzeAudioFile, aiDemucs, aiTts, installVoicePkgs, loadVoiceStatus, toggleRealtime, installingVoice, voiceStatusText, rtRecording, rtTranslate, rtTargetLang, rtLog, searchMusic, batchSearchDownload, applyMusicPreset, parseMusicPlaylist, onMusicSelection, downloadMusicSelected, downloadMusicRow, showAlreadyHave, musicFavItems, musicFavMissing, musicFavSelected, musicFavReadySel, musicFavSwitching, musicFavDownloading, onMusicFavSelection, addMusicFav, removeMusicFav, clearMusicFav, previewMusicFav, switchMusicFav, downloadMusicFav, loadMusicFavs, installMusicdl,
           loadSubs, addSub, removeSub, toggleSub, scanOneSub, scanAllSubs, startLiveRecord, pauseLiveTask, resumeLiveTask, endLiveTask, endAllLive, cancelLiveTask, addLiveMonitor, removeLiveMonitor, pauseLiveMonitor, resumeLiveMonitor, scanLiveMonitors, loadLiveMonitors, liveRoomCfg, liveRoomFmts, liveRoomQualities, openLiveMonitorCfg, saveLiveMonitorCfg, liveMonitorCfgText, testTelegram,
           testWecom, applyRiskPreset, loadRiskPresets, loadFavTab, loadFavFolderItems, loadYtPlaylist, onFavSelChange,
           downloadFavSelected, downloadFavOne, subscribeFavSelected, subscribeFavOne, startBiliQr, pollBiliQr,
@@ -11430,11 +13218,14 @@
           burnDlg, burnJob, burnStarting, burnSubChoices, burnOutName, burnRunning, burnPercent, burnStatusText, openBurn, closeBurn, startBurn, stopBurn,
           batchMode, batchScope, batchRunning, selectedFiles, syncOffsetSec, syncScale, syncInplace, playFile, zipPath, zipCurrentFolder,
           doSearch, downloadSearchItem, analyzeSearchItem, subscribeSearchItem, normalizeSearchUrl, loadPlatformCookies, savePlatformCookie, savePlatformCookieText, clearCookieFlag, browsePlatformCookie, exportSync, triggerImportSync, onImportSync,
+          cc, ccBusy, ccMsg, loadCookieCloud, saveCookieCloud, clearCookieCloudKey, testCookieCloud, pullCookieCloud, pushCookieCloud,
+          cl, clPlan, clPlanStale, clTrash, clBusy, clMsg, loadCleanup, saveCleanup, previewCleanup,
+          runCleanup, runOneGroup, loadCleanupTrash, restoreTrash, restoreAllTrash,
           importUrlFile, onUrlFile, urlFileInput, exportHistory,
           torrentFileInput, torrentUploading, pickTorrentFile, onTorrentFile,
           btText, btStarting, btLinkCount, btIgnoredCount, pasteBt, startBtDownload,
           btTasks, queueTasks,
-          aria2Checking, aria2Info, checkAria2,
+          aria2Checking, aria2Installing, aria2Info, checkAria2, installAria2,
           seedingRows, seedingNote, loadSeeding, stopSeed, stopAllSeeding, seedTotals, seedReadout,
           btRuleTestName, btRuleTesting, btRuleTested, addBtRule, delBtRule, moveBtRule, testBtRule,
           btFilesTask, btFileRows, btSelecting, btSourceLabel, btPicked, btPickAll,
@@ -11443,15 +13234,21 @@
           loadBtTrackers, refreshBtTrackers,
           btLimitTask, btLimitDl, btLimitUl, btLimitApplying, btLimitResult, toggleBtLimit, applyBtLimit,
           analyzing, analyzeUrl, analyze, analyzeFromInfoPage, pasteAnalyzeUrl,
-          downloadFromInfo, downloadEntry, downloadQualityPreset, downloadAllEntries, entryTableRef, entrySel, entryRange, onEntrySelection, entryAt, selectEntryRange, clearEntrySel, downloadSelectedEntries, selectedQuality, copyText, copyFormats,
+          downloadFromInfo, downloadEntry, downloadQualityPreset, downloadAllEntries, entryTableRef, entrySel, entryRange, onEntrySelection, entryAt, selectEntryRange, clearEntrySel, downloadSelectedEntries, selectedQuality, infoCodec, infoCodecOptions, shownQualityPresets, infoAudioTop, copyText, copyFormats,
           loadFiles, onFileRowClick, openFile, goParentDir, deleteFile, clearArchive, formatSize, taskSize, taskSpec, taskSpecTitle, tierSizeText, thumbBroken, flashTaskId, formatCount, formatDuration,
           fileSearch, fileSort, filteredFiles, runFileAction, openDownloadFolder, testCookie, redownload, toggleDark,
           UI_THEMES, setTheme,
           loadStatus, checkEnv, updateYtdlp, updateFfmpeg,
-          components, compInfo, updatingComp, latestBusy, verCmp, loadComponents, updateComponent, pathBusy, setEnvPath,
+          components, compInfo, compDetail, compUpdatable, foldRare, updatingComp, latestBusy, verCmp, loadComponents, updateComponent, pathBusy, setEnvPath,
           compAll, compAllBusy, compTargets, compAllSummary, updateAllComponents,
           compUpdates, compCheckBusy, compCheckText, startCompCheck,
+          encoders, encProbeBusy, encProbeText, loadEncoders,
+          outbox, outboxBusy, outboxText, loadOutbox, retryOutbox, clearOutbox, fmtWait,
+          auth, authGate, authForm, authBusy, authTokenShown,
+          loadAuthStatus, doLogin, saveAuthKnobs, applyAuthPassword,
+          copyMachineToken, rotateMachineToken, unlockIp, unlockAll,
           loadHistory, loadLogs, clearHistory, clearLogs, openLogDir, exportDiagnostics, logLoc, saveSettings, saveAcoustid,
+          autoSaveNote, cfgDefs, defRows, defBrief, defBusy, cfgLabel, loadConfigDefaults, resetKeys, resetAllDefaults,
           mirrorOpts, mirrorProbing, mirrorLabel, mirrorHint, probeMirrors,
           netInfo, netBusy, loadNetInfo, netVerdictText, netOverrideValue, setProxyOverride,
           useSystemProxy, resetNetwork,

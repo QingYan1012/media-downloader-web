@@ -3,6 +3,7 @@
 /*
 
 !/.gitignore
+!/.dockerignore
 !/LICENSE
 !/README.md
 !/README.en.md
