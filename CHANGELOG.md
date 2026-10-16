@@ -884,14 +884,15 @@ issue #206 那张清单的 ④。**这一项的风险不在下载，在「程序
 
 ### 发布物
 
-- **已发包**：`dist/MediaDownloader-1.4.0-portable.zip`（**219.0 MB**，目录展开 564.7 MB：runtime 322.4 MB + tools 234.5 MB + chromaprint 4.0 MB + docs 1.2 MB + static 770.6 KB + extension 28.7 KB + plugins 2.3 KB），sha256 `474b7add011a9adf257017701ea1b1d90835dbb3e5f14213fefe9d18cb7f8ce8`，记在同名 `.zip.sha256` 里（`sha256sum -c` 或 `Get-FileHash` 都能核）。`appVersion` 升到 `v1.4.0 · Element Plus`（版本真源只有 `static/index.html` 那一处），两份 README 的徽章与包名、两份详细文档里那两处文件名同处改口。
+- **已发包**：`dist/MediaDownloader-1.4.0-portable.zip`（**219.0 MB**，目录展开 564.7 MB：runtime 322.4 MB + tools 234.5 MB + chromaprint 4.0 MB + docs 1.2 MB + static 770.6 KB + extension 28.7 KB + plugins 2.3 KB），`appVersion` 升到 `v1.4.0 · Element Plus`（版本真源只有 `static/index.html` 那一处），两份 README 的徽章与包名、两份详细文档里那两处文件名同处改口。
+- **这一节不写自己的校验值**：本文件是打进包里的，一个包不可能把自己的 sha256 装进自己肚子里 —— 数值只记在同名 `.zip.sha256` 里（`sha256sum -c` 或 `Get-FileHash` 都能核，那份 sidecar 不在包内，所以写得下）。当时那一版的 hex 是 `474b7add…8ce8`，**它已经作废**：同一个 `v1.4.0` 号下面后来又重打过，眼下 `dist/` 里这只包的字节以它自己的 sidecar 为准，最后一轮的读数记在本批末尾「发布之后这一轮」的「发布物」小节。
 - **runtime 是复用的**：`--skip-runtime`，把 1.3.2 那一份用硬链接铺到新目录（`cp -al`，16.9 秒、不占第二份空间），包内 `pip 26.2.1` 与 18 个依赖、3 个工具版本原样带走；`components_bundled.json` 里 `app` 写的是 1.4.0。
 - **包内自检四道全过**：`check_present`（必进包文件与目录在场，static 里 5 项）、`check_module_imports`（14 个顶层模块）、`selfupdate_probe`（包内 pip 装-导一轮）、`smoke_test`（真起服务打 `/api/music/status` 与 `/api/components`，随包清单命中 12 项）。私密扫描 `leaks=[]`，`cookies/` 里只有那句「放 cookies.txt 在这里.txt」占位，`Downloads/` 空。
 - **出包后逐字节核过**：45 个应用文件（`APP_PY` + `APP_FILES` + `static` / `plugins` / `extension` / `docs/screenshots` 里没被排除的每一份）与工作区 `sha256` 全同，zip 内 10899 个文件条目与包内目录一一对齐，包内 `static/index.html` 读的到的版本行是 `appVersion = 'v1.4.0 · Element Plus'`。
-- **压完之后又动过的三份（写清楚，别让「包与工作区一致」这句话说过头）**：拿工作区整棵树与包内再比一遍（两边都有的文件才计入），得数是 **42 份逐字节一致、3 份不一致**，差的正是 `CHANGELOG.md` 与 `docs/详细功能介绍.md`、`docs/detailed-features.en.md` 三份。原因是同一件：这几份记的是「这一轮做完之后才量到的东西」——本文件里那节「发布物」要写这个包自己的 sha256（一个包不可能把自己的校验值装进自己肚子里），两份详细文档里那处是 `cleanup_test.py` 的条数 156 → **159** 与「A 段末尾三条测的是打包」那句说明。**包内那两份文档因此还写着 156 条**；按这次「重新打包一次安装包」的口径没有为几行文档再压第二遍。要包内文档也同步，说一声就重打一次（`--skip-runtime` 那一趟实测 17 秒，runtime 是硬链接复用、不占第二份空间）。
+- **压完之后又动过的三份（当时确实不一致，下面那一轮已经关掉这件事）**：拿工作区整棵树与包内再比一遍（两边都有的文件才计入），得数是 **42 份逐字节一致、3 份不一致**，差的正是 `CHANGELOG.md` 与 `docs/详细功能介绍.md`、`docs/detailed-features.en.md` 三份。原因是同一件：这几份记的是「这一轮做完之后才量到的东西」——两份详细文档里那处是 `cleanup_test.py` 的条数 156 → **159** 与「A 段末尾三条测的是打包」那句说明，本文件里那处是这一节当时想写的包体校验值（见上一条，那条口径本身已经改成不写字面 hex）。**包内那两份文档当时因此还写着 156 条**；按那次「重新打包一次安装包」的口径没有为几行文档再压第二遍。这处差异在「发布之后这一轮」那次重打里补齐了，验证方式写在最后那一节的「发布物」里（读的是 zip 里条目的哈希，不是 `dist/…-portable/` 那棵目录树）。
 - **第一次打的那个包是空壳**（`static/` 是空目录，界面整个没进包），根因与修法写在上面「出包这一轮抓到的一处打包脚本 bug」那一节；那个 zip 与它的 `.sha256` 已被重打覆盖，现在 `dist/` 里这个 1.4.0 包是唯一一份。
 - 上一包 `dist/MediaDownloader-1.3.2-portable.zip`（218.8 MB，sha256 `91763532…71348d`）**不含这一批的任何改动**，留在 `dist/` 只做回退用。
-- **GitHub Release 没有新条目**：`web_app/` 这个 git 仓库（远端 `github.com/QingYan1012/media-downloader-web`，分支 `main`）这一批改动一个字没提交、更没推 —— 提交与推包是要人点头的那一步，没有点头就停在本机 `dist/`。
+- **GitHub Release 已经发出去了（2026-10-16 点头之后）**：这一批 squash 成一条提交 `7ac0ff6` 推到 `origin/main`，打**轻量**标签 `v1.4.0`（与仓库既有的那几个同款），Release 条目挂着上面那只 zip 与同名 `.zip.sha256`。这台机器上没有 `gh`，`api.github.com` 也直连不通（直接打过去是超时），走的是 git 自己那条 `http.proxy`；令牌用 `git credential fill` 现取现用，不落文件、不打印。发完把资产回下过一次，哈希与 `474b7add…8ce8` 对得上。（**这只资产后来被同号的重打换掉过**，最后一次换的读数与本批末尾那一节一起记。）
 
 ## 复跑全批抓到的一处假红：站点代理判定吃的是这台机器的代理地址
 
@@ -905,6 +906,53 @@ issue #206 那张清单的 ④。**这一项的风险不在下载，在「程序
 - **仓库里不再留这台机器的代理地址**（点头之后做的）：上面那 8 处逐字地址统一写作 `<本机代理地址>` —— 真值只在盘上的 `config.json` 和昨天的日志里，发布文档不需要它。`tests/` 里 8 套共 24 处夹具原本直接抄这台机器真配的那个地址，现在换成假端口 `http://127.0.0.1:9999`：这些断言从来不连那个地址，只是把值喂进去再比回来，换号不影响判据。**改的是自检与文档，随包代码一行没动**（`tests/` 不进包），那 8 套重跑一遍 —— siteproxy 82、cookiecloud 153、flacref 28、musicfavorites 83、subrss 57、subtg 62、telegram_channel 43、telegram_mt 52，合计 **560 条断言、exit code 全 0、判红 none**。还剩两处面向用户的示例（界面报错文案与一处文档串，用的是这类客户端的常见默认端口，不是本机配置记录）和 `music_search.py` 里一句「本机实测」注释没动 —— 这三份都在 1.4.0 那个包里，按「不重压、保持这一份包」的口径不为注释去动随包文件，下一轮出包顺手改掉。
 - **复跑读数**：**59 套、3656 行 `^PASS`、判红一项都没有**（`RED: none`，`BAD text lines: none`；siteproxy 那 12+1 条从 69 回到 82）。这一趟是压包之后跑的，只动了 `tests/siteproxy_test.py` 一处和文档，随包的 `server.py` / `static/index.html` 没有再变，因此没有为它重压包。
 
+
+## 发布之后这一轮：截图换成 v1.4.0 的界面、音乐结果表把富余摊开、重出包换掉 Release 资产
+
+v1.4.0 发出去之后接着三句要求：「跑一下音乐结果表确认排版」、「选 a，并把 github 页面截图也更新下」、「重出一版并替换 Release，把艺人/专辑也改成 min-width 让富余摊开」。**版本号不动，仍是 `v1.4.0`** —— 这一轮不升号，是把同一个号的发布物换掉。
+
+### 先记一条我自己的误判（「排版不好看」得有个能核对的对象）
+
+上一轮我报「结果表右边空一大条、标题列写死 160」，**两句都不成立**。固定视口量下来：1680 时卡片 1420、表 1378、八列之和 1378 —— 表本来就是满的；`标题` 那一列早就是 `min-width="160"` 而不是 `width`，富余全被它一家吃掉（1680 下 468 px）。真正难看的是这件事的反面：**标题 468 px 装两三个字的歌名，而 艺人 120 / 专辑 110 是硬宽度，稍长就变省略号**。写这一段是为了以后翻记录时能分清哪句是量出来的、哪句是看出来的。
+
+### 音乐结果表：富余摊到三列
+
+- 两张表一起改：搜索结果那张（`static/index.html:3141`、`3142`）与「自建收藏清单」那张（`3218`、`3219`），`艺人` / `专辑` 由 `width` 换成 `min-width`，下限数值不变（120 / 110；收藏表那列原本写死 100，一并提到 110 与搜索表同口径）。
+- 分配规则是 Element Plus 的：写死 `width` 的列不参与，剩下的空间按各 `min-width` 的比例分给弹性列。所以改完是 标题 : 艺人 : 专辑 = 160 : 120 : 110 在摊，不再一家独吞。
+- 读数（headless Chrome 固定 1920 视口、一次真实五源搜索 74 条）：表宽 1618 = 42+386+288+264+190+70+118+260，其中 **标题 386 / 艺人 288 / 专辑 264**。专辑那一列现在「Songs From a Secret Garden」「周杰伦地表最强世界巡回演唱会」这种长度整条放得下。
+- 固定宽那四列（来源 190 / 时长 70 / 品质 118 / 操作 260）没动：它们装的是标记与按钮，摊宽只会让按钮行右边留白。
+
+### 截图这件事有个前提：不能在天天在用的那个实例上拍
+
+六张 `docs/screenshots/*.png` 是 v1.2.8 时期拍的（侧栏还没有「磁力 / 种子」，音乐页是空结果）。直接拿 8765 拍会把这台机器的订阅、下载目录、已登录站点一起发到公网，所以走一次性干净实例：
+
+- `MEDIADOWNLOADER_STATE_DIR` 指到临时目录 + `MEDIADOWNLOADER_PORT=8799` 另起一份。这个环境变量搬得走 config / history / subscriptions / cookies / Downloads / app.log（server.py:55 起那一片），**搬不走** `tg_session/`、`browser_sniff_profile/`、`catcatch_rules.json`（这三个钉在 `APP_DIR` 上），所以那份克隆实例只要不碰 Telegram 与浏览器嗅探，就与本机数据无关。新目录里 `web_auth_enabled` 默认 `False`，不用登录。
+- **拍之前先把「保存目录」改成中性值**（整包 POST 一份 `download_dir = C:\MediaDownloader\Downloads`）。不改这一处，首页那张图正中间就把本机用户名发出去了 —— 与前面「仓库里不再留这台机器的代理地址」是同一条规矩，只是这次的泄露面在像素里而不在文本里。
+- 六张的取景与尺寸：home 明 / 暗 1920×1080、聚合搜索 1920×560、音乐 1920×1026、订阅 1920×860、TG 频道 1920×560。订阅那张从 568 加高到 860 是为了让高亮中的「订阅」整条进画面（新版侧栏多一项，568 下它掉在折线以下，图里看不出这是哪一页）；音乐那张 1026 是裁到最后一整行结束，不把行切成两半。
+- 音乐那张**跑了一次真搜索**（关键词「夜曲」，五源，74 条）。图里那句「Spotify —— 180s 内没跑完，本次已放弃等待」没修掉：那是这台机器当时的实话，不是摆拍出来的漂亮图。
+- 拍完关掉克隆实例、删掉那份临时状态目录与 `C:\MediaDownloader`，8765 那个自始至终没重启过（截界面这件事只读不写，但**它读的是那份临时实例**，不是用户的）。
+
+### headless Chrome 的三个坑（都实际踩过一遍）
+
+- `page.goto(..., wait_until="networkidle")` 在这份界面上**永远超时** —— 进度流是一条挂着的 SSE。换 `domcontentloaded` + 等 `.nav-item` 出现。
+- 点侧栏会把侧栏自己滚走，主区也会滚。截图前要把所有 `scrollTop` 归零、鼠标挪回 (0, 0)，否则「订阅」那张里高亮项掉出画面，还留一圈 hover 底色。
+- 想「裁到整行结束」不能靠改视口高度去凑：改高度会让表格重排、行边界跟着动，凑完照样切一行。改成按 `getBoundingClientRect().bottom` 量出边界、截图之后用 PIL 裁那一段。
+
+### 自检
+
+- **`matchgate_test.py` 的 G9 是红的，而且红在这次发布之前就已经红了**：断言要的是 `"> 不像</span>"`（「不像」前面多一个空格），界面上真实的那一行是 `<span v-if="row.score_reject" class="msrc-flag msrc-flag--bad" :title="row.score_reject">不像</span>`。`git show HEAD:…` 两份都还是这个对不上的样子 —— 也就是说上面「复跑全批：59 套 / 3656 项 / `RED: none`」那句读数里，**这一套是被漏判的**（3656 这个条数本身没错，红的那条不打印 `PASS`，所以条数看不出来；判红要看每套的退出码）。改的是断言不是产品：换成 `:title="row.score_reject">不像</span>`，比原句更严，同时钉住「悬浮里就是整句拒因」。
+- 复跑全批还纠出**跑法本身**的一处错：cwd 必须是 `web_app` 根。`potdaemon_test.py` / `potcomponent_test.py` / `matchgate_test.py` 三套会按相对路径去读 `pack_release.py` 与 `static/index.html`，在 `tests/` 下起就 `FileNotFoundError` —— 第一遍就是这么误红三套的，不是产品问题。
+- 修完复跑：**59 套、3796 项（其中 4 套打印 `OK` 而非 `PASS`，共 140 项，`^PASS` 口径仍是 3656）、判红一项都没有**；`python -m py_compile server.py pack_release.py` 通过。
+
+### 发布物（这一轮重打的这一版）
+
+- **随包变的是两份东西**：`static/index.html`（两张表的 `艺人` / `专辑` 由 `width` 换成 `min-width`）与 `docs/screenshots/` 那六张（音乐那张按改完的排名重拍过）。`server.py` 与 `pack_release.py` 一个字没动；`tests/matchgate_test.py` 那条 G9 改的是自检，而 `tests/` 不进包。
+- **产物**：`dist/MediaDownloader-1.4.0-portable.zip` **219.2 MB**，目录展开 **564.9 MB**（`runtime` 322.4 MB + `tools` 234.5 MB + `chromaprint` 4.0 MB + `docs` 1.3 MB + `static` 771.8 KB + `extension` 28.7 KB + `plugins` 2.3 KB），zip **10899** 个条目。`appVersion` 仍是 `v1.4.0 · Element Plus`，**这一轮不升号，是把同一个号的发布物换掉**。校验值照本批上面那一条口径，不写死在这份随包文件里（一个包装不下自己的校验值），精确字节与 hex 都在同名 `.zip.sha256`，在 `dist/` 目录里 `sha256sum -c` 直接核。
+- **`--skip-runtime` 那一趟**：runtime 用硬链接复用上一版的 `runtime/`，不占第二份空间，整趟十几秒。
+- **包内自检四道全过**：`check_present`（必进包文件与目录在场）、`check_module_imports`（14 个顶层模块）、`selfupdate_probe`（包内 pip 装-导一轮）、`smoke_test`（真起服务打 `/api/music/status` 与 `/api/components`，随包组件清单命中 12 项）；私密扫描 `leaks=[]`，`cookies/` 里只有那句占位、`Downloads/` 空。
+- **核的是 zip 里的条目，不是 `dist/…-portable/` 那棵树**：45 份应用文件与工作区 `sha256` 逐字节全同（这一轮新换的那九份 —— 本文件、两份详细文档、`static/index.html`、六张截图 —— 也在其中）。上面「压完之后又动过的三份」那处差异到这一版关闭：两份详细文档里 `cleanup_test.py` 写的是 **159 项**，包内外一致。
+- **与 GitHub Release 的关系**：这一刻挂在 `v1.4.0` 那条 Release 上的资产是本小节的**上一版**（229,822,034 B，读数从 API 的 `digest` 字段读回、上传时间 `2026-10-16T03:56:11Z`，与当时本地那只字节相同）。这一版压完之后要不要再把资产换掉，是要人点头的那一步；换了之后请以 GitHub 的 `digest` 字段为准，本文件不追记字面 hex —— 否则每补一次数字就要多压一包。
+- **git**：这一轮的随包改动（`static/index.html`、`docs/screenshots/music-search.png`）、`tests/matchgate_test.py` 与本文件在压包之后一起提交、推 `origin/main`（人已点头），所以提交树与包内字节一致，Release 上那份下载能从仓库复现。
 
 ---
 

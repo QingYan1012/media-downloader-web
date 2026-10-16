@@ -3138,8 +3138,8 @@
                     <span v-if="row.dup_count > 1" class="hint" :title="`歌单里这首歌排了 ${row.dup_count} 遍，已合并成一行，下载只下一遍`"> ×{{ row.dup_count }}</span>
                   </template>
                 </el-table-column>
-                <el-table-column prop="artists" label="艺人" width="120" sortable="custom" :sort-orders="['ascending', 'descending']" show-overflow-tooltip></el-table-column>
-                <el-table-column prop="album" label="专辑" width="110" sortable="custom" :sort-orders="['ascending', 'descending']" show-overflow-tooltip></el-table-column>
+                <el-table-column prop="artists" label="艺人" min-width="120" sortable="custom" :sort-orders="['ascending', 'descending']" show-overflow-tooltip></el-table-column>
+                <el-table-column prop="album" label="专辑" min-width="110" sortable="custom" :sort-orders="['ascending', 'descending']" show-overflow-tooltip></el-table-column>
                 <el-table-column label="来源" width="190">
                   <template #default="{ row }">
                     <div class="msrc-line">
@@ -3215,8 +3215,8 @@
               <el-table v-else :data="pagers.musicFav.paged" size="small" stripe @selection-change="onMusicFavSelection">
                 <el-table-column type="selection" width="42"></el-table-column>
                 <el-table-column prop="title" label="标题" min-width="160"></el-table-column>
-                <el-table-column prop="artists" label="艺人" width="120"></el-table-column>
-                <el-table-column prop="album" label="专辑" width="100"></el-table-column>
+                <el-table-column prop="artists" label="艺人" min-width="120"></el-table-column>
+                <el-table-column prop="album" label="专辑" min-width="110"></el-table-column>
                 <el-table-column prop="source" label="来源" width="110"></el-table-column>
                 <el-table-column prop="duration" label="时长" width="70"></el-table-column>
                 <el-table-column prop="quality" label="品质" width="70"></el-table-column>
