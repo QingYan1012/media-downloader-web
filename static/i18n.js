@@ -861,7 +861,7 @@
       'home.from': 'From',
       'home.hashAuto': 'Detect algorithm',
       'home.hashHintA': 'After the download the finished file is hashed once and compared with this string: a match leaves one line in the runtime log, a mismatch writes a line on the card (a notice, the file is not deleted). The length already tells the algorithms apart (32=MD5, 40=SHA-1, 64=SHA-256); naming one explicitly catches a truncated copy already when the item joins the queue. Comparable are torrents/magnets and links recognised as direct CDN files, which land ',
-      'home.hashHintB': 'downloads; the parse-and-download path re-muxes and embeds cover art and subtitles afterwards, so the bytes are rewritten locally and never match the publisher\'s digest of the original file (the line on the card says which case you are looking at).',
+      'home.hashHintB': ' intact; the parse-and-download path re-muxes and embeds cover art and subtitles afterwards, so the bytes are rewritten locally and never match the publisher\'s digest of the original file (the line on the card says which case you are looking at).',
       'home.hashHintBold': 'byte for byte',
       'home.hashPh': 'Paste an MD5 / SHA-1 / SHA-256 digest, empty = do not compare',
       'home.hlsEngine': 'Use the HLS-dedicated engine',

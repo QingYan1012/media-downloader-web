@@ -204,6 +204,21 @@ ck("C19 alert 不硬塞取消键（它天生只有一个按钮），但别人显
 ck("C20 这两个按钮词两份词表都有（缺 en 就印回中文，缺 zh 界面直接空着）",
    "'common.ok':" in zh_blob and "'common.cancel':" in zh_blob
    and "'common.ok':" in en_blob and "'common.cancel':" in en_blob, "")
+# 模板里两截字面量中间只隔一个标签（{{ A }}<strong>{{ B }}</strong>{{ C }}），中文连着写不用空格，
+# 英文必须留：不留就渲染成 "thelatest"、"butqueues"（订阅页这两处在翻完时实测到了）。
+# 跨行写的那类不算：换行本来就被浏览器折成一个空格。
+# 用零宽预查：A-B 与 B-C 连着两处接缝要都能抓到（普通匹配会把 B 那句吃掉，只留下前一半）。
+# 只认行内标签夹着的那类：表格两个单元格 </th><th> 相邻不连着读，不该按缺空格算。
+SEAM = re.compile(r"(?=\{\{\s*tr\('([^']*)'\s*\)\s*\}\}(?:</?(?:b|strong|em|i|u|span|code|small|sup|sub|mark|a)[^>]*>){1,2}\{\{\s*tr\('([^']*)')")
+_seams = [(a, b) for a, b in SEAM.findall(re.sub(r"<!--.*?-->", "", HTML, flags=re.S))
+          if a in DICT["en"] and b in DICT["en"]]
+ck("C21 抓到了同标签接缝（一条没有就是闸门空转）", len(_seams) >= 2, f"{len(_seams)} 处：{_seams}")
+ck("C22 英文的接缝处要么前一句带尾空格，要么后一句以空格/标点开头",
+   not [f"{a}|{b}" for a, b in _seams
+        if not (DICT["en"][a].endswith(" ") or DICT["en"][b].startswith(" ")
+                or DICT["en"][b][:1] in ",.;:!?、。）]」』\"'")],
+   str([f"{a}|{b}" for a, b in _seams if not (DICT["en"][a].endswith(" ") or DICT["en"][b].startswith(" ")
+        or DICT["en"][b][:1] in ",.;:!?、。）]」』\"'")]))
 
 # ---------------------------------------------------------------- D. 后端那一层
 print("== D. 后端：只存这一项，别处一概不读 ==")
