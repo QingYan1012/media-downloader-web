@@ -3017,47 +3017,47 @@
           <!-- 音乐搜索 -->
           <div v-if="page === 'music'">
             <div class="card">
-              <div class="section-title">音乐搜索 / 歌单（musicdl）</div>
+              <div class="section-title">{{ tr('music.title') }}</div>
               <div class="hint" style="margin-bottom:10px">
-                适配 musicdl 2.x：多源并行搜索、歌单与单曲链接解析、Cookie、精确下载。请遵守版权，仅下载有权使用的内容。
+                {{ tr('music.intro') }}
               </div>
               <div class="row row--top row--mb">
                 <el-select v-model="musicSearchType" style="width:120px" size="large">
-                  <el-option label="单曲" value="song"></el-option>
-                  <el-option label="歌单" value="playlist"></el-option>
-                  <el-option label="专辑" value="album"></el-option>
+                  <el-option :label="tr('music.typeSong')" value="song"></el-option>
+                  <el-option :label="tr('music.typePlaylist')" value="playlist"></el-option>
+                  <el-option :label="tr('music.typeAlbum')" value="album"></el-option>
                 </el-select>
-                <el-input class="row-grow" size="large" v-model="musicKeyword" type="textarea" :autosize="{ minRows: 3, maxRows: 12 }" placeholder="歌名 / 歌手 / 专辑（多行表示批量，每行一条）" clearable @keydown.ctrl.enter="searchMusic"></el-input>
-                <el-button size="large" type="primary" :loading="musicSearching" @click="searchMusic"><svg class="btn-ico"><use href="#i-search"></use></svg>搜索</el-button>
-                <el-button size="large" plain :loading="musicSearching" @click="batchSearchDownload">批量搜索并下载</el-button>
+                <el-input class="row-grow" size="large" v-model="musicKeyword" type="textarea" :autosize="{ minRows: 3, maxRows: 12 }" :placeholder="tr('music.kwPh')" clearable @keydown.ctrl.enter="searchMusic"></el-input>
+                <el-button size="large" type="primary" :loading="musicSearching" @click="searchMusic"><svg class="btn-ico"><use href="#i-search"></use></svg>{{ tr('music.searchBtn') }}</el-button>
+                <el-button size="large" plain :loading="musicSearching" @click="batchSearchDownload">{{ tr('music.btnBatchDl') }}</el-button>
               </div>
               <div class="row row--tight row--mb">
-                <el-checkbox v-model="musicIncludeLocal" size="small">包含本地库</el-checkbox>
-                <el-button size="small" plain @click="scanLocalMusic">扫描本地库</el-button>
+                <el-checkbox v-model="musicIncludeLocal" size="small">{{ tr('music.withLocal') }}</el-checkbox>
+                <el-button size="small" plain @click="scanLocalMusic">{{ tr('music.scanLocal') }}</el-button>
                 <el-select size="small" v-model="musicPreset" style="width:130px" @change="applyMusicPreset">
                   <el-option v-for="p in musicPresetOptions" :key="p.value" :label="p.label" :value="p.value"></el-option>
                 </el-select>
-                <span class="hint">已勾选 {{ musicSources.length }} 个源</span>
+                <span class="hint">{{ tr('music.srcChecked', { n: musicSources.length }) }}</span>
                 <el-button size="small" plain :loading="installingMusicdl" @click="installMusicdl">
-                  {{ musicdlReady ? '更新 musicdl' : '安装 musicdl' }}
+                  {{ musicdlReady ? tr('music.update') : tr('music.install') }}
                 </el-button>
                 <span v-if="musicdlReady" style="color:var(--ok);font-weight:700">
-                  ● musicdl 已就绪{{ musicdlVersion ? ' · v' + musicdlVersion : '' }}
+                  {{ tr('music.ready') }}{{ musicdlVersion ? ' · v' + musicdlVersion : '' }}
                 </span>
                 <span v-else style="color:var(--bad);font-weight:700">
-                  ● musicdl 未安装 · 音乐搜索/歌词/封面不可用，请点击左侧按钮在线安装
+                  {{ tr('music.notInstalled') }}
                 </span>
               </div>
               <div class="row row--tight row--mb">
-                <el-input size="small" v-model="musicPlaylistUrl" placeholder="歌单或单曲链接 music.163.com / y.qq.com / open.spotify.com / …" clearable style="width:360px" @paste="onPaste($event, 'url')"></el-input>
+                <el-input size="small" v-model="musicPlaylistUrl" :placeholder="tr('music.plPh')" clearable style="width:360px" @paste="onPaste($event, 'url')"></el-input>
                 <el-select v-model="musicPlaylistMode" size="small" style="width:170px" @change="saveMusicPlaylistMode">
-                  <el-option label="快速列出曲目（默认）" value="fast"></el-option>
-                  <el-option label="逐曲获取高音质地址" value="quality"></el-option>
+                  <el-option :label="tr('music.plModeFast')" value="fast"></el-option>
+                  <el-option :label="tr('music.plModeQuality')" value="quality"></el-option>
                 </el-select>
-                <el-button size="small" :loading="musicSearching" @click="parseMusicPlaylist">解析歌单 / 单曲</el-button>
+                <el-button size="small" :loading="musicSearching" @click="parseMusicPlaylist">{{ tr('music.btnParse') }}</el-button>
               </div>
               <div class="source-row">
-                <span class="hint">搜索源：</span>
+                <span class="hint">{{ tr('music.srcLabel') }}</span>
                 <el-checkbox-group v-model="musicSources" size="small" class="source-pool">
                   <el-checkbox v-for="(s, i) in musicSourceOrdered" :key="s" :label="s" style="margin-right:6px">
                     <span v-if="i < musicSources.length" class="src-rank">{{ i + 1 }}</span>{{ s.replace('MusicClient','') }}
@@ -3065,53 +3065,53 @@
                 </el-checkbox-group>
               </div>
               <div class="hint" style="margin-bottom:8px">
-                编号即实际检索顺序；「顺序」选择国内或国际优先时，下方的源会同步重排。
+                {{ tr('music.rankHint') }}
               </div>
-              <el-input size="small" v-model="musicCookies" type="textarea" :rows="1" placeholder="可选：额外 Cookie（同名键覆盖设置页保存的平台登录），格式 name=value; …" style="margin-bottom:8px"></el-input>
+              <el-input size="small" v-model="musicCookies" type="textarea" :rows="1" :placeholder="tr('music.cookiePh')" style="margin-bottom:8px"></el-input>
               <div style="display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;padding:8px 0;border-top:1px dashed var(--line)">
-                <span class="hint" style="font-weight:600">并行策略</span>
-                <span class="hint">模式</span>
+                <span class="hint" style="font-weight:600">{{ tr('music.stratTitle') }}</span>
+                <span class="hint">{{ tr('music.modeLabel') }}</span>
                 <el-select v-model="musicStrategy.mode" size="small" style="width:110px">
-                  <el-option label="并行" value="parallel"></el-option>
-                  <el-option label="逐源串行" value="sequential"></el-option>
+                  <el-option :label="tr('music.modeParallel')" value="parallel"></el-option>
+                  <el-option :label="tr('music.modeSequential')" value="sequential"></el-option>
                 </el-select>
-                <span class="hint">顺序</span>
+                <span class="hint">{{ tr('music.orderLabel') }}</span>
                 <el-select v-model="musicStrategy.order" size="small" style="width:120px">
-                  <el-option label="勾选顺序" value="as_is"></el-option>
-                  <el-option label="国内优先" value="cn_first"></el-option>
-                  <el-option label="国际优先" value="global_first"></el-option>
+                  <el-option :label="tr('music.orderAsIs')" value="as_is"></el-option>
+                  <el-option :label="tr('music.orderCn')" value="cn_first"></el-option>
+                  <el-option :label="tr('music.orderGlobal')" value="global_first"></el-option>
                 </el-select>
-                <span class="hint">每源条数</span>
+                <span class="hint">{{ tr('music.perSrcCount') }}</span>
                 <el-input-number v-model="musicStrategy.search_size" :min="1" :max="40" size="small" style="width:110px"></el-input-number>
-                <span class="hint">重试</span>
+                <span class="hint">{{ tr('music.retryLabel') }}</span>
                 <el-input-number v-model="musicStrategy.max_retries" :min="0" :max="5" size="small" style="width:90px"></el-input-number>
-                <span class="hint">超时（连接/读取，秒）</span>
+                <span class="hint">{{ tr('music.timeoutLabel') }}</span>
                 <el-input-number v-model="musicStrategy.connect_timeout" :min="3" :max="60" size="small" style="width:90px"></el-input-number>
                 <el-input-number v-model="musicStrategy.read_timeout" :min="5" :max="120" size="small" style="width:90px"></el-input-number>
-                <span class="hint">源内线程数</span>
+                <span class="hint">{{ tr('music.threadsLabel') }}</span>
                 <el-input-number v-model="musicStrategy.threads_per_source" :min="1" :max="16" size="small" style="width:90px"></el-input-number>
-                <span class="hint" title="单个源超过该秒数后不再等待，0 表示不限">每源预算（秒）</span>
+                <span class="hint" :title="tr('music.budgetTip')">{{ tr('music.budgetLabel') }}</span>
                 <el-input-number v-model="musicStrategy.per_source_budget" :min="0" :max="1800" size="small" style="width:90px"></el-input-number>
-                <span class="hint">去重</span>
+                <span class="hint">{{ tr('music.dedupeLabel') }}</span>
                 <el-select v-model="musicStrategy.dedupe" size="small" style="width:120px">
-                  <el-option label="跨源去重" value="global"></el-option>
-                  <el-option label="仅源内去重" value="source"></el-option>
-                  <el-option label="不去重" value="off"></el-option>
+                  <el-option :label="tr('music.dedupeGlobal')" value="global"></el-option>
+                  <el-option :label="tr('music.dedupeSource')" value="source"></el-option>
+                  <el-option :label="tr('music.dedupeOff')" value="off"></el-option>
                 </el-select>
-                <span class="hint" title="不管是粘贴整张歌单还是单曲链接，Spotify 和网易云这类只带回曲名、歌手、时长而给不了音频地址的条目，都靠这里下载时按曲名去这些源取音频地址；行上的「换源」也到这些源里重新找同一首歌。这里勾的源会全部搜一遍，再把过闸的候选放在一起取分最高的那条（分一样时按勾选顺序，先勾的赢）—— 不会因为第一个源先撞上了就跳过后面的。候选与上方「搜索源」一致，都能选；标了「取址慢」的源要经第三方转链，每首约十秒且时常失败，所以不进默认。完全没指定时才回落到默认 5 个源，并在日志写明">匹配源</span>
-                <el-select v-model="musicStrategy.match_sources" multiple collapse-tags collapse-tags-tooltip size="small" style="width:230px" placeholder="留空则用默认 5 个源">
+                <span class="hint" :title="tr('music.matchSrcHint')">{{ tr('music.matchSrcLabel') }}</span>
+                <el-select v-model="musicStrategy.match_sources" multiple collapse-tags collapse-tags-tooltip size="small" style="width:230px" :placeholder="tr('music.matchSrcPh')">
                   <el-option v-for="s in musicMatchSourceOptions" :key="s.value" :label="s.label" :value="s.value"></el-option>
                 </el-select>
-                <el-button size="small" plain @click="saveMusicStrategy">保存策略</el-button>
-                <span class="hint" title="可用字段：{name} 曲名、{artist} 歌手、{album} 专辑、{source} 来源、{id} 编号、{ext} 扩展名；归档用 {track} 曲目序号、{disc} 碟片号、{year} 年份、{date} 发布日，例：{artist}/{album}/{year}/{track} - {name}。序号自动补零成 01，否则 Emby 会排成 1、10、11、2；{track} 取这一行在歌单里的第几首（平台给了碟片序号时以平台的为准），取不到就按它在这一单里的第几首。平台没给的字段留空：空掉的目录层不会建，行首行尾多余的「- 」会被削掉">文件名模板</span>
+                <el-button size="small" plain @click="saveMusicStrategy">{{ tr('music.saveStrategy') }}</el-button>
+                <span class="hint" :title="tr('music.fmtHint')">{{ tr('music.fmtLabel') }}</span>
                 <el-input v-model="musicFilenameTemplate" size="small" style="width:220px" placeholder="{artist}/{name} - {artist}"></el-input>
-                <el-checkbox v-model="musicEmbedMeta" size="small">内嵌封面</el-checkbox>
-                <el-checkbox v-model="musicHideUnavailable" size="small">隐藏付费或不可用项</el-checkbox>
+                <el-checkbox v-model="musicEmbedMeta" size="small">{{ tr('music.embedMeta') }}</el-checkbox>
+                <el-checkbox v-model="musicHideUnavailable" size="small">{{ tr('music.hideUnavail') }}</el-checkbox>
                 <el-checkbox v-model="musicIncludeReference" size="small"
-                             title="每次搜索附带查一次 Qobuz / Tidal 官方曲库，给出 ISRC、精确时长、位深和官方链接，用来核对本平台结果找没找对歌。这些行只读、勾不上也下不了，音频仍由上面勾选的源提供">无损参照</el-checkbox>
+                             :title="tr('music.refOnlyHint')">{{ tr('music.refOnlyLabel') }}</el-checkbox>
                 <el-checkbox v-model="musicBlockReupload" size="small"
-                             title="下载时取回的成品若与歌单标注的曲名、歌手或时长对不上（相差超过 3 秒），判为搬运版并跳过。Spotify 与 Apple 的音频本来就要经转链站从其它平台取回，这项默认关闭">拦搬运版</el-checkbox>
-                <span class="hint" title="每个平台取哪一档音质写死在它自己的阶梯里，这里钉不住它。所以「要求」只做两件事：① 同一首歌有多条候选时优先挑达标的那条；② 下载完读成品自己的标签，把实际档位与差在哪一维写上日志。勾了「不达标不下」才会整首跳过（下载前只能按平台标注判，标注缺那一维的不会误跳）">音质要求</span>
+                             :title="tr('music.blockReupHint')">{{ tr('music.blockReupLabel') }}</el-checkbox>
+                <span class="hint" :title="tr('music.qReqHint')">{{ tr('music.qReqLabel') }}</span>
                 <el-select v-model="musicQualitySpec.format" size="small" style="width:150px">
                   <el-option v-for="o in musicQualityOptions.format" :key="o.value" :label="o.label" :value="o.value"></el-option>
                 </el-select>
@@ -3125,38 +3125,37 @@
                   <el-option v-for="o in musicQualityOptions.bitrate" :key="o.value" :label="o.label" :value="o.value"></el-option>
                 </el-select>
                 <el-checkbox v-model="musicQualitySpec.strict" size="small"
-                             title="取到的成品按平台标注确认低于上面的要求时跳过这一首（要求里没提的那一维、或平台没标注的那一维，一律不算不达标）">不达标不下</el-checkbox>
-                <span class="hint" v-if="musicQualitySummary">本批要求：{{ musicQualitySummary }}</span>
+                             :title="tr('music.strictHint')">{{ tr('music.strictLabel') }}</el-checkbox>
+                <span class="hint" v-if="musicQualitySummary">{{ tr('music.batchReq', { spec: musicQualitySummary }) }}</span>
               </div>
             </div>
             <div class="card">
               <div class="row row--spread row--mb">
                 <div class="row">
-                  <span class="hint">共 {{ musicResults.length }} 条</span>
-                  <el-checkbox v-model="musicSkipExisting" size="small" title="下载目录里已经有同一首歌的（按曲名、歌手、时长认，不看文件名），这次不再下第二份；取消勾选则会重新下载，并把目录里那份换成本次的">跳过已下载的歌</el-checkbox>
+                  <span class="hint">{{ tr('music.countTotal', { n: musicResults.length }) }}</span>
+                  <el-checkbox v-model="musicSkipExisting" size="small" :title="tr('music.skipExistHint')">{{ tr('music.skipExistLabel') }}</el-checkbox>
                 </div>
                 <div class="row">
-                  <el-button size="small" plain :disabled="!musicSelected.length" @click="addMusicFav(musicSelected)">收藏选中项 ({{ musicSelected.length }})</el-button>
-                  <el-button size="small" plain :loading="!!musicSwitching.length" :disabled="!musicSelected.length" @click="switchMusicSource(musicSelected)">换源选中项 ({{ musicSelected.length }})</el-button>
-                  <el-button type="primary" size="small" :disabled="!musicSelected.length" @click="downloadMusicSelected"><svg class="btn-ico"><use href="#i-download"></use></svg>下载选中项 ({{ musicSelected.length }})</el-button>
+                  <el-button size="small" plain :disabled="!musicSelected.length" @click="addMusicFav(musicSelected)">{{ tr('music.favSel') }} ({{ musicSelected.length }})</el-button>
+                  <el-button size="small" plain :loading="!!musicSwitching.length" :disabled="!musicSelected.length" @click="switchMusicSource(musicSelected)">{{ tr('music.switchSel') }} ({{ musicSelected.length }})</el-button>
+                  <el-button type="primary" size="small" :disabled="!musicSelected.length" @click="downloadMusicSelected"><svg class="btn-ico"><use href="#i-download"></use></svg>{{ tr('music.dlSel') }} ({{ musicSelected.length }})</el-button>
                 </div>
               </div>
-              <div v-if="!musicResults.length" class="empty-tip">请输入关键词搜索，或粘贴歌单 / 单曲链接后解析</div>
+              <div v-if="!musicResults.length" class="empty-tip">{{ tr('music.emptyTip') }}</div>
               <div v-if="musicSourceErrors.length" class="warn-box">
-                <div style="font-weight:600;margin-bottom:2px">本次以下源无结果：</div>
+                <div style="font-weight:600;margin-bottom:2px">{{ tr('music.noResultSources') }}</div>
                 <div v-for="[k, v] in musicSourceErrors" :key="k">· {{ k }} —— {{ v }}</div>
               </div>
               <div v-if="musicNeedsMatch" class="hint" style="margin-bottom:8px">
-                本清单有 {{ musicNeedsMatch }} 首仅列出曲名 —— 勾选下载时才会按曲名在上方已勾选的源中匹配音频地址，无法匹配的会记录到日志并跳过。
+                {{ tr('music.needsMatchTip', { n: musicNeedsMatch }) }}
               </div>
               <div v-if="musicHasScore" class="hint" style="margin-bottom:8px">
-                来源列那个数字 = 这一条与你输入的关键词有多对得上（{{ musicScoreLine }} 以上算对得上，红的是被阈值挡下来的，鼠标停在数字上看曲名/歌手两维的分与被挡的原因）。
-                它不判「是不是同一版录音」—— 那要有时长可比，换源和查重用的才是那套管。
+                {{ tr('music.scoreTip', { line: musicScoreLine }) }}
               </div>
               <div v-if="player.url && player.from === 'search'" style="margin:10px 0;padding:10px;background:var(--surface);border-radius:8px">
                 <div class="row row--tight" style="margin-bottom:6px">
                   <img v-if="player.cover" :src="player.cover" alt="" style="width:48px;height:48px;object-fit:cover;border-radius:6px;border:1px solid var(--line)">
-                  <div class="hint">正在试听：{{ player.title }}{{ player.sub ? ' - ' + player.sub : '' }}<span v-if="player.queue.length > 1">（第 {{ player.idx + 1 }} / {{ player.queue.length }} 首，播完自动接下一首）</span> —— 进度、音量在窗口底部的播放条，按空格键暂停 / 继续</div>
+                  <div class="hint">{{ tr('music.previewing', { title: player.title }) }}{{ player.sub ? ' - ' + player.sub : '' }}<span v-if="player.queue.length > 1">{{ tr('music.previewQueue', { i: player.idx + 1, n: player.queue.length }) }}</span> {{ tr('music.previewBar') }}</div>
                 </div>
                 <div v-if="musicLrcLines.length" style="margin-top:8px;max-height:160px;overflow:auto;font-size:14px;line-height:1.8">
                   <div v-for="(ln,i) in musicLrcLines" :key="i" :style="{color: i===musicLrcActive ? 'var(--accent)' : 'var(--muted)', fontWeight: i===musicLrcActive ? 700 : 400}">
@@ -3169,15 +3168,15 @@
               </div>
               <el-table v-if="musicResults.length" :data="pagers.music.paged" size="small" stripe class="music-table" @selection-change="onMusicSelection" @sort-change="onMusicSortChange">
                 <el-table-column type="selection" width="42" :selectable="(row) => !row.reference_only"></el-table-column>
-                <el-table-column prop="title" label="标题" min-width="160" sortable="custom" :sort-orders="['ascending', 'descending']">
+                <el-table-column prop="title" :label="tr('common.colTitle')" min-width="160" sortable="custom" :sort-orders="['ascending', 'descending']">
                   <template #default="{ row }">
                     <span>{{ row.title }}</span>
-                    <span v-if="row.dup_count > 1" class="hint" :title="`歌单里这首歌排了 ${row.dup_count} 遍，已合并成一行，下载只下一遍`"> ×{{ row.dup_count }}</span>
+                    <span v-if="row.dup_count > 1" class="hint" :title="tr('music.dupHint', { n: row.dup_count })"> ×{{ row.dup_count }}</span>
                   </template>
                 </el-table-column>
-                <el-table-column prop="artists" label="艺人" min-width="120" sortable="custom" :sort-orders="['ascending', 'descending']" show-overflow-tooltip></el-table-column>
-                <el-table-column prop="album" label="专辑" min-width="110" sortable="custom" :sort-orders="['ascending', 'descending']" show-overflow-tooltip></el-table-column>
-                <el-table-column label="来源" width="190">
+                <el-table-column prop="artists" :label="tr('music.colArtists')" min-width="120" sortable="custom" :sort-orders="['ascending', 'descending']" show-overflow-tooltip></el-table-column>
+                <el-table-column prop="album" :label="tr('music.colAlbum')" min-width="110" sortable="custom" :sort-orders="['ascending', 'descending']" show-overflow-tooltip></el-table-column>
+                <el-table-column :label="tr('common.colSource')" width="190">
                   <template #default="{ row }">
                     <div class="msrc-line">
                       <span :title="row.reference_only ? refHint(row) : ''">{{ row.source }}</span>
@@ -3187,40 +3186,40 @@
                       <span v-if="row.alt_sources && row.alt_sources.length" class="hint" :title="(row.alt_sources||[]).join(', ')">+{{ row.alt_sources.length }}</span>
                     </div>
                     <div class="msrc-flags">
-                      <span v-if="row.score_reject" class="msrc-flag msrc-flag--bad" :title="row.score_reject">不像</span>
-                      <span v-if="row.needs_match" class="msrc-flag msrc-flag--warn" title="仅列出曲名，下载时才在已勾选的源中匹配音频地址">待匹配</span>
-                      <span v-else-if="row.unofficial && !row.reupload_suspect" class="msrc-flag msrc-flag--warn" :title="row.real_source + (row.origin_reasons && row.origin_reasons.length ? '：' + row.origin_reasons.join('；') : '')">转链</span>
-                      <span v-if="row.reupload_suspect" class="msrc-flag msrc-flag--bad" :title="(row.real_source ? row.real_source + '：' : '') + '取回的成品与标注对不上：' + (row.origin_reasons || []).join('；')">疑似搬运版</span>
+                      <span v-if="row.score_reject" class="msrc-flag msrc-flag--bad" :title="row.score_reject">{{ tr('music.flagBad') }}</span>
+                      <span v-if="row.needs_match" class="msrc-flag msrc-flag--warn" :title="tr('music.needMatchHint')">{{ tr('music.flagNeedMatch') }}</span>
+                      <span v-else-if="row.unofficial && !row.reupload_suspect" class="msrc-flag msrc-flag--warn" :title="row.real_source + (row.origin_reasons && row.origin_reasons.length ? tr('music.reasonColon') + row.origin_reasons.join(tr('music.reasonSep')) : '')">{{ tr('music.flagUnofficial') }}</span>
+                      <span v-if="row.reupload_suspect" class="msrc-flag msrc-flag--bad" :title="(row.real_source ? row.real_source + tr('music.reasonColon') : '') + tr('music.reupWhy') + (row.origin_reasons || []).join(tr('music.reasonSep'))">{{ tr('music.flagReupload') }}</span>
                     </div>
-                    <div v-if="row.switch_note" class="hint" title="新来路的地址已当场探测过，品质、时长以换到的那条为准">{{ row.switch_note }}</div>
-                    <div v-if="row.switch_fail" class="msrc-flag msrc-flag--bad" :title="row.switch_fail">换源未成功</div>
+                    <div v-if="row.switch_note" class="hint" :title="tr('music.switchNoteHint')">{{ row.switch_note }}</div>
+                    <div v-if="row.switch_fail" class="msrc-flag msrc-flag--bad" :title="row.switch_fail">{{ tr('music.switchFailed') }}</div>
                   </template>
                 </el-table-column>
-                <el-table-column prop="duration" label="时长" width="70"></el-table-column>
-                <el-table-column prop="quality" label="品质" width="118">
+                <el-table-column prop="duration" :label="tr('common.colDuration')" width="70"></el-table-column>
+                <el-table-column prop="quality" :label="tr('common.colQuality')" width="118">
                   <template #default="{ row }">
                     <span :title="row.quality_note || ''">{{ row.quality || '—' }}</span>
-                    <el-tag v-if="row.quality_state === 'low'" type="danger" size="small" effect="plain" :title="row.quality_note">低于要求</el-tag>
+                    <el-tag v-if="row.quality_state === 'low'" type="danger" size="small" effect="plain" :title="row.quality_note">{{ tr('music.qBelow') }}</el-tag>
                     <el-tag v-else-if="row.quality_state === 'ok'" type="success" size="small" effect="plain"
-                            title="按上方「音质要求」逐维比过这一条的平台标注，没有低于要求的维度">符合</el-tag>
-                    <el-tag v-else-if="row.quality_state === 'unknown'" type="warning" size="small" effect="plain" :title="row.quality_note">未核到</el-tag>
+                            :title="tr('music.qOkHint')">{{ tr('music.qOk') }}</el-tag>
+                    <el-tag v-else-if="row.quality_state === 'unknown'" type="warning" size="small" effect="plain" :title="row.quality_note">{{ tr('music.qUnknown') }}</el-tag>
                     <div v-if="row.ref_note" class="hint" :style="row.ref_state === 'below' ? 'color:var(--bad)' : ''"
-                         :title="row.ref_note + '（只比元数据：曲名 / 歌手 / 时长 / 位深 / 采样率，不取第三方音频）'">{{ row.ref_note }}</div>
+                         :title="row.ref_note + tr('music.refMetaSuffix')">{{ row.ref_note }}</div>
                   </template>
                 </el-table-column>
-                <el-table-column label="操作" width="260">
+                <el-table-column :label="tr('common.colOps')" width="260">
                   <template #default="{ row }">
                     <div class="mrow-actions">
-                      <el-button v-if="row.reference_only" size="small" plain @click="openRefLink(row)">官方页面</el-button>
+                      <el-button v-if="row.reference_only" size="small" plain @click="openRefLink(row)">{{ tr('music.officialPage') }}</el-button>
                       <template v-else>
-                        <el-button v-if="!row.needs_match" size="small" plain @click="previewMusicRow(row, pagers.music.paged)">试听</el-button>
-                        <el-button v-if="!row.needs_match" size="small" plain @click="probeMusicRow(row)">大小</el-button>
+                        <el-button v-if="!row.needs_match" size="small" plain @click="previewMusicRow(row, pagers.music.paged)">{{ tr('music.preview') }}</el-button>
+                        <el-button v-if="!row.needs_match" size="small" plain @click="probeMusicRow(row)">{{ tr('music.sizeProbe') }}</el-button>
                         <el-button v-if="row.id && !row.is_local" size="small" plain :loading="musicSwitching.includes(row.id)"
-                                   title="到「匹配源」里的其他平台重新找这一首，换成那条的音频地址；只有判定确实是同一首歌才会换" @click="switchMusicSource([row])">换源</el-button>
-                        <el-button size="small" plain @click="downloadMusicRow(row)">下载</el-button>
+                                   :title="tr('music.switchHint')" @click="switchMusicSource([row])">{{ tr('music.switchBtn') }}</el-button>
+                        <el-button size="small" plain @click="downloadMusicRow(row)">{{ tr('common.dl') }}</el-button>
                         <el-button size="small" plain :disabled="!!row.is_local"
-                                   :title="row.is_local ? '本地已有的成品不进收藏清单：这一单是要能整单下的' : '收进下方「自建收藏清单」，攒成一单以后整单下'"
-                                   @click="addMusicFav([row])">收藏</el-button>
+                                   :title="row.is_local ? tr('music.favHintLocal') : tr('music.favHintAdd')"
+                                   @click="addMusicFav([row])">{{ tr('music.favBtn') }}</el-button>
                       </template>
                     </div>
                   </template>
@@ -3228,50 +3227,50 @@
               </el-table>
               <el-pagination v-if="pagers.music.show" v-model:current-page="pagers.music.page" :page-size="pagers.music.pageSize"
                              :total="pagers.music.total" layout="total, prev, pager, next, jumper" size="small" background class="pager"></el-pagination>
-              <div v-if="pagers.music.show" class="hint hint--block">翻页后当前页的勾选会清空，请分页勾选后分别执行批量操作</div>
+              <div v-if="pagers.music.show" class="hint hint--block">{{ tr('music.pagerSelTip') }}</div>
             </div>
             <div class="card">
-              <div class="section-title">自建收藏清单</div>
+              <div class="section-title">{{ tr('music.favListTitle') }}</div>
               <div class="row row--spread row--mb">
                 <div class="row">
-                  <span class="hint">共 {{ musicFavItems.length }} 首</span>
+                  <span class="hint">{{ tr('music.countSongs', { n: musicFavItems.length }) }}</span>
                   <el-tag v-if="musicFavMissing" type="danger" size="small" effect="plain"
-                          title="上次整单下载时按曲名没找到同一首歌，点开状态列看下一步">上次有 {{ musicFavMissing }} 首没找到</el-tag>
-                  <span class="hint">整单下载沿用上方「匹配源」与「跳过已下载的歌」；标「要重新找地址」的行会按曲名重新取址</span>
+                          :title="tr('music.favMissingHint')">{{ tr('music.favMissingN', { n: musicFavMissing }) }}</el-tag>
+                  <span class="hint">{{ tr('music.favListHint') }}</span>
                 </div>
                 <div class="row">
-                  <el-button size="small" plain :disabled="!musicFavReadySel.length" @click="switchMusicFav(musicFavReadySel)">换源选中 ({{ musicFavReadySel.length }})</el-button>
-                  <el-button size="small" plain :disabled="!musicFavSelected.length" @click="downloadMusicFav(musicFavSelected)">下载选中 ({{ musicFavSelected.length }})</el-button>
-                  <el-button size="small" plain :disabled="!musicFavSelected.length" @click="removeMusicFav(musicFavSelected)">删除选中 ({{ musicFavSelected.length }})</el-button>
-                  <el-button size="small" plain :disabled="!musicFavItems.length" @click="clearMusicFav()">清空</el-button>
+                  <el-button size="small" plain :disabled="!musicFavReadySel.length" @click="switchMusicFav(musicFavReadySel)">{{ tr('music.favSwitchSel') }} ({{ musicFavReadySel.length }})</el-button>
+                  <el-button size="small" plain :disabled="!musicFavSelected.length" @click="downloadMusicFav(musicFavSelected)">{{ tr('music.favDlSel') }} ({{ musicFavSelected.length }})</el-button>
+                  <el-button size="small" plain :disabled="!musicFavSelected.length" @click="removeMusicFav(musicFavSelected)">{{ tr('common.delSelected') }} ({{ musicFavSelected.length }})</el-button>
+                  <el-button size="small" plain :disabled="!musicFavItems.length" @click="clearMusicFav()">{{ tr('common.clear') }}</el-button>
                   <el-button type="primary" size="small" :loading="!!musicFavDownloading" :disabled="!musicFavItems.length"
-                             @click="downloadMusicFav()"><svg class="btn-ico"><use href="#i-download"></use></svg>整单下载 ({{ musicFavItems.length }})</el-button>
+                             @click="downloadMusicFav()"><svg class="btn-ico"><use href="#i-download"></use></svg>{{ tr('music.dlWhole') }} ({{ musicFavItems.length }})</el-button>
                 </div>
               </div>
-              <div v-if="!musicFavItems.length" class="empty-tip">在上方搜索结果里点「收藏」，把跨平台的歌攒成一单：这一单可以整单下载、逐行换源，上次没找到的那几首也会被记住。</div>
+              <div v-if="!musicFavItems.length" class="empty-tip">{{ tr('music.favEmptyTip') }}</div>
               <el-table v-else :data="pagers.musicFav.paged" size="small" stripe @selection-change="onMusicFavSelection">
                 <el-table-column type="selection" width="42"></el-table-column>
-                <el-table-column prop="title" label="标题" min-width="160"></el-table-column>
-                <el-table-column prop="artists" label="艺人" min-width="120"></el-table-column>
-                <el-table-column prop="album" label="专辑" min-width="110"></el-table-column>
-                <el-table-column prop="source" label="来源" width="110"></el-table-column>
-                <el-table-column prop="duration" label="时长" width="70"></el-table-column>
-                <el-table-column prop="quality" label="品质" width="70"></el-table-column>
-                <el-table-column label="状态" width="130">
+                <el-table-column prop="title" :label="tr('common.colTitle')" min-width="160"></el-table-column>
+                <el-table-column prop="artists" :label="tr('music.colArtists')" min-width="120"></el-table-column>
+                <el-table-column prop="album" :label="tr('music.colAlbum')" min-width="110"></el-table-column>
+                <el-table-column prop="source" :label="tr('common.colSource')" width="110"></el-table-column>
+                <el-table-column prop="duration" :label="tr('common.colDuration')" width="70"></el-table-column>
+                <el-table-column prop="quality" :label="tr('common.colQuality')" width="70"></el-table-column>
+                <el-table-column :label="tr('common.colStatus')" width="130">
                   <template #default="{ row }">
-                    <el-tag v-if="row.state === 'missing'" type="danger" size="small" effect="plain" :title="row.note">没找到</el-tag>
-                    <el-tag v-else-if="row.state === 'unsearched'" type="warning" size="small" effect="plain" :title="row.note">本轮没轮到</el-tag>
-                    <el-tag v-else-if="row.resolved === 'ready'" type="success" size="small" effect="plain">地址已就绪</el-tag>
-                    <span v-else class="hint" title="这一轮的搜索结果已经不在了（重启过或被更新的搜索挤掉），下载时会按曲名重新找地址">要重新找地址</span>
+                    <el-tag v-if="row.state === 'missing'" type="danger" size="small" effect="plain" :title="row.note">{{ tr('music.stMissing') }}</el-tag>
+                    <el-tag v-else-if="row.state === 'unsearched'" type="warning" size="small" effect="plain" :title="row.note">{{ tr('music.stUnsearched') }}</el-tag>
+                    <el-tag v-else-if="row.resolved === 'ready'" type="success" size="small" effect="plain">{{ tr('music.stReady') }}</el-tag>
+                    <span v-else class="hint" :title="tr('music.stStaleHint')">{{ tr('music.stStale') }}</span>
                   </template>
                 </el-table-column>
-                <el-table-column label="操作" width="260">
+                <el-table-column :label="tr('common.colOps')" width="260">
                   <template #default="{ row }">
-                    <el-button v-if="row.resolved === 'ready'" size="small" plain @click="previewMusicFav(row)">试听</el-button>
+                    <el-button v-if="row.resolved === 'ready'" size="small" plain @click="previewMusicFav(row)">{{ tr('music.preview') }}</el-button>
                     <el-button v-if="row.resolved === 'ready'" size="small" plain :loading="musicFavSwitching.includes(row.slot)"
-                               title="到「匹配源」里的其他平台重新找这一首，换成那条的音频地址；只有判定确实是同一首歌才会换" @click="switchMusicFav([row])">换源</el-button>
-                    <el-button size="small" plain @click="downloadMusicFav([row])">下载</el-button>
-                    <el-button size="small" plain @click="removeMusicFav([row])">删除</el-button>
+                               :title="tr('music.switchHint')" @click="switchMusicFav([row])">{{ tr('music.switchBtn') }}</el-button>
+                    <el-button size="small" plain @click="downloadMusicFav([row])">{{ tr('common.dl') }}</el-button>
+                    <el-button size="small" plain @click="removeMusicFav([row])">{{ tr('common.del') }}</el-button>
                   </template>
                 </el-table-column>
               </el-table>
@@ -6552,22 +6551,44 @@
         // 音质要求：档位阶梯写死在 musicdl 每个源里，钉不住，所以这一项只做「多候选挑达标的」
         // 与「下完核对成品实际档位」，勾了不达标不下才整首跳过。选项表由后端回，界面不抄第二份
         const musicQualitySpec = ref({ format: '', min_bit_depth: 0, min_sample_rate: 0, min_bitrate: 0, strict: false });
-        const musicQualityOptions = ref({
-          format: [{ value: '', label: '不限' }],
-          bit_depth: [{ value: 0, label: '位深不限' }],
-          sample_rate: [{ value: 0, label: '采样率不限' }],
-          bitrate: [{ value: 0, label: '码率不限' }],
+        // 选项表存后端给的原始值，标签在渲染时现取词表：切语言不用重新问后端
+        const musicQualityRaw = ref({
+          format: [['', '']],
+          bit_depth: [0],
+          sample_rate: [0],
+          bitrate: [0],
+        });
+        // 后端 format 的标签是它自己那句中文，按值换键；对不上的值照用后端原文
+        const MUSIC_QFMT_KEYS = { '': 'music.qAny', lossless: 'music.qFmtLossless' };
+        const musicQualityOptions = computed(() => {
+          const raw = musicQualityRaw.value || {};
+          const khz = (v) => (v / 1000).toFixed(1).replace(/\.0$/, '');
+          return {
+            format: (raw.format || []).map((x) => ({
+              value: x[0],
+              label: MUSIC_QFMT_KEYS[x[0]] ? tr(MUSIC_QFMT_KEYS[x[0]]) : String(x[1]),
+            })),
+            bit_depth: (raw.bit_depth || []).map((v) => ({
+              value: v, label: v ? tr('music.qBitAbove', { n: v }) : tr('music.qBitAny'),
+            })),
+            sample_rate: (raw.sample_rate || []).map((v) => ({
+              value: v, label: v ? tr('music.qKhzAbove', { n: khz(v) }) : tr('music.qRateAny'),
+            })),
+            bitrate: (raw.bitrate || []).map((v) => ({
+              value: v, label: v ? tr('music.qKAbove', { n: v }) : tr('music.qBrAny'),
+            })),
+          };
         });
         // 与后端 quality_spec_label 同一写法，界面上这句话要能对上日志里那句「本次音质要求」
         function qualitySpecLabel(s) {
           s = s || {};
           const parts = [];
-          if (s.format === 'lossless') parts.push('无损');
+          if (s.format === 'lossless') parts.push(tr('music.qLosslessWord'));
           else if (s.format) parts.push(String(s.format).toUpperCase());
-          if (s.min_bit_depth) parts.push(s.min_bit_depth + 'bit 以上');
-          if (s.min_sample_rate) parts.push((s.min_sample_rate / 1000).toFixed(1).replace(/\.0$/, '') + 'kHz 以上');
-          if (s.min_bitrate) parts.push(s.min_bitrate + 'k 以上');
-          return parts.join('、');
+          if (s.min_bit_depth) parts.push(tr('music.qBitAbove', { n: s.min_bit_depth }));
+          if (s.min_sample_rate) parts.push(tr('music.qKhzAbove', { n: (s.min_sample_rate / 1000).toFixed(1).replace(/\.0$/, '') }));
+          if (s.min_bitrate) parts.push(tr('music.qKAbove', { n: s.min_bitrate }));
+          return parts.join(tr('music.qJoin'));
         }
         const musicQualitySummary = computed(() => qualitySpecLabel(musicQualitySpec.value));
         // 底部常驻播放条：整份界面只有一个 <audio>，切页不销毁，所以歌不会被切段
@@ -6604,16 +6625,16 @@
         // （musicdl 打 spotubedl 一类接口），能下但每首约十秒、时常失败，所以标出来、不进默认。
         const musicMatchSourceOptions = computed(() => (musicSourceOptions.value || []).map((s) => ({
           value: s,
-          label: s.replace('MusicClient', '') + (/^(Spotify|Apple)/.test(s) ? '（取址慢）' : ''),
+          label: s.replace('MusicClient', '') + (/^(Spotify|Apple)/.test(s) ? tr('music.srcSlowSuffix') : ''),
         })));
-        const musicPresetOptions = [
-          { value: 'default', label: '默认组合' },
-          { value: 'cn', label: '国内扩展' },
-          { value: 'global', label: '国际流媒体' },
-          { value: 'radio', label: '有声 / 电台' },
-          { value: 'all_common', label: '常用混合' },
-          { value: 'custom', label: '自定义' },
-        ];
+        const musicPresetOptions = computed(() => [
+          { value: 'default', label: tr('music.presetDefault') },
+          { value: 'cn', label: tr('music.presetCn') },
+          { value: 'global', label: tr('music.presetGlobal') },
+          { value: 'radio', label: tr('music.presetRadio') },
+          { value: 'all_common', label: tr('music.presetAllCommon') },
+          { value: 'custom', label: tr('music.presetCustom') },
+        ]);
         const MUSIC_PRESET_FALLBACK = {
           default: ['MiguMusicClient','NeteaseMusicClient','QQMusicClient','AppleMusicClient','SpotifyMusicClient'],
           cn: ['MiguMusicClient','NeteaseMusicClient','QQMusicClient','KuwoMusicClient','QianqianMusicClient','KugouMusicClient','BilibiliMusicClient'],
@@ -9938,12 +9959,11 @@
           }
           if (st.quality_options) {
             const qo = st.quality_options;
-            const khz = (v) => (v / 1000).toFixed(1).replace(/\.0$/, '');
-            musicQualityOptions.value = {
-              format: (qo.format || []).map((x) => ({ value: x[0], label: x[1] })),
-              bit_depth: (qo.bit_depth || []).map((v) => ({ value: v, label: v ? v + 'bit 以上' : '位深不限' })),
-              sample_rate: (qo.sample_rate || []).map((v) => ({ value: v, label: v ? khz(v) + 'kHz 以上' : '采样率不限' })),
-              bitrate: (qo.bitrate || []).map((v) => ({ value: v, label: v ? v + 'k 以上' : '码率不限' })),
+            musicQualityRaw.value = {
+              format: qo.format || [],
+              bit_depth: qo.bit_depth || [],
+              sample_rate: qo.sample_rate || [],
+              bitrate: qo.bitrate || [],
             };
           }
           if (st.quality_spec && typeof st.quality_spec === 'object') {
@@ -9997,7 +10017,7 @@
         async function searchMusic() {
           const lines = musicKeywordLines();
           if (!lines.length) {
-            ElementPlus.ElMessage.warning('请输入关键词（支持多行批量）');
+            ElementPlus.ElMessage.warning(tr('music.tNeedKw'));
             return;
           }
           musicSearching.value = true;
@@ -10030,15 +10050,15 @@
             musicSourceErrors.value = Object.entries(errsAll);
             musicResults.value = merged;
             let msg = lines.length > 1
-              ? `批量 ${lines.length} 词 → ${merged.length} 条`
-              : `找到 ${merged.length} 条`;
+              ? tr('music.tBatchFound', { q: lines.length, n: merged.length })
+              : tr('music.tFound', { n: merged.length });
             if (Object.keys(statsAll).length) {
-              msg += '（' + Object.entries(statsAll).map(([k,v]) => k + ':' + v).join(', ') + '）';
+              msg += tr('music.statsWrap', { s: Object.entries(statsAll).map(([k,v]) => k + ':' + v).join(', ') });
             }
             if (elapsedAll) msg += ` · ${elapsedAll.toFixed(0)}s`;
             if (musicSourceErrors.value.length) {
               ElementPlus.ElMessage.warning({
-                message: msg + `｜${musicSourceErrors.value.length} 个源无结果，原因见结果上方`,
+                message: msg + tr('music.tSrcNoRes', { n: musicSourceErrors.value.length }),
                 duration: 6000,
               });
             } else {
@@ -10053,7 +10073,7 @@
         async function batchSearchDownload() {
           const lines = musicKeywordLines();
           if (!lines.length) {
-            ElementPlus.ElMessage.warning('每行一条：歌名 或 歌名 - 歌手');
+            ElementPlus.ElMessage.warning(tr('music.tBatchPh'));
             return;
           }
           musicSearching.value = true;
@@ -10077,12 +10097,12 @@
             }
             musicResults.value = merged;
             if (!toDownload.length) {
-              ElementPlus.ElMessage.warning('没有可下载结果');
+              ElementPlus.ElMessage.warning(tr('music.tNoRes'));
               return;
             }
             musicSelected.value = toDownload.map(x => x.id || x.url).filter(Boolean);
             await downloadMusicSelected();
-            ElementPlus.ElMessage.success(`已按 ${toDownload.length}/${lines.length} 条关键词加入下载`);
+            ElementPlus.ElMessage.success(tr('music.tBatchQueued', { ok: toDownload.length, n: lines.length }));
           } catch (e) {
             ElementPlus.ElMessage.error(String(e.message || e));
           } finally {
@@ -10099,7 +10119,7 @@
               : (r.url && String(r.url).startsWith('http'))
                 ? '/api/music/preview?url=' + encodeURIComponent(r.url) : '';
           if (!url) return null;
-          return { url, title: r.title || '（未知曲名）', sub: r.artists || '',
+          return { url, title: r.title || tr('music.unknownTitle'), sub: r.artists || '',
                    cover: (r.is_local && r.cover_url) ? r.cover_url : '', row: r };
         }
         // 高精度 LRC：结果自带文本 > 音频内嵌歌词 > 同名歌词文件
@@ -10137,7 +10157,8 @@
             el.volume = playerVol.value;
             el.muted = playerMuted.value || playerVol.value <= 0;
             el.load();
-            el.play().catch(() => {});   // 浏览器拦下自动播放时，播放条还在，点一下即可
+            // 浏览器拦下自动播放时，播放条还在，点一下即可
+            el.play().catch(() => {});
           }
           const lines = await fetchRowLyrics(track.row);
           if (player.queue[player.idx] === track) musicLrcLines.value = lines;
@@ -10148,7 +10169,7 @@
           let i = pool.findIndex(x => x.row === row);
           if (i < 0) {
             const one = playableOf(row);
-            if (!one) { ElementPlus.ElMessage.warning('这一行没有可试听的音频地址'); return; }
+            if (!one) { ElementPlus.ElMessage.warning(tr('music.tNoAudio')); return; }
             pool.unshift(one);
             i = 0;
           }
@@ -10224,18 +10245,18 @@
         });
         async function probeMusicRow(row) {
           const url = row.url || '';
-          if (!url.startsWith('http')) { ElementPlus.ElMessage.info('无直接链接可探测'); return; }
+          if (!url.startsWith('http')) { ElementPlus.ElMessage.info(tr('music.tNoDirect')); return; }
           try {
             const r = await api('/api/music/probe', { method: 'POST', body: JSON.stringify({ url }) });
-            const mb = r.size ? (r.size/1048576).toFixed(2) + ' MB' : '未知';
-            ElementPlus.ElMessage.success(`大小 ${mb}` + (r.accept_ranges ? ' · 支持 Range' : ''));
+            const mb = r.size ? (r.size/1048576).toFixed(2) + ' MB' : tr('music.tUnknownSize');
+            ElementPlus.ElMessage.success(tr('music.tProbeSize', { mb: mb }) + (r.accept_ranges ? ' ' + tr('music.rangeSuffix') : ''));
           } catch (e) { ElementPlus.ElMessage.error(String(e.message || e)); }
         }
         // 换源：让后端到「匹配源」里的其他平台重新找这一首，只有判定确实是同一首歌才改写清单。
         async function switchMusicSource(rows) {
           const list = (rows || []).filter(r => r && r.id && !r.reference_only && !r.is_local);
           if (!list.length) {
-            ElementPlus.ElMessage.warning('这些行换不了源：本地音乐和无损参照都没有「换一条来路」这回事');
+            ElementPlus.ElMessage.warning(tr('music.tNoSwitchable'));
             return;
           }
           musicSwitching.value = musicSwitching.value.concat(list.map(r => r.id));
@@ -10255,8 +10276,8 @@
               const x = byId[row.id] || {};
               row.switch_fail = '';
               if (!x.ok) {
-                row.switch_fail = x.reason || '后端没回这一行的结论';
-                fails.push(`「${row.title || '（未知曲名）'}」—— ${row.switch_fail}`);
+                row.switch_fail = x.reason || tr('music.tNoVerdict');
+                fails.push(tr('music.switchFailLine', { title: row.title || tr('music.unknownTitle'), why: row.switch_fail }));
                 return;
               }
               const n = x.row || {};
@@ -10278,24 +10299,24 @@
                 // 换源把这一行换成另一条结果了：那个「与关键词的吻合度」是老的行算出来的，
                 // 留着不换就等于挂着一条对不上号的分数。同曲判定另在 switch_note 里写。
                 score: null, score_name: null, score_artist: null, score_time: null, score_reject: '',
-                switch_note: `从 ${x.from || '原平台'} 换成 ${x.to}（同曲判定 ${x.score} 分）`,
+                switch_note: tr('music.switchNote', { from: x.from || tr('music.origPlatform'), to: x.to, score: x.score }),
               });
             });
             const okN = list.length - fails.length;
-            const txt = `换源结束：${okN} 首已换成别的平台`
-              + (fails.length ? `，${fails.length} 首没换成，清单保持原样` : '')
-              + '（逐首结论见运行日志）';
+            const txt = tr('music.switchDone', { ok: okN })
+              + (fails.length ? tr('music.switchFailPart', { n: fails.length }) : '')
+              + tr('music.switchLogTail');
             if (okN && fails.length) ElementPlus.ElMessage.warning(txt);
             else if (okN) ElementPlus.ElMessage.success(txt);
-            else ElementPlus.ElMessage.warning(fails.length ? txt : '换源结束：没有结果');
+            else ElementPlus.ElMessage.warning(fails.length ? txt : tr('music.switchNone'));
             if (fails.length) {
               const esc = (t) => String(t).replace(/[&<>"']/g, (c) => (
                 { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
               ElementPlus.ElMessageBox.alert(
-                '<div class="unmatched-h">这些行没换成（判定不是同一首歌，或别的平台压根没这首）：</div>'
+                '<div class="unmatched-h">' + tr('music.unmatchedHead') + '</div>'
                 + `<div class="unmatched-l">${fails.map(esc).join('<br>')}</div>`,
-                '换源未成功的曲目',
-                { dangerouslyUseHTMLString: true, confirmButtonText: '知道了', customClass: 'unmatched-box' },
+                tr('music.unmatchedTitle'),
+                { dangerouslyUseHTMLString: true, confirmButtonText: tr('common.gotIt'), customClass: 'unmatched-box' },
               ).catch(() => {});
             }
           } catch (e) {
@@ -10308,36 +10329,36 @@
         function refHint(row) {
           const bits = [row.bit_depth ? row.bit_depth + 'bit' : '',
                         row.sampling_rate ? row.sampling_rate + 'kHz' : ''].filter(Boolean).join('/');
-          const parts = [row.real_source || '官方曲库元数据'];
+          const parts = [row.real_source || tr('music.refMetaFallback')];
           if (row.isrc) parts.push('ISRC ' + row.isrc);
           if (bits) parts.push(bits);
-          if (row.duration) parts.push('时长 ' + row.duration);
-          if (row.version) parts.push('版本标注「' + row.version + '」');
-          if (row.date) parts.push('发行 ' + row.date);
-          if (row.label) parts.push('厂牌 ' + row.label);
-          parts.push('只读，音频不从这一行下');
+          if (row.duration) parts.push(tr('music.hintDur', { v: row.duration }));
+          if (row.version) parts.push(tr('music.hintVersion', { v: row.version }));
+          if (row.date) parts.push(tr('music.hintDate', { v: row.date }));
+          if (row.label) parts.push(tr('music.hintLabel', { v: row.label }));
+          parts.push(tr('music.refReadOnly'));
           return parts.join(' · ');
         }
         function matchHint(row) {
           const line = row.match_accept || 85;
-          const f = (v) => (v === null || v === undefined) ? '未参与' : String(Math.round(v));
-          const parts = [`这一条与你输入的关键词的吻合度：${row.score} / 100（录取线 ${line}）`];
-          parts.push(`曲名 ${f(row.score_name)} · 歌手 ${f(row.score_artist)} · 时长 ${f(row.score_time)}`);
-          if (row.score_reject) parts.push('挡下来的原因：' + row.score_reject);
-          parts.push('这一分管的是「对不对得上你输入的关键词」。要判「与某条标注是不是同一版录音」得有时长可比，'
-                     + '换源与查重走的是那一套管');
-          parts.push('阈值写死在后端 music_search 的 MATCH_* 里，目前不能在界面改');
+          const f = (v) => (v === null || v === undefined) ? tr('music.scoreNA') : String(Math.round(v));
+          const parts = [tr('music.matchHintHead', { score: row.score, line: line })];
+          parts.push(tr('music.matchHintParts', { name: f(row.score_name), artist: f(row.score_artist), time: f(row.score_time) }));
+          if (row.score_reject) parts.push(tr('music.rejectWhy') + row.score_reject);
+          parts.push(tr('music.matchHintScope')
+                     + tr('music.matchHintSwitch'));
+          parts.push(tr('music.matchHintThresh'));
           return parts.join('\n');
         }
         function openRefLink(row) {
           const url = String(row.url || '');
-          if (!url.startsWith('http')) { ElementPlus.ElMessage.info('这一行没有官方页面链接'); return; }
+          if (!url.startsWith('http')) { ElementPlus.ElMessage.info(tr('music.tNoOfficial')); return; }
           window.open(url, '_blank', 'noopener');
         }
         async function scanLocalMusic() {
           try {
             const r = await api('/api/music/local_scan', { method: 'POST', body: JSON.stringify({}) });
-            ElementPlus.ElMessage.success(`本地索引 ${r.count || 0} 首，索引文件在 ${r.index_file || '（未返回）'}`);
+            ElementPlus.ElMessage.success(tr('music.localScanIdx', { n: r.count || 0, file: r.index_file || tr('music.noneReturned') }));
           } catch (e) { ElementPlus.ElMessage.error(String(e.message || e)); }
         }
         // 界面上这一份就是本次要交给后端的：不发给下载接口的话，后端只会读上次保存的值，
@@ -10375,7 +10396,7 @@
                 },
               }),
             });
-            ElementPlus.ElMessage.success('策略与模板已保存');
+            ElementPlus.ElMessage.success(tr('music.strategySaved'));
           } catch (e) {
             ElementPlus.ElMessage.error(String(e.message || e));
           }
@@ -10392,21 +10413,21 @@
               body: JSON.stringify({ music_playlist_mode: musicPlaylistMode.value }),
             });
           } catch (e) {
-            ElementPlus.ElMessage.error('保存解析方式失败：' + String(e.message || e));
+            ElementPlus.ElMessage.error(tr('music.plModeSaveFail') + String(e.message || e));
           }
         }
         async function parseMusicPlaylist() {
           const url = (musicPlaylistUrl.value || '').trim();
           if (!url.startsWith('http')) {
-            ElementPlus.ElMessage.warning('请粘贴歌单或单曲链接');
+            ElementPlus.ElMessage.warning(tr('music.tNeedPlUrl'));
             return;
           }
           const quality = musicPlaylistMode.value === 'quality';
           musicSearching.value = true;
           ElementPlus.ElMessage.info({
             message: quality
-              ? '高音质模式：musicdl 逐曲取地址，几十首通常要 1-3 分钟，最长等 15 分钟'
-              : '正在列出曲目：歌单（yt-dlp 优先，通常几秒）或单曲链接（只取这一首的元数据）；酷狗/咪咕/Spotify 这类只有 musicdl 认，需要逐曲等',
+              ? tr('music.parseQuality')
+              : tr('music.parseFast'),
             duration: 8000,
           });
           try {
@@ -10423,16 +10444,16 @@
             if ((r.count || 0) > 0) {
               const single = (engine || '').endsWith('-single');
               const note = engine === 'yt-dlp'
-                ? '（yt-dlp 列曲目，下载走链接）'
+                ? tr('music.noteYtDlp')
                 : (single || engine === 'spotify-list'
-                    ? '（只列了曲目，下载时才按曲名去勾选的源里匹配地址）'
-                    : '（musicdl 逐曲取址）');
+                    ? tr('music.noteListOnly')
+                    : tr('music.noteMusicdl'));
               const dup = (r.diag && r.diag.dup_merged) || 0;
-              ElementPlus.ElMessage.success(`${single ? '单曲' : '歌单'} ${r.count} 首${note}`
-                + (dup ? `，已合并 ${dup} 首重复（同一首歌排了多遍，下载只下一遍）` : ''));
+              ElementPlus.ElMessage.success(tr('music.parsedN', { what: single ? tr('music.typeSong') : tr('music.typePlaylist'), n: r.count, note: note })
+                + (dup ? tr('music.dupMerged', { n: dup }) : ''));
             } else {
               ElementPlus.ElMessage.error({
-                message: `解析失败：${hint || '各源都没返回曲目，详见下方日志'}`,
+                message: tr('music.parseFail', { why: hint || tr('music.parseFailWhy') }),
                 duration: 8000,
               });
             }
@@ -10468,11 +10489,11 @@
             const miss = (s.match && s.match.missed) || [];
             const lazy = (s.match && s.match.unsearched) || [];
             const hasList = miss.length + lazy.length > 0;
-            const txt = `${favCtx ? '收藏清单下载结束' : '多选下载结束'}：成功 ${s.ok || 0} 首`
-              + (skip ? `，${skip} 首没取到地址${hasList ? '（清单见下）' : '（原因见运行日志）'}` : '')
-              + (dupSkip ? `，${dupSkip} 首是重复排的、只下了一遍` : '')
-              + (have ? `，${have} 首目录里已有同名成品、没再下一份` : '')
-              + `，用时 ${Math.round(s.elapsed_s || 0)} 秒`;
+            const txt = tr('music.batchDoneHead', { ctx: favCtx ? tr('music.favDoneHead') : tr('music.selDoneHead'), ok: s.ok || 0 })
+              + (skip ? tr('music.skipPart', { n: skip, tail: hasList ? tr('music.skipListTail') : tr('music.skipLogTail') }) : '')
+              + (dupSkip ? tr('music.dupSkipPart', { n: dupSkip }) : '')
+              + (have ? tr('music.haveSkipPart', { n: have }) : '')
+              + tr('music.elapsedPart', { s: Math.round(s.elapsed_s || 0) });
             if (s.ok) ElementPlus.ElMessage.success(txt);
             else ElementPlus.ElMessage.warning(txt);
             if (hasList) showUnmatched(miss, lazy, (s.match && s.match.sources) || '');
@@ -10484,15 +10505,15 @@
           { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
         // 「跳过已下载」到底跳了哪几首、凭什么算同一首：只报数量的话没人知道自己少下了什么
         function showAlreadyHave(list) {
-          const rows = (list || []).map(x => `${x.title || '（未知曲名）'} → ${String(x.path || '').split(/[\\/]/).pop()}`
-            + `（同一首判定 ${Math.round(x.score || 0)} 分，目录里那首叫「${x.local_title || '（无标签）'}」）`);
+          const rows = (list || []).map(x => `${x.title || tr('music.unknownTitle')} → ${String(x.path || '').split(/[\\/]/).pop()}`
+            + tr('music.haveScoreLine', { score: Math.round(x.score || 0), name: x.local_title || tr('music.noTag') }));
           if (!rows.length) return;
           ElementPlus.ElMessageBox.alert(
-            `<div class="unmatched-h">下载目录里已经有一版，这次没有下第二份的 ${rows.length} 首</div>`
+            '<div class="unmatched-h">' + tr('music.haveHead', { n: rows.length }) + '</div>'
             + `<div class="unmatched-l">${rows.map(escHtml).join('、')}</div>`
-            + `<div class="unmatched-h">判定按曲名 + 歌手 + 时长打分，不看文件名；要重下这一批就取消勾选清单上方的「跳过已下载的歌」</div>`,
-            '目录里已经有同一首歌',
-            { dangerouslyUseHTMLString: true, confirmButtonText: '知道了', customClass: 'unmatched-box' },
+            + '<div class="unmatched-h">' + tr('music.haveHint') + '</div>',
+            tr('music.haveTitle'),
+            { dangerouslyUseHTMLString: true, confirmButtonText: tr('common.gotIt'), customClass: 'unmatched-box' },
           ).catch(() => {});
         }
         // 匹配那一轮没找到 / 没轮到搜的歌整份列出来：只报前几首会让人以为就少这几首
@@ -10502,10 +10523,10 @@
               + `<div class="unmatched-l">${rows.map(escHtml).join('、')}</div>`
             : '';
           ElementPlus.ElMessageBox.alert(
-            block(`在 ${srcNames || '勾选的匹配源'} 里按曲名没找到同一首歌，已跳过 ${miss.length} 首`, miss)
-            + block(`本轮没轮到搜 ${lazy.length} 首（整轮时间预算用满，不是没找到），再下一次即可`, lazy),
-            '按曲名未匹配的曲目',
-            { dangerouslyUseHTMLString: true, confirmButtonText: '知道了', customClass: 'unmatched-box' },
+            block(tr('music.unmatchedBlock', { src: srcNames || tr('music.defaultMatchSrc'), n: miss.length }), miss)
+            + block(tr('music.lazyBlock', { n: lazy.length }), lazy),
+            tr('music.unmatchedNameTitle'),
+            { dangerouslyUseHTMLString: true, confirmButtonText: tr('common.gotIt'), customClass: 'unmatched-box' },
           ).catch(() => {});
         }
         async function downloadMusicSelected() {
@@ -10525,7 +10546,7 @@
                   quality_spec: musicQualityBody(),
                 }),
               });
-              ElementPlus.ElMessage.success(r.message || 'musicdl 下载中');
+              ElementPlus.ElMessage.success(r.message || tr('music.dlRunning'));
               watchMusicBatch(r.started_at);
             }
             if (urls.length) {
@@ -10533,7 +10554,7 @@
                 method: 'POST',
                 body: JSON.stringify({ urls, cookies: musicCookies.value || '' }),
               });
-              ElementPlus.ElMessage.success(`已入队 ${urls.length} 首`);
+              ElementPlus.ElMessage.success(tr('music.queuedN', { n: urls.length }));
               page.value = 'queue';
               loadTasks();
             }
@@ -10561,7 +10582,7 @@
             };
             const r = await api('/api/music/download', { method: 'POST', body: JSON.stringify(body) });
             ElementPlus.ElMessage.success(
-              r.message || (r.mode === 'musicdl' ? 'musicdl 下载中' : `已入队 ${r.count || 1} 首`)
+              r.message || (r.mode === 'musicdl' ? tr('music.dlRunning') : tr('music.queuedN', { n: r.count || 1 }))
             );
             if (r.mode === 'queue') {
               page.value = 'queue';
@@ -10587,7 +10608,7 @@
             musicFavMissing.value = r.missing || 0;
             musicFavSelected.value = [];
           } catch (e) {
-            ElementPlus.ElMessage.error('收藏清单读取失败: ' + e.message);
+            ElementPlus.ElMessage.error(tr('music.favLoadFail', { msg: e.message }));
           }
         }
         function onMusicFavSelection(rows) {
@@ -10596,7 +10617,7 @@
         async function addMusicFav(rows) {
           const list = (rows || []).filter(r => r && !r.reference_only && !r.is_local);
           if (!list.length) {
-            ElementPlus.ElMessage.warning('无损参照和本地成品收不进收藏清单：这一单要能整单下');
+            ElementPlus.ElMessage.warning(tr('music.tFavRefused'));
             return;
           }
           try {
@@ -10605,11 +10626,11 @@
               body: JSON.stringify({ rows: list.map(x => ({ ...x })) }),
               uiName: '收进收藏清单',
             });
-            const bits = [`已收 ${r.added || 0} 首`];
-            if (r.duplicated) bits.push(`${r.duplicated} 首清单里已有`);
-            if (r.refused) bits.push(`${r.refused} 行是参照或本地成品、没收`);
-            if (r.no_title) bits.push(`${r.no_title} 行没有曲名、没收`);
-            const txt = bits.join('，') + `，清单共 ${r.total || 0} 首`;
+            const bits = [tr('music.favAdded', { n: r.added || 0 })];
+            if (r.duplicated) bits.push(tr('music.favDuplicated', { n: r.duplicated }));
+            if (r.refused) bits.push(tr('music.favRefused', { n: r.refused }));
+            if (r.no_title) bits.push(tr('music.favNoTitle', { n: r.no_title }));
+            const txt = bits.join(tr('music.commaSep')) + tr('music.favTotalTail', { n: r.total || 0 });
             (r.added ? ElementPlus.ElMessage.success : ElementPlus.ElMessage.info)(txt);
             await loadMusicFavs();
           } catch (e) {
@@ -10623,7 +10644,7 @@
             const r = await api('/api/music/favorites/remove', {
               method: 'POST', body: JSON.stringify({ ids }), uiName: '从收藏清单删除',
             });
-            ElementPlus.ElMessage.success(`已删除 ${r.removed} 首，清单还剩 ${r.total} 首`);
+            ElementPlus.ElMessage.success(tr('music.favRemoved', { n: r.removed, total: r.total }));
             await loadMusicFavs();
           } catch (e) {
             ElementPlus.ElMessage.error(String(e.message || e));
@@ -10634,8 +10655,8 @@
           if (!n) return;
           try {
             await ElementPlus.ElMessageBox.confirm(
-              `确定清空收藏清单里的 ${n} 首？只清这份清单，已经下载到目录里的文件不会被动。`,
-              '清空收藏清单', { type: 'warning', confirmButtonText: '清空', cancelButtonText: '取消' });
+              tr('music.favClearConfirm', { n: n }),
+              tr('music.favClearTitle'), { type: 'warning', confirmButtonText: tr('common.clear'), cancelButtonText: tr('common.cancel') });
           } catch (_) { return; }
           await removeMusicFav(musicFavItems.value);
         }
@@ -10645,7 +10666,7 @@
         async function switchMusicFav(rows) {
           const list = (rows || []).filter(r => r && r.slot && r.resolved === 'ready');
           if (!list.length) {
-            ElementPlus.ElMessage.warning('勾选的行里没有可直接换源的歌 —— 「要重新找地址」的行先下这一次，会按曲名在「匹配源」里重新取址');
+            ElementPlus.ElMessage.warning(tr('music.tFavNoSwitch'));
             return;
           }
           musicFavSwitching.value = musicFavSwitching.value.concat(list.map(r => r.slot));
@@ -10660,13 +10681,14 @@
               uiName: '收藏清单换源',
             });
             const fails = (r.results || []).filter(x => !x.ok)
-              .map(x => `「${x.title || x.id}」—— ${x.reason || '其他源里没有过闸门的结果'}`);
+              .map(x => tr('music.favFailLine', { name: x.title || x.id, why: x.reason || tr('music.noGateResult') }));
             if (r.switched) {
-              ElementPlus.ElMessage.success(`已换 ${r.switched} 首` + (fails.length ? `，${fails.length} 首没换成` : ''));
+              ElementPlus.ElMessage.success(tr('music.favSwitched', { n: r.switched }) + (fails.length ? tr('music.favSwitchFailPart', { n: fails.length }) : ''));
             } else {
-              ElementPlus.ElMessage.warning(`都没换成：${fails.slice(0, 3).join('；') || '其他源里没有过闸门的结果'}`);
+              ElementPlus.ElMessage.warning(tr('music.noneSwitched', { why: fails.slice(0, 3).join(tr('music.reasonSep')) || tr('music.noGateResult') }));
             }
-            await loadMusicFavs();   // 换到的那条由后端同步进清单行
+            // 换到的那条由后端同步进清单行
+            await loadMusicFavs();
           } catch (e) {
             ElementPlus.ElMessage.error(String(e.message || e));
           } finally {
@@ -10691,8 +10713,8 @@
               }),
               uiName: (rows && rows.length) ? '下载收藏清单勾选行' : '收藏清单整单下载',
             });
-            ElementPlus.ElMessage.success((r.message || 'musicdl 下载中')
-              + (r.reminted ? ` —— 其中 ${r.reminted} 首要先按曲名重新找地址` : ''));
+            ElementPlus.ElMessage.success((r.message || tr('music.dlRunning'))
+              + (r.reminted ? ' ' + tr('music.remintedPart', { n: r.reminted }) : ''));
             watchMusicBatch(r.started_at, { slots: r.slots || [] });
           } catch (e) {
             ElementPlus.ElMessage.error(String(e.message || e));
@@ -10726,20 +10748,20 @@
               method: 'POST',
               body: JSON.stringify({ mirror: settings.value.pip_mirror || '', force: wasReady }),
             });
-            ElementPlus.ElMessage.info(r.message || '正在后台处理 musicdl，进度见运行日志');
+            ElementPlus.ElMessage.info(r.message || tr('music.tInstallBg'));
             let done = false;
             for (let i = 0; i < 20; i++) {
               await new Promise((res) => setTimeout(res, 5000));
               const st = await ensureMusicStatus().catch(() => null);
               if (st && st.musicdl && (st.musicdl_version || '') !== oldVer) {
-                ElementPlus.ElMessage.success('musicdl ' + (wasReady ? '已更新' : '安装完成') + ' · v' + (st.musicdl_version || '?'));
+                ElementPlus.ElMessage.success('musicdl ' + (wasReady ? tr('music.upgraded') : tr('music.installed')) + ' · v' + (st.musicdl_version || '?'));
                 done = true;
                 break;
               }
             }
             if (!done) {
               ElementPlus.ElMessage.info(
-                wasReady ? '版本未变化，可能已是最新版；详情见运行日志' : '安装仍未完成，请查看运行日志中的 pip 输出'
+                wasReady ? tr('music.installSame') : tr('music.installFail')
               );
             }
           } catch (e) {

@@ -278,7 +278,9 @@ CJK = re.compile(r"[\u4e00-\u9fff]")
 latin = re.compile(r"[A-Za-z]")
 # 例外：zh 原话里本来就没有汉字的那几条 —— 「aria2c：」是工具名加全角冒号，
 # 后面接的是本机路径。给它编一句中文反而是我新写的话，不是界面原本那句
-F6_OK = {"bt.binFound"}
+# 音乐页那三条是纯拼接模板（「{name}」—— {why}、统计的（{s}））：值里只有全角括号、破折号与占位符，
+# 翻的是英文一侧的标点（（）→ () 、「」—— → — ），汉字本来就不该有
+F6_OK = {"bt.binFound", "music.favFailLine", "music.statsWrap", "music.switchFailLine"}
 zh_plain = [k for k, v in DICT["zh"].items()
             if not CJK.search(str(v)) and latin.search(str(v)) and k not in F6_OK]
 ck("F6 zh 那份每条要么含中文、要么只是不含字母的标点（词表里的分隔符）——不许混进其实是英文的条目",
@@ -389,7 +391,7 @@ def strip_comments(src: str) -> str:
     return re.sub(r"<!--.*?-->", "", src, flags=re.S)
 
 
-PAGES_DONE = ["home", "queue", "bt", "files", "subs"]   # ← 每翻完一页把页名加进来；登记了却没翻干净会被 I3 判红
+PAGES_DONE = ["home", "queue", "bt", "files", "subs", "music"]   # ← 每翻完一页把页名加进来；登记了却没翻干净会被 I3 判红
 ck("I2 PAGES_DONE 都是真有的页", all(page_block(k) for k in PAGES_DONE),
    str([k for k in PAGES_DONE if not page_block(k)]))
 for _pg in PAGES_DONE:
@@ -432,6 +434,18 @@ PAGE_HANDLERS = {
     "subs": ["addSub", "removeSub", "toggleSub", "setSubAuto", "scanOneSub", "openSubBackfill",
              "runSubBackfill", "scanAllSubs", "openSubPlan", "closeSubPlan", "loadSubPlan",
              "runSubPlanNow", "clearSubArchive", "openSubRules", "saveSubRules", "subStatus"],
+    # 音乐页：搜索表 + 歌单解析 + 自建收藏清单 + musicdl 安装。选项表的标签这次改成渲染时现取
+    # （musicQualityOptions / musicPresetOptions 都换成了 computed），所以「切语言不用重新问后端」，
+    # 后端 quality_options 只留原始值在 musicQualityRaw 里。ensureMusicStatus 也登记：它以前在脚本里
+    # 拼「16bit 以上」那几张表。startNeteaseQr / pollNeteaseQr 在本页脚本里但不归这批（设置页那一批）。
+    "music": ["ensureMusicStatus", "qualitySpecLabel", "searchMusic", "batchSearchDownload",
+              "fetchRowLyrics", "playerLoad", "playFrom", "previewMusicRow", "probeMusicRow",
+              "switchMusicSource", "refHint", "matchHint", "openRefLink", "scanLocalMusic",
+              "saveMusicStrategy", "applyMusicPreset", "saveMusicPlaylistMode", "parseMusicPlaylist",
+              "watchMusicBatch", "showAlreadyHave", "showUnmatched", "onMusicSelection",
+              "downloadMusicSelected", "downloadMusicRow", "onMusicSortChange", "onMusicFavSelection",
+              "addMusicFav", "removeMusicFav", "clearMusicFav", "previewMusicFav", "switchMusicFav",
+              "downloadMusicFav", "loadMusicFavs", "installMusicdl"],
 }
 # 允许留中文的处理器：这些行比的是后端发来的数据（预设名、占位标题），翻成英文这行判断就失效。
 # 「允许留下」不等于「不用管」——残留的行数和那几句都钉死，改了名字或悄悄多出一行都判红
@@ -462,9 +476,10 @@ _registered = {f for _fns in PAGE_HANDLERS.values() for f in _fns}
 ck("I5b 每个允许留中文的处理器都登记在某一页里（漏登记就没人盯它了）",
    all(f in _registered for f in RESIDUE), str([f for f in RESIDUE if f not in _registered]))
 # 埋点那一句（uiName / logAction 的动作名）是发给后端进运行日志的记录，排在 ACTION_NAMES 那一批再收。
-# I5 不算它，但每一页有几条要钉住：悄悄多出一条埋点，或者那一批改完忘了删这里的名额，都会判红
-MAIDIAN = re.compile(r"""uiName: '|logAction\('|logSort\('""")
-MAIDIAN_EXPECT = {"home": 0, "queue": 0, "bt": 7, "files": 4, "subs": 0}
+# I5 不算它，但每一页有几条要钉住：悄悄多出一条埋点，或者那一批改完忘了删这里的名额，都会判红。
+# uiName 认到冒号为止：音乐页那条是三元表达式（勾选行 / 整单两种说法），值不写在引号里，也只算一行。
+MAIDIAN = re.compile(r"""uiName:|logAction\('|logSort\('""")
+MAIDIAN_EXPECT = {"home": 0, "queue": 0, "bt": 7, "files": 4, "subs": 0, "music": 5}
 # 来源类型那一列的名字与提示：键不是写在 tr(' …') 里而是存在表里（labelKey / hintKey），
 # 上面那遍字面扫抓不到它们，所以单独比一遍 —— 少哪一份英文界面就印键名
 kind_meta = block(HTML, "const SUB_KIND_META = {", "};")

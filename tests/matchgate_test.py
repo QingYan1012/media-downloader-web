@@ -7,6 +7,7 @@ r"""同曲打分闸门：五个维度各自打分 + 硬阈值，谁挡的要说�
 from __future__ import annotations
 
 import inspect
+import re
 import sys
 from pathlib import Path
 
@@ -287,18 +288,28 @@ SEG = SRV[SRV.index('def api_music_search'):SRV.index('def api_music_playlist')]
 ck("G6 搜索接口把 items 原样交出去，不逐字段重建（重建会把新键静默吞掉，ConfigBody 那类漏口）",
    '"items": items' in SEG, "接口那一层在改行形状")
 HTML = (Path(M.__file__).resolve().parent / "static" / "index.html").read_text(encoding="utf-8", errors="replace")
+# 下面 G8~G10 钉的是「屏幕上看得见那几句」。音乐页翻进词表以后，句子搬到 static/i18n.js，
+# 模板里只剩键名 —— 所以这里连着读一份 zh 词表，比的仍然是那几句原话：切语言不该改掉这条线。
+I18N_TXT = (Path(M.__file__).resolve().parent / "static" / "i18n.js").read_text(encoding="utf-8", errors="replace")
+_zh_blob = I18N_TXT[I18N_TXT.index("    zh: {"):I18N_TXT.index("\n    en: {")]
+ZH = dict(re.findall(r"""['"]?([A-Za-z][\w.-]*)['"]?:\s*'((?:[^'\\]|\\.)*)'""", _zh_blob))
 ck("G7 来源列有分数徽章，被挡的标红、过线的标绿",
    'matchHint(row)">{{ row.score }}</el-tag>' in HTML
    and "row.score_reject ? 'danger'" in HTML, "徽章没接到界面上")
 ck("G8 徽章的悬浮里写得出三项子分与录取线",
    "function matchHint" in HTML
-   and "曲名 ${f(row.score_name)} · 歌手 ${f(row.score_artist)} · 时长 ${f(row.score_time)}" in HTML
-   and "（录取线 ${line}）" in HTML)
+   and "tr('music.matchHintParts', { name: f(row.score_name), artist: f(row.score_artist), time: f(row.score_time) })" in HTML
+   and ZH.get("music.matchHintParts") == "曲名 {name} · 歌手 {artist} · 时长 {time}"
+   and "（录取线 {line}）" in ZH.get("music.matchHintHead", ""),
+   "三项子分或录取线从悬浮里掉了")
 ck("G9 拒因也在屏幕上：被挡的行多一个「不像」，鼠标停在上面看整句",
    'v-if="row.score_reject"' in HTML
-   and ':title="row.score_reject">不像</span>' in HTML)
+   and ':title="row.score_reject">{{ tr(\'music.flagBad\') }}</span>' in HTML
+   and ZH.get("music.flagBad") == "不像", "「不像」这个徽章或它的悬浮没了")
 ck("G10 表头上方有一句图例，讲清这个分只管对不对得上关键词",
-   "v-if=\"musicHasScore\"" in HTML and "{{ musicScoreLine }}" in HTML)
+   'v-if="musicHasScore"' in HTML
+   and "{{ tr('music.scoreTip', { line: musicScoreLine }) }}" in HTML
+   and "{line}" in ZH.get("music.scoreTip", ""), "图例不在了，或不再点出录取线")
 ck("G11 换源后这一行的旧分要清掉：行都换成另一条了，分数不能跟着走",
    "score: null, score_name: null, score_artist: null, score_time: null, score_reject: ''" in HTML)
 ck("G12 matchHint 与两个 computed 都在 setup 的 return 里挂着（漏了就渲染成空白）",
