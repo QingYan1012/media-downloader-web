@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import errno
 import hashlib
 import hmac
 import io
@@ -23750,8 +23751,76 @@ def api_events_stats():
     return {"ok": True, "clients": SSE_HUB.clients(), "dropped": SSE_HUB.dropped, "tick_sec": SSE_TICK_SEC}
 
 
+def _probe_host(host: str) -> str:
+    """预检之后要拿哪个地址去问 /api/health：绑 0.0.0.0 / :: 时那个地址不能当客户端目标。"""
+    h = str(host or "").strip()
+    return "127.0.0.1" if h in ("", "0.0.0.0", "::", "*", "::ffff") else h
+
+
+def port_taken(host: str, port: int) -> bool:
+    """启动前先自己试绑一次。撞端口时 uvicorn 抛的是 Errno 10048，那行很容易被人看成「卡住了」
+       —— 这台程序启动成功后控制台本来就只有横幅四行，不再打任何字。"""
+    import socket
+    fam = socket.AF_INET6 if ":" in str(host or "") else socket.AF_INET
+    s = socket.socket(fam, socket.SOCK_STREAM)
+    try:
+        s.bind((host, int(port)))
+        return False
+    except OSError as e:
+        # 只认「地址被占」；别的错（地址写错之类）留给 uvicorn 自己报，别在这里替它下结论
+        return getattr(e, "errno", None) in (errno.EADDRINUSE, 10048)
+    finally:
+        s.close()
+
+
+def port_taken_by_us(host: str, port: int, timeout_s: float = 1.5) -> bool:
+    """占着这个端口的是不是本程序另一台：只有 /api/health 答 {ok:true} 才算。
+       认这一条是因为「已经开着一台，再开第二台」是最常见的撞车，那种情况该劝人用原来那台，
+       而不是让人去关一个他找不到的程序。/api/health 只读内存里的队列计数，不会顺手跑 ffmpeg。"""
+    try:
+        with requests.get("http://%s:%d/api/health" % (_probe_host(host), int(port)),
+                          timeout=timeout_s) as r:
+            return bool(r.ok) and bool(r.json().get("ok"))
+    except Exception:
+        return False
+
+
+def _boot_ready_announcer(host: str, port: int) -> None:
+    """服务真答话了再打「已就绪」那一行：横幅在 uvicorn 绑定之前就打了，光看它不知道端口起来了没有。"""
+    def _run():
+        t0 = time.time()
+        while time.time() - t0 < 60:
+            if port_taken_by_us(host, port, timeout_s=1.0):
+                print("  服务已就绪：http://%s:%d 现在能访问了（这个窗口保持开着；Ctrl+C 停止）"
+                      % (_probe_host(host), int(port)), flush=True)
+                return
+            time.sleep(0.3)
+        # 60 秒还没答话：多半是端口没起来（上面已经拦过一道），这里不再补一句，免得和真错误信息打架
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
 def main():
     import uvicorn
+
+    host = os.environ.get("MEDIADOWNLOADER_HOST") or "127.0.0.1"
+    try:
+        port = int(os.environ.get("MEDIADOWNLOADER_PORT") or 8765)
+    except ValueError:
+        port = 8765
+    if port_taken(host, port):
+        by_us = port_taken_by_us(host, port)
+        tip = ("  这台机器上已经开着一个多媒体下载器：http://%s:%d 就是它，直接用那一个就行。"
+               % (_probe_host(host), port)) if by_us else \
+              ("  端口 %d 被别的程序占着（占它的不是本程序，它没答 /api/health）。" % port)
+        print("=" * 50)
+        print("  多媒体下载器 Web 版 (Element Plus) —— 没能启动")
+        print(tip)
+        print("  要让这一台也起来：设环境变量 MEDIADOWNLOADER_PORT 换个端口再启动。")
+        print("=" * 50)
+        log_mgr.log("端口 %d 已被占用，本次启动退出（%s）"
+                    % (port, "同一台机器上已有一个实例在跑" if by_us else "被别的程序占着"), "warning")
+        raise SystemExit(1)
 
     # 启动时按配置放宽 SSL（解决 bytefcdn 等 Hostname mismatch）
     if cfg.data.get("nocheckcertificate", True) is not False:
@@ -23809,16 +23878,14 @@ def main():
             log_mgr.log(f"启动时拉起 PO Token 服务端失败: {e}", "warning")
 
     threading.Thread(target=_boot_pot_server, daemon=True).start()
-    host = os.environ.get("MEDIADOWNLOADER_HOST") or "127.0.0.1"
-    try:
-        port = int(os.environ.get("MEDIADOWNLOADER_PORT") or 8765)
-    except ValueError:
-        port = 8765
     log_mgr.log(f"Web 服务启动 | FFmpeg={ffmpeg_mgr.version()} | yt-dlp={engine.check_ytdlp()}")
     print("=" * 50)
     print("  多媒体下载器 Web 版 (Element Plus)")
     print(f"  打开浏览器访问: http://{host}:{port}")
     print("=" * 50)
+    # 横幅之后 uvicorn 那句「Uvicorn running on」是 INFO，被下面的 log_level="warning" 压掉了，
+    # 所以健康启动的控制台到这四行就没字了 —— 看着跟卡住一模一样。补一句真答过话的为准
+    _boot_ready_announcer(host, port)
     try:
         # timeout_graceful_shutdown 是容器/服务化的必需项：SSE 进度流（/api/events）平时一直挂着，
         # uvicorn 默认会等到所有连接自己断开才退出，docker stop 于是等满超时被 SIGKILL，
