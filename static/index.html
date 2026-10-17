@@ -1945,9 +1945,11 @@
                           <el-input v-model="opts.playlist_items" :placeholder="tr('home.itemsPh')" size="small" style="width:200px" clearable></el-input>
                         </span>
                       </div>
+                      <el-checkbox v-model="opts.playlist_subdir">{{ tr('home.playlistSubdir') }}</el-checkbox>
                       <el-checkbox v-model="opts.is_live">{{ tr('home.isLive') }}</el-checkbox>
                       <el-checkbox v-model="opts.use_hls_engine">{{ tr('home.hlsEngine') }}</el-checkbox>
                     </div>
+                    <div class="hint">{{ tr('home.playlistSubdirHint') }}</div>
                   </div>
                 </div>
               </div>
@@ -4459,7 +4461,12 @@
                   <div style="margin-top:12px">
                     <div class="section-title">文件名模板</div>
                     <el-input size="small" v-model="settings.filename_template" placeholder="%(title).80B [%(id)s].%(ext)s" clearable></el-input>
-                    <div class="hint">yt-dlp 模板，例如 %(uploader)s/%(title)s.%(ext)s</div>
+                    <div class="hint">yt-dlp 模板，例如 %(title).80B [%(id)s].%(ext)s；模板里的「/」「\」会被换成「_」，所以这里写不出子目录，整批下载要分堆请勾下面那项</div>
+                  </div>
+                  <div style="margin-top:12px">
+                    <div class="section-title">合集落点</div>
+                    <el-checkbox v-model="settings.playlist_subdir">整批下合集 / 播放列表时，先在下载目录里建一层同名文件夹</el-checkbox>
+                    <div class="hint">文件夹名取合集自己的标题（Windows 禁字符换掉、超 60 字截断，不加编号），加在这一趟原本的落点下面：下载目录、或自动分类规则命中的那个子目录。只有整批下合集那一趟生效，单条下载与直播录制照旧平铺；改名或取消勾选只影响以后下的内容，已经下好的文件不搬。</div>
                   </div>
                 </div>
                 
@@ -6024,6 +6031,8 @@
           skip_downloaded: true,
           verify_download: true,
           allow_playlist: false,
+          playlist_subdir: false,
+          playlist_folder: '',
           playlist_start: 0,
           playlist_end: 0,
           playlist_items: '',
@@ -6220,6 +6229,7 @@
           azure_translator_region: 'eastasia',
           azure_translator_endpoint: 'https://api.cognitive.microsofttranslator.com',
           filename_template: '%(title).80B [%(id)s].%(ext)s',
+          playlist_subdir: false,
           write_description: false,
           write_info_json: false,
           write_sub_files: true,
@@ -7676,6 +7686,9 @@
             opts.value.format = data.format || 'mkv';
             opts.value.embed_sub = data.embed_sub !== false;
             opts.value.write_sub_files = data.write_sub_files !== false;
+            // 合集建夹这一格后端一直在读：不回填就会显示默认值，再点一次保存把存好的冲掉
+            opts.value.playlist_subdir = !!data.playlist_subdir;
+            settings.value.playlist_subdir = !!data.playlist_subdir;
             opts.value.audio_only = !!data.audio_only;
             const raw = data.subtitle_langs || 'zh-Hans,zh-CN,zh,zh-Hant,zh-TW';
             opts.value.subtitle_langs = raw;
@@ -12259,18 +12272,25 @@
         async function downloadAllEntries() {
           if (!mediaInfo.value || !mediaInfo.value.entries || !mediaInfo.value.entries.length) return;
           const urls = mediaInfo.value.entries.map(e => e.url).filter(u => u && u.startsWith('http'));
-          if (!urls.length) {
-            // 无单条链接时整表下载
-            urlText.value = mediaInfo.value.webpage_url || '';
-            opts.value.allow_playlist = true;
+          // 逐条链接入队时容器已经不在手上了，合集名由解析页这一份标题带过去
+          opts.value.playlist_folder = mediaInfo.value.title || '';
+          try {
+            if (!urls.length) {
+              // 无单条链接时整表下载
+              urlText.value = mediaInfo.value.webpage_url || '';
+              opts.value.allow_playlist = true;
+              page.value = 'home';
+              await startDownload();
+              return;
+            }
+            urlText.value = urls.join('\n');
+            opts.value.allow_playlist = false;
             page.value = 'home';
             await startDownload();
-            return;
+          } finally {
+            // 用完清空：下一次单条下载不该被上一批的合集名带进文件夹
+            opts.value.playlist_folder = '';
           }
-          urlText.value = urls.join('\n');
-          opts.value.allow_playlist = false;
-          page.value = 'home';
-          await startDownload();
         }
 
         function onEntrySelection(rows) {
@@ -12312,10 +12332,16 @@
           if (urls.length < rows.length) {
             ElementPlus.ElMessage.warning('其中 ' + (rows.length - urls.length) + ' 条没有单条链接，已跳过');
           }
-          urlText.value = urls.join('\n');
-          opts.value.allow_playlist = false;
-          page.value = 'home';
-          await startDownload();
+          // 勾出来的这一段仍然属于同一个合集，落点跟「全部加入队列」同一口径
+          opts.value.playlist_folder = mediaInfo.value.title || '';
+          try {
+            urlText.value = urls.join('\n');
+            opts.value.allow_playlist = false;
+            page.value = 'home';
+            await startDownload();
+          } finally {
+            opts.value.playlist_folder = '';
+          }
         }
 
         async function downloadEntry(row) {
@@ -12331,8 +12357,14 @@
             ElementPlus.ElMessage.warning('该条目无可用链接');
             return;
           }
+          // 逐集补下也归进同一合集：否则一单的东西会分在文件夹内外两处
+          opts.value.playlist_folder = mediaInfo.value.title || '';
           page.value = 'home';
-          await startDownload();
+          try {
+            await startDownload();
+          } finally {
+            opts.value.playlist_folder = '';
+          }
         }
 
         async function copyText(t) {
@@ -12752,6 +12784,7 @@ const CFG_LABELS = {
           "openai_base_url": "OpenAI Base URL",
           "openai_model": "OpenAI 模型",
           "pip_mirror": "PyPI 镜像",
+          "playlist_subdir": "整批下合集时建一层同名文件夹",
           "plugins_enabled": "启用 URL 插件",
           "po_provider_enabled": "PO Token 服务门控",
           "po_provider_url": "PO Token 服务门控",

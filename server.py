@@ -3624,6 +3624,8 @@ class ConfigManager:
         "skip_downloaded": True,
         "verify_download": True,    # 下载完体检文件：网页伪装/空壳/截断
         "allow_playlist": False,
+        # 合集/播放列表整批下时先在下载目录里建一层同名文件夹（默认关：老目录结构不突变）
+        "playlist_subdir": False,
         "playlist_start": 0,
         "playlist_end": 0,
         "playlist_items": "",
@@ -6863,6 +6865,19 @@ class DownloaderEngine:
                 is_pl_info = bool(info) and (
                     info.get("_type") in ("playlist", "multi_video") or bool(info.get("entries"))
                 )
+                # 合集整批的落点：勾了「整批存进同名文件夹」才多建这一层，单视频与直播录制不加。
+                # 名字有两个来处：① 解析回的 info 本身就是容器（下载页直接下整表那一颗），标题即合集名；
+                # ② 逐条链接那一侧（整表/选中分集走的是 N 条独立任务）容器不在手上，用入队时带过来的那份。
+                dl_dir, pl_note = playlist_landing_dir(
+                    out_dir,
+                    str((info or {}).get("title") or "") if is_pl_info
+                    else str(cfg.get("playlist_folder") or ""),
+                    bool(cfg.get("playlist_subdir")),
+                    is_playlist=is_pl_info,
+                    is_live=is_live,
+                )
+                if pl_note:
+                    self.log(f"[{task_id[:8]}] {pl_note}")
                 if info and not is_pl_info and (info.get("title") or info.get("id")):
                     raw_title = str(info.get("title") or "video")
                     safe_title = safe_filename_component(raw_title, 60)
@@ -6870,7 +6885,7 @@ class DownloaderEngine:
                     if safe_title != raw_title.strip():
                         self.log(f"[{task_id[:8]}] 标题里有 Windows 不能用于文件名的字符，"
                                  f"落盘名已清洗为「{safe_title}」")
-                    out_tmpl = str(Path(out_dir) / f"{safe_title} [{safe_id}].%(ext)s")
+                    out_tmpl = str(Path(dl_dir) / f"{safe_title} [{safe_id}].%(ext)s")
                     if is_live:
                         # 记下真正落盘的文件名主干，结束录制时靠它点名找回拉流子进程
                         self._live_stems[task_id] = f"{safe_title} [{safe_id}]"
@@ -6878,7 +6893,7 @@ class DownloaderEngine:
                     template = cfg.get("filename_template") or "%(title).60B [%(id)s].%(ext)s"
                     template = _BIDI_CTRL_RE.sub("", str(template))[:120]
                     template = template.replace("/", "_").replace("\\", "_").replace("\0", "")
-                    out_tmpl = str(Path(out_dir) / template)
+                    out_tmpl = str(Path(dl_dir) / template)
                 opts = self._ydl_opts(cfg, for_info=False, player_clients=clients, url=url)
                 sl_now, sl_note = resolve_speed_limit(cfg)
                 if opts.get("ratelimit") or sl_note:
@@ -9516,6 +9531,48 @@ def _opts_dir_is_manual(task_dir, global_dir) -> bool:
     return not _same_dir(a, str(global_dir or "").strip())
 
 
+def playlist_folder_name(raw: str) -> str:
+    """把合集/播放列表的标题变成一层文件夹名；标题里没剩下可用字符时回空串（＝不建这层）。
+
+    安全文件名那套会给空标题兜一个 "download"，那是给成品文件名准备的；这一层是用来分堆的
+    目录名，宁可照实说「这一批没拿到合集名，仍平铺」，也不要造出一个谁都想不到的文件夹。
+    """
+    s = str(raw or "").strip()
+    if not s or not re.search(r"\w", s):
+        return ""
+    return safe_filename_component(s, 60)
+
+
+def playlist_landing_dir(base_dir: str, title: str, want: bool, *,
+                         is_playlist: bool = False,
+                         is_live: bool = False) -> Tuple[str, str]:
+    """合集整批这一趟写进哪一层，以及给用户的那句话（空串＝没什么要解释的）。
+
+    base_dir 是这一趟原本的落点（下载目录，或自动分类规则给出的那个子目录）：合集这一层加在它
+    下面，不替掉它。名字有两个来处 —— 整表下载那一颗是容器自己的标题，逐条链接那一侧是解析页
+    带过来的那份合集名。文件夹在这里就建出来：日志说「存到 X」的时候 X 得真的在场，不能先报后建。
+    """
+    if not want or is_live:
+        return base_dir, ""
+    folder = playlist_folder_name(title)
+    if not folder:
+        raw = str(title or "").strip()
+        if is_playlist:
+            return base_dir, f"容器没给出能当目录名的合集标题，这一批仍平铺在 {base_dir}"
+        if raw:
+            return base_dir, (f"合集名「{raw[:40]}」清洗后没剩下可用字符，"
+                              f"这一批仍平铺在 {base_dir}")
+        return base_dir, ""
+    target = str(Path(base_dir) / folder)
+    try:
+        Path(target).mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        return base_dir, (f"合集文件夹「{folder}」建不出来：{e}；"
+                          f"这一批仍平铺在 {base_dir}")
+    return target, (f"合集整批存到 {target}"
+                    f"（名字来自{'容器标题' if is_playlist else '解析页带过来的合集名'}）")
+
+
 def url_target_dir(url: str, cfg: dict, base_dir: str,
                    log_fn: Callable = lambda *a, **k: None,
                    manual: bool = False) -> Tuple[str, str, str]:
@@ -10419,6 +10476,7 @@ class TaskQueue:
             "local_ai_transcribe", "local_ai_translate", "local_ai_lang",
             "whisper_model", "whisper_device", "whisper_compute",
             "skip_downloaded", "verify_download", "allow_playlist", "sponsorblock",
+            "playlist_subdir", "playlist_folder",
             "write_description", "write_info_json", "write_sub_files",
             "speed_limit", "filename_template", "prefer_codec",
             "force_format", "download_section", "is_live", "use_hls_engine",
@@ -11506,6 +11564,9 @@ class AddUrlsBody(BaseModel):
     skip_downloaded: bool = True
     verify_download: Optional[bool] = None  # 不传 = 跟随全局：下载完体检成品文件
     allow_playlist: bool = False
+    # 合集/播放列表整批落点：开关 + 这一批属于哪个合集（解析页/搜索页带过来，逐条链接那一侧只有前端知道）
+    playlist_subdir: Optional[bool] = None
+    playlist_folder: Optional[str] = None
     sponsorblock: str = "off"
     prefer_codec: str = "auto"
     write_sub_files: Optional[bool] = None  # 不传 = 跟随全局设置：成品旁是否另存 .vtt/.srt
@@ -11556,6 +11617,7 @@ class ConfigBody(BaseModel):
     ui_language: Optional[str] = None
     skip_downloaded: Optional[bool] = None
     allow_playlist: Optional[bool] = None
+    playlist_subdir: Optional[bool] = None  # 合集整批时自动建一层同名文件夹
     sponsorblock: Optional[str] = None
     ytdlp_extra_args: Optional[str] = None  # 自定义 yt-dlp 参数（一行命令行式参数）
     telegram_enabled: Optional[bool] = None
