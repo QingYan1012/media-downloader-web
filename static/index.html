@@ -10510,6 +10510,7 @@
               + (have ? tr('music.haveSkipPart', { n: have }) : '')
               + ((s.cover && s.cover.ok) ? tr('music.coverOkPart', { n: s.cover.ok }) : '')
               + (coverMiss.length ? tr('music.coverMissPart', { n: coverMiss.length }) : '')
+              + ((s.cover && s.cover.kept) ? tr('music.coverKeptPart', { n: s.cover.kept }) : '')
               + tr('music.elapsedPart', { s: Math.round(s.elapsed_s || 0) });
             if (s.ok) ElementPlus.ElMessage.success(txt);
             else ElementPlus.ElMessage.warning(txt);

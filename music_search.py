@@ -4903,15 +4903,16 @@ COVER_WHY_TEXT = {
     "fmt": "容器或图片格式装不了封面，只留同名图片文件",
     "nocover": "平台没给封面地址，没东西可嵌",
     "failed": "写进文件没成功",
-    "kept": "这一趟没勾内嵌，成品自带的封面保留",
+    "kept": "勾了不嵌入，但文件里那张没能移出去",
 }
 
 
 def cover_verdict(audio_path: str, want: bool, cover_path: str = "") -> dict:
     """封面这一趟的结论：回读文件自己的标签，不信「我调用过写入函数」。
 
-    want=False 时也回读：成品自带封面（源就给过、或走过 yt-dlp 的 --embed-thumbnail）抹不掉，
-    抹了要重编码文件，那种事不该由一个下载勾选来干 —— 所以照实说明「文件里本来就有」。
+    want=False 时也回读：不勾就该是干净的。成品里的图可能是下载器自己写进去的
+    （musicdl 的 auto_supplement_song 默认开），所以移图这一步在 auto_tag_audio 里做过；
+    回读还能读到图，说明没移干净，照实报，别把「没动它」说成「本来就有」。
     """
     p = Path(audio_path)
     try:
@@ -4920,7 +4921,7 @@ def cover_verdict(audio_path: str, want: bool, cover_path: str = "") -> dict:
         data = ""
     has = bool(data)
     if has:
-        return {"want": bool(want), "has": True, "why": ""}
+        return {"want": bool(want), "has": True, "why": "" if want else "kept"}
     if not want:
         return {"want": False, "has": False, "why": ""}
     if p.suffix.lower() not in COVER_TAG_EXTS:
@@ -4931,6 +4932,57 @@ def cover_verdict(audio_path: str, want: bool, cover_path: str = "") -> dict:
         # 容器能装封面、但这张图的格式装不进去（webp 进 m4a 就是这种）
         return {"want": True, "has": False, "why": "fmt"}
     return {"want": True, "has": False, "why": "failed"}
+
+
+def strip_embedded_cover(audio_path: str, log: Callable = print) -> bool:
+    """把已经写进标签的封面图移出去 —— 「不勾选就不嵌入」要连下载器顺手写进去的那张也算上。
+
+    只改标签，不碰音频数据（实测：mp3 移掉 APIC 后标签头之后那一段字节一模一样），
+    同名图片文件也不动。返回 True = 这一趟文件里不该有图、也确实没图了。
+    """
+    p = Path(audio_path)
+    if not p.is_file():
+        return False
+    try:
+        had = bool(audio_embedded_cover(str(p))[0])
+    except Exception:
+        had = False
+    if not had:
+        return True                      # 本来就没图，不用动它
+    suf = p.suffix.lower()
+    try:
+        if suf == ".mp3":
+            from mutagen.id3 import ID3
+            tags = ID3(str(p))
+            tags.delall("APIC")
+            # padding 不给的话 mutagen 会把原来那段标签区当留白保住，图没了但 80KB 空壳还在
+            tags.save(str(p), v2_version=3, padding=lambda _t: 256)
+        elif suf == ".flac":
+            from mutagen.flac import FLAC
+            audio = FLAC(str(p))
+            audio.clear_pictures()
+            audio.save()
+        elif suf in (".m4a", ".mp4"):
+            from mutagen.mp4 import MP4
+            audio = MP4(str(p))
+            if audio.tags is not None and "covr" in audio.tags:
+                del audio.tags["covr"]
+            audio.save()
+        else:
+            log(f"封面没移出: {p.name}（{suf} 这个容器的封面不是标签级写入，没动它）", "warning")
+            return False
+    except Exception as e:
+        log(f"封面没移出: {p.name}（{type(e).__name__}: {e}）", "warning")
+        return False
+    try:
+        left = bool(audio_embedded_cover(str(p))[0])
+    except Exception:
+        left = True
+    if left:
+        log(f"封面没移出: {p.name}（改过标签，回读却仍带着图）", "warning")
+        return False
+    log(f"封面: 已从 {p.name} 的标签里移出（同名图片文件仍留在旁边）")
+    return True
 
 
 def auto_tag_audio(
@@ -5016,6 +5068,10 @@ def auto_tag_audio(
             audio.save()
         else:
             return False
+        if not embed_cover:
+            # 上面只保证「我们不写」；下载器（musicdl 的 auto_supplement_song）在那之前已经把
+            # 封面塞进标签了，所以不勾这一步还要把图从文件里移出去
+            strip_embedded_cover(str(pth), log=log)
         log(f"自动标签: {pth.name}")
         return True
     except Exception as e:

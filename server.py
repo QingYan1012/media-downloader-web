@@ -18424,7 +18424,7 @@ _MUSIC_JOB: Dict[str, Any] = {}
 
 def note_music_cover(job: Dict[str, Any], cv: dict, name: str, title: str, log: Callable) -> None:
     """封面这一趟：记账 + 逐行写结论。勾了内嵌就回读文件自己的标签，回读不到要说是为什么；
-       没勾而成品自带封面（源给过、或走过 yt-dlp 的 --embed-thumbnail）只照实说明，不去抹。"""
+       没勾时回读还能读到图，说明那张（多半是下载器自己写的）没能移出去，照实报出来。"""
     from music_search import COVER_WHY_TEXT
     c = job.setdefault("cover", {"ok": 0, "kept": 0, "miss": []})
     if cv.get("want"):
@@ -18437,7 +18437,8 @@ def note_music_cover(job: Dict[str, Any], cv: dict, name: str, title: str, log: 
             log(f"封面没嵌上: {name}（{COVER_WHY_TEXT.get(why, why)}）", "warning")
     elif cv.get("has"):
         c["kept"] = int(c.get("kept") or 0) + 1
-        log(f"封面: {name} 自带封面，这一趟没勾内嵌、原样保留（抹掉要重编码，不该由这个勾选来干）")
+        why = cv.get("why") or "kept"
+        log(f"封面没移出: {name}（{COVER_WHY_TEXT.get(why, why)}）", "warning")
 
 
 @app.post("/api/music/download")
@@ -18556,7 +18557,9 @@ def api_music_download(body: dict):
                 # 这一句先落在日志里：不勾时后面每首都不会有封面的动静，
                 # 没有这句就分不清「这个格式没封面可嵌」和「你本来就没勾」
                 log_mgr.log(f"内嵌封面: {'开' if embed else '关'}"
-                            + ("" if embed else "（同名封面图片仍留在成品旁边，只是不写进文件）"))
+                            + ("" if embed else
+                               "（同名封面图片仍留在成品旁边；我们不写图，"
+                               "下载器顺手写进标签的那张也会被移出去）"))
 
                 def finish(i: int, path: str) -> None:
                     _MUSIC_JOB["done"] = int(_MUSIC_JOB.get("done") or 0) + 1

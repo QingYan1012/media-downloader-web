@@ -10,6 +10,7 @@ r"""内嵌封面开关真生效：勾了真进文件、不勾真不进，结论�
 from __future__ import annotations
 
 import inspect
+import json
 import os
 import pathlib
 import re
@@ -131,8 +132,8 @@ if ".mp3" in BLANK:
 
     seeded = fresh(".mp3", "v_seeded")
     M.auto_tag_audio(str(seeded), cover_path=str(JPG), embed_cover=True)
-    ck("C5 不勾但成品自带封面：如实报 has（抹掉要重编码，不该由这个勾选来干）",
-       M.cover_verdict(str(seeded), False, "") == {"want": False, "has": True, "why": ""})
+    ck("C5 勾了不嵌、文件里却还有图：归因 kept（那是移出去这一步没成，不是「本来就有所以不管」）",
+       M.cover_verdict(str(seeded), False, "") == {"want": False, "has": True, "why": "kept"})
 
 if ".ogg" in BLANK:
     ogg = SHARD / "unsupported.ogg"
@@ -149,6 +150,9 @@ if WEBP.is_file() and ".m4a" in BLANK:
 
 ck("C8 原因文案四种齐全（日志与界面都得落到具体那一种）",
    set(M.COVER_WHY_TEXT) >= {"fmt", "nocover", "failed", "kept"}, str(sorted(M.COVER_WHY_TEXT)))
+ck("C8b kept 那句说的是「没能移出去」，不再是「原样保留」",
+   "移出" in M.COVER_WHY_TEXT["kept"] and "保留" not in M.COVER_WHY_TEXT["kept"],
+   M.COVER_WHY_TEXT["kept"])
 
 # ---------------------------------------------------------------- D. 不再重封装
 print("== D. 封面只走 mutagen 写标签：ffmpeg 重封装那一趟删了，sidecar 照旧留 ==")
@@ -176,7 +180,7 @@ if ".mp3" in BLANK and JPG.is_file():
        side.read_bytes() == before, f"{len(before)} 字节")
 
 # ---------------------------------------------------------------- E. 批量结论汇总
-print("== E. 批量任务的账：成功进 ok、失败进 miss、不勾自带封面进 kept ==")
+print("== E. 批量任务的账：成功进 ok、嵌不上进 miss、没勾却还有图进 kept ==")
 import server as S  # noqa: E402
 
 lines: list[tuple[str, str]] = []
@@ -190,7 +194,7 @@ job: dict = {}
 S.note_music_cover(job, {"want": True, "has": True, "why": ""}, "a.mp3", "晴天", log)
 S.note_music_cover(job, {"want": True, "has": False, "why": "nocover"}, "b.mp3", "稻香", log)
 S.note_music_cover(job, {"want": True, "has": False, "why": "fmt"}, "c.ogg", "七里香", log)
-S.note_music_cover(job, {"want": False, "has": True, "why": ""}, "d.m4a", "半岛铁盒", log)
+S.note_music_cover(job, {"want": False, "has": True, "why": "kept"}, "d.m4a", "半岛铁盒", log)
 S.note_music_cover(job, {"want": False, "has": False, "why": ""}, "e.mp3", "安静", log)
 cov = job.get("cover") or {}
 ck("E1 计数分得开：ok=1 / kept=1 / miss=2（没勾且干净的哪本账都不进）",
@@ -198,13 +202,16 @@ ck("E1 计数分得开：ok=1 / kept=1 / miss=2（没勾且干净的哪本账都
 ck("E2 miss 里带曲名与原因，界面展开才指得是哪几首",
    [x["title"] for x in cov["miss"]] == ["稻香", "七里香"]
    and [x["why"] for x in cov["miss"]] == ["nocover", "fmt"], str(cov["miss"]))
-ck("E3 逐行给结论：四首各一句，其中两句是失败告警",
-   len(lines) == 4 and sum(1 for lv, m in lines if lv == "warning" and "封面没嵌上" in m) == 2,
+ck("E3 逐行给结论：四首各一句，其中两句是「没嵌上」、一句是「没移出」",
+   len(lines) == 4
+   and sum(1 for lv, m in lines if lv == "warning" and "封面没嵌上" in m) == 2
+   and sum(1 for lv, m in lines if lv == "warning" and "封面没移出" in m) == 1,
    f"{len(lines)} 行")
 ck("E4 日志那句带原因原文（写日志的一侧仍是中文，界面渲染是另一套）",
    any(M.COVER_WHY_TEXT["nocover"] in m for _lv, m in lines))
-ck("E5 不勾但自带封面那句说的是「保留」，没混进失败名单",
-   any("自带封面" in m for _lv, m in lines)
+ck("E5 不勾却还有图那句是告警、说的是没移出，且没混进嵌失败的名单",
+   any("封面没移出: d.m4a" in m and M.COVER_WHY_TEXT["kept"] in m
+       for lv, m in lines if lv == "warning")
    and all(x["title"] != "半岛铁盒" for x in cov["miss"]))
 ck("E6 没勾且文件干净的没写日志（不该为「本来就没有」吵一句）",
    not any("安静" in m for _lv, m in lines))
@@ -258,12 +265,17 @@ ck("F8 界面默认勾选，且随策略一起存回后端",
    and "music_embed_metadata: !!musicEmbedMeta.value" in IDX
    and "if (typeof st.embed_metadata === 'boolean')" in IDX)
 ck("F9 勾选框有说明开关到底管什么的 tooltip", "tr('music.embedMetaHint')" in IDX)
-ck("F10 批量小结会说「嵌上几首 / 几首没嵌上」，失败能展开",
+ck("F10 批量小结会说「嵌上几首 / 几首没嵌上 / 几首没移出」，失败能展开",
    "tr('music.coverOkPart'" in IDX and "tr('music.coverMissPart'" in IDX
-   and "showCoverMiss(coverMiss)" in IDX)
-ck("F11 小结里封面那两句排在「用时」之前（拼接顺序钉住，跑完先看结果再看耗时）",
+   and "tr('music.coverKeptPart'" in IDX and "showCoverMiss(coverMiss)" in IDX)
+ck("F10b 没移出那一本账读的是 s.cover.kept（后端记的就是这个键，写成别的名字永远显示不出来）",
+   "s.cover.kept) ? tr('music.coverKeptPart'" in IDX and "tr('music.coverKeptPart', { n: s.cover.kept })" in IDX)
+ck("F11 小结里封面那三句排在「用时」之前（拼接顺序钉住，跑完先看结果再看耗时）",
    0 < IDX.index("tr('music.coverOkPart'") < IDX.index("tr('music.coverMissPart'")
-   < IDX.index("tr('music.elapsedPart'"))
+   < IDX.index("tr('music.coverKeptPart'") < IDX.index("tr('music.elapsedPart'"))
+I18N_C = pathlib.Path(APP / "static" / "i18n.js").read_text(encoding="utf-8")
+ck("F12 「没移出」那句中英都有（i18n 的门是逐个键比对的，少一边就是切英文后空白）",
+   I18N_C.count("'music.coverKeptPart'") == 2, str(I18N_C.count("'music.coverKeptPart'")))
 
 # ---------------------------------------------------------------- G. 端点里真的取这个值
 print("== G. 端点实测：勾与不勾落到队列 opts 上的 embed_thumb 不一样（假 cfg / 假队列，不写真实 config） ==")
@@ -308,6 +320,116 @@ try:
 finally:
     for k, v in ORIG.items():
         setattr(S, k, v)
+
+# ---------------------------------------------------------------- H. 不勾就连下载器写的那张也移出去
+print("== H. 勾了不嵌时把已经在标签里的图移出去：只动标签，音频数据与同名图片文件都不碰 ==")
+FFPROBE = APP / "tools" / "ffprobe.exe"
+if not FFPROBE.is_file():
+    FFPROBE = pathlib.Path(shutil.which("ffprobe") or "ffprobe")
+
+
+def probe(p: pathlib.Path):
+    """回读音频自己的流信息：移图前后不一致就说明动到了数据，不是只动标签"""
+    r = subprocess.run([str(FFPROBE), "-v", "error", "-print_format", "json",
+                        "-show_format", "-show_streams", str(p)],
+                       capture_output=True, text=True, timeout=60,
+                       encoding="utf-8", errors="replace")
+    try:
+        j = json.loads(r.stdout)
+    except Exception:
+        return None
+    st = next((s for s in (j.get("streams") or []) if s.get("codec_type") == "audio"), {})
+    return (st.get("codec_name"), str(j.get("format", {}).get("duration")),
+            str(j.get("format", {}).get("bit_rate")))
+
+
+def text_tag(p: pathlib.Path) -> str:
+    from mutagen import File as _MF
+    t = getattr(_MF(str(p)), "tags", None) or {}
+    return " ".join(str(v) for v in t.values())
+
+
+def mp3_frames(p: pathlib.Path) -> bytes:
+    """ID3 那一段之后的全部字节 —— 就是音频帧本身。标签怎么写都不该动它。"""
+    b = p.read_bytes()
+    i = 0
+    if b[:3] == b"ID3":
+        size = (b[6] << 21) | (b[7] << 14) | (b[8] << 7) | b[9]
+        i = 10 + size
+    while i < len(b) - 1 and not (b[i] == 0xFF and (b[i + 1] & 0xE0) == 0xE0):
+        i += 1
+    return b[i:]
+
+
+if ".mp3" in BLANK and JPG.is_file():
+    keep = SHARD / "sibling.jpg"
+    keep.write_bytes(JPG_BYTES)
+
+    seeded = fresh(".mp3", "strip_seed")
+    M.auto_tag_audio(str(seeded), title="晴天", artists="周杰伦", album="八度空间",
+                     cover_path=str(JPG), embed_cover=True)
+    before_probe = probe(seeded)
+    ck("H0 先把图嵌进去（这一组要移的是「已经在文件里」的那张，不是空气）",
+       embedded(seeded) == JPG_BYTES, f"{len(embedded(seeded))} 字节")
+
+    gone = SHARD / "strip_done.mp3"
+    shutil.copyfile(seeded, gone)
+    ok = M.auto_tag_audio(str(gone), title="晴天", artists="周杰伦", album="八度空间",
+                          cover_path=str(JPG), embed_cover=False)
+    ck("H1 不勾这一趟：文件里的图真没了（回读为空）",
+       ok and embedded(gone) == b"", f"回读 {len(embedded(gone))} 字节")
+    ck("H2 移图只动标签：音频帧一个字节没变（容器总码率会变，那是标签区小了，不是数据被动过）",
+       mp3_frames(gone) == mp3_frames(BLANK[".mp3"]) == mp3_frames(seeded)
+       and probe(gone)[:2] == before_probe[:2],
+       f"{before_probe} -> {probe(gone)} / 帧 {len(mp3_frames(gone))} 字节")
+    ck("H3 文字标签没被一起带走（曲名还在）", "晴天" in text_tag(gone), text_tag(gone)[:40])
+    ck("H4 移完的体积回到空白件附近（图没了却留 80KB 空壳＝padding 没收回）",
+       abs(gone.stat().st_size - BLANK[".mp3"].stat().st_size) < 4096,
+       f"空白 {BLANK['.mp3'].stat().st_size} / 现在 {gone.stat().st_size}")
+    ck("H5 同名图片文件不碰（移的是文件里那张，旁边那张是留给用户看的）",
+       keep.read_bytes() == JPG_BYTES)
+
+    clean = fresh(".mp3", "strip_clean")
+    raw = clean.read_bytes()
+    ck("H6 文件本来就没图：不动它、照实返回 True（不该为「没有」重写一篇）",
+       M.strip_embedded_cover(str(clean)) and clean.read_bytes() == raw)
+
+    ro = fresh(".mp3", "strip_ro")
+    M.auto_tag_audio(str(ro), cover_path=str(JPG), embed_cover=True)
+    os.chmod(ro, 0o444)
+    msgs: list[tuple[str, str]] = []
+    try:
+        res = M.strip_embedded_cover(str(ro), log=lambda m, lv="info": msgs.append((lv, m)))
+    finally:
+        os.chmod(ro, 0o644)
+    ck("H7 移不动就说移不动：返回 False 且给一句告警，不假装成功",
+       res is False and any(lv == "warning" and "封面没移出" in m for lv, m in msgs), str(msgs)[:120])
+
+    ck("H8 不勾这一趟真调用移图（写在 auto_tag_audio 的收尾里，不是只在归因里说说）",
+       "strip_embedded_cover(str(pth), log=log)" in inspect.getsource(M.auto_tag_audio))
+    ck("H9 mp3 那条用 callable 给 padding（ID3.save(padding=256) 会 TypeError，等于这条支路从没跑通过）",
+       "padding=lambda _t: 256" in SRC_MS)
+
+for ext, tag in ((".flac", "flac"), (".m4a", "m4a")):
+    if ext not in BLANK or not JPG.is_file():
+        continue
+    p = fresh(ext, "strip_" + tag)
+    M.auto_tag_audio(str(p), cover_path=str(JPG), embed_cover=True)
+    seeded_art = embedded(p)
+    seeded_bytes = p.read_bytes()
+    seeded_probe = probe(p)
+    ck(f"H10a[{tag}] 先确认真把图嵌进去了 {ext}（不然后面「移完了」是句空话）",
+       seeded_art == JPG_BYTES, f"回读 {len(seeded_art)} 字节 / jpg {len(JPG_BYTES)} 字节")
+    M.auto_tag_audio(str(p), title="稻香", artists="周杰伦", cover_path=str(JPG), embed_cover=False)
+    ck(f"H10[{tag}] {ext} 走的是各自的标签通道，移完回读为空",
+       embedded(p) == b"" and seeded_bytes != p.read_bytes(),
+       f"{len(seeded_bytes)} → {p.stat().st_size}")
+    ck(f"H10b[{tag}] 移图没改流本身：编码与时长前后一致（重编码会动这两个；总码率会随标签区变小）",
+       probe(p)[:2] == seeded_probe[:2], f"{seeded_probe} -> {probe(p)}")
+
+src_strip = inspect.getsource(M.strip_embedded_cover)
+ck("H11 认不了的容器照实说「没动它」并回 False（不把「不支持」混报成「移出去了」）",
+   "return False" in src_strip and "没动它" in src_strip)
 
 print("\nFAILED: " + (", ".join(FAILED) if FAILED else "none"))
 sys.exit(1 if FAILED else 0)
