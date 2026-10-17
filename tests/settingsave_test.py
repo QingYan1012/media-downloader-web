@@ -25,6 +25,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import server as S  # noqa: E402
 
 HTML = (Path(__file__).resolve().parent.parent / "static" / "index.html").read_text(encoding="utf-8")
+# 界面文案搬进词表后，这里判的「界面上说了什么」要看词表的中文那一份：键名留在 HTML 里，字在 i18n.js 里
+I18N = (Path(__file__).resolve().parent.parent / "static" / "i18n.js").read_text(encoding="utf-8")
+_zh_blob = I18N[I18N.find("    zh: {"):I18N.find("\n    en: {")]
+ZH = dict(re.findall(r"'([A-Za-z][\w.-]*)':\s*'((?:[^'\\]|\\.)*)'", _zh_blob))
 
 FAILED = []
 TOTAL = 0
@@ -383,15 +387,19 @@ try:
        bound <= FIELDS, str(sorted(bound - FIELDS))[:160])
     ck("I3 界面绑的键在默认表里都有名字（否则恢复默认那栏点不动它）",
        bound <= set(DEFAULTS), str(sorted(bound - set(DEFAULTS)))[:160])
-    m = re.search(r'const CFG_LABELS = \{(.*?)\n        \};', HTML, re.S)
-    labels = set(re.findall(r'"([a-z0-9_]+)":', m.group(1))) if m else set()
-    ck("I4 中文名表拿到了", len(labels) > 100, f"labels={len(labels)}")
+    m = re.search(r'const CFG_KEYS = \{(.*?)\n        \};', HTML, re.S)
+    keys = set(re.findall(r'"([a-z0-9_]+)":', m.group(1))) if m else set()
+    m2 = re.search(r'const CFG_RAW = \{(.*?)\n        \};', HTML, re.S)
+    raws = set(re.findall(r'"([a-z0-9_]+)":', m2.group(1))) if m2 else set()
+    labels = keys | raws
+    ck("I4 人话名表拿到了（词表键一份、两边一样的厂商名一份）",
+       len(labels) > 100 and keys and raws, f"词表键={len(keys)} 原样={len(raws)}")
     ck("I5 界面上有控制项的可默认键都叫得出名字",
        (bound & set(defaultable)) <= labels, str(sorted((bound & set(defaultable)) - labels))[:200])
-    ck("I6 中文名表里没有多余键名（打错的键永远不会被用上）",
+    ck("I6 人话名表里没有多余键名（打错的键永远不会被用上）",
        labels <= set(DEFAULTS), str(sorted(labels - set(DEFAULTS)))[:160])
     ck("I7 叫不出名字时退回键名，不是显示 undefined",
-       'const cfgLabel = k => CFG_LABELS[k] || k;' in HTML)
+       "const cfgLabel = k => (CFG_KEYS[k] ? tr(CFG_KEYS[k]) : CFG_RAW[k] || k);" in HTML)
     ck("I8 不再整包回存（settings.value 没有一处被直接 POST 出去）",
        "JSON.stringify(settings.value)" not in HTML)
     ck("I9 走的是「只交改动项」那一份 payload",
@@ -428,19 +436,27 @@ try:
                if not re.search(r'(^|[ ,\n])' + n + r'\s*[,}]', retm)]
     ck("I19 模板要用的名字都从 setup 里交出去了", not missing, str(missing))
     ck("I20 恢复默认那张卡真的渲染在设置页里",
-       "一键恢复默认" in HTML and 'v-for="it in defRows"' in HTML
-       and '恢复这一项' in HTML and 'defBusy === it.key' in HTML)
-    ck("I21 界面上说了哪些栏不自动存", "不自动存</b>的是这几栏" in HTML)
+       "tr('settings.resetAllBtn')" in HTML and 'v-for="it in defRows"' in HTML
+       and "tr('settings.resetOneBtn')" in HTML and 'defBusy === it.key' in HTML)
+    ck("I21 界面上说了哪些栏不自动存",
+       "<b>{{ tr('settings.noAutoSaveBold') }}</b>{{ tr('settings.noAutoSaveList') }}" in HTML
+       and "限速时段" in ZH.get("settings.noAutoSaveList", "")
+       and "访问保护开关" in ZH.get("settings.noAutoSaveList", ""))
     ck("I22 界面文案点名了那四样动不到的钥匙",
-       "口令、签名密钥、机器令牌与 CookieCloud 同步密钥不在这张表里" in HTML)
+       "tr('settings.defSecretBold')" in HTML
+       and all(w in ZH.get("settings.defSecretBold", "")
+               for w in ("口令", "签名密钥", "机器令牌", "CookieCloud 同步密钥")))
     ck("I23 差异表用的是后端算好的 differs，界面不再抄一份默认值",
        "cfgDefs.value.items" in HTML and "const DEFAULTS_JS" not in HTML)
     ck("I24 进设置页会重新核对默认值",
        re.search(r"if \(p === 'settings'\) \{[^\n]*loadConfigDefaults\(\);", HTML) is not None)
     ck("I25 界面说了恢复默认前会留一份配置备份（卡上与确认框都写了）",
-       HTML.count("config.json.bak-") >= 2 and "r.backup ? `（改前的配置留在" in HTML)
+       HTML.count("config.json.bak-") >= 2 and "r.backup ? tr('settings.defBackupAt'" in HTML
+       and "改前的配置留在 {file}" in ZH.get("settings.defBackupAt", ""))
     ck("I26 一键恢复的确认框逐个点名将被清空的密钥，不写成一句「密钥类会被清空」",
-       "defRows.value.filter(i => i.secret)" in HTML and "会被清空的密钥（" in HTML)
+       "defRows.value.filter(i => i.secret)" in HTML
+       and "tr('settings.defAllSecLead'" in HTML
+       and "会被清空的密钥（{n} 项）" in ZH.get("settings.defAllSecLead", ""))
 
     # ------------------------------------------------------------ J 段：日志口径
     d = fresh(concurrent=9, telegram_bot_token="TOK-IN-LOG")

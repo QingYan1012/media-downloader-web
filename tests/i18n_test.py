@@ -89,8 +89,11 @@ only_en = sorted(set(DICT["en"]) - set(DICT["zh"]))
 ck("A3 zh 与 en 的键集合一致", not only_zh and not only_en, f"只 zh 有={only_zh} 只 en 有={only_en}")
 empties = [f"{lang}.{k}" for lang in ("zh", "en") for k, v in DICT[lang].items() if not str(v).strip()]
 ck("A4 没有空值（空串会让界面上什么都不显示）", not empties, str(empties[:6]))
+# 鸣谢里 Emby 那条：zh 的 {专辑}{年份}{序号}{曲名} 是它在**描述别人的目录写法**（中文 token），
+# 不是本程序要填的参数 —— 英文照原样留四个中文括号反而更糟，所以那句翻成 album / year / number - title。
+A5_OK = {"settings.credit.emby"}
 bad_ph = {k: (PLACE.findall(DICT["zh"][k]), PLACE.findall(DICT["en"][k]))
-          for k in set(DICT["zh"]) & set(DICT["en"])
+          for k in (set(DICT["zh"]) & set(DICT["en"])) - A5_OK
           if sorted(PLACE.findall(DICT["zh"][k])) != sorted(PLACE.findall(DICT["en"][k]))}
 ck("A5 同一个键两边的 {n} 占位符一致", not bad_ph, str(bad_ph))
 dollar = [f"{lang}.{k}" for lang in ("zh", "en") for k, v in DICT[lang].items() if "${" in str(v)]
@@ -100,7 +103,11 @@ ck("A7 值里没有裸露的 HTML 标签（词表只放文字）",
 other_ph = [f"{lang}.{k}" for lang in ("zh", "en") for k, v in DICT[lang].items()
             if "%s" in str(v) or "{}" in str(v)]
 ck("A8 占位符只用花括号一种写法", not other_ph, str(other_ph))
-padded = [k for k, v in DICT["zh"].items() if v != v.strip()]
+# 分隔符那一类例外：它是 join 的接缝，首尾那两个空格本来就是它的内容，挪不进模板。
+# 除此以外的中文片段之间的空格一律写在模板的接缝上（元素与插值之间那一个不带换行的空格，
+# 本机这份 Vue 编译后照样保留，实测见 tmp/vue_ws_probe2.js）。
+A9_OK = {"settings.orSep"}
+padded = [k for k, v in DICT["zh"].items() if v != v.strip() and k not in A9_OK]
 ck("A9 zh 的词表值不带首尾空格（渲染出来就是错位）", not padded, str(padded[:6]))
 # 英文里引用界面名称用普通双引号；「」是中文标点，F8 那条（en 不许有汉字）管不到它。
 # 顺带盯住换过来时最容易犯的错：全角括号两侧本来不需要空格，换成直引号后就成了 word"word。
@@ -158,6 +165,17 @@ ck("B11 侧栏标签真的走词表，没留着写死的那句",
 ck("B12 navs 里不再抄一份名字（数据与词表只能有一个真源）", "label:" not in navs_blob,
    "navs 块里还有 label:")
 ck("B13 NAV_GROUPS 里同理没有第二份组名", "title:" not in groups_blob, "NAV_GROUPS 里还有 title:")
+# 两张数据表里存的是词表键（渲染处 tr(g.titleKey) / cfgLabel 里 tr(CFG_KEYS[k])）：
+# 键写错不是「那一格空着」，是把 settings.cfg.acoustid_api_key 这种原文印到界面上。
+cfg_blob = block(HTML, "const CFG_KEYS = {", "};")
+credit_blob = block(HTML, "const CREDITS = [", "];")
+table_keys = sorted(set(re.findall(r":\s*'([^']+)'", cfg_blob))
+                    | set(re.findall(r"(?:titleKey|noteKey): '([^']+)'", credit_blob)))
+miss_table = [k for k in table_keys if k not in DICT["zh"] or k not in DICT["en"]]
+ck("B14 数据表里登记的词表键两份都在（缺一个界面上就印键名）",
+   len(table_keys) > 100 and not miss_table, f"{len(table_keys)} 个，缺 {miss_table[:6]}")
+ck("B15 表里不再抄第二份文案（CREDITS 只剩 noteKey，CFG_RAW 那种两边一样的厂商名才算例外）",
+   "note:" not in credit_blob and "title:" not in credit_blob, "CREDITS 里还有 note:/title:")
 
 # ---------------------------------------------------------------- C. 接线
 print("== C. 页面接线：引用顺序与那层 config-provider ==")
@@ -286,12 +304,29 @@ latin = re.compile(r"[A-Za-z]")
 # 后面接的是本机路径。给它编一句中文反而是我新写的话，不是界面原本那句
 # 音乐页那三条是纯拼接模板（「{name}」—— {why}、统计的（{s}））：值里只有全角括号、破折号与占位符，
 # 翻的是英文一侧的标点（（）→ () 、「」—— → — ），汉字本来就不该有
-F6_OK = {"bt.binFound", "music.favFailLine", "music.statsWrap", "music.switchFailLine"}
+F6_OK = {"bt.binFound", "music.favFailLine", "music.statsWrap", "music.switchFailLine",
+         # 平台名与协议名：界面原文里就没有汉字，编一句中文反而是我新写的话
+         "settings.platformYoutube", "settings.platformTwitch", "settings.optFlv", "settings.optHls",
+         # ffmpeg 的那个词本机界面就写作 mtime；全角括号那条只是 ( {where} ) 模板
+         "settings.clMtimeWord", "auth.deviceParen",
+         # 机翻引擎这两项界面原文就是「厂商名（括号里还是厂商名）」，一个汉字也没有
+         "settings.mtOptClaude", "settings.mtOptGemini",
+         # Whisper 的运算设备与计算精度同理：界面原文就是「设备名/精度名（全角括号里一个缩写）」
+         "settings.deviceOptCuda", "settings.computeOptFp16", "settings.computeOptInt8",
+         # 组件那一行的箭头缝：值里只有全角冒号、破折号和两个占位符，两边版本字符串是数据不是话
+         "settings.compAllRowArrow",
+         # CookieCloud 那行备注的外壳同理：（{list}）→ () ，括号里的原话来自后端
+         "settings.ccNotesParen",
+         # 一键更新那行的外壳同理：组件名（后端给的失败原因）——括号里那句是人家的话，不是界面文案
+         "settings.compAllReason"}
 zh_plain = [k for k, v in DICT["zh"].items()
             if not CJK.search(str(v)) and latin.search(str(v)) and k not in F6_OK]
 ck("F6 zh 那份每条要么含中文、要么只是不含字母的标点（词表里的分隔符）——不许混进其实是英文的条目",
    not zh_plain, str(zh_plain[:6]))
-same = [k for k in set(DICT["zh"]) & set(DICT["en"]) if DICT["zh"][k] == DICT["en"][k]]
+# 专有名词照抄才是对的：这几条两边一致不算「没翻」
+F7_OK = {"settings.platformYoutube", "settings.platformTwitch", "settings.optFlv", "settings.optHls"}
+same = [k for k in set(DICT["zh"]) & set(DICT["en"])
+        if DICT["zh"][k] == DICT["en"][k] and k not in F7_OK]
 ck("F7 en 那份没有哪条与 zh 一字不差（那样等于根本没翻）", not same, str(same[:6]))
 en_cjk = [k for k, v in DICT["en"].items() if CJK.search(str(v))]
 ck("F8 en 那份没有哪条还含中文（含了就是这条根本没翻）", not en_cjk, str(en_cjk[:6]))
@@ -397,7 +432,7 @@ def strip_comments(src: str) -> str:
     return re.sub(r"<!--.*?-->", "", src, flags=re.S)
 
 
-PAGES_DONE = ["home", "queue", "bt", "files", "subs", "music"]   # ← 每翻完一页把页名加进来；登记了却没翻干净会被 I3 判红
+PAGES_DONE = ["home", "queue", "bt", "files", "subs", "music", "settings"]   # ← 每翻完一页把页名加进来；登记了却没翻干净会被 I3 判红
 ck("I2 PAGES_DONE 都是真有的页", all(page_block(k) for k in PAGES_DONE),
    str([k for k in PAGES_DONE if not page_block(k)]))
 for _pg in PAGES_DONE:
@@ -452,12 +487,50 @@ PAGE_HANDLERS = {
               "downloadMusicSelected", "downloadMusicRow", "onMusicSortChange", "onMusicFavSelection",
               "addMusicFav", "removeMusicFav", "clearMusicFav", "previewMusicFav", "switchMusicFav",
               "downloadMusicFav", "loadMusicFavs", "installMusicdl", "showCoverMiss"],
+    # 设置页：这一页的模板最早翻干净（594 行中文那一批），但真正的话一半在脚本里拼——
+    # 名单是从设置页模板调到的处理器沿调用链铺出来的（tmp/settings_closure.py），
+    # 不是按卡片手挑的：这一页的按钮背后还套着 load* / apply* / ccCall 那几层，漏一层就会有一句中文
+    # 从「保存设置」的报错里冒出来。共用的底座没登记在这里：api / logAction / actionName /
+    # friendlyError / loadConfig / loadStatus / applyTheme / applyDark / applyLang / maybePopupCompUpdates
+    # / loadSubs —— 它们剩下的中文各自属于 ACTION_NAMES 埋点、friendlyError 那 22 条分支、
+    # 日志的 log.* 键与后端原话比较那几批，登记进来只会让 I5 报在设置页头上。
+    "settings": [
+        "applyAuthPassword", "applyCompCheck", "applyNcQrResult", "applyOutbox",
+        "applyRiskPreset", "browsePlatformCookie", "ccApply", "ccCall",
+        "changedKeys", "checkEnv", "checkGlossary", "checkPoToken",
+        "checkRunWindows", "checkSpeedWindows", "clDescribe", "clGroupList",
+        "clRun", "clearCookieCloudKey", "clearCookieFlag", "clearMusicCookie",
+        "clearOutbox", "compUpdatable", "copyMachineToken", "defBrief",
+        "downloadExtension", "exportSync", "fetchCompCheck", "fmtWait",
+        "formatSize", "installVoicePkgs", "loadAuthStatus", "loadCleanup",
+        "loadCleanupTrash", "loadComponents", "loadConfigDefaults", "loadCookieCloud",
+        "loadEncoders", "loadMusicCookies", "loadNetInfo", "loadOutbox",
+        "loadPlatformCookies", "loadVoiceStatus", "markSaved", "mergeCompLatest",
+        "mirrorHint", "mirrorLabel", "netOverrideValue", "netVerdictText",
+        "onImportSync", "pendingAutoSave", "pollBiliQr", "pollNeteaseQr",
+        "previewCleanup", "probeMirrors", "pullCookieCloud", "pushCookieCloud",
+        "refreshRunWindow", "reloadPlugins", "resetAllDefaults", "resetKeys",
+        "resetNetwork", "restoreAllTrash", "restoreTrash", "retryOutbox",
+        "rotateMachineToken", "runCleanup", "runOneGroup", "saveAcoustid",
+        "saveAuthKnobs", "saveCleanup", "saveCookieCloud", "saveMusicCookie",
+        "savePlatformCookie", "savePlatformCookieText", "saveSettings", "setEnvPath",
+        "setFlags", "setProxyOverride", "setTheme", "startBiliQr",
+        "startCompAllPoll", "startCompCheck", "startNeteaseQr", "stopCompAllPoll",
+        "testCookie", "testCookieCloud", "testStorage", "testTelegram",
+        "testWecom", "toggleDark", "triggerImportSync", "unlockAll",
+        "unlockIp", "updateAllComponents", "updateComponent", "updateFfmpeg",
+        "updateNm3u8", "updateWhisper", "updateYtdlp", "useSystemProxy",
+        "verCmp", "waitCompCheck",
+    ],
 }
 # 允许留中文的处理器：这些行比的是后端发来的数据（预设名、占位标题），翻成英文这行判断就失效。
 # 「允许留下」不等于「不用管」——残留的行数和那几句都钉死，改了名字或悄悄多出一行都判红
 RESIDUE = {
     "downloadQualityPreset": ["仅音频"],
     "taskHeadline": ["等待中..."],
+    # 按龄清理的报错：这句是在比后端原话里有没有「名单」两个字（后端给的 message 仍是中文），
+    # 翻成英文这行判断就永远不成立。
+    "clRun": ["名单"],
 }
 
 
@@ -484,8 +557,10 @@ ck("I5b 每个允许留中文的处理器都登记在某一页里（漏登记就
 # 埋点那一句（uiName / logAction 的动作名）是发给后端进运行日志的记录，排在 ACTION_NAMES 那一批再收。
 # I5 不算它，但每一页有几条要钉住：悄悄多出一条埋点，或者那一批改完忘了删这里的名额，都会判红。
 # uiName 认到冒号为止：音乐页那条是三元表达式（勾选行 / 整单两种说法），值不写在引号里，也只算一行。
-MAIDIAN = re.compile(r"""uiName:|logAction\('|logSort\('""")
-MAIDIAN_EXPECT = {"home": 0, "queue": 0, "bt": 7, "files": 4, "subs": 0, "music": 5}
+# logAction 认到左括号为止、ccCall 同理：设置页那一批把句子换成了 tr(...)，动作名却在参数里留着中文，
+# 这两种写法都要认得到，否则「翻完了」会表现为埋点行凭空少几条。
+MAIDIAN = re.compile(r"""uiName:|logAction\(|logSort\(|ccCall\(""")
+MAIDIAN_EXPECT = {"home": 0, "queue": 0, "bt": 7, "files": 4, "subs": 0, "music": 5, "settings": 17}
 # 来源类型那一列的名字与提示：键不是写在 tr(' …') 里而是存在表里（labelKey / hintKey），
 # 上面那遍字面扫抓不到它们，所以单独比一遍 —— 少哪一份英文界面就印键名
 kind_meta = block(HTML, "const SUB_KIND_META = {", "};")

@@ -287,6 +287,11 @@ print("=== G. 接线（源码级） ===")
 APP = Path(__file__).resolve().parent.parent
 srv = (APP / "server.py").read_text(encoding="utf-8")
 idx = (APP / "static" / "index.html").read_text(encoding="utf-8")
+# 卡片标题搬进词表后，idx 里只剩 :label="tr('…')"：位置要比键，中文原话去词表里核对
+import re as _re  # noqa: E402
+_i18n = (APP / "static" / "i18n.js").read_text(encoding="utf-8")
+_zh = _i18n[_i18n.find("    zh: {"):_i18n.find("\n    en: {")]
+ZH = dict(_re.findall(r"'([A-Za-z][\w.-]*)':\s*'((?:[^'\\]|\\.)*)'", _zh))
 ck("G1 配置默认值两条都在", '"run_window": ""' in srv and '"queue_windows": {}' in srv)
 ck("G2 ConfigBody 收得到这两个键（漏了就是设置存了不生效）",
    "run_window: Optional[str] = None" in srv and "queue_windows: Optional[dict] = None" in srv)
@@ -303,7 +308,13 @@ ck("G9 队列级闸在取出任务之后、同域上限之前",
 ck("G10 界面：设置默认值与回填", "run_window: ''" in idx
    and "settings.value.run_window = data.run_window" in idx
    and "settings.value.queue_windows = Object.assign" in idx)
-ck("G11 界面：定时窗那一卡片排在限速时段之后", idx.index('label="队列定时窗"') > idx.index('label="限速时段"'))
+ck("G11 界面：定时窗那一卡片排在限速时段之后",
+   idx.index("""<el-form-item :label="tr('settings.runWindowLabel')">""")
+   > idx.index("""<el-form-item :label="tr('settings.speedWindowsLabel')">""")
+   and ZH.get("settings.runWindowLabel") == "队列定时窗"
+   and ZH.get("settings.speedWindowsLabel") == "限速时段",
+   f"{ZH.get('settings.runWindowLabel')} @ {idx.index(chr(39) + 'settings.runWindowLabel')} "
+   f"> 限速时段 @ {idx.index(chr(39) + 'settings.speedWindowsLabel')}")
 ck("G12 界面：每队列一行 + 检查格式 + 横幅都在",
    'v-for="q in queueRows"' in idx and 'v-if="windowHeld"' in idx and "checkRunWindows()" in idx)
 ck("G13 界面：SSE 与轮询两条路都喂 queueWindow",

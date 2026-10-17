@@ -29,6 +29,10 @@ import server as S  # noqa: E402
 
 SRC = Path(S.__file__).read_text(encoding="utf-8")
 HTML = (APP / "static" / "index.html").read_text(encoding="utf-8")
+# 界面文案搬进词表后，这里判的「说没说清」要看词表的中文那一份：键名留在 HTML 里，字在 i18n.js 里
+I18N = (APP / "static" / "i18n.js").read_text(encoding="utf-8")
+_zh_blob = I18N[I18N.find("    zh: {"):I18N.find("\n    en: {")]
+ZH = dict(re.findall(r"'([A-Za-z][\w.-]*)':\s*'((?:[^'\\]|\\.)*)'", _zh_blob))
 FAILED = []
 TOTAL = 0
 TMP = Path(tempfile.mkdtemp(prefix="md_cookiefirst_"))
@@ -469,7 +473,7 @@ E.drop_cookie_pref()
 print("== I. 接线：默认值 → ConfigBody → 界面 ==")
 ck("I0 锚点都在（改动挪走了就先报这一条，别让整段崩）",
    '"cookie_public_first": False' in SRC and "cookie_public_first: Optional[bool] = None" in SRC
-   and '"cookie_public_first": "公开优先' in HTML, "")
+   and "tr('settings.publicHintP1')" in HTML, "")
 ck("I1 默认关（「现有行为一字不变」这条要靠默认值兑现）",
    S.cfg.DEFAULTS["cookie_public_first"] is False, S.cfg.DEFAULTS.get("cookie_public_first"))
 ck("I2 ConfigBody 真声明了这个键（没声明的键会在 model_dump 那步静默丢掉 —— G2 那类 bug）",
@@ -479,10 +483,9 @@ _vm = set(re.findall(r'v-model="settings\.([a-z0-9_]+)"', HTML))
 ck("I3 界面这个键后端收得下、默认表里有名字（三处一致）",
    "cookie_public_first" in _fields and "cookie_public_first" in S.cfg.DEFAULTS
    and "cookie_public_first" in _vm, sorted(_vm - _fields)[:6])
-ck("I4 中文名表也叫得出这个键（「恢复默认」那栏才点得动它）",
-   '"cookie_public_first"' in HTML and re.search(
-       r'const CFG_LABELS = \{(.*?)\n        \};', HTML, re.S) is not None
-   and '"cookie_public_first": "公开优先' in HTML, "")
+ck("I4 人话名表也叫得出这个键（「恢复默认」那栏才点得动它）",
+   '"cookie_public_first": \'settings.cfg.cookie_public_first\'' in HTML
+   and re.search(r'const CFG_KEYS = \{(.*?)\n        \};', HTML, re.S) is not None, "")
 ck("I5 界面有开关本体（不是只有一句说明）",
    'v-model="settings.cookie_public_first"' in HTML, "")
 ck("I6 loadConfig 把这个键读回来（!! 转真布尔，后端没给也不算打开）",
@@ -490,11 +493,15 @@ ck("I6 loadConfig 把这个键读回来（!! 转真布尔，后端没给也不�
 ck("I7 界面默认值表里也有这条（没这条第一次渲染就是 undefined，保存时会写进真配置）",
    "cookie_public_first: false," in HTML, "")
 ck("I8 说明里写清了默认关与「哪三种失败不重跑」（不然用户以为每次都会打两遍）",
-   "默认关" in HTML and "429 限流、连不上、内容不存在" in HTML, "")
+   "tr('settings.publicHintB5')" in HTML
+   and "默认关" in ZH.get("settings.publicHintP1", "")
+   and "429 限流、连不上、内容不存在" in ZH.get("settings.publicHintB5", ""), "")
 ck("I9 说明里点明连下载也不带（这一条决定的是整趟，不只是解析）",
-   "连下载也不带" in HTML, "")
+   "tr('settings.publicHintB4')" in HTML and "连下载也不带" in ZH.get("settings.publicHintB4", ""), "")
 ck("I10 逐平台 Cookie 的优先级没被这条改动（开关只决定第一次带不带）",
-   "逐平台" in HTML and '只决定「第一次要不要带」' in HTML, "")
+   "tr('settings.publicHintP8')" in HTML
+   and "逐平台" in ZH.get("settings.publicHintP8", "")
+   and "只决定「第一次要不要带」" in ZH.get("settings.publicHintP8", ""), "")
 ck("I11 get_info 拆成两层：公开优先在门面，原解析本体一字未改地留在 _get_info_once",
    "def get_info(self, url: str, cfg: dict) -> Optional[Dict]:" in SRC
    and "def _get_info_once(self, url: str, cfg: dict, cache_key: str, now: float)" in SRC, "")

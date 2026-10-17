@@ -590,20 +590,30 @@ ck("I9 令牌值不会进日志（log 只记参数形状）", "def _log" in mcp_
 # ============ J. 界面接线（源码断言，渲染读数另跑） ============
 print("== J 界面接线 ==")
 html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+# 设置页的文案搬进了词表（#55）：卡名与那几句说明在 index.html 里只剩键名，字在 static/i18n.js 里。
+# 所以下面 J6/J7/J9/J12/J26–J28 都判两件事：界面上按这个键取词，词表中文那一份仍带着这句话。
+import re as _re  # noqa: E402
+_i18n = (ROOT / "static" / "i18n.js").read_text(encoding="utf-8")
+_zh = _i18n[_i18n.find("    zh: {"):_i18n.find("\n    en: {")]
+ZH = dict(_re.findall(r"'([A-Za-z][\w.-]*)':\s*'((?:[^'\\]|\\.)*)'", _zh))
 ck("J1 有登录门这块", 'class="auth-gate"' in html)
 ck("J2 门上写清「本机不需要登录」", "本机（127.0.0.1）用浏览器打开是不需要登录的" in html)
 ck("J3 有「记住这台设备」", "记住这台设备" in html)
 ck("J4 过期/空闲各说一句", "空闲太久" in html and "登录状态已经过期" in html)
 ck("J5 门上的错误原样上屏", 'v-if="authGate.error"' in html)
-ck("J6 设置页有那张卡", '<div class="section-title">访问保护（登录）</div>' in html)
-ck("J7 卡片说了只拦非本机", "只有从非本机地址来的连接要登录" in html)
+ck("J6 设置页有那张卡", """<div class="section-title">{{ tr('auth.cardTitle') }}</div>""" in html
+   and ZH.get("auth.cardTitle") == "访问保护（登录）")
+ck("J7 卡片说了只拦非本机", """<b>{{ tr('auth.boldRemoteOnly') }}</b>""" in html
+   and "只有从非本机地址来的连接要登录" in ZH.get("auth.boldRemoteOnly", ""))
 ck("J8 口令框是密码框（不明文回显）",
    html.count('type="password" show-password') >= 2)
-ck("J9 说了只存加盐哈希", "只存加盐哈希" in html)
+ck("J9 说了只存加盐哈希", """{{ tr('auth.pwStoredHint') }}""" in html
+   and "只存加盐哈希" in ZH.get("auth.pwStoredHint", ""))
 ck("J10 四个可调项都在卡里", all(f"settings.web_auth_{k}" in html for k in
                             ("enabled", "session_hours", "remember_days", "max_fails", "lock_minutes")))
 ck("J11 机器令牌默认打码显示", ":type=\"authTokenShown ? 'text' : 'password'\"" in html)
-ck("J12 令牌那条说了 MCP 不用改", "MCP 桥只连 127.0.0.1" in html)
+ck("J12 令牌那条说了 MCP 不用改", """{{ tr('auth.tokenHintB') }}""" in html
+   and "MCP 桥只连 127.0.0.1" in ZH.get("auth.tokenHintB", ""))
 ck("J13 锁定名单能逐条解锁", "unlockIp(l.ip)" in html)
 ck("J14 有全部解锁", "unlockAll()" in html)
 ck("J15 api() 认 401 的 auth_required", "err.auth_required" in html)
@@ -626,9 +636,12 @@ ck("J24 界面没有把口令哈希取来显示",
    "settings.web_auth_password_hash" not in html and "config.web_auth_password_hash" not in html)
 ck("J25 埋点表里认得这几个动作",
    all(f"'/api/auth/{k}'" in html for k in ("login", "logout", "password", "machine_token", "unlock")))
-ck("J26 说了 SECRET_KEY 会落盘所以重启不丢登录态", "重启程序后浏览器不用重登" in html)
-ck("J27 说了令牌要点「重置」才生成（刷新界面不写盘）", "这串要点「重置」才生成" in html)
-ck("J28 说了令牌连关掉保护这一项也代劳不了", "连「把保护关掉」这一项也照样拦" in html)
+ck("J26 说了 SECRET_KEY 会落盘所以重启不丢登录态", """{{ tr('auth.rememberHint', {""" in html
+   and "重启程序后浏览器不用重登" in ZH.get("auth.rememberHint", ""))
+ck("J27 说了令牌要点「重置」才生成（刷新界面不写盘）",
+   "这串要点「重置」才生成" in ZH.get("auth.tokenHintB", ""))
+ck("J28 说了令牌连关掉保护这一项也代劳不了",
+   "连「把保护关掉」这一项也照样拦" in ZH.get("auth.tokenHintB", ""))
 ck("J29 界面上没有「先看看界面」这种点了没用的出口", "先看看界面" not in html)
 
 # ============ K. 打包排除 ============

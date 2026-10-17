@@ -439,6 +439,12 @@ ck("I18 POST /api/notify/outbox/clear 注册了", ("POST", "/api/notify/outbox/c
 print("== J 接线 ==")
 srv = (ROOT / "server.py").read_text(encoding="utf-8")
 html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+# 那张卡的文案搬进了词表（#55）：index.html 里只剩 tr('notify.*' / 'settings.outbox*')，字在 static/i18n.js 里。
+# 所以 J14/J17/J18/J20 判两件事：界面上按这个键取词，词表中文那一份仍带着那句话。
+import re as _re  # noqa: E402
+_i18n = (ROOT / "static" / "i18n.js").read_text(encoding="utf-8")
+_zh = _i18n[_i18n.find("    zh: {"):_i18n.find("\n    en: {")]
+ZH = dict(_re.findall(r"'([A-Za-z][\w.-]*)':\s*'((?:[^'\\]|\\.)*)'", _zh))
 ck("J1 文件常量在 STATE_DIR 里（跟 config/history 同一个地方）",
    'NOTIFY_OUTBOX_FILE = STATE_DIR / "notify_outbox.json"' in srv)
 ck("J2 三个通知方法都改成进队",
@@ -468,17 +474,25 @@ ck("J11 投递不就地改共享记录（界面读数不会看到改一半）",
 ck("J12 启动时开线程并读回上次没送完的",
    "start_notify_outbox()" in srv[srv.index("def main():"):] and "pending = _outbox_load()" in srv)
 ck("J13 直播开播通知也进队列（原来是直发）", '_notify_enqueue("live"' in srv)
-ck("J14 界面有那张卡", "通知补发队列" in html and "notify_outbox.json" in html)
+ck("J14 界面有那张卡",
+   """<div class="section-title">{{ tr('notify.outboxTitle') }}</div>""" in html
+   and ZH.get("notify.outboxTitle") == "通知补发队列" and "notify_outbox.json" in html)
 ck("J15 界面把间隔表读出来而不是写死", "{{ (outbox.retry_delays || []).join(' → ') }}" in html)
 ck("J16 界面三个动作各绑各的接口",
    "api('/api/notify/outbox', { noLog: true })" in html
    and "api('/api/notify/outbox/retry'" in html and "api('/api/notify/outbox/clear'" in html)
-ck("J17 补发状态在界面上分得清三种", "'待补发'" in html and "'已送出'" in html and "'已丢弃'" in html)
+ck("J17 补发状态在界面上分得清三种",
+   """{{ r.status === 'sent' ? tr('notify.stSent') : (r.status === 'pending' ? tr('notify.stPending') : tr('notify.stDropped')) }}""" in html
+   and ZH.get("notify.stPending") == "待补发" and ZH.get("notify.stSent") == "已送出"
+   and ZH.get("notify.stDropped") == "已丢弃")
 ck("J18 界面显示还欠哪个通道与下次几点再试",
-   "还欠 {{ r.channels.join('、') }}" in html and "fmtWait(r.next_in)" in html)
+   """{{ tr('notify.stillOwes') }} {{ r.channels.join(tr('settings.fieldSep')) }}""" in html
+   and "还欠" in ZH.get("notify.stillOwes", "") and ZH.get("settings.fieldSep") == "、"
+   and "fmtWait(r.next_in)" in html)
 ck("J19 进设置页才拉一次（不在首页白跑）",
    "if (p === 'settings' && !(outbox.value.records || []).length) loadOutbox()" in html)
-ck("J20 清空前会先问一句", "清空后待补发的通知不会再重试" in html)
+ck("J20 清空前会先问一句", """tr('settings.outboxClearBody')""" in html
+   and "清空后待补发的通知不会再重试" in ZH.get("settings.outboxClearBody", ""))
 ck("J21 新增的设置项一个都没有（不碰 ConfigBody）",
    "notify_outbox_enabled" not in srv and "outbox" not in srv[srv.index("class ConfigBody"):
                                                              srv.index("class ConfigBody") + 4000])

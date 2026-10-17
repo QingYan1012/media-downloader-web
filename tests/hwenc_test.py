@@ -319,6 +319,12 @@ finally:
 # ---------- H. 接线（静态核对源码，接口漏一个键就红） ----------
 srv = (ROOT / "server.py").read_text(encoding="utf-8")
 html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+# 卡片标题与按钮文字搬进词表之后，光在 index.html 里搜「视频编码」就只会搜到空气。
+# 这里把 zh 那份词表读出来：断言改成两半 —— 界面接的是哪个键 + 这个词表键的中文还是不是那句原话。
+import re as _re  # noqa: E402
+_i18n = (ROOT / "static" / "i18n.js").read_text(encoding="utf-8")
+_zh = _i18n[_i18n.find("    zh: {"):_i18n.find("\n    en: {")]
+ZH = dict(_re.findall(r"'([A-Za-z][\w.-]*)':\s*'((?:[^'\\]|\\.)*)'", _zh))
 dm = srv[srv.index("DEFAULTS"):]
 ck("H1 三项默认值进 DEFAULTS 且等于改动前的行为",
    '"video_encoder": "cpu"' in dm and '"video_cpu_codec": "x264"' in dm and '"video_cpu_preset": "medium"' in dm)
@@ -343,7 +349,12 @@ ck("H10 转码超时被掐断要说出来", "秒被掐断" in srv)
 ck("H11 copy 预设不受影响", "if _preset_needs_encoder(base):" in srv)
 ck("H12 flv_to_mp4 的 copy→重编兜底还在", 'preset_id == "flv_to_mp4"' in srv and "_with_encoder(enc)" in srv)
 ck("H13 VAAPI 明确不做并写了原因", "VAAPI" in srv and "ass=" in srv[srv.index("VAAPI") - 400:srv.index("VAAPI") + 400])
-ck("H14 界面有那张卡片", "视频编码（转码与烧字幕）" in html and "探测编码器" in html)
+ck("H14 界面有那张卡片",
+   """<div class="section-title">{{ tr('settings.videoCodecTitle') }}</div>""" in html
+   and """{{ tr('settings.probeEncBtn') }}""" in html
+   and ZH.get("settings.videoCodecTitle") == "视频编码（转码与烧字幕）"
+   and ZH.get("settings.probeEncBtn") == "探测编码器",
+   f"标题={ZH.get('settings.videoCodecTitle')} 按钮={ZH.get('settings.probeEncBtn')}")
 ck("H15 三个下拉各绑各的设置项",
    'v-model="settings.video_encoder"' in html and 'v-model="settings.video_cpu_codec"' in html
    and 'v-model="settings.video_cpu_preset"' in html)

@@ -125,6 +125,10 @@ print("== C. 接线：设置、请求字段、opts→cfg、outtmpl 两处都跟�
 SVC = pathlib.Path(APP / "server.py").read_text(encoding="utf-8")
 IDX = pathlib.Path(APP / "static" / "index.html").read_text(encoding="utf-8")
 I18N = pathlib.Path(APP / "static" / "i18n.js").read_text(encoding="utf-8")
+# 界面文案搬进词表之后，IDX 里只剩 tr('键名')。断言要看两半：接的是哪个键，以及那个键的中文还是不是原话
+import re as _re  # noqa: E402
+_zh = I18N[I18N.find("    zh: {"):I18N.find("\n    en: {")]
+ZH = dict(_re.findall(r"'([A-Za-z][\w.-]*)':\s*'((?:[^'\\]|\\.)*)'", _zh))
 
 ck("C1 设置项存在且默认 False（默认关，老目录结构不突变）",
    S.ConfigManager.DEFAULTS.get("playlist_subdir") is False,
@@ -165,9 +169,14 @@ ck("C12 界面：整表 / 选中分集 / 单条补下三颗入口都把合集名
 ck("C13 opts 默认值里这两个键都在（少一个就是界面绑定到 undefined）",
    "playlist_subdir: false," in IDX and "playlist_folder: ''," in IDX)
 ck("C14 恢复默认那张表给这个键留了人话名（settingsave_test 钉的是「有控制项就要有名」）",
-   '"playlist_subdir": "' in IDX)
+   "\"playlist_subdir\": 'settings.cfg.playlist_subdir'" in IDX
+   and bool(ZH.get("settings.cfg.playlist_subdir")) and "playlist_subdir" not in ZH.get("settings.cfg.playlist_subdir", ""),
+   f"表里={'playlist_subdir' in IDX} 中文名={ZH.get('settings.cfg.playlist_subdir')}")
 ck("C15 文件名模板那句说明不再举例带「/」的写法（模板里的分隔符会被换成「_」，写了也出不来目录）",
-   "%(uploader)s/%(title)s" not in IDX and "会被换成「_」" in IDX)
+   "%(uploader)s/%(title)s" not in IDX and "会被换成「_」" in ZH.get("settings.filenameHint", "")
+   and "tr('settings.filenameHint')" in IDX
+   and "%(uploader)s/%(title)s" not in ZH.get("settings.filenameHint", ""),
+   ZH.get("settings.filenameHint", "")[:60])
 ck("C16 中英两边都有这两个键（i18n 的门是逐个键比对的）",
    I18N.count("'home.playlistSubdir'") == 2 and I18N.count("'home.playlistSubdirHint'") == 2)
 _ci = dl.find("playlist_landing_dir(")

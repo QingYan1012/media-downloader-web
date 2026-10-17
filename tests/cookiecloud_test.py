@@ -671,18 +671,36 @@ try:
 
     # ---------------- L 界面静态断言（HTML 里真有的字句）
     html = (S.APP_DIR / "static" / "index.html").read_text(encoding="utf-8")
-    ck("L1 设置页有 CookieCloud 这张卡", 'CookieCloud 同步' in html)
+    # 这张卡的文案搬进了词表（#55）：index.html 里只剩 tr('settings.cc*')，字在 static/i18n.js 里。
+    # 下面每条判两件事：界面上按这个键取词，词表中文那一份仍带着那句话。
+    _i18n = (S.APP_DIR / "static" / "i18n.js").read_text(encoding="utf-8")
+    _zh = _i18n[_i18n.find("    zh: {"):_i18n.find("\n    en: {")]
+    ZH = dict(re.findall(r"'([A-Za-z][\w.-]*)':\s*'((?:[^'\\]|\\.)*)'", _zh))
+    ck("L1 设置页有 CookieCloud 这张卡",
+       """<div class="section-title">{{ tr('settings.ccTitle') }}</div>""" in html
+       and ZH.get("settings.ccTitle") == "CookieCloud 同步")
     ck("L2 四个按钮各在：保存 / 测试连接 / 从云端拉取 / 本机推给云端",
        all(x in html for x in ['saveCookieCloud', 'testCookieCloud', 'pullCookieCloud', 'pushCookieCloud']))
     ck("L3 密钥输入框是 password 型，占位语说明「留空就是不改它」",
-       'type="password" v-model="cc.key"' in html and "留空就是不改它" in html)
-    ck("L4 界面上写着密钥不回显、日志里不出现", "界面不回显、日志里也不会出现" in html)
+       'type="password" v-model="cc.key"' in html and """tr('settings.ccKeySetPh')""" in html
+       and "留空就是不改它" in ZH.get("settings.ccKeySetPh", ""))
+    ck("L4 界面上写着密钥不回显、日志里不出现", """{{ tr('settings.ccKeyStoredHint') }}""" in html
+       and "界面不回显、日志里也不会出现" in ZH.get("settings.ccKeyStoredHint", ""))
     ck("L5 未配置时按缺的那一层分别显示；配全了但什么都没干过时说「还没测过，也没同步过」",
-       "开着但配不全，缺的是" in html and "还没测过，也没同步过" in html and "还没试" in html)
+       """{{ tr('settings.ccMissingLead') }}""" in html and """{{ tr('settings.ccNeverSynced') }}""" in html
+       and """tr('settings.ccSchemeUnknown')""" in html
+       and ZH.get("settings.ccMissingLead") == "开着但配不全，缺的是"
+       and ZH.get("settings.ccNeverSynced") == "还没测过，也没同步过"
+       and ZH.get("settings.ccSchemeUnknown", "").startswith("还没试"))
     ck("L6 写着覆盖前留 .bak-<时间> 与「拉完不用再改来源」",
-       ".bak-&lt;时间&gt;" in html and "拉完不用再改来源" in html)
+       """.bak-&lt;{{ tr('settings.timeWord') }}&gt;""" in html
+       and ZH.get("settings.timeWord") == "时间"
+       and "拉完不用再改来源" in ZH.get("settings.ccPullHint4", ""))
     ck("L7 推送要确认，且确认语里说明是「整个盖掉」",
-       "整个盖掉" in html and "本机推给云端" in html)
+       """tr('settings.ccPushBody')""" in html and """{{ tr('settings.ccPushHint2') }}""" in html
+       and "整个盖掉" in ZH.get("settings.ccPushBody", "")
+       and "整个盖掉" in ZH.get("settings.ccPushHint1", "") + ZH.get("settings.ccPushHint2", "")
+       and ZH.get("settings.ccPushBtn") == "本机推给云端")
     ck("L8 四个写接口都进了操作名表（日志里要说清是哪一下）",
        all(x in html for x in ["/api/cookiecloud/account': ", "/api/cookiecloud/test': ",
                                "/api/cookiecloud/pull': ", "/api/cookiecloud/push': "]))
@@ -692,12 +710,14 @@ try:
        "loadPlatformCookies(); loadCookieCloud();" in html)
     ck("L11 三种加密方式在界面上都有中文说明（吃后端的 scheme_labels）",
        "cc.scheme_labels[s]" in html and "scheme_labels" in json.dumps(S._cc_payload()))
-    ck("L12 关掉开关时的话是「不会向任何服务器发请求」",
-       "关着就不会向那个服务器发任何请求" in html)
+    ck("L12 关掉开关时的话是「不会向任何服务器发请求」", """{{ tr('settings.ccOnLabel') }}""" in html
+       and "关着就不会向那个服务器发任何请求" in ZH.get("settings.ccOnLabel", ""))
     ck("L13 HTML 里没有硬编码的密钥/UUID 字样", CC_KEY not in html)
     ck("L14 状态行会把「没成」和原话一起显示（失败不装作没发生），成功时把错话擦掉",
        "cc.state.last_test_error" in html and "cc.state.last_pull_error" in html
-       and "cc.state.last_push_error" in html and html.count("没成") >= 3)
+       and "cc.state.last_push_error" in html
+       and html.count("""tr('settings.ccFailedWord')""") >= 3
+       and ZH.get("settings.ccFailedWord") == "没成")
     cc_body = re.search(r"async function ccCall\(.*?\n        \}", html, re.S)
     cc_body = cc_body.group(0) if cc_body else ""
     ck("L15 失败的那一路也会把状态重读一遍（时间戳不能只跟着成功走）",

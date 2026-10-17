@@ -561,21 +561,44 @@ try:
 
     # ---------------- M 界面静态断言：文案要说清三条口径
     html = (Path(__file__).resolve().parents[1] / "static" / "index.html").read_text(encoding="utf-8")
-    ck("M1 设置页有「按龄清理」这一张卡", "按龄清理" in html and 'class="section-title">按龄清理' in html)
+    # 这一张卡的文案搬进了词表（#55）：index.html 里只剩 tr('settings.cl*')，字在 static/i18n.js 里。
+    # 所以每条都判两件事：界面上按这个键取词，词表中文那一份仍带着那句话。
+    import re as _re  # noqa: E402
+    _i18n = (Path(__file__).resolve().parents[1] / "static" / "i18n.js").read_text(encoding="utf-8")
+    _zh = _i18n[_i18n.find("    zh: {"):_i18n.find("\n    en: {")]
+    ZH = dict(_re.findall(r"'([A-Za-z][\w.-]*)':\s*'((?:[^'\\]|\\.)*)'", _zh))
+    ck("M1 设置页有「按龄清理」这一张卡",
+       """<div class="section-title">{{ tr('settings.cleanupTitle') }}</div>""" in html
+       and ZH.get("settings.cleanupTitle") == "按龄清理")
     ck("M2 四个天数输入框都在（0 就是不碰）",
        html.count('v-model="cl.log_days"') == 1 and html.count('v-model="cl.download_days"') == 1
        and html.count('v-model="cl.backup_days"') == 1 and html.count('v-model="cl.trash_days"') == 1)
-    ck("M3 开关那句写明了自动只碰哪三样", "日志归档、编辑备份、回收目录里到期的" in html)
-    ck("M4 明确写了年龄按 mtime", "mtime" in html and "最后一次被动过的时间" in html)
+    ck("M3 开关那句写明了自动只碰哪三样", """{{ tr('settings.clOnBold') }}""" in html
+       and "日志归档、编辑备份、回收目录里到期的" in ZH.get("settings.clOnBold", ""))
+    ck("M4 明确写了年龄按 mtime", """<b>{{ tr('settings.clMtimeWord') }}</b>{{ tr('settings.clRule1Tail') }}""" in html
+       and ZH.get("settings.clMtimeWord") == "mtime"
+       and "最后一次被动过的时间" in ZH.get("settings.clRule1Tail", ""))
     ck("M5 有「先看名单」与「按名单删除」两个按钮（顺序就是口径）",
-       "先看名单" in html and "按名单删除" in html)
+       html.index("""@click="previewCleanup">{{ tr('settings.clPreviewBtn') }}""")
+       < html.index("""@click="runCleanup">{{ tr('settings.clRunBtn') }}""")
+       and ZH.get("settings.clPreviewBtn") == "先看名单"
+       and ZH.get("settings.clRunBtn") == "按名单删除",
+       "按钮文案在词表里，界面上按键取词")
     ck("M6 「按名单删除」在没有名单或名单过期时是灰的",
        ':disabled="!clPlan || clPlanStale"' in html)
-    ck("M7 有「看回收目录」与放回原位的入口", "看回收目录" in html and "放回原位" in html)
+    ck("M7 有「看回收目录」与放回原位的入口",
+       """@click="loadCleanupTrash">{{ tr('settings.clTrashBtn') }}""" in html
+       and """@click="restoreAllTrash">{{ tr('settings.clRestoreAllBtn') }}""" in html
+       and ZH.get("settings.clTrashBtn") == "看回收目录"
+       and "放回原位" in ZH.get("settings.clRestoreAllBtn", ""))
     ck("M8 名单里每组都标了是直接删还是挪进回收目录",
-       "g.hard ? '直接删' : '挪进回收目录'" in html)
-    ck("M9 没逐条列出的那部分是报数，不是不说", "没逐条列出来" in html)
-    ck("M10 护住进行中任务这件事上屏了", "正在下载、排队、暂停/稍后，以及还在做种" in html)
+       """{{ g.hard ? tr('settings.clHardDelete') : tr('settings.clMoveToTrash') }}""" in html
+       and ZH.get("settings.clHardDelete") == "直接删"
+       and ZH.get("settings.clMoveToTrash") == "挪进回收目录")
+    ck("M9 没逐条列出的那部分是报数，不是不说", """{{ tr('settings.clHiddenNote'""" in html
+       and "没逐条列出来" in ZH.get("settings.clHiddenNote", ""))
+    ck("M10 护住进行中任务这件事上屏了", """{{ tr('settings.clProtectHint') }}""" in html
+       and "正在下载、排队、暂停/稍后，以及还在做种" in ZH.get("settings.clProtectHint", ""))
     ck("M11 半成品仍归原来那个按钮，文案不抢活",
        "清理临时文件" in html or "cleanup-parts" in html)
     ck("M12 四个写接口都有中文动作名（日志里不说裸路径）",
