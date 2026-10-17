@@ -7141,6 +7141,9 @@ class DownloaderEngine:
                     info2 = ydl.extract_info(url, download=True)
                     if info2:
                         filepath = ""
+                        # 这一趟要的成品容器：转封装/抽音频之后工具报回来的名字还是换容器前那一个，
+                        # 找回文件时先按它找（同一个基名旁边可能躺着上一次的旧容器）
+                        want_ext = (str(opts.get("merge_output_format") or fmt or ""),)
                         is_pl_result = info2.get("_type") in ("playlist", "multi_video") or bool(
                             info2.get("entries")
                         )
@@ -7157,6 +7160,8 @@ class DownloaderEngine:
                                         pth = ydl.prepare_filename(e)
                                     except Exception:
                                         pth = ""
+                                # 换过容器的分集，这个 pth 是换之前的名字，文件躺在旁边换了后缀
+                                pth = resolve_written_file(pth, want_ext)
                                 if pth and Path(pth).exists():
                                     pl_files.append(pth)
                             filepath = pl_files[-1] if pl_files else ""
@@ -7183,13 +7188,8 @@ class DownloaderEngine:
                                 return False, ""
                         if not filepath:
                             filepath = ydl.prepare_filename(info2)
-                        if not Path(filepath).exists():
-                            base = Path(filepath).with_suffix("")
-                            for ext in (".mp4", ".mkv", ".webm", ".mp3", ".m4a", ".flac", ".wav"):
-                                cand = Path(str(base) + ext)
-                                if cand.exists():
-                                    filepath = str(cand)
-                                    break
+                        # 单条那一支同样会被转封装换了名字，两条路共用同一个找回逻辑（别再各写一份名单）
+                        filepath = resolve_written_file(filepath, want_ext)
                         # 命中下载记录的单条视频同样走到这里，只是永远不会有文件：
                         # 不点名原因就会被完整性校验说成「文件不可用」
                         if not Path(filepath).exists() and _already_recorded():
@@ -9529,6 +9529,44 @@ def _opts_dir_is_manual(task_dir, global_dir) -> bool:
     if not a:
         return False
     return not _same_dir(a, str(global_dir or "").strip())
+
+
+# 成品换了容器之后，工具报回来的名字仍是换容器前那一个（见 resolve_written_file）。
+# 这一份名单只在这里定义，两处调用点共用，别再抄第二份出来各自漂移。
+REMUX_FALLBACK_EXTS = (".mp4", ".mkv", ".webm", ".mp3", ".m4a", ".flac", ".wav")
+
+
+def resolve_written_file(pth: str, prefer=()) -> str:
+    """工具报的路径不在场时，按同一个基名换扩展，找回真正写出来的那个文件。
+
+    挂 FFmpegVideoRemuxer（目标容器=mkv/mp4/webm）或转音频时，yt-dlp 处理完写回分集 info 的
+    filepath 仍是换容器前那个名字，成品其实躺在旁边换了后缀。照那个名字判在场，整批就得到
+    「写出 0 个文件」，再被完整性校验说成「下载完成但文件不可用」—— 文件明明在盘上。
+
+    给的名字在场就原样还；prefer 是这一趟要的容器（先找它，因为同一个基名旁边可能既躺着
+    上一次的旧容器、又躺着这次的成品，按目标容器先找才不会认领错文件）；都没找到仍把原名
+    还回去，让调用方照实说「文件不存在」，这里不替工具撒谎。
+    """
+    if not pth:
+        return ""
+    p = Path(pth)
+    if p.exists():
+        return str(p)
+    order: List[str] = []
+    for e in (prefer or ()):
+        ext = str(e or "").strip().lower()
+        ext = ("." + ext.lstrip(".")) if ext else ""
+        if ext and ext not in order:
+            order.append(ext)
+    for ext in REMUX_FALLBACK_EXTS:
+        if ext not in order:
+            order.append(ext)
+    base = str(p.with_suffix(""))
+    for ext in order:
+        cand = Path(base + ext)
+        if cand.exists():
+            return str(cand)
+    return pth
 
 
 def playlist_folder_name(raw: str) -> str:
