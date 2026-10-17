@@ -113,6 +113,13 @@ d9, note9 = S.playlist_landing_dir(str(blocked), PL_TITLE, True, is_playlist=Tru
 ck("B12 文件夹建不出来时回原目录，并把缘故说清（不能让 outtmpl 指向一个不存在又建不出的地方）",
    d9 == str(blocked) and "建不出来" in note9, note9[:80])
 
+manual = SHARD / "这一批手动挑的目录"   # 下载页给这一批单独挑的落点（opts.download_dir 那一格）
+manual.mkdir(parents=True, exist_ok=True)
+d10, note10 = S.playlist_landing_dir(str(manual), PL_TITLE, True, is_playlist=True)
+ck("B13 手动给这一批挑了落点：合集层加在它下面，不替掉用户挑的那一格（口径已定）",
+   d10 == str(manual / PL_TITLE) and pathlib.Path(d10).is_dir()
+   and d10 != str(base) and str(manual) in note10, d10)
+
 # ---------------------------------------------------------------- C. 接线
 print("== C. 接线：设置、请求字段、opts→cfg、outtmpl 两处都跟着这层走 ==")
 SVC = pathlib.Path(APP / "server.py").read_text(encoding="utf-8")
@@ -163,6 +170,10 @@ ck("C15 文件名模板那句说明不再举例带「/」的写法（模板里�
    "%(uploader)s/%(title)s" not in IDX and "会被换成「_」" in IDX)
 ck("C16 中英两边都有这两个键（i18n 的门是逐个键比对的）",
    I18N.count("'home.playlistSubdir'") == 2 and I18N.count("'home.playlistSubdirHint'") == 2)
+_ci = dl.find("playlist_landing_dir(")
+ck("C17 落点函数第一手参数就是这一趟算完的 out_dir（手动指定与自动分类都排在它前面，所以合集层只会加在下面、不会替掉用户挑的落点）",
+   dl[_ci:_ci + 90].split("playlist_landing_dir(", 1)[1].lstrip().startswith("out_dir"),
+   dl[_ci:_ci + 70].replace("\n", " ⏎ "))
 
 # ---------------------------------------------------------------- D. 端点实测
 print("== D. 端点实测：请求里的开关与合集名真的落到任务的 opts 上（假队列，不真下载） ==")

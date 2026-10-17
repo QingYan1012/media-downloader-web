@@ -361,6 +361,21 @@ def mp3_frames(p: pathlib.Path) -> bytes:
     return b[i:]
 
 
+def flac_blocks(p: pathlib.Path):
+    """flac 自己的元数据块表：[(块类型, 长度, 内容是否全零)]。移图后不该再有 6(PICTURE)。"""
+    b = p.read_bytes()
+    assert b[:4] == b"fLaC", b[:4]
+    i, out = 4, []
+    while True:
+        hdr = b[i]
+        size = int.from_bytes(b[i + 1:i + 4], "big")
+        out.append((hdr & 0x7F, size, b[i + 4:i + 4 + size].count(0) == size))
+        i += 4 + size
+        if hdr & 0x80:
+            break
+    return out, len(b), i   # i 之后就是音频帧
+
+
 if ".mp3" in BLANK and JPG.is_file():
     keep = SHARD / "sibling.jpg"
     keep.write_bytes(JPG_BYTES)
@@ -418,6 +433,7 @@ for ext, tag in ((".flac", "flac"), (".m4a", "m4a")):
     seeded_art = embedded(p)
     seeded_bytes = p.read_bytes()
     seeded_probe = probe(p)
+    seeded_layout = flac_blocks(p) if tag == "flac" else None
     ck(f"H10a[{tag}] 先确认真把图嵌进去了 {ext}（不然后面「移完了」是句空话）",
        seeded_art == JPG_BYTES, f"回读 {len(seeded_art)} 字节 / jpg {len(JPG_BYTES)} 字节")
     M.auto_tag_audio(str(p), title="稻香", artists="周杰伦", cover_path=str(JPG), embed_cover=False)
@@ -426,6 +442,20 @@ for ext, tag in ((".flac", "flac"), (".m4a", "m4a")):
        f"{len(seeded_bytes)} → {p.stat().st_size}")
     ck(f"H10b[{tag}] 移图没改流本身：编码与时长前后一致（重编码会动这两个；总码率会随标签区变小）",
        probe(p)[:2] == seeded_probe[:2], f"{seeded_probe} -> {probe(p)}")
+    if tag == "flac":
+        # 活体读到的形状：图没了、腾出来的位置补成全零 PADDING、整文件字节数不变 —— 口径已定，钉住别被「顺手优化」掉
+        blocks, total, audio_start = flac_blocks(p)
+        ck("H12[flac] 移之前真有 PICTURE 块、移之后没了，腾出的位置是全零 PADDING（不是旧图残留）",
+           any(c == 6 for c, _s, _z in seeded_layout[0])
+           and all(c != 6 for c, _s, _z in blocks)
+           and any(c == 1 and z for c, _s, z in blocks),
+           f"{[(c, s) for c, s, _ in seeded_layout[0]]} → {[(c, s) for c, s, _ in blocks]}")
+        ck("H12b[flac] 旧图那段字节移前确实在文件里、移完整个文件一个都不剩（含被并进 padding 的那段）",
+           JPG_BYTES[3:60] in seeded_bytes and JPG_BYTES[3:60] not in p.read_bytes(),
+           f"移前 {len(seeded_bytes)} 字节含图 / 移后 {total} 字节、音频帧从 {audio_start} 起")
+        ck("H12c[flac] 移完体积与音频帧起点都不变（flac 这一路不缩，mp3 才收标签区 —— 按实测说）",
+           total == seeded_layout[1] and audio_start == seeded_layout[2],
+           f"{seeded_layout[1]} → {total}，帧起点 {seeded_layout[2]} → {audio_start}")
 
 src_strip = inspect.getsource(M.strip_embedded_cover)
 ck("H11 认不了的容器照实说「没动它」并回 False（不把「不支持」混报成「移出去了」）",
