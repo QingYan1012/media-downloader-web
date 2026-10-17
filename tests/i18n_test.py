@@ -102,6 +102,12 @@ other_ph = [f"{lang}.{k}" for lang in ("zh", "en") for k, v in DICT[lang].items(
 ck("A8 占位符只用花括号一种写法", not other_ph, str(other_ph))
 padded = [k for k, v in DICT["zh"].items() if v != v.strip()]
 ck("A9 zh 的词表值不带首尾空格（渲染出来就是错位）", not padded, str(padded[:6]))
+# 英文里引用界面名称用普通双引号；「」是中文标点，F8 那条（en 不许有汉字）管不到它。
+# 顺带盯住换过来时最容易犯的错：全角括号两侧本来不需要空格，换成直引号后就成了 word"word。
+en_br = [k for k, v in DICT["en"].items() if "「" in str(v) or "」" in str(v)]
+ck("A10 en 的值里不留中文引号「」", not en_br, str(en_br[:6]))
+en_glue = [k for k, v in DICT["en"].items() if re.search(r'[A-Za-z0-9]"[A-Za-z0-9]', str(v))]
+ck("A11 en 的引号两侧不直接贴词（补空格这类活由脚本干，别让它在词表里留着）", not en_glue, str(en_glue[:6]))
 
 # ---------------------------------------------------------------- B. 模板用到的键
 print("== B. 模板里用到的每个键都在词表 ==")
@@ -445,7 +451,7 @@ PAGE_HANDLERS = {
               "watchMusicBatch", "showAlreadyHave", "showUnmatched", "onMusicSelection",
               "downloadMusicSelected", "downloadMusicRow", "onMusicSortChange", "onMusicFavSelection",
               "addMusicFav", "removeMusicFav", "clearMusicFav", "previewMusicFav", "switchMusicFav",
-              "downloadMusicFav", "loadMusicFavs", "installMusicdl"],
+              "downloadMusicFav", "loadMusicFavs", "installMusicdl", "showCoverMiss"],
 }
 # 允许留中文的处理器：这些行比的是后端发来的数据（预设名、占位标题），翻成英文这行判断就失效。
 # 「允许留下」不等于「不用管」——残留的行数和那几句都钉死，改了名字或悄悄多出一行都判红

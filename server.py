@@ -3635,7 +3635,7 @@ class ConfigManager:
         "music_platform_cookies": {},
         "musicdl_sources": [],
         "music_filename_template": "{artist}/{name} - {artist}",
-        "music_embed_metadata": False,
+        "music_embed_metadata": True,
         "music_hide_unavailable": True,
         "music_include_local": False,
         "music_playlist_mode": "fast",
@@ -17680,7 +17680,7 @@ def api_music_status():
             "include_reference": bool(cfg.data.get("music_include_reference", False)),
             # 界面重开时要照原样回填这几项：后端下载读的就是它们，界面显示默认值会把人骗到
             "filename_template": str(cfg.data.get("music_filename_template") or ""),
-            "embed_metadata": bool(cfg.data.get("music_embed_metadata", False)),
+            "embed_metadata": bool(cfg.data.get("music_embed_metadata", True)),
             "hide_unavailable": bool(cfg.data.get("music_hide_unavailable", True)),
             "include_local": bool(cfg.data.get("music_include_local", False)),
             # 音质要求：存的就是下载时读的，重开页面必须原样回填；选项表也由此处给，
@@ -18150,6 +18150,7 @@ def api_music_favorites_download(body: dict):
         "match_sources": body.get("match_sources") or [],
         "skip_downloaded": body.get("skip_downloaded"),
         "block_reupload": body.get("block_reupload"),
+        "embed_metadata": body.get("embed_metadata"),
         "proxy": body.get("proxy") or "",
         "cookies": str(body.get("cookies") or ""),
     })
@@ -18358,6 +18359,24 @@ def api_music_preview(id: str = "", url: str = ""):
 _MUSIC_JOB: Dict[str, Any] = {}
 
 
+def note_music_cover(job: Dict[str, Any], cv: dict, name: str, title: str, log: Callable) -> None:
+    """封面这一趟：记账 + 逐行写结论。勾了内嵌就回读文件自己的标签，回读不到要说是为什么；
+       没勾而成品自带封面（源给过、或走过 yt-dlp 的 --embed-thumbnail）只照实说明，不去抹。"""
+    from music_search import COVER_WHY_TEXT
+    c = job.setdefault("cover", {"ok": 0, "kept": 0, "miss": []})
+    if cv.get("want"):
+        if cv.get("has"):
+            c["ok"] = int(c.get("ok") or 0) + 1
+            log(f"封面: 已嵌入 {name}")
+        else:
+            why = cv.get("why") or "failed"
+            c.setdefault("miss", []).append({"title": title, "why": why})
+            log(f"封面没嵌上: {name}（{COVER_WHY_TEXT.get(why, why)}）", "warning")
+    elif cv.get("has"):
+        c["kept"] = int(c.get("kept") or 0) + 1
+        log(f"封面: {name} 自带封面，这一趟没勾内嵌、原样保留（抹掉要重编码，不该由这个勾选来干）")
+
+
 @app.post("/api/music/download")
 def api_music_download(body: dict):
     """
@@ -18395,6 +18414,12 @@ def api_music_download(body: dict):
     if block_reupload is None:
         block_reupload = bool(cfg.data.get("music_block_reupload", False))
     block_reupload = bool(block_reupload)
+    # 「内嵌封面」这一勾：界面每次下载都带上当前值。以前它只在点「保存策略」时才落进 config，
+    # 勾完直接点下载就等于没勾 —— 和这个开关要修的那个毛病是同一类
+    embed_meta = body.get("embed_metadata")
+    if embed_meta is None:
+        embed_meta = bool(cfg.data.get("music_embed_metadata", True))
+    embed_meta = bool(embed_meta)
     # 音质要求：musicdl 每一源取哪一档写死在它自己里，这里只能用于「多候选挑达标的」
     # 与「下完核对成品实际什么档」，勾了不达标不下才整首跳过
     from music_search import norm_quality_spec, quality_spec_active, quality_spec_label
@@ -18453,7 +18478,8 @@ def api_music_download(body: dict):
                            "done": 0, "ok": 0, "out_dir": out_dir, "last": "",
                            "dup_skipped": sum(int(d["count"]) - 1 for d in dup_skipped),
                            "already": len(already_have), "already_list": already_have,
-                           "started_at": time.time(), "elapsed_s": 0, "match": {}})
+                           "started_at": time.time(), "elapsed_s": 0, "match": {},
+                           "cover": {"ok": 0, "kept": 0, "miss": []}})
         # 匹配那一轮直接往这个 dict 里写结论：download_status 是浅拷贝，轮询时读到的就是最新内容
         match_report: Dict[str, Any] = _MUSIC_JOB["match"]
 
@@ -18463,7 +18489,11 @@ def api_music_download(body: dict):
                 from music_search import musicdl_cache_dir, SIDE_CAR_EXTS, cleanup_empty_dirs
                 from music_search import promote_music_file
                 cache_dir = musicdl_cache_dir(out_dir)
-                embed = bool(cfg.data.get("music_embed_metadata", False))
+                embed = embed_meta
+                # 这一句先落在日志里：不勾时后面每首都不会有封面的动静，
+                # 没有这句就分不清「这个格式没封面可嵌」和「你本来就没勾」
+                log_mgr.log(f"内嵌封面: {'开' if embed else '关'}"
+                            + ("" if embed else "（同名封面图片仍留在成品旁边，只是不写进文件）"))
 
                 def finish(i: int, path: str) -> None:
                     _MUSIC_JOB["done"] = int(_MUSIC_JOB.get("done") or 0) + 1
@@ -18537,19 +18567,22 @@ def api_music_download(body: dict):
                             str(pp),
                             lyrics_text=meta.get("lyric") or "",
                             cover_url=meta.get("cover") or "",
-                            embed=embed,
                             log=log_mgr.log,
                         )
+                        cover_file = (lr or {}).get("cover") or ""
                         try:
-                            from music_search import auto_tag_audio
+                            from music_search import auto_tag_audio, cover_verdict
                             auto_tag_audio(
                                 str(pp),
                                 title=meta.get("title") or "",
                                 artists=meta.get("artists") or "",
                                 album=meta.get("album") or "",
-                                cover_path=(lr or {}).get("cover") or "",
+                                cover_path=cover_file,
+                                embed_cover=embed,
                                 log=log_mgr.log,
                             )
+                            note_music_cover(_MUSIC_JOB, cover_verdict(str(pp), embed, cover_file),
+                                             pp.name, meta.get("title") or pp.name, log_mgr.log)
                         except Exception as te:
                             log_mgr.log(f"自动标签: {te}", "warning")
                     except Exception as re:
@@ -18614,6 +18647,7 @@ def api_music_download(body: dict):
                     title or "track", artists=artists, source=source,
                     save_dir=out_dir, cookies=cookies,
                     proxy=music_proxy_for_source(source), log=log_mgr.log,
+                    embed_cover=embed_meta,
                 )
             except Exception as e:
                 log_mgr.log(f"musicdl 任务失败: {e}", "error")
@@ -18623,7 +18657,9 @@ def api_music_download(body: dict):
     if not urls:
         raise HTTPException(400, "没有可下载链接 / 缓存 id / 歌名")
     opts = {
-        "audio_only": True, "embed_meta": True, "embed_thumb": True,
+        "audio_only": True, "embed_meta": True,
+        # 走队列兜底的这些行也听同一个开关：以前这里写死 True，勾选只管另一条路
+        "embed_thumb": embed_meta,
         "format": "m4a", "queue_name": body.get("queue_name") or "music",
     }
     if title:

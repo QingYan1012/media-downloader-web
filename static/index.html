@@ -3105,7 +3105,8 @@
                 <el-button size="small" plain @click="saveMusicStrategy">{{ tr('music.saveStrategy') }}</el-button>
                 <span class="hint" :title="tr('music.fmtHint')">{{ tr('music.fmtLabel') }}</span>
                 <el-input v-model="musicFilenameTemplate" size="small" style="width:220px" placeholder="{artist}/{name} - {artist}"></el-input>
-                <el-checkbox v-model="musicEmbedMeta" size="small">{{ tr('music.embedMeta') }}</el-checkbox>
+                <el-checkbox v-model="musicEmbedMeta" size="small"
+                             :title="tr('music.embedMetaHint')">{{ tr('music.embedMeta') }}</el-checkbox>
                 <el-checkbox v-model="musicHideUnavailable" size="small">{{ tr('music.hideUnavail') }}</el-checkbox>
                 <el-checkbox v-model="musicIncludeReference" size="small"
                              :title="tr('music.refOnlyHint')">{{ tr('music.refOnlyLabel') }}</el-checkbox>
@@ -6538,7 +6539,7 @@
         const musicSearchType = ref('song');
         const musicIncludeLocal = ref(false);
         const musicFilenameTemplate = ref('{artist}/{name} - {artist}');
-        const musicEmbedMeta = ref(false);
+        const musicEmbedMeta = ref(true);
         // 整批点下载时默认不再下第二份已有同名成品的歌；单首点「下载」不受这个约束
         const musicSkipExisting = ref(true);
         // 正在换源的行 id：行内按钮各自转圈，批量按钮整轮置灰
@@ -10488,16 +10489,20 @@
             const have = s.already || 0;
             const miss = (s.match && s.match.missed) || [];
             const lazy = (s.match && s.match.unsearched) || [];
+            const coverMiss = (s.cover && s.cover.miss) || [];
             const hasList = miss.length + lazy.length > 0;
             const txt = tr('music.batchDoneHead', { ctx: favCtx ? tr('music.favDoneHead') : tr('music.selDoneHead'), ok: s.ok || 0 })
               + (skip ? tr('music.skipPart', { n: skip, tail: hasList ? tr('music.skipListTail') : tr('music.skipLogTail') }) : '')
               + (dupSkip ? tr('music.dupSkipPart', { n: dupSkip }) : '')
               + (have ? tr('music.haveSkipPart', { n: have }) : '')
+              + ((s.cover && s.cover.ok) ? tr('music.coverOkPart', { n: s.cover.ok }) : '')
+              + (coverMiss.length ? tr('music.coverMissPart', { n: coverMiss.length }) : '')
               + tr('music.elapsedPart', { s: Math.round(s.elapsed_s || 0) });
             if (s.ok) ElementPlus.ElMessage.success(txt);
             else ElementPlus.ElMessage.warning(txt);
             if (hasList) showUnmatched(miss, lazy, (s.match && s.match.sources) || '');
             showAlreadyHave(s.already_list);
+            showCoverMiss(coverMiss);
             loadFiles().catch(() => {});
           }, 4000);
         }
@@ -10513,6 +10518,23 @@
             + `<div class="unmatched-l">${rows.map(escHtml).join('、')}</div>`
             + '<div class="unmatched-h">' + tr('music.haveHint') + '</div>',
             tr('music.haveTitle'),
+            { dangerouslyUseHTMLString: true, confirmButtonText: tr('common.gotIt'), customClass: 'unmatched-box' },
+          ).catch(() => {});
+        }
+        // 勾了「内嵌封面」却没嵌进去的歌整份列出来：只报数量等于让人猜是哪几首、为什么少
+        const COVER_WHY_KEYS = { fmt: 'music.coverWhyFmt', nocover: 'music.coverWhyNoCover',
+                                 failed: 'music.coverWhyFailed' };
+        function showCoverMiss(list) {
+          const rows = (list || []).map(x => tr('music.favFailLine', {
+            name: x.title || tr('music.unknownTitle'),
+            why: tr(COVER_WHY_KEYS[x.why] || 'music.coverWhyFailed'),
+          }));
+          if (!rows.length) return;
+          ElementPlus.ElMessageBox.alert(
+            '<div class="unmatched-h">' + tr('music.coverMissHead', { n: rows.length }) + '</div>'
+            + `<div class="unmatched-l">${rows.map(escHtml).join(tr('music.commaSep'))}</div>`
+            + '<div class="unmatched-h">' + tr('music.coverMissHint') + '</div>',
+            tr('music.coverMissTitle'),
             { dangerouslyUseHTMLString: true, confirmButtonText: tr('common.gotIt'), customClass: 'unmatched-box' },
           ).catch(() => {});
         }
@@ -10543,6 +10565,8 @@
                   match_sources: musicStrategy.value.match_sources || [],
                   skip_downloaded: musicSkipExisting.value !== false,
                   block_reupload: !!musicBlockReupload.value,
+                  // 每次都带当前值：这个勾不点「保存策略」也要算数
+                  embed_metadata: !!musicEmbedMeta.value,
                   quality_spec: musicQualityBody(),
                 }),
               });
@@ -10552,7 +10576,10 @@
             if (urls.length) {
               await api('/api/music/download', {
                 method: 'POST',
-                body: JSON.stringify({ urls, cookies: musicCookies.value || '' }),
+                body: JSON.stringify({
+                  urls, cookies: musicCookies.value || '',
+                  embed_metadata: !!musicEmbedMeta.value,
+                }),
               });
               ElementPlus.ElMessage.success(tr('music.queuedN', { n: urls.length }));
               page.value = 'queue';
@@ -10578,6 +10605,7 @@
               // 单首是明确的一次动作：目录里已有也重新下，归档时替换旧那份，不另存副本
               skip_downloaded: false,
               block_reupload: !!musicBlockReupload.value,
+              embed_metadata: !!musicEmbedMeta.value,
               quality_spec: musicQualityBody(),
             };
             const r = await api('/api/music/download', { method: 'POST', body: JSON.stringify(body) });
@@ -10708,6 +10736,7 @@
                 match_sources: (musicStrategy.value && musicStrategy.value.match_sources) || [],
                 skip_downloaded: musicSkipExisting.value !== false,
                 block_reupload: !!musicBlockReupload.value,
+                embed_metadata: !!musicEmbedMeta.value,
                 quality_spec: musicQualityBody(),
                 cookies: musicCookies.value || '',
               }),

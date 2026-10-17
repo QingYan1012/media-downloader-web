@@ -3886,6 +3886,7 @@ def download_songs(
     match_report: Optional[dict] = None,
     block_reupload: bool = False,
     quality_spec: Any = None,
+    embed_cover: bool = False,
 ) -> List[str]:
     """按缓存 id 精确下载（官方 download）。返回列表与 cache_ids 一一对应，下不上的位置是 ""。
 
@@ -4021,11 +4022,28 @@ def download_songs(
                 lyrics_text=lyric,
                 lyrics_url=lyric_url,
                 cover_url=cover,
-                embed=False,
                 log=log,
             )
         except Exception as e:
             log(f"歌词/封面处理: {e}", "warning")
+        if embed_cover:
+            # 这一路（单曲 musicdl 直接下载）没有 server 那边的改名收尾，就地写进文件并回读
+            try:
+                lr_cover = ""
+                for sib in Path(path).parent.glob(Path(path).stem + ".*"):
+                    if sib.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp"):
+                        lr_cover = str(sib)
+                        break
+                auto_tag_audio(path, title=title, artists=str(artists or ""),
+                               album=str(_song_field(song, "album", "album_name") or ""),
+                               cover_path=lr_cover, embed_cover=True, log=log)
+                cv = cover_verdict(path, True, lr_cover)
+                if cv["has"]:
+                    log(f"封面: 已嵌入 {Path(path).name}")
+                else:
+                    log(f"封面没嵌上: {Path(path).name}（{COVER_WHY_TEXT.get(cv['why'], cv['why'])}）", "warning")
+            except Exception as e:
+                log(f"内嵌封面: {e}", "warning")
         org = origin_by_idx.get(i) or audio_origin(song, want_by_idx.get(i))
         q_note = ""
         if spec_on:
@@ -4234,6 +4252,7 @@ def download_via_musicdl(
     cookies: str = "",
     proxy: str = "",
     log: Callable = print,
+    embed_cover: bool = False,
 ) -> Optional[str]:
     """无缓存时：搜索匹配后下载第一首。"""
     srcs = [source] if source else list(DEFAULT_SOURCES)
@@ -4261,6 +4280,7 @@ def download_via_musicdl(
         cookies=cookies,
         proxy=proxy,
         log=log,
+        embed_cover=embed_cover,
     )
     return paths[0] if paths else "ok"
 
@@ -4685,12 +4705,12 @@ def save_lyrics_and_cover(
     lyrics_text: str = "",
     lyrics_url: str = "",
     cover_url: str = "",
-    embed: bool = False,
     log: Callable = print,
 ) -> dict:
-    """保存同名 .lrc / 封面；可选 ffmpeg 内嵌。"""
+    """保存同名 .lrc / .jpg。写不写进音频文件是 auto_tag_audio 那一步的事（看「内嵌封面」开关），
+       这里只落同名文件：关掉了封面也该在目录里看得到。"""
     p = Path(audio_path)
-    out = {"lrc": "", "cover": "", "embedded": False}
+    out = {"lrc": "", "cover": ""}
     if not p.is_file():
         return out
     # lyrics
@@ -4721,30 +4741,6 @@ def save_lyrics_and_cover(
             log(f"封面: {cover_path.name}")
         except Exception as e:
             log(f"封面下载失败: {e}", "warning")
-    if embed and (out["lrc"] or out["cover"]):
-        try:
-            tmp = p.with_name(p.stem + ".embed" + p.suffix)
-            cmd = ["ffmpeg", "-y", "-i", str(p)]
-            if out["cover"]:
-                cmd += ["-i", out["cover"]]
-            # 简化：仅贴封面
-            if out["cover"]:
-                cmd += [
-                    "-map", "0", "-map", "1",
-                    "-c", "copy",
-                    "-disposition:v:0", "attached_pic",
-                    str(tmp),
-                ]
-                r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-                if r.returncode == 0 and tmp.is_file():
-                    tmp.replace(p)
-                    out["embedded"] = True
-                    log("已内嵌封面")
-                else:
-                    if tmp.exists():
-                        tmp.unlink(missing_ok=True)
-        except Exception as e:
-            log(f"内嵌元数据失败: {e}", "warning")
     return out
 
 
@@ -4898,6 +4894,45 @@ def shift_lrc_text(lrc_text: str, offset_ms: float) -> str:
     return line_re.sub(repl, lrc_text or "")
 
 
+COVER_TAG_EXTS = (".mp3", ".flac", ".m4a", ".mp4")
+# 能写进标签的封面图片格式：mp3 的 APIC、flac 的 Picture、m4a 的 covr 三处都是按 jpg / png 标 mime，
+# webp 之类硬贴个 jpeg 旗标，回读能得到字节、播放器却认不出 —— 那就等于对着勾选撒谎
+COVER_IMG_EXTS = (".jpg", ".jpeg", ".png")
+# 运行日志里那句原因（写日志的一侧仍是中文，界面按语言渲染那一套是后面那批）
+COVER_WHY_TEXT = {
+    "fmt": "容器或图片格式装不了封面，只留同名图片文件",
+    "nocover": "平台没给封面地址，没东西可嵌",
+    "failed": "写进文件没成功",
+    "kept": "这一趟没勾内嵌，成品自带的封面保留",
+}
+
+
+def cover_verdict(audio_path: str, want: bool, cover_path: str = "") -> dict:
+    """封面这一趟的结论：回读文件自己的标签，不信「我调用过写入函数」。
+
+    want=False 时也回读：成品自带封面（源就给过、或走过 yt-dlp 的 --embed-thumbnail）抹不掉，
+    抹了要重编码文件，那种事不该由一个下载勾选来干 —— 所以照实说明「文件里本来就有」。
+    """
+    p = Path(audio_path)
+    try:
+        data, _mime = audio_embedded_cover(str(p))
+    except Exception:
+        data = ""
+    has = bool(data)
+    if has:
+        return {"want": bool(want), "has": True, "why": ""}
+    if not want:
+        return {"want": False, "has": False, "why": ""}
+    if p.suffix.lower() not in COVER_TAG_EXTS:
+        return {"want": True, "has": False, "why": "fmt"}
+    if not cover_path or not Path(cover_path).is_file():
+        return {"want": True, "has": False, "why": "nocover"}
+    if Path(cover_path).suffix.lower() not in COVER_IMG_EXTS:
+        # 容器能装封面、但这张图的格式装不进去（webp 进 m4a 就是这种）
+        return {"want": True, "has": False, "why": "fmt"}
+    return {"want": True, "has": False, "why": "failed"}
+
+
 def auto_tag_audio(
     audio_path: str,
     *,
@@ -4905,9 +4940,11 @@ def auto_tag_audio(
     artists: str = "",
     album: str = "",
     cover_path: str = "",
+    embed_cover: bool = True,
     log: Callable = print,
 ) -> bool:
-    """用 mutagen 写入基础标签；封面可选。"""
+    """用 mutagen 写入基础标签。embed_cover=False 时只写文字标签、不把封面写进文件
+       （同名的 .jpg 仍然留着——关掉的只是「进文件」这一步）。"""
     pth = Path(audio_path)
     if not pth.is_file():
         return False
@@ -4920,6 +4957,12 @@ def auto_tag_audio(
         log("自动标签需要 mutagen: pip install mutagen", "warning")
         return False
     suf = pth.suffix.lower()
+    if not embed_cover:
+        cover_path = ""
+    elif cover_path and Path(cover_path).suffix.lower() not in COVER_IMG_EXTS:
+        # 与 cover_verdict 认同一张表：这几种容器只按 jpg / png 标 mime，
+        # webp 硬贴个 jpeg 旗标回读能得到字节、播放器却认不出，等于对着勾选撒谎
+        cover_path = ""
     try:
         if suf == ".mp3":
             try:
@@ -5401,12 +5444,24 @@ def audio_embedded_cover(path: str) -> tuple:
         except Exception:
             keys = []
         for k in keys:
-            if not str(k).startswith("APIC"):
-                continue
-            frame = tags.get(k)
-            data = getattr(frame, "data", None)
-            if data:
-                found.append((bytes(data), str(getattr(frame, "mime", "") or "").strip()))
+            ks = str(k)
+            if ks.startswith("APIC"):
+                frame = tags.get(k)
+                data = getattr(frame, "data", None)
+                if data:
+                    found.append((bytes(data), str(getattr(frame, "mime", "") or "").strip()))
+            elif ks.lower() == "covr":
+                # m4a / mp4 的封面在 covr：mutagen 给的是 MP4Cover（bytes 的子类），
+                # 既不在 pictures 也不是 APIC 帧。以前这里读不到它，界面预览取不到 m4a 的封面，
+                # 「回读确认嵌没嵌上」也会把明明嵌好的判成失败
+                for item in (tags.get(k) or []):
+                    try:
+                        data = bytes(item)
+                    except Exception:
+                        continue
+                    if data:
+                        fmt = getattr(item, "imageformat", None)
+                        found.append((data, "image/png" if fmt == 14 else "image/jpeg"))
     if not found:
         return "", ""
     # 有些文件把 1x1 占位图当封面，选最大的那张
