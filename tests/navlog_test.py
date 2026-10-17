@@ -80,13 +80,14 @@ EXPECT_LOADS = {
     "subs": ["loadSubs"],
     "sniff": ["loadCatcatch"],
     "favs": ["loadFavTab"],
+    "library": ["loadLibrary"],
     "music": ["loadMusicFavs"],
     "tg": ["loadTgMtStatus"],
     "settings": ["loadPlatformCookies", "loadCookieCloud", "loadMusicCookies", "loadRiskPresets",
                  "loadComponents", "loadNetInfo", "loadCleanup", "loadConfigDefaults"],
 }
 # 这几页在这个回调里没有要取的数据（都靠各自的按钮与轮询），跑完只该留下入场动画那一步
-QUIET_PAGES = ["home", "info", "search", "library", "voice"]
+QUIET_PAGES = ["home", "info", "search", "voice"]
 
 # ---------- A. 后端埋点通道本身 ----------
 print("== A. 后端 /api/ui_event 的口径 ==")

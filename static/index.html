@@ -880,6 +880,20 @@
     .pager { margin-top: var(--row-mt); justify-content: flex-end; }
     /* 资源库转码单元格：下拉与「执行」按钮固定间距，不再挤在一起 */
     .lib-transcode { display: flex; align-items: center; gap: var(--gap); white-space: nowrap; }
+    /* 一行一个的下拉改用原生 select：el-select 会把整份预设选项常驻挂在页面上，一页 50 行就是 50 份 */
+    .lib-transcode select {
+      width: 170px;
+      height: 24px;
+      padding: 0 20px 0 6px; /* 右侧留出身画的下拉箭头，否则最后一截字压在箭头上 */
+      font-family: inherit;
+      font-size: 12px;
+      color: var(--ink);
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: var(--r-sm);
+      cursor: pointer;
+    }
+    .lib-transcode select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
     .search-grid {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
@@ -1783,7 +1797,7 @@
         <div class="content">
 
           <!-- 下载页 -->
-          <div v-show="page === 'home'">
+          <div v-if="page === 'home'">
             <div class="bento">
               <div class="card span-6">
                 <div class="card-title">{{ tr('home.mediaLinks') }}</div>
@@ -2014,7 +2028,7 @@
 
 
           <!-- 队列 -->
-          <div v-show="page === 'queue'">
+          <div v-if="page === 'queue'">
             <div v-if="status.throttle && status.throttle.length" class="card row row--mb">
               <span style="font-size:16px">🐢</span>
               <b>{{ tr('queue.throttleTitle') }}</b>
@@ -2116,7 +2130,7 @@
           </div>
 
           <!-- 磁力 / 种子 -->
-          <div v-show="page === 'bt'">
+          <div v-if="page === 'bt'">
             <div class="card row--mb">
               <div class="section-title">{{ tr('bt.addTitle') }}</div>
               <div class="link-start">
@@ -2395,7 +2409,7 @@
           </div>
 
           <!-- 信息 -->
-          <div v-show="page === 'info'">
+          <div v-if="page === 'info'">
             <div class="card">
               <div class="section-title">解析媒体链接</div>
               <div class="row">
@@ -2554,7 +2568,7 @@
           </div>
 
           <!-- 文件浏览（参考 MediaSync） -->
-          <div v-show="page === 'files'">
+          <div v-if="page === 'files'">
             <div class="row-actions" style="margin-bottom:12px;align-items:center;flex-wrap:wrap">
               <el-button size="small" @click="loadFiles('')">{{ tr('files.root') }}</el-button>
               <el-button size="small" @click="goParentDir" :disabled="!filesPath">{{ tr('files.parent') }}</el-button>
@@ -2874,7 +2888,7 @@
           </div>
 
           <!-- 历史 -->
-          <div v-show="page === 'history'">
+          <div v-if="page === 'history'">
             <div class="stats-grid">
               <div class="stat-box"><div class="num">{{ histStats.total }}</div><div class="lbl">总计</div></div>
               <div class="stat-box"><div class="num">{{ histStats.success }}</div><div class="lbl">成功</div></div>
@@ -2925,7 +2939,7 @@
           </div>
 
           <!-- 日志 -->
-          <div v-show="page === 'log'">
+          <div v-if="page === 'log'">
             <div class="row-actions" style="margin-bottom:12px">
               <el-select size="small" v-model="logLevel" style="width:110px" @change="loadLogs">
                 <el-option label="全部" value="all"></el-option>
@@ -2957,7 +2971,7 @@
 
           
           <!-- 语音工具 -->
-          <div v-show="page === 'voice'">
+          <div v-if="page === 'voice'">
             <div class="card">
               <div class="section-title">语音工具（Demucs / Edge-TTS / 实时转写）</div>
               <div class="hint" style="margin-bottom:10px">参考 voice-pro：支持人声分离、字幕配音、准实时转写与翻译。依赖可一键安装。</div>
@@ -3001,7 +3015,7 @@
           </div>
 
           <!-- 音乐搜索 -->
-          <div v-show="page === 'music'">
+          <div v-if="page === 'music'">
             <div class="card">
               <div class="section-title">音乐搜索 / 歌单（musicdl）</div>
               <div class="hint" style="margin-bottom:10px">
@@ -3401,7 +3415,7 @@
           </div>
 
           <!-- 聚合搜索 -->
-          <div v-show="page === 'search'">
+          <div v-if="page === 'search'">
             <div class="card">
               <div class="section-title">聚合搜索</div>
               <div class="row">
@@ -3468,7 +3482,7 @@
           </div>
 
           <!-- 收藏 / 关注 / 稍后再看 -->
-          <div v-show="page === 'favs'">
+          <div v-if="page === 'favs'">
             <div class="card">
               <div class="section-title">账号收藏 / 播放列表（需对应平台 Cookie）</div>
               <div class="row row--mb">
@@ -3521,7 +3535,7 @@
           </div>
 
           <!-- 订阅追踪 -->
-          <div v-show="page === 'subs'">
+          <div v-if="page === 'subs'">
             <div class="bento">
               <div class="card span-4">
                 <div class="card-title">{{ tr('subs.addTitle') }}</div>
@@ -3871,7 +3885,7 @@
           </div>
 
           <!-- 直播录制 -->
-          <div v-show="page === 'live'">
+          <div v-if="page === 'live'">
             <div class="card">
               <div class="section-title">直播录制</div>
               <el-input size="large" v-model="liveUrl" type="textarea" :autosize="{ minRows: 3, maxRows: 12 }" placeholder="示例：https://live.bilibili.com/xxxxx 或 YouTube 直播链接"></el-input>
@@ -4028,7 +4042,7 @@
           <!-- 设置 -->
 
           <!-- 网页嗅探 -->
-          <div v-show="page === 'sniff'">
+          <div v-if="page === 'sniff'">
             <div class="card">
               <div class="section-title">浏览器网络嗅探（推荐，与下蛋一致）</div>
               <p class="hint hint--block">
@@ -4160,7 +4174,7 @@
           </div>
 
           <!-- 资源库 -->
-          <div v-show="page === 'library'">
+          <div v-if="page === 'library'">
             <div class="card">
               <div class="row row--spread row--tight">
                 <div class="section-title" style="margin:0">本地资源库</div>
@@ -4210,9 +4224,9 @@
                     <td>{{ it.mtime }}</td>
                     <td>
                       <div class="lib-transcode">
-                        <el-select v-model="it._preset" placeholder="预设" size="small" style="width:150px">
-                          <el-option v-for="p in transcodePresets" :key="p.id" :label="p.label" :value="p.id"></el-option>
-                        </el-select>
+                        <select v-model="it._preset">
+                          <option v-for="p in transcodePresets" :key="p.id" :value="p.id">{{ p.label }}</option>
+                        </select>
                         <el-button size="small" plain :loading="it._tc" @click="runTranscode(it)">执行</el-button>
                       </div>
                     </td>
@@ -4228,7 +4242,7 @@
             </div>
           </div>
 
-          <div v-show="page === 'settings'">
+          <div v-if="page === 'settings'">
             <div class="settings-wrap">
               <div class="settings-main">
                 <div class="card">
@@ -13174,6 +13188,9 @@ const CFG_LABELS = {
             void c.offsetWidth; // 不强制回流，同名动画不会重放
             c.classList.add('is-enter');
           }
+          // 页面块是 v-if：离场即销毁节点，而摘掉 DOM 并不会让浏览器停掉声音，先手动停下
+          const m = mediaEl.value;
+          if (m && !m.paused) m.pause();
           if (p === 'queue' || p === 'live' || p === 'bt') loadTasks();
           if (p === 'bt') { loadSeeding(); loadBtTrackers(); }
           if (p === 'live') loadLiveMonitors();
@@ -13183,6 +13200,7 @@ const CFG_LABELS = {
           if (p === 'subs') loadSubs();
           if (p === 'sniff') loadCatcatch();
           if (p === 'favs') loadFavTab();
+          if (p === 'library') loadLibrary(false);
           if (p === 'music') loadMusicFavs();
           if (p === 'settings') { loadPlatformCookies(); loadCookieCloud(); loadMusicCookies(); loadRiskPresets(); loadComponents(); loadNetInfo(); loadCleanup(); loadConfigDefaults(); }
           if (p === 'tg') loadTgMtStatus(false);
@@ -13204,7 +13222,6 @@ const CFG_LABELS = {
           watch(page, () => setTimeout(paintIcons, 50));
           window.addEventListener('keydown', onSpaceKey);
 
-          loadLibrary(false);
           loadTranscodePresets();
           // 顶栏「订阅新增」与侧栏角标在别的页面上也要有数：不预取一次的话，重启后没点进
           // 订阅页就一直是空的（计数本来就持久化在 subscriptions.json，只是没人去读）
