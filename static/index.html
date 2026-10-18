@@ -586,14 +586,20 @@
        不在每条规则里各写一遍 64px（那样一改宽度就得满文件找齐）。 */
     .sidebar { transition: width .18s ease; }
     .sidebar.is-collapsed { --sidebar-w: 64px; }
+    /* 折叠钮在标题行右端（margin-left:auto 顶过去），不再是标题行下面那条整宽的条：
+       那一整条其实只有右端 16px 有东西，剩下的是能点着的空白。
+       现在它是一枚 30px 方块，热区就是看到的那块。 */
     .nav-collapse {
       display: flex;
-      width: 100%;
-      padding: 7px 16px;
-      justify-content: flex-end;
+      flex: none;
+      width: 30px;
+      height: 30px;
+      margin-left: auto;
+      padding: 0;
+      justify-content: center;
       align-items: center;
       border: 0;
-      border-bottom: 1px solid rgba(255,255,255,.06);
+      border-radius: 8px;
       background: transparent;
       color: rgba(255,255,255,.5);
       cursor: pointer;
@@ -601,10 +607,12 @@
     }
     .nav-collapse:hover { color: #fff; background: rgba(255,255,255,.07); }
     .nav-collapse svg { width: 16px; height: 16px; transition: transform .18s ease; }
-    .sidebar.is-collapsed .nav-collapse { justify-content: center; padding: 7px 0; }
     /* 同一个箭头转 180 度当「展开」，省得为两种状态各存一份图标 */
     .sidebar.is-collapsed .nav-collapse svg { transform: rotate(180deg); }
-    .sidebar.is-collapsed .sidebar-logo { justify-content: center; padding: 20px 0 14px; }
+    /* 折叠后只剩 64px：图标 36 + 钮 30 并排放不下，所以让钮换行到图标下面居中，
+       而不是把两个都缩小硬挤 —— 挤完钮只剩十几像素，等于点不着。 */
+    .sidebar.is-collapsed .sidebar-logo { flex-wrap: wrap; justify-content: center; padding: 20px 0 12px; }
+    .sidebar.is-collapsed .nav-collapse { margin-left: 0; width: 100%; height: 26px; }
     .sidebar.is-collapsed .sidebar-logo .brand,
     .sidebar.is-collapsed .sidebar-foot,
     .sidebar.is-collapsed .nav-group,
@@ -2017,14 +2025,14 @@
             <span class="brand-name">{{ tr('brand') }}</span>
             <span class="brand-sub">Media Stream</span>
           </div>
+          <button type="button" class="nav-collapse" :title="navCollapsed ? tr('header.expandNav') : tr('header.collapseNav')"
+                  :aria-label="navCollapsed ? tr('header.expandNav') : tr('header.collapseNav')" :aria-expanded="!navCollapsed" @click="navCollapsed = !navCollapsed">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+          </button>
         </div>
-        <button type="button" class="nav-collapse" :title="navCollapsed ? tr('header.expandNav') : tr('header.collapseNav')"
-                :aria-label="navCollapsed ? tr('header.expandNav') : tr('header.collapseNav')" :aria-expanded="!navCollapsed" @click="navCollapsed = !navCollapsed">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
-        </button>
         <div class="nav-scroll">
           <template v-for="(g, gi) in navGroups" :key="g.id">
-            <!-- 第一组顶上不该压一条线：它上面是折叠按钮，那条线没有左边可分 -->
+            <!-- 第一组顶上不该压一条线：标题行自己带了一条，再压一条就是双线 -->
             <div v-if="gi > 0" class="nav-group-line"></div>
             <div class="nav-group">{{ tr('navGroup.' + g.id) }}</div>
             <div

@@ -210,8 +210,29 @@ ck("P35 文件页默认按修改时间倒序，三处联动一致（目录仍钉
    and "const FILE_DIR = { name: 'asc', size: 'desc', mtime: 'desc' };" in HTML
    and "if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;" in HTML)
 
+# ---- #80 折叠钮移进标题行 ----
+# 这条只能静态钉「挂在哪儿」，量不出来「64px 里到底放不放得下」——
+# 后者是活体读的（tmp/nav80_check.py：展开 30×30 贴右端、折叠换行整行宽、来回点都回得来）。
+_logo_blk = HTML[HTML.index('<div class="sidebar-logo">'):HTML.index('<div class="nav-scroll">')]
+_btn_at = _logo_blk.index('class="nav-collapse"')
+ck("P36 折叠钮挂在标题行里、排在品牌名之后（挪回标题行下面那条整宽条，这一条就红）",
+   HTML.count('class="nav-collapse"') == 1
+   and '<div class="brand">' in _logo_blk[:_btn_at]
+   and "</div>" in _logo_blk[_logo_blk.index("</button>", _btn_at):])
+_btn_rule = re.search(r"\.nav-collapse \{([^}]*)\}", HTML)
+_cl_logo = re.search(r"\.sidebar\.is-collapsed \.sidebar-logo \{([^}]*)\}", HTML)
+_cl_btn = re.search(r"\.sidebar\.is-collapsed \.nav-collapse \{([^}]*)\}", HTML)
+ck("P37 两档位置各靠一条规则：展开用 margin-left:auto 顶到右端、不再自带下划线；折叠靠 flex-wrap 换到图标下面整行宽",
+   _btn_rule is not None and _cl_logo is not None and _cl_btn is not None
+   and re.search(r"margin-left:\s*auto", _btn_rule.group(1)) is not None
+   and "border-bottom" not in _btn_rule.group(1)
+   and "flex-wrap: wrap" in _cl_logo.group(1)
+   and re.search(r"width:\s*100%", _cl_btn.group(1)) is not None,
+   "btn=%r clLogo=%r clBtn=%r" % (_btn_rule and _btn_rule.group(1), _cl_logo and _cl_logo.group(1),
+                                  _cl_btn and _cl_btn.group(1)))
+
 print("\n== 汇总 ==")
 if FAILED:
-    print(f"共 35 条，失败 {len(FAILED)} 条\n失败清单：" + "、".join(FAILED))
+    print(f"共 37 条，失败 {len(FAILED)} 条\n失败清单：" + "、".join(FAILED))
     sys.exit(1)
-print("共 35 条，全部通过")
+print("共 37 条，全部通过")
