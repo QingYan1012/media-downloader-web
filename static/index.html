@@ -3254,22 +3254,24 @@
           <div v-if="page === 'log'">
             <div class="row-actions" style="margin-bottom:12px">
               <el-select size="small" v-model="logLevel" style="width:110px" @change="loadLogs">
-                <el-option label="全部" value="all"></el-option>
+                <el-option :label="tr('logs.levelAll')" value="all"></el-option>
                 <el-option label="info" value="info"></el-option>
                 <el-option label="warning" value="warning"></el-option>
                 <el-option label="error" value="error"></el-option>
               </el-select>
-              <el-input size="small" v-model="logSearch" placeholder="搜索日志..." style="width:200px" clearable @input="loadLogs"></el-input>
-              <el-button size="small" type="danger" plain @click="clearLogs">清空</el-button>
-              <el-button size="small" plain @click="openLogDir">打开日志文件夹</el-button>
-              <el-button size="small" plain title="把版本、运行状态、设置（密钥与 Cookie 内容不打包）、队列和近期日志打成一个 zip，用于发给别人排查"
-                       @click="exportDiagnostics">导出诊断包</el-button>
-              <span class="hint" style="margin-left:auto">本页最多显示最近 200 条（记的是写操作、失败与点通知跳过来的那一下，光翻页面不占行）；日志写在程序所在文件夹的
-                <code>{{ logLoc.file }}</code>，跨天归档成 app-日期.log，超过 7 天自动删除<template v-if="logLoc.dir">（当前在
-                <code>{{ logLoc.dir }}</code>，已归档 {{ logLoc.archives.length }} 份）</template></span>
+              <el-input size="small" v-model="logSearch" :placeholder="tr('logs.searchPh')" style="width:200px" clearable @input="loadLogs"></el-input>
+              <el-button size="small" type="danger" plain @click="clearLogs">{{ tr('common.clear') }}</el-button>
+              <el-button size="small" plain @click="openLogDir">{{ tr('logs.btnOpenDir') }}</el-button>
+              <el-button size="small" plain :title="tr('logs.exportTip')"
+                       @click="exportDiagnostics">{{ tr('logs.btnExport') }}</el-button>
+              <!-- 这一行的空格是排版，不是文案：改前 的/当前在 与后面那枚 <code> 之间各有一个「文本节点里的换行塌下来的空格」，
+                   塌成插值后得手写回去（不带换行）；而 </code> 与紧跟的「，跨天」「，已归档」改前一个空格都没有，
+                   所以这两个插值必须紧贴 </code> 写在同一行 —— 带换行的空白会被 Vue 折成一个空格（#9、#15 踩过同一个坑）。
+                   逐字节由活体 A/B 用 span.hint 的 textContent 钉住。 -->
+              <span class="hint" style="margin-left:auto">{{ tr('logs.hintHead') }} <code>{{ logLoc.file }}</code>{{ tr('logs.hintMid') }}<template v-if="logLoc.dir">{{ tr('logs.hintLoc') }} <code>{{ logLoc.dir }}</code>{{ tr('logs.hintArch', { n: logLoc.archives.length }) }}</template></span>
             </div>
             <div class="card" style="max-height:calc(100vh - 200px);overflow:auto;font-size:13px">
-              <div v-if="!logs.length" class="empty-tip">暂无日志</div>
+              <div v-if="!logs.length" class="empty-tip">{{ tr('logs.empty') }}</div>
               <div
                 v-for="(e, i) in logs"
                 :key="i"
@@ -13130,7 +13132,7 @@
 
         async function clearLogs() {
           try {
-            await ElementPlus.ElMessageBox.confirm('确定清空日志？', '确认', { type: 'warning' });
+            await ElementPlus.ElMessageBox.confirm(tr('logs.clearAsk'), tr('common.confirm'), { type: 'warning' });
             await api('/api/logs/clear', { method: 'POST' });
             await loadLogs();
           } catch (_) {}
@@ -13138,16 +13140,16 @@
         // 诊断包是发给别人看的：密钥和 Cookie 内容由后端摘掉，前端只负责把文件收下来
         async function exportDiagnostics() {
           const done = actionName('/api/diagnostics/export');
-          const tip = ElementPlus.ElMessage({ message: '正在打包诊断信息，请稍候…', duration: 0 });
+          const tip = ElementPlus.ElMessage({ message: tr('logs.tPacking'), duration: 0 });
           try {
             const res = await fetch('/api/diagnostics/export', { method: 'POST' });
             if (!res.ok) {
               let msg = '';
               try { msg = (await res.json()).detail; } catch (_) { msg = res.statusText; }
-              throw new Error(friendlyError(msg || ('导出失败（HTTP ' + res.status + '）')));
+              throw new Error(friendlyError(msg || tr('logs.failHttp', { s: res.status })));
             }
             const blob = await res.blob();
-            if (!blob.size) throw new Error('诊断包是空的，请查看运行日志中的原因');
+            if (!blob.size) throw new Error(tr('logs.emptyZip'));
             const cd = res.headers.get('content-disposition') || '';
             const name = (cd.match(/filename="?([^";]+)"?/) || [])[1] || 'diagnostics.zip';
             const url = URL.createObjectURL(blob);
@@ -13156,11 +13158,11 @@
             a.download = name;
             a.click();
             URL.revokeObjectURL(url);
-            ElementPlus.ElMessage.success('已导出 ' + name + '（密钥与 Cookie 内容不在包里）');
+            ElementPlus.ElMessage.success(tr('logs.exported', { p: name }));
             logAction(done);
           } catch (e) {
             logAction(done + '（失败）', 'warning');
-            ElementPlus.ElMessage.error(e.message || '导出诊断包失败');
+            ElementPlus.ElMessage.error(e.message || tr('logs.exportFail'));
           } finally {
             tip.close();
           }
@@ -13169,7 +13171,7 @@
         async function openLogDir() {
           if (!logLoc.value.dir) await loadLogs();
           if (!logLoc.value.dir) {
-            ElementPlus.ElMessage.warning('还没拿到日志所在的文件夹，重启程序后再点一次');
+            ElementPlus.ElMessage.warning(tr('logs.noDir'));
             return;
           }
           try {
@@ -13178,9 +13180,9 @@
               uiName: '打开日志文件夹',
               body: JSON.stringify({ path: logLoc.value.dir })
             });
-            ElementPlus.ElMessage.success('已在资源管理器中打开 ' + (r.path || logLoc.value.dir));
+            ElementPlus.ElMessage.success(tr('logs.opened', { p: r.path || logLoc.value.dir }));
           } catch (e) {
-            ElementPlus.ElMessage.error(e.message || '无法打开日志文件夹');
+            ElementPlus.ElMessage.error(e.message || tr('logs.openFail'));
           }
         }
 

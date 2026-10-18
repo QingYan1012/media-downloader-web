@@ -24,6 +24,7 @@ import server as S  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 HTML = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+I18N = (ROOT / "static" / "i18n.js").read_text(encoding="utf-8")
 
 FAILED = []
 TOTAL = 0
@@ -170,7 +171,11 @@ ck("B13b 通知条的两个跳转各记一行，句子在词表里（不是硬�
 ck("B14 主题与明暗仍记（它们真的写进配置）",
    "logAction('切换主题为「'" in HTML and "logAction(settings.value.dark_mode" in HTML)
 
-ck("B15 日志页把这条口径写在界面上", "光翻页面不占行" in HTML)
+# 这句口径 #55 第 17 页翻进词表后住在 i18n.js 里，界面上的字仍在，只是换了个文件；
+# 所以两边都要查：词表里有这句话，模板里确实引了这个键。
+I18N = (ROOT / "static" / "i18n.js").read_text(encoding="utf-8")
+ck("B15 日志页把这条口径写在界面上",
+   "光翻页面不占行" in I18N and re.search(r"tr\(['\"]logs\.hintHead['\"]\)", HTML) is not None)
 ck("B16 页头标题仍用 pageTitle（不是顺手把变量删了）", "{{ pageTitle }}" in HTML)
 ck("B17 页面切换的入场动画没被一起删掉", "classList.add('is-enter')" in PAGE_WATCH_BODY)
 

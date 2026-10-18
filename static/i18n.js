@@ -2540,6 +2540,31 @@
       'history.noPath': '无文件路径',
       'history.opened': '已打开所在文件夹',
       'history.openFail': '无法打开文件夹',
+
+      /* 运行日志页（#55 第 17 页，逐页推进的最后一次）。hint* 四条是从原来那一整行正文里按
+         <code> 与 <template> 的边界切开的，每条都是原文的一段，合起来仍逐字等于改前那句；
+         数字与「份）」之间那两个空格本来在同一文本节点里，所以 {n} 留在值内，
+         而 <code> 前面那个空格是节点之间的接缝，只能写在模板上。
+         「清空」与确认框标题沿用 common.clear / common.confirm，没另建键。 ---- */
+      'logs.levelAll': '全部',
+      'logs.searchPh': '搜索日志...',
+      'logs.btnOpenDir': '打开日志文件夹',
+      'logs.exportTip': '把版本、运行状态、设置（密钥与 Cookie 内容不打包）、队列和近期日志打成一个 zip，用于发给别人排查',
+      'logs.btnExport': '导出诊断包',
+      'logs.hintHead': '本页最多显示最近 200 条（记的是写操作、失败与点通知跳过来的那一下，光翻页面不占行）；日志写在程序所在文件夹的',
+      'logs.hintMid': '，跨天归档成 app-日期.log，超过 7 天自动删除',
+      'logs.hintLoc': '（当前在',
+      'logs.hintArch': '，已归档 {n} 份）',
+      'logs.empty': '暂无日志',
+      'logs.clearAsk': '确定清空日志？',
+      'logs.noDir': '还没拿到日志所在的文件夹，重启程序后再点一次',
+      'logs.opened': '已在资源管理器中打开 {p}',
+      'logs.openFail': '无法打开日志文件夹',
+      'logs.tPacking': '正在打包诊断信息，请稍候…',
+      'logs.failHttp': '导出失败（HTTP {s}）',
+      'logs.emptyZip': '诊断包是空的，请查看运行日志中的原因',
+      'logs.exported': '已导出 {p}（密钥与 Cookie 内容不在包里）',
+      'logs.exportFail': '导出诊断包失败',
     },
     en: {
       'live.monTitle': 'Live room monitor (auto-detect streams starting)',
@@ -5012,6 +5037,30 @@
       'history.noPath': 'This record has no file path',
       'history.opened': 'Opened the folder it lives in',
       'history.openFail': 'Could not open the folder',
+
+      /* 运行日志页的英文那一份。「200 条」「7 天」是这一页写死的显示口径，跟后端那份
+         LOG_LIMIT / 保留天数是同一对数字，翻的是句子不是数值。app-日期.log 在英文里写成
+         app-YYYY-MM-DD.log：值里不能出现尖括号（A7 把词表当纯文字），而 <date> 那种写法
+         在英文里更像标签而不是文件名。 ---- */
+      'logs.levelAll': 'All',
+      'logs.searchPh': 'Search logs...',
+      'logs.btnOpenDir': 'Open log folder',
+      'logs.exportTip': 'Packs the version, runtime status, settings (secret and cookie values are not included), the queue and recent logs into one zip - hand that to whoever is debugging with you',
+      'logs.btnExport': 'Export diagnostics',
+      'logs.hintHead': 'This page shows at most the latest 200 entries (only write actions, failures and the click that jumped you here are recorded; just browsing pages adds no lines). The log is written next to the program:',
+      'logs.hintMid': ', rotated daily into app-YYYY-MM-DD.log and deleted after 7 days ',
+      'logs.hintLoc': '(currently in',
+      'logs.hintArch': ', {n} archives so far)',
+      'logs.empty': 'No log entries yet',
+      'logs.clearAsk': 'Clear the running log?',
+      'logs.noDir': 'The log folder is not known yet - restart the program and click again',
+      'logs.opened': 'Opened {p} in the file explorer',
+      'logs.openFail': 'Could not open the log folder',
+      'logs.tPacking': 'Packaging diagnostics, one moment...',
+      'logs.failHttp': 'Export failed (HTTP {s})',
+      'logs.emptyZip': 'The diagnostics zip came out empty - check the running log for the reason',
+      'logs.exported': 'Exported {p} (secrets and cookie values are not inside)',
+      'logs.exportFail': 'Diagnostics export failed',
     },
   };
 
