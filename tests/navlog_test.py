@@ -82,12 +82,14 @@ EXPECT_LOADS = {
     "favs": ["loadFavTab"],
     "library": ["loadLibrary"],
     "music": ["loadMusicFavs"],
+    # 语音页从 #78 起有得取了：那三个下拉（引擎/权重/设备）全靠 voice_status 的 separation 段
+    "voice": ["loadVoiceStatus"],
     "tg": ["loadTgMtStatus"],
     "settings": ["loadPlatformCookies", "loadCookieCloud", "loadMusicCookies", "loadRiskPresets",
                  "loadComponents", "loadNetInfo", "loadCleanup", "loadConfigDefaults"],
 }
 # 这几页在这个回调里没有要取的数据（都靠各自的按钮与轮询），跑完只该留下入场动画那一步
-QUIET_PAGES = ["home", "info", "search", "voice"]
+QUIET_PAGES = ["home", "info", "search"]
 
 # ---------- A. 后端埋点通道本身 ----------
 print("== A. 后端 /api/ui_event 的口径 ==")

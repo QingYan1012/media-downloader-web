@@ -3591,6 +3591,13 @@ class ConfigManager:
         # 语音工具那两项以前只写在读取处的兜底里，默认值表没登记：界面上有这两项，
         # 「恢复默认」的名单里就没有它们。默认值和代码里那份兜底保持一致。
         "demucs_model": "htdemucs",
+        # #78 人声分离：引擎 / RoFormer 权重 / 设备三档。默认走新装的 RoFormer，
+        # 设备默认 auto —— 默认值不能替用户挑 GPU：装了别的程序占着显存时，
+        # auto 会自己回到 CPU，写死 cuda 就变成「一按分离就报错」。
+        "vocal_engine": "roformer",
+        "roformer_model": "bs_1297",
+        "ai_device": "auto",
+        "vocal_native_fp16": False,
         "edge_tts_voice": "",  # 空 = 用引擎自己的默认音色
         # 字幕机翻（DeepL / OpenAI）
         "subtitle_translate_provider": "deepl",  # deepl|openai|claude|gemini|google|azure|none
@@ -11776,6 +11783,10 @@ class ConfigBody(BaseModel):
     summary_lang: Optional[str] = None
     translate_auto_fallback: Optional[bool] = None
     demucs_model: Optional[str] = None
+    vocal_engine: Optional[str] = None
+    roformer_model: Optional[str] = None
+    ai_device: Optional[str] = None
+    vocal_native_fp16: Optional[bool] = None
     edge_tts_voice: Optional[str] = None
     sub_scan_delay_sec: Optional[int] = None
     acoustid_api_key: Optional[str] = None
@@ -12196,15 +12207,60 @@ def resolve_media_path(path: str) -> Path:
 
 
 @app.get("/api/ai/voice_status")
-def api_voice_status():
+def api_voice_status(refresh: int = 0):
+    """语音类依赖的可用性。人声分离这一项要能说出「缺的是哪一层」：
+    venv 没建 / runner 不在 / 包 import 不动 / 权重缺 ckpt 还是缺 yaml / 要 GPU 但看不到 CUDA，
+    这五种在界面上是五句不同的话，处置也各不相同（前两种是装环境，中间两种是补文件，
+    最后一种是换设备或装驱动）。所以这里不打包成一个 bool。
+    """
     try:
-        from voice_tools import demucs_available, edge_tts_available, deep_translator_available, EDGE_VOICE_PRESETS
+        from voice_tools import (SEP_RUNNER, EDGE_VOICE_PRESETS, deep_translator_available,
+                                 edge_tts_available, roformer_model_states, separation_probe,
+                                 separator_setup_running)
+        probe = separation_probe(refresh=bool(refresh))
+        venv = bool(probe.get("python_present"))
+        runner = bool(probe.get("runner_present", SEP_RUNNER.is_file()))
+        models = roformer_model_states()
+        ready = [m["id"] for m in models if m["present"]]
+
+        def why(engine_ok: bool, pkg_ok: bool) -> str:
+            if not venv:
+                return "venv"
+            if not runner:
+                return "runner"
+            if not pkg_ok:
+                return "import"
+            if not ready:
+                return "weights"
+            return "" if engine_ok else "unknown"
+
+        as_ok = probe.get("audio_separator_import") == "ok"
+        dm_ok = probe.get("demucs_import") == "ok"
         return {
-            "demucs": demucs_available(),
             "edge_tts": edge_tts_available(),
             "deep_translator": deep_translator_available(),
             "voices": EDGE_VOICE_PRESETS,
             "auto_fallback": bool(cfg.data.get("translate_auto_fallback", True)),
+            "separation": {
+                "venv": venv,
+                "runner": runner,
+                "torch": probe.get("torch", ""),
+                "cuda_available": bool(probe.get("cuda_available")),
+                "gpu_name": probe.get("gpu_name", ""),
+                "vram_gib": probe.get("vram_gib"),
+                "probe_error": probe.get("probe_error", "") or probe.get("torch_error", ""),
+                "models": models,
+                "ready_models": ready,
+                "default_model": ready[0] if ready else "",
+                "engines": [
+                    {"id": "roformer", "available": venv and runner and as_ok and bool(ready),
+                     "reason": why(as_ok and bool(ready), as_ok)},
+                    {"id": "demucs", "available": venv and dm_ok,
+                     "reason": "" if (venv and dm_ok) else ("import" if venv else "venv")},
+                ],
+                "device": str(cfg.data.get("ai_device") or "auto"),
+                "setup_running": separator_setup_running(),
+            },
         }
     except Exception as e:
         return {"error": str(e)}
@@ -12408,21 +12464,55 @@ def api_ai_analyze(body: dict):
     return {"ok": True, "message": f"正在分析: {media.name}（结果写运行日志{'与 JSON' if write_json else ''}）"}
 
 
-@app.post("/api/ai/demucs")
-def api_ai_demucs(body: dict):
-    """人声/伴奏分离。path 相对下载目录或绝对路径。"""
+@app.post("/api/ai/vocal_separate")
+def api_ai_vocal_separate(body: dict):
+    """人声/伴奏分离。引擎、权重、设备都取自设置，body 可以逐项覆盖。
+
+    这一句里的 path 相对下载目录或绝对路径；设备只有三档（auto/cpu/cuda），
+    传别的按 auto 处理 —— 宁可退回自动，也不要拿一个没听过的字符串去拼命令行参数。
+    """
     media = resolve_media_path(body.get("path") or "")
-    model = (body.get("model") or cfg.data.get("demucs_model") or "htdemucs").strip()
+    engine = (body.get("engine") or cfg.data.get("vocal_engine") or "roformer").strip().lower()
+    if engine not in ("roformer", "demucs"):
+        engine = "roformer"
+    device = (body.get("device") or cfg.data.get("ai_device") or "auto").strip().lower()
+    if device not in ("auto", "cpu", "cuda"):
+        device = "auto"
+    model_id = (body.get("model") or cfg.data.get("roformer_model") or "").strip()
+    demucs_model = (body.get("demucs_model") or cfg.data.get("demucs_model") or "htdemucs").strip()
+    out_dir = str(media.parent / ("separated" if engine == "roformer" else "demucs"))
+
+    from voice_tools import SEP_RUNNER, separator_python
+    if not separator_python() or not SEP_RUNNER.is_file():
+        # 这一层缺了不用等三十秒：命令行了无音讯地失败，界面上只有一行日志，
+        # 人会以为「分离慢」，其实引擎根本不在。
+        return {"ok": False, "error": "分离引擎的独立环境还没建（tools/separator/venv 里没有 python）"}
 
     def job():
         try:
-            from voice_tools import separate_vocals
-            separate_vocals(str(media), out_dir=str(media.parent / "demucs"), model=model, log=log_mgr.log)
+            from voice_tools import separate_demucs, separate_roformer
+            if engine == "demucs":
+                fact = separate_demucs(str(media), model=demucs_model, device=device,
+                                       out_dir=out_dir, log=log_mgr.log)
+            else:
+                fact = separate_roformer(str(media), model_id=model_id, device=device,
+                                         out_dir=out_dir,
+                                         native_fp16=bool(cfg.data.get("vocal_native_fp16", False)),
+                                         log=log_mgr.log)
+            got = str(fact.get("actual_device") or "")
+            outs = fact.get("outputs") or []
+            if device == "cuda" and not got.startswith("cuda"):
+                # 「选了 GPU、实际在 CPU 上跑」必须自己说破，不然设置里那格就成了谎话
+                log_mgr.log(f"分离完成，但没跑在 GPU 上（实际用的是 {got or '未知'}）", "warning")
+            for p in outs:
+                log_mgr.log(f"分离成品: {p}")
+            if not outs:
+                log_mgr.log("分离结束但一个成品都没有，按失败记", "error")
         except Exception as e:
-            log_mgr.log(f"Demucs 失败: {e}", "error")
+            log_mgr.log(f"人声分离失败: {e}", "error")
 
     threading.Thread(target=job, daemon=True).start()
-    return {"ok": True, "message": f"Demucs 分离中: {media.name}"}
+    return {"ok": True, "message": f"人声分离中: {media.name}（{engine} / {device}）"}
 
 
 @app.post("/api/ai/tts")
@@ -12476,6 +12566,32 @@ def api_ai_install_voice(body: dict = None):
 
     threading.Thread(target=job, daemon=True).start()
     return {"ok": True, "message": f"后台安装: {which}"}
+
+
+@app.post("/api/ai/separator_setup")
+def api_separator_setup(body: dict = None):
+    """建分离用的独立环境 / 补 RoFormer 权重。
+
+    便携包不带这两层（口径定的），所以缺的时候要在程序里点得齐：
+    只把「缺 venv」这句话打在界面上，等于把功能做给了搭过环境的那台机器。
+    两个动作都是分钟级、且要下两个多 GB，所以走后台任务 + 运行日志，不同步等。
+    """
+    step = ((body or {}).get("step") or "all").strip().lower()
+    if step not in ("venv", "weights", "all"):
+        raise HTTPException(400, f"step 只认 venv / weights / all，收到的是「{step[:16]}」")
+
+    def job():
+        from voice_tools import setup_separator
+        r = setup_separator(log_mgr.log, step=step, mirror=str(cfg.data.get("pip_mirror") or ""))
+        if r == "busy":
+            log_mgr.log("已经有一个搭建任务在跑了，这一次先不叠加", "warning")
+        elif r == "ok":
+            log_mgr.log("分离环境就绪")
+        else:
+            log_mgr.log(f"分离环境搭建未完成: {r}", "error")
+
+    threading.Thread(target=job, daemon=True).start()
+    return {"ok": True, "message": "分离环境搭建中，进度看运行日志"}
 
 
 @app.post("/api/ai/realtime")
@@ -13975,9 +14091,16 @@ def _apply_config(data: dict, request: Request = None) -> dict:
     if any(k.startswith("web_auth_") for k in data) and request is not None and _auth_token_only(request):
         # 令牌是「让自动脚本能读能写下载」的，不该顺手把这道门本身关掉或改口径
         raise HTTPException(403, "机器令牌只开数据接口：改访问保护的设置要从界面登录")
+    from voice_tools import DEMUCS_MODELS, ROFORMER_MODELS, SEPARATION_DEVICES
     for k, allowed, label in (("video_encoder", VIDEO_ENCODER_MODES, "视频编码器"),
                               ("video_cpu_codec", VIDEO_CPU_CODECS, "CPU 编码器"),
-                              ("video_cpu_preset", VIDEO_CPU_PRESETS, "编码档位")):
+                              ("video_cpu_preset", VIDEO_CPU_PRESETS, "编码档位"),
+                              # 分离这三项也上闸门：它们是直接拼进子进程命令行的参数，
+                              # 存进配置的脏值迟早被喂给 demucs / separator_runner
+                              ("vocal_engine", ("roformer", "demucs"), "分离引擎"),
+                              ("ai_device", tuple(SEPARATION_DEVICES), "分离设备"),
+                              ("roformer_model", tuple(m["id"] for m in ROFORMER_MODELS), "分离权重"),
+                              ("demucs_model", tuple(DEMUCS_MODELS), "Demucs 模型")):
         if k in data:
             v = str(data[k] or "").strip().lower()
             if v not in allowed:

@@ -3175,7 +3175,7 @@
                             <el-dropdown-item v-if="isMediaFile(row) || isSrtFile(row)" :command="'aiTranslateSrt|' + $index">{{ tr('files.miTranslate') }}</el-dropdown-item>
                             <el-dropdown-item v-if="isMediaFile(row)" divided :command="'aiPipeline|' + $index">{{ tr('files.miPipeline') }}</el-dropdown-item>
                             <el-dropdown-item v-if="isMediaFile(row)" :command="'showPipeline|' + $index">{{ tr('files.miOutputs') }}</el-dropdown-item>
-                            <el-dropdown-item v-if="isMediaFile(row)" divided :command="'aiDemucs|' + $index">{{ tr('files.miVocal') }}</el-dropdown-item>
+                            <el-dropdown-item v-if="isMediaFile(row)" divided :command="'aiVocalSeparate|' + $index">{{ tr('files.miVocal') }}</el-dropdown-item>
                             <el-dropdown-item v-if="isMediaFile(row)" :command="'analyzeAudioFile|' + $index">{{ tr('files.miAnalyze') }}</el-dropdown-item>
                             <el-dropdown-item v-if="(row.ext||'').toLowerCase()==='.srt'" divided :command="'aiTts|' + $index">{{ tr('files.miTts') }}</el-dropdown-item>
                             <el-dropdown-item v-if="isSrtFile(row)" :command="'aiCalibrateSrt|' + $index">{{ tr('files.miCalibrate') }}</el-dropdown-item>
@@ -3285,8 +3285,8 @@
           <!-- 语音工具 -->
           <div v-if="page === 'voice'">
             <div class="card">
-              <div class="section-title">语音工具（Demucs / Edge-TTS / 实时转写）</div>
-              <div class="hint" style="margin-bottom:10px">参考 voice-pro：支持人声分离、字幕配音、准实时转写与翻译。依赖可一键安装。</div>
+              <div class="section-title">语音工具（Edge-TTS / 实时转写）</div>
+              <div class="hint" style="margin-bottom:10px">参考 voice-pro：支持字幕配音、准实时转写与翻译。依赖可一键安装。人声分离在下一张卡里，它走独立环境。</div>
               <div class="row row--tight row--mb">
                 <el-button size="small" type="primary" plain :loading="installingVoice" @click="installVoicePkgs">安装依赖</el-button>
                 <span class="hint">{{ voiceStatusText }}</span>
@@ -3301,14 +3301,56 @@
                     <el-option label="晓曼（粤语）" value="zh-HK-HiuMaanNeural"></el-option>
                   </el-select>
                 </el-form-item>
-                <el-form-item label="Demucs 模型">
-                  <el-select size="small" v-model="settings.demucs_model" style="width:200px">
+              </el-form>
+            </div>
+            <div class="card">
+              <div class="section-title">人声分离（RoFormer / Demucs）</div>
+              <div class="hint" style="margin-bottom:10px">
+                分离固定用 tools/separator/venv 这个独立环境起，不和主程序共用 python：主程序的 torch 是 CPU 构建，
+                在它里面装的分离包永远跑不了 GPU。便携包不带这个环境也不带权重，缺哪一层下面那行会写出来。
+              </div>
+              <div class="row row--tight row--mb">
+                <el-button size="small" type="primary" plain :loading="sepBusy" @click="setupSeparatorEnv">搭建分离环境</el-button>
+                <el-button size="small" plain :loading="sepBusy" @click="setupSeparatorWeights">下载权重</el-button>
+                <el-button size="small" plain @click="refreshSepStatus">刷新状态</el-button>
+              </div>
+              <div class="hint" style="margin-bottom:10px">{{ sepStatusText }}</div>
+              <el-form label-position="top" size="small">
+                <el-form-item label="分离引擎">
+                  <el-select size="small" v-model="settings.vocal_engine" style="width:220px">
+                    <el-option label="RoFormer（人声更干净）" value="roformer"></el-option>
+                    <el-option label="Demucs（四轨，能出 no_vocals）" value="demucs"></el-option>
+                  </el-select>
+                  <span class="hint" v-if="sepEngineReason">{{ sepEngineReason }}</span>
+                </el-form-item>
+                <el-form-item v-if="settings.vocal_engine === 'roformer'" label="RoFormer 权重">
+                  <el-select size="small" v-model="settings.roformer_model" style="width:320px">
+                    <el-option v-for="m in sepModels" :key="m.id" :label="sepModelLabel(m)" :value="m.id" :disabled="!m.present"></el-option>
+                  </el-select>
+                  <span class="hint">两条 BS 走人声，1143 人声/伴奏都行，Inst V2 是按伴奏训的。</span>
+                </el-form-item>
+                <el-form-item v-else label="Demucs 模型">
+                  <el-select size="small" v-model="settings.demucs_model" style="width:220px">
                     <el-option label="htdemucs" value="htdemucs"></el-option>
                     <el-option label="htdemucs_ft" value="htdemucs_ft"></el-option>
                     <el-option label="mdx_extra" value="mdx_extra"></el-option>
                   </el-select>
+                  <span class="hint">demucs 的模型它自己去下（首次跑会等），这一档不依赖上面那四个权重。</span>
+                </el-form-item>
+                <el-form-item label="跑在哪">
+                  <el-select size="small" v-model="settings.ai_device" style="width:220px">
+                    <el-option label="自动（有 GPU 就用）" value="auto"></el-option>
+                    <el-option label="只用 CPU" value="cpu"></el-option>
+                    <el-option label="只用 GPU" value="cuda" :disabled="!sepHasGpu"></el-option>
+                  </el-select>
+                  <span class="hint">{{ sepDeviceText }}</span>
+                </el-form-item>
+                <el-form-item v-if="settings.vocal_engine === 'roformer'">
+                  <el-checkbox v-model="settings.vocal_native_fp16">半精度（FP16）推理</el-checkbox>
+                  <span class="hint">省显存、更快；个别机器上会出 NaN，出现底噪就关掉这一项。</span>
                 </el-form-item>
               </el-form>
+              <div class="hint">用法：文件页选中音频/视频 → AI 处理 → 分离人声。成品落在源文件旁边的 separated/ 或 demucs/ 目录，路径会写在运行日志里。</div>
             </div>
             <div class="card">
               <div class="section-title">准实时转写 / 翻译</div>
@@ -6637,6 +6679,10 @@
           translate_auto_fallback: true,
           edge_tts_voice: 'zh-CN-XiaoxiaoNeural',
           demucs_model: 'htdemucs',
+          vocal_engine: 'roformer',
+          roformer_model: 'bs_1297',
+          ai_device: 'auto',
+          vocal_native_fp16: false,
           subtitle_translate_provider: 'deepl',
           subtitle_target_lang: 'zh',
           subtitle_glossary: '',
@@ -6964,6 +7010,49 @@
         const searchQuery = ref('');
         const installingVoice = ref(false);
         const voiceStatusText = ref('');
+        // 分离这一整块的读数只来自 /api/ai/voice_status 的 separation 段：
+        // 「venv 在不在、torch 看到没看到 GPU、四条权重齐了几条」都在那儿，这里只负责把它翻成人话。
+        const sepInfo = ref(null);
+        const sepBusy = computed(() => !!(sepInfo.value && sepInfo.value.setup_running));
+        const SEP_MODEL_NAMES = {
+          bs_1297: 'BS-RoFormer 12.97',
+          bs_1296: 'BS-RoFormer 12.96',
+          mel_1143: 'Mel-RoFormer 11.43',
+          mel_inst_v2: 'Mel-RoFormer Inst V2',
+        };
+        const sepModels = computed(() => (sepInfo.value && sepInfo.value.models) || []);
+        const sepHasGpu = computed(() => !!(sepInfo.value && sepInfo.value.cuda_available));
+        const sepStatusText = computed(() => {
+          const s = sepInfo.value;
+          if (!s) return '分离状态还没读到';
+          if (!s.venv) return '缺独立环境（tools/separator/venv 里没有 python）——点「搭建分离环境」';
+          if (!s.runner) return '缺 separator_runner.py：独立环境有了，但没有入口脚本，分离跑不起来';
+          const gpu = s.cuda_available
+            ? `GPU ${(s.gpu_name || 'CUDA')} ${(s.vram_gib ? s.vram_gib.toFixed(1) + ' GiB' : '')}`
+            : (s.probe_error ? `看不到 CUDA（${String(s.probe_error).slice(0, 60)}）` : '看不到 CUDA');
+          const ready = (s.ready_models || []).length, all = (s.models || []).length;
+          const miss = (s.models || []).filter(m => !m.present).map(m => SEP_MODEL_NAMES[m.id] || m.id);
+          return `环境就绪 · torch ${s.torch || '?'} · ${gpu} · 权重 ${ready}/${all}`
+            + (miss.length ? `（缺 ${miss.join('、')}，点「下载权重」）` : '');
+        });
+        const sepDeviceText = computed(() => {
+          const s = sepInfo.value;
+          if (!s) return '';
+          const d = settings.value.ai_device || 'auto';
+          if (d === 'cuda') return s.cuda_available ? `强制 GPU：${s.gpu_name || 'CUDA'}`
+            : '这个环境看不到 CUDA，选「只用 GPU」会直接报错，改成自动或 CPU';
+          if (d === 'cpu') return '强制 CPU：GPU 空着，慢但稳（实测同一条三分之一的速度）';
+          return s.cuda_available ? `自动：会用 GPU（${s.gpu_name || 'CUDA'}）` : '自动：看不到 CUDA，会用 CPU';
+        });
+        const sepEngineReason = computed(() => {
+          const s = sepInfo.value;
+          if (!s) return '';
+          const e = (s.engines || []).find(x => x.id === (settings.value.vocal_engine || 'roformer'));
+          if (!e || e.available) return '';
+          return { venv: '这个引擎要的独立环境还没建', runner: '缺 separator_runner.py',
+                   import: '包在这个环境里 import 不动', weights: '一条权重都还没下' }[e.reason]
+            || '这个引擎当前不可用';
+        });
         const rtRecording = ref(false);
         const rtTranslate = ref(true);
         const rtTargetLang = ref('zh');
@@ -7299,7 +7388,7 @@
         /* 文件行「更多」下拉：command 形如「方法名|行号」，行号取当前页切片内的下标。
            列排序全部走 sortable="custom"，Element 不再二次排序，故 $index 与当页切片一一对应。 */
         const FILE_ACTIONS = {
-          aiTranscribe, aiTranslateSrt, aiPipeline, showPipeline, aiDemucs, analyzeAudioFile,
+          aiTranscribe, aiTranslateSrt, aiPipeline, showPipeline, aiVocalSeparate, analyzeAudioFile,
           aiTts, aiCalibrateSrt, exportBilingual, openBurn, openPicard, mbTagFile,
           mbEnrichFile, fingerprintFile, guessTagsFile,
         };
@@ -7543,7 +7632,7 @@
           '/api/ai/subtitle_export': '导出字幕',
           '/api/ai/hardsub': '烧录硬字幕',
           '/api/ai/hardsub_stop': '停止硬字幕烧录',
-          '/api/ai/demucs': '人声分离',
+          '/api/ai/vocal_separate': '人声分离',
           '/api/ai/tts': '字幕配音',
           '/api/ai/install_voice': '安装语音模型包',
           '/api/telegram/test': '测试 Telegram 通知',
@@ -8184,6 +8273,13 @@
             settings.value.whisper_model = data.whisper_model || 'base';
             settings.value.whisper_device = data.whisper_device || 'auto';
             settings.value.whisper_compute = data.whisper_compute || 'auto';
+            // 分离这五格后端一直在读，界面却只写不读：存的是「只用 GPU」，页面一开显示「自动」，
+            // 人只会以为自己的选择没保住（引擎其实照旧）。活体跑出来的读数，钉在 settingsave_test 的 I27。
+            settings.value.vocal_engine = ['roformer', 'demucs'].includes(data.vocal_engine) ? data.vocal_engine : 'roformer';
+            settings.value.roformer_model = data.roformer_model || 'bs_1297';
+            settings.value.demucs_model = data.demucs_model || 'htdemucs';
+            settings.value.ai_device = ['auto', 'cpu', 'cuda'].includes(data.ai_device) ? data.ai_device : 'auto';
+            settings.value.vocal_native_fp16 = !!data.vocal_native_fp16;
             settings.value.diarization_enabled = !!data.diarization_enabled;
             settings.value.diarization_max_speakers = Math.min(8, Math.max(2, parseInt(data.diarization_max_speakers, 10) || 4));
             settings.value.hf_token = data.hf_token || '';
@@ -9645,10 +9741,11 @@
             else ElementPlus.ElMessage.success(r.message || '分析已开始，见日志');
           } catch (e) { ElementPlus.ElMessage.error(String(e.message || e)); }
         }
-        async function aiDemucs(row) {
+        async function aiVocalSeparate(row) {
           try {
-            await api('/api/ai/demucs', { method: 'POST', body: JSON.stringify({ path: row.path }) });
-            ElementPlus.ElMessage.success('Demucs 分离中，见日志与 demucs/ 目录');
+            const r = await api('/api/ai/vocal_separate', { method: 'POST', body: JSON.stringify({ path: row.path }) });
+            if (r.ok === false) { ElementPlus.ElMessage.error(r.error || '分离没能开始'); return; }
+            ElementPlus.ElMessage.success(r.message || '分离已开始，成品路径写在运行日志里');
           } catch (e) { ElementPlus.ElMessage.error(String(e.message || e)); }
         }
         async function aiTts(row) {
@@ -9666,11 +9763,42 @@
           } catch (e) { ElementPlus.ElMessage.error(String(e.message || e)); }
           finally { installingVoice.value = false; }
         }
-        async function loadVoiceStatus() {
+        function sepModelLabel(m) {
+          const n = SEP_MODEL_NAMES[m.id] || m.id;
+          if (m.present) return n;
+          return `${n}（缺${m.missing === 'yaml' ? '模型结构配置' : '权重本体'}）`;
+        }
+        async function loadVoiceStatus(refresh) {
           try {
-            const s = await api('/api/ai/voice_status');
-            voiceStatusText.value = `Demucs:${s.demucs?'✓':'×'} Edge-TTS:${s.edge_tts?'✓':'×'} DeepTranslator:${s.deep_translator?'✓':'×'}`;
+            const s = await api('/api/ai/voice_status' + (refresh ? '?refresh=1' : ''));
+            voiceStatusText.value = `Edge-TTS:${s.edge_tts ? '✓' : '×'} DeepTranslator:${s.deep_translator ? '✓' : '×'}`;
+            if (s.error) { voiceStatusText.value += ` · ${tr('settings.voiceStatusReadFail')}`; return; }
+            sepInfo.value = s.separation || null;
+            if (!s.separation) voiceStatusText.value += ` · ${tr('settings.voiceStatusNoSep')}`;
+            if (!sepInfo.value || !sepInfo.value.setup_running) stopSepPolling();
           } catch (_) {}
+        }
+        // 搭建是分钟级的后台任务，界面这边只有「服务端说锁还开着」这一个真实读数可用：
+        // 转圈跟着它，不跟着我猜的秒数 —— 猜的那个数字到了、任务其实没完，那一行就成了谎。
+        let _sepPoll = null;
+        function startSepPolling() {
+          if (_sepPoll) return;
+          _sepPoll = setInterval(() => loadVoiceStatus(true), 15000);
+        }
+        function stopSepPolling() { if (_sepPoll) { clearInterval(_sepPoll); _sepPoll = null; } }
+        async function refreshSepStatus() {
+          await loadVoiceStatus(true);
+          ElementPlus.ElMessage.success(sepStatusText.value);
+        }
+        async function setupSeparatorEnv() { await setupSeparator('venv'); }
+        async function setupSeparatorWeights() { await setupSeparator('weights'); }
+        async function setupSeparator(step) {
+          try {
+            const r = await api('/api/ai/separator_setup', { method: 'POST', body: JSON.stringify({ step }) });
+            ElementPlus.ElMessage.success(r.message || '后台执行中，进度看运行日志');
+            startSepPolling();
+            setTimeout(() => loadVoiceStatus(true), 1500);
+          } catch (e) { ElementPlus.ElMessage.error(String(e.message || e)); }
         }
         async function toggleRealtime() {
           if (rtRecording.value) {
@@ -13170,6 +13298,7 @@ const CFG_KEYS = {
           "acoustid_api_key": 'settings.cfg.acoustid_api_key',
           "acoustid_min_score": 'settings.acoustidMinLabel',
           "adaptive_throttle": 'settings.adaptiveThrottleLabel',
+          "ai_device": 'settings.cfg.ai_device',
           "ai_polish": 'settings.polishLabel',
           "ai_summarize": 'settings.summarizeLabel',
           "anthropic_model": 'settings.claudeModelLabel',
@@ -13226,6 +13355,7 @@ const CFG_KEYS = {
           "proxy": 'settings.proxyLabel',
           "proxy_mode": 'settings.proxyModeLabel',
           "risk_cooldown_429": 'settings.cfg.risk_cooldown_429',
+          "roformer_model": 'settings.cfg.roformer_model',
           "risk_delay_sec": 'settings.cfg.risk_delay_sec',
           "risk_user_agent": 'settings.cfg.risk_user_agent',
           "run_window": 'settings.runWindowLabel',
@@ -13265,6 +13395,8 @@ const CFG_KEYS = {
           "video_cpu_codec": 'settings.cpuCodecLabel',
           "video_cpu_preset": 'settings.cfg.video_cpu_preset',
           "video_encoder": 'settings.encoderPrefLabel',
+          "vocal_engine": 'settings.cfg.vocal_engine',
+          "vocal_native_fp16": 'settings.cfg.vocal_native_fp16',
           "web_auth_enabled": 'settings.cfg.web_auth_enabled',
           "web_auth_lock_minutes": 'settings.cfg.web_auth_lock_minutes',
           "web_auth_max_fails": 'settings.cfg.web_auth_max_fails',
@@ -13911,6 +14043,8 @@ const CFG_KEYS = {
           if (p === 'favs') loadFavTab();
           if (p === 'library') loadLibrary(false);
           if (p === 'music') loadMusicFavs();
+          // 分离那三个下拉全靠这份读数：不进语音页就不知道 venv 在不在、权重齐了几条
+          if (p === 'voice') loadVoiceStatus();
           if (p === 'settings') { loadPlatformCookies(); loadCookieCloud(); loadMusicCookies(); loadRiskPresets(); loadComponents(); loadNetInfo(); loadCleanup(); loadConfigDefaults(); }
           if (p === 'tg') loadTgMtStatus(false);
         });
@@ -14080,11 +14214,11 @@ const CFG_KEYS = {
           srtEditBox, srtQc, runSrtQc, runSrtRewrap, qcJumpTo, qcDropNoise,
           searchQuery, searchPlatform, searchContentType, searchSort, setSearchSort,
           searchTotal, searchTruncated, searchNotes, SEARCH_PLAT_NAMES, searchResults, searching, platformCookies, cookieIssueCount, syncFileInput,
-          musicKeyword, musicResults, musicSearching, musicSourceErrors, musicNeedsMatch, musicScoreLine, musicHasScore, musicdlVersion, musicdlReady, musicPreset, musicStrategy, saveMusicStrategy, musicSearchType, musicIncludeLocal, musicFilenameTemplate, musicEmbedMeta, musicSkipExisting, musicHideUnavailable, musicBlockReupload, musicIncludeReference, musicQualitySpec, musicQualityOptions, musicQualitySummary, refHint, matchHint, openRefLink, player, playerEl, playerPlaying, playerTime, playerDur, playerVol, playerMuted, playerSeeking, playerSeekVal, playerStep, playerToggle, playerClose, playerSeek, onPlayerTick, onPlayerMeta, onPlayerEnded, musicLrcLines, musicLrcActive, previewMusicRow, probeMusicRow, switchMusicSource, musicSwitching, scanLocalMusic, musicSources, musicSourceOptions, musicMatchSourceOptions, musicPresetOptions, musicSourceOrdered, musicPlaylistUrl, musicPlaylistMode, saveMusicPlaylistMode, musicCookies, musicSelected, aiPipeline, analyzeAudioFile, aiDemucs, aiTts, installVoicePkgs, loadVoiceStatus, toggleRealtime, installingVoice, voiceStatusText, rtRecording, rtTranslate, rtTargetLang, rtLog, searchMusic, batchSearchDownload, applyMusicPreset, parseMusicPlaylist, onMusicSelection, downloadMusicSelected, downloadMusicRow, showAlreadyHave, musicFavItems, musicFavMissing, musicFavSelected, musicFavReadySel, musicFavSwitching, musicFavDownloading, onMusicFavSelection, addMusicFav, removeMusicFav, clearMusicFav, previewMusicFav, switchMusicFav, downloadMusicFav, loadMusicFavs, installMusicdl,
+          musicKeyword, musicResults, musicSearching, musicSourceErrors, musicNeedsMatch, musicScoreLine, musicHasScore, musicdlVersion, musicdlReady, musicPreset, musicStrategy, saveMusicStrategy, musicSearchType, musicIncludeLocal, musicFilenameTemplate, musicEmbedMeta, musicSkipExisting, musicHideUnavailable, musicBlockReupload, musicIncludeReference, musicQualitySpec, musicQualityOptions, musicQualitySummary, refHint, matchHint, openRefLink, player, playerEl, playerPlaying, playerTime, playerDur, playerVol, playerMuted, playerSeeking, playerSeekVal, playerStep, playerToggle, playerClose, playerSeek, onPlayerTick, onPlayerMeta, onPlayerEnded, musicLrcLines, musicLrcActive, previewMusicRow, probeMusicRow, switchMusicSource, musicSwitching, scanLocalMusic, musicSources, musicSourceOptions, musicMatchSourceOptions, musicPresetOptions, musicSourceOrdered, musicPlaylistUrl, musicPlaylistMode, saveMusicPlaylistMode, musicCookies, musicSelected, aiPipeline, analyzeAudioFile, aiVocalSeparate, aiTts, installVoicePkgs, loadVoiceStatus, refreshSepStatus, setupSeparatorEnv, setupSeparatorWeights, sepModelLabel, sepBusy, sepInfo, sepModels, sepHasGpu, sepStatusText, sepDeviceText, sepEngineReason, toggleRealtime, installingVoice, voiceStatusText, rtRecording, rtTranslate, rtTargetLang, rtLog, searchMusic, batchSearchDownload, applyMusicPreset, parseMusicPlaylist, onMusicSelection, downloadMusicSelected, downloadMusicRow, showAlreadyHave, musicFavItems, musicFavMissing, musicFavSelected, musicFavReadySel, musicFavSwitching, musicFavDownloading, onMusicFavSelection, addMusicFav, removeMusicFav, clearMusicFav, previewMusicFav, switchMusicFav, downloadMusicFav, loadMusicFavs, installMusicdl,
           loadSubs, addSub, removeSub, toggleSub, scanOneSub, scanAllSubs, startLiveRecord, pauseLiveTask, resumeLiveTask, endLiveTask, endAllLive, cancelLiveTask, addLiveMonitor, removeLiveMonitor, pauseLiveMonitor, resumeLiveMonitor, scanLiveMonitors, loadLiveMonitors, liveRoomCfg, liveRoomFmts, liveRoomQualities, openLiveMonitorCfg, saveLiveMonitorCfg, liveMonitorCfgText, testTelegram,
           testWecom, applyRiskPreset, loadRiskPresets, loadFavTab, loadFavFolderItems, loadYtPlaylist, onFavSelChange,
           downloadFavSelected, downloadFavOne, subscribeFavSelected, subscribeFavOne, startBiliQr, pollBiliQr,
-          isPlayable, isAudioFile, isMediaFile, isVideoFile, openPicard, mbTagFile, mbEnrichFile, fingerprintFile, guessTagsFile, isSrtFile, aiDemucs, aiTts, installVoicePkgs, loadVoiceStatus, toggleRealtime, installingVoice, voiceStatusText, rtRecording, rtTranslate, rtTargetLang, rtLog, aiTranscribe, aiTranslateSrt, aiCalibrateSrt, onFileSelectionChange, runBatchAi, runSrtCalibrateSelected,
+          isPlayable, isAudioFile, isMediaFile, isVideoFile, openPicard, mbTagFile, mbEnrichFile, fingerprintFile, guessTagsFile, isSrtFile, aiVocalSeparate, aiTts, installVoicePkgs, loadVoiceStatus, refreshSepStatus, setupSeparatorEnv, setupSeparatorWeights, sepModelLabel, sepBusy, sepInfo, sepModels, sepHasGpu, sepStatusText, sepDeviceText, sepEngineReason, toggleRealtime, installingVoice, voiceStatusText, rtRecording, rtTranslate, rtTargetLang, rtLog, aiTranscribe, aiTranslateSrt, aiCalibrateSrt, onFileSelectionChange, runBatchAi, runSrtCalibrateSelected,
           burnDlg, burnJob, burnStarting, burnSubChoices, burnOutName, burnRunning, burnPercent, burnStatusText, openBurn, closeBurn, startBurn, stopBurn,
           batchMode, batchScope, batchRunning, selectedFiles, syncOffsetSec, syncScale, syncInplace, playFile, zipPath, zipCurrentFolder,
           doSearch, downloadSearchItem, analyzeSearchItem, subscribeSearchItem, normalizeSearchUrl, loadPlatformCookies, savePlatformCookie, savePlatformCookieText, clearCookieFlag, browsePlatformCookie, exportSync, triggerImportSync, onImportSync,

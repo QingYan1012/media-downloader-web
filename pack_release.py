@@ -65,6 +65,7 @@ APP_PY = [
     "audio_analyze.py",
     "diarize_tools.py",
     "voice_tools.py",
+    "separator_runner.py",  # 分离引擎的子进程入口：voice_tools 只拼路径调它，漏了它「能选引擎」就是空话
     "mcp_server.py",
 ]
 APP_FILES = ["requirements.txt", "README.md", "README.en.md", "CHANGELOG.md", "CHANGELOG.en.md", "LICENSE", "Dockerfile", "docker-compose.yml", ".dockerignore",
