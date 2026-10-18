@@ -3285,89 +3285,86 @@
           <!-- 语音工具 -->
           <div v-if="page === 'voice'">
             <div class="card">
-              <div class="section-title">语音工具（Edge-TTS / 实时转写）</div>
-              <div class="hint" style="margin-bottom:10px">参考 voice-pro：支持字幕配音、准实时转写与翻译。依赖可一键安装。人声分离在下一张卡里，它走独立环境。</div>
+              <div class="section-title">{{ tr('voice.title') }}</div>
+              <div class="hint" style="margin-bottom:10px">{{ tr('voice.intro') }}</div>
               <div class="row row--tight row--mb">
-                <el-button size="small" type="primary" plain :loading="installingVoice" @click="installVoicePkgs">安装依赖</el-button>
+                <el-button size="small" type="primary" plain :loading="installingVoice" @click="installVoicePkgs">{{ tr('voice.btnInstall') }}</el-button>
                 <span class="hint">{{ voiceStatusText }}</span>
               </div>
               <el-form label-position="top" size="small">
-                <el-form-item label="Edge-TTS 音色">
+                <el-form-item :label="tr('settings.cfg.edge_tts_voice')">
                   <!-- 空串在这一格有含义：后端拿它按字幕目标语言挑预设音色（voice_tools.EDGE_VOICE_PRESETS）。
                        el-select 把空值当「没选」，所以不做成选项，改用 placeholder 说清它的效果、clearable 让人清得回去。 -->
                   <el-select size="small" v-model="settings.edge_tts_voice" filterable clearable
-                             placeholder="跟随字幕目标语言" style="width:280px">
-                    <el-option label="晓晓（中文）" value="zh-CN-XiaoxiaoNeural"></el-option>
-                    <el-option label="云希（中文男）" value="zh-CN-YunxiNeural"></el-option>
-                    <el-option label="Jenny（英文）" value="en-US-JennyNeural"></el-option>
-                    <el-option label="Nanami（日语）" value="ja-JP-NanamiNeural"></el-option>
-                    <el-option label="晓曼（粤语）" value="zh-HK-HiuMaanNeural"></el-option>
+                             :placeholder="tr('voice.ttsPh')" style="width:280px">
+                    <el-option :label="tr('voice.vXiaoxiao')" value="zh-CN-XiaoxiaoNeural"></el-option>
+                    <el-option :label="tr('voice.vYunxi')" value="zh-CN-YunxiNeural"></el-option>
+                    <el-option :label="tr('voice.vJenny')" value="en-US-JennyNeural"></el-option>
+                    <el-option :label="tr('voice.vNanami')" value="ja-JP-NanamiNeural"></el-option>
+                    <el-option :label="tr('voice.vHiumaan')" value="zh-HK-HiuMaanNeural"></el-option>
                   </el-select>
                 </el-form-item>
               </el-form>
             </div>
             <div class="card">
-              <div class="section-title">人声分离（RoFormer / Demucs）</div>
-              <div class="hint" style="margin-bottom:10px">
-                分离固定用 tools/separator/venv 这个独立环境起，不和主程序共用 python：主程序的 torch 是 CPU 构建，
-                在它里面装的分离包永远跑不了 GPU。便携包不带这个环境也不带权重，缺哪一层下面那行会写出来。
-              </div>
+              <div class="section-title">{{ tr('voice.sepTitle') }}</div>
+              <div class="hint" style="margin-bottom:10px">{{ tr('voice.sepIntro') }}</div>
               <div class="row row--tight row--mb">
-                <el-button size="small" type="primary" plain :loading="sepBusy" @click="setupSeparatorEnv">搭建分离环境</el-button>
-                <el-button size="small" plain :loading="sepBusy" @click="setupSeparatorWeights">下载权重</el-button>
-                <el-button size="small" plain @click="refreshSepStatus">刷新状态</el-button>
+                <el-button size="small" type="primary" plain :loading="sepBusy" @click="setupSeparatorEnv">{{ tr('voice.btnSetupEnv') }}</el-button>
+                <el-button size="small" plain :loading="sepBusy" @click="setupSeparatorWeights">{{ tr('voice.btnWeights') }}</el-button>
+                <el-button size="small" plain @click="refreshSepStatus">{{ tr('voice.btnRefresh') }}</el-button>
               </div>
               <div class="hint" style="margin-bottom:10px">{{ sepStatusText }}</div>
               <el-form label-position="top" size="small">
-                <el-form-item label="分离引擎">
+                <el-form-item :label="tr('voice.engineLabel')">
                   <el-select size="small" v-model="settings.vocal_engine" style="width:220px">
-                    <el-option label="RoFormer（人声更干净）" value="roformer"></el-option>
-                    <el-option label="Demucs（四轨，能出 no_vocals）" value="demucs"></el-option>
+                    <el-option :label="tr('voice.engRoformer')" value="roformer"></el-option>
+                    <el-option :label="tr('voice.engDemucs')" value="demucs"></el-option>
                   </el-select>
                   <span class="hint" v-if="sepEngineReason">{{ sepEngineReason }}</span>
                 </el-form-item>
-                <el-form-item v-if="settings.vocal_engine === 'roformer'" label="RoFormer 权重">
+                <el-form-item v-if="settings.vocal_engine === 'roformer'" :label="tr('settings.cfg.roformer_model')">
                   <el-select size="small" v-model="settings.roformer_model" style="width:320px">
                     <el-option v-for="m in sepModels" :key="m.id" :label="sepModelLabel(m)" :value="m.id" :disabled="!m.present"></el-option>
                   </el-select>
-                  <span class="hint">两条 BS 走人声，1143 人声/伴奏都行，Inst V2 是按伴奏训的。</span>
+                  <span class="hint">{{ tr('voice.rFormerHint') }}</span>
                 </el-form-item>
-                <el-form-item v-else label="Demucs 模型">
+                <el-form-item v-else :label="tr('settings.cfg.demucs_model')">
                   <el-select size="small" v-model="settings.demucs_model" style="width:220px">
                     <el-option label="htdemucs" value="htdemucs"></el-option>
                     <el-option label="htdemucs_ft" value="htdemucs_ft"></el-option>
                     <el-option label="mdx_extra" value="mdx_extra"></el-option>
                   </el-select>
-                  <span class="hint">demucs 的模型它自己去下（首次跑会等），这一档不依赖上面那四个权重。</span>
+                  <span class="hint">{{ tr('voice.demucsHint') }}</span>
                 </el-form-item>
-                <el-form-item label="跑在哪">
+                <el-form-item :label="tr('voice.deviceLabel')">
                   <el-select size="small" v-model="settings.ai_device" style="width:220px">
-                    <el-option label="自动（有 GPU 就用）" value="auto"></el-option>
-                    <el-option label="只用 CPU" value="cpu"></el-option>
-                    <el-option label="只用 GPU" value="cuda" :disabled="!sepHasGpu"></el-option>
+                    <el-option :label="tr('voice.devAuto')" value="auto"></el-option>
+                    <el-option :label="tr('voice.devCpu')" value="cpu"></el-option>
+                    <el-option :label="tr('voice.devGpu')" value="cuda" :disabled="!sepHasGpu"></el-option>
                   </el-select>
                   <span class="hint">{{ sepDeviceText }}</span>
                 </el-form-item>
                 <el-form-item v-if="settings.vocal_engine === 'roformer'">
-                  <el-checkbox v-model="settings.vocal_native_fp16">半精度（FP16）推理</el-checkbox>
-                  <span class="hint">省显存、更快；个别机器上会出 NaN，出现底噪就关掉这一项。</span>
+                  <el-checkbox v-model="settings.vocal_native_fp16">{{ tr('voice.fp16') }}</el-checkbox>
+                  <span class="hint">{{ tr('voice.fp16Hint') }}</span>
                 </el-form-item>
               </el-form>
-              <div class="hint">用法：文件页选中音频/视频 → AI 处理 → 分离人声。成品落在源文件旁边的 separated/ 或 demucs/ 目录，路径会写在运行日志里。</div>
+              <div class="hint">{{ tr('voice.usage') }}</div>
             </div>
             <div class="card">
-              <div class="section-title">准实时转写 / 翻译</div>
-              <div class="hint" style="margin-bottom:8px">点击开始后，浏览器采集麦克风音频，每约 4 秒上传一段进行转写（需 faster-whisper）。</div>
+              <div class="section-title">{{ tr('voice.rtTitle') }}</div>
+              <div class="hint" style="margin-bottom:8px">{{ tr('voice.rtIntro') }}</div>
               <div class="row row--tight row--mb">
-                <el-button size="small" :type="rtRecording ? 'danger' : 'primary'" @click="toggleRealtime">{{ rtRecording ? '停止' : '开启麦克风' }}</el-button>
-                <el-checkbox v-model="rtTranslate">同时进行机翻</el-checkbox>
+                <el-button size="small" :type="rtRecording ? 'danger' : 'primary'" @click="toggleRealtime">{{ rtRecording ? tr('common.stop') : tr('voice.rtStart') }}</el-button>
+                <el-checkbox v-model="rtTranslate">{{ tr('voice.rtTranslate') }}</el-checkbox>
                 <el-select v-model="rtTargetLang" style="width:120px" size="small">
-                  <el-option label="中文" value="zh"></el-option>
-                  <el-option label="英文" value="en"></el-option>
-                  <el-option label="日文" value="ja"></el-option>
+                  <el-option :label="tr('common.langZh')" value="zh"></el-option>
+                  <el-option :label="tr('common.langEn')" value="en"></el-option>
+                  <el-option :label="tr('common.langJa')" value="ja"></el-option>
                 </el-select>
               </div>
-              <div style="background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;min-height:120px;white-space:pre-wrap;font-size:15px">{{ rtLog || '等待开始…' }}</div>
+              <div style="background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;min-height:120px;white-space:pre-wrap;font-size:15px">{{ rtLog || tr('voice.rtIdle') }}</div>
             </div>
           </div>
 
@@ -7026,34 +7023,36 @@
         const sepHasGpu = computed(() => !!(sepInfo.value && sepInfo.value.cuda_available));
         const sepStatusText = computed(() => {
           const s = sepInfo.value;
-          if (!s) return '分离状态还没读到';
-          if (!s.venv) return '缺独立环境（tools/separator/venv 里没有 python）——点「搭建分离环境」';
-          if (!s.runner) return '缺 separator_runner.py：独立环境有了，但没有入口脚本，分离跑不起来';
+          if (!s) return tr('voice.stNone');
+          if (!s.venv) return tr('voice.stNoVenv');
+          if (!s.runner) return tr('voice.stNoRunner');
           const gpu = s.cuda_available
             ? `GPU ${(s.gpu_name || 'CUDA')} ${(s.vram_gib ? s.vram_gib.toFixed(1) + ' GiB' : '')}`
-            : (s.probe_error ? `看不到 CUDA（${String(s.probe_error).slice(0, 60)}）` : '看不到 CUDA');
+            : (s.probe_error ? tr('voice.stNoCudaErr', { err: String(s.probe_error).slice(0, 60) }) : tr('voice.stNoCuda'));
           const ready = (s.ready_models || []).length, all = (s.models || []).length;
           const miss = (s.models || []).filter(m => !m.present).map(m => SEP_MODEL_NAMES[m.id] || m.id);
-          return `环境就绪 · torch ${s.torch || '?'} · ${gpu} · 权重 ${ready}/${all}`
-            + (miss.length ? `（缺 ${miss.join('、')}，点「下载权重」）` : '');
+          // 这一行是「标签 + 数据」拼的：' · ' 与 '、' 的接缝是排版不是文案，留在代码里；
+          // 中文值里带不带空格照旧由词表那几条决定，渲染出来与改造前那一行逐字节一样
+          return `${tr('voice.stReady')} · torch ${s.torch || '?'} · ${gpu} · ${tr('voice.stWeights')} ${ready}/${all}`
+            + (miss.length ? tr('voice.stMiss', { list: miss.join(tr('voice.listSep')) }) : '');
         });
         const sepDeviceText = computed(() => {
           const s = sepInfo.value;
           if (!s) return '';
           const d = settings.value.ai_device || 'auto';
-          if (d === 'cuda') return s.cuda_available ? `强制 GPU：${s.gpu_name || 'CUDA'}`
-            : '这个环境看不到 CUDA，选「只用 GPU」会直接报错，改成自动或 CPU';
-          if (d === 'cpu') return '强制 CPU：GPU 空着，慢但稳（实测同一条三分之一的速度）';
-          return s.cuda_available ? `自动：会用 GPU（${s.gpu_name || 'CUDA'}）` : '自动：看不到 CUDA，会用 CPU';
+          if (d === 'cuda') return s.cuda_available ? tr('voice.devForceGpu', { name: s.gpu_name || 'CUDA' })
+            : tr('voice.devCudaWarn');
+          if (d === 'cpu') return tr('voice.devForceCpu');
+          return s.cuda_available ? tr('voice.devAutoYes', { name: s.gpu_name || 'CUDA' }) : tr('voice.devAutoNo');
         });
         const sepEngineReason = computed(() => {
           const s = sepInfo.value;
           if (!s) return '';
           const e = (s.engines || []).find(x => x.id === (settings.value.vocal_engine || 'roformer'));
           if (!e || e.available) return '';
-          return { venv: '这个引擎要的独立环境还没建', runner: '缺 separator_runner.py',
-                   import: '包在这个环境里 import 不动', weights: '一条权重都还没下' }[e.reason]
-            || '这个引擎当前不可用';
+          return { venv: tr('voice.engWhyVenv'), runner: tr('voice.engWhyRunner'),
+                   import: tr('voice.engWhyImport'), weights: tr('voice.engWhyWeights') }[e.reason]
+            || tr('voice.engWhyUnknown');
         });
         const rtRecording = ref(false);
         const rtTranslate = ref(true);
@@ -9776,7 +9775,7 @@
         function sepModelLabel(m) {
           const n = SEP_MODEL_NAMES[m.id] || m.id;
           if (m.present) return n;
-          return `${n}（缺${m.missing === 'yaml' ? '模型结构配置' : '权重本体'}）`;
+          return n + tr('voice.missSuffix', { what: m.missing === 'yaml' ? tr('voice.missYaml') : tr('voice.missWeights') });
         }
         async function loadVoiceStatus(refresh) {
           try {
@@ -9805,7 +9804,7 @@
         async function setupSeparator(step) {
           try {
             const r = await api('/api/ai/separator_setup', { method: 'POST', body: JSON.stringify({ step }) });
-            ElementPlus.ElMessage.success(r.message || '后台执行中，进度看运行日志');
+            ElementPlus.ElMessage.success(r.message || tr('voice.setupBg'));
             startSepPolling();
             setTimeout(() => loadVoiceStatus(true), 1500);
           } catch (e) { ElementPlus.ElMessage.error(String(e.message || e)); }
@@ -9816,7 +9815,7 @@
             try { if (_rtRecorder && _rtRecorder.state !== 'inactive') _rtRecorder.stop(); } catch(_){}
             try { if (_rtMedia) _rtMedia.getTracks().forEach(t => t.stop()); } catch(_){}
             if (_rtTimer) { clearInterval(_rtTimer); _rtTimer = null; }
-            rtLog.value += '\n[已停止]\n';
+            rtLog.value += '\n' + tr('voice.rtStopped') + '\n';
             logAction('停止准实时转写');
             return;
           }
@@ -9835,23 +9834,23 @@
                 const q = new URLSearchParams({ lang: 'auto', translate: rtTranslate.value ? 'true' : 'false', target_lang: rtTargetLang.value });
                 const resp = await fetch('/api/ai/realtime?' + q.toString(), { method: 'POST', body: fd });
                 const data = await resp.json();
-                if (!resp.ok) throw new Error(data.detail || '失败');
+                if (!resp.ok) throw new Error(data.detail || tr('status.failed'));
                 if (data.text) rtLog.value += data.text + '\n';
                 if (data.translated) rtLog.value += '→ ' + data.translated + '\n';
               } catch (e) {
-                rtLog.value += '[错误] ' + (e.message || e) + '\n';
+                rtLog.value += tr('voice.rtError') + ' ' + (e.message || e) + '\n';
               }
               if (rtRecording.value && _rtRecorder) {
                 try { _rtRecorder.start(); setTimeout(() => { try { if (_rtRecorder.state === 'recording') _rtRecorder.stop(); } catch(_){} }, 4000); } catch(_){}
               }
             };
             rtRecording.value = true;
-            rtLog.value = '[开始]\n';
+            rtLog.value = tr('voice.rtStarted') + '\n';
             logAction('开始准实时转写');
             _rtRecorder.start();
             setTimeout(() => { try { if (_rtRecorder.state === 'recording') _rtRecorder.stop(); } catch(_){} }, 4000);
           } catch (e) {
-            ElementPlus.ElMessage.error('无法访问麦克风: ' + (e.message || e));
+            ElementPlus.ElMessage.error(tr('voice.rtMicFail') + ': ' + (e.message || e));
           }
         }
 
