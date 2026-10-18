@@ -1459,6 +1459,11 @@
        真正需要独占一行的说明文字加 .hint--block */
     .hint { font-weight: 400; }
     .row > .hint, .tool-bar > .hint { margin-top: 0; }
+    /* 行容器里跟控件同排的提示文字必须去掉那 6px 上边距：flex 居中量的是「外边距盒」，
+       内容会被顶到控件中心下方 3px（活体逐行量过：全界面 31 行不齐，全是这一个原因）。
+       独占一行的 .hint--block 不算它 —— 那点间距正是它跟上一行的分隔。 */
+    .row-actions > .hint:not(.hint--block),
+    .el-form-item__content > .hint:not(.hint--block) { margin-top: 0; }
     .hint--block { display: block; flex: 1 0 100%; margin-top: 8px; }
     .row > .hint--block, .tool-bar > .hint--block { margin-top: 0; }
     /* el-form-item 内容区是 flex：块级说明必须换行到控件下方，不能挤在按钮右侧折行 */
@@ -3070,7 +3075,7 @@
                 {{ tr('music.rankHint') }}
               </div>
               <el-input size="small" v-model="musicCookies" type="textarea" :rows="1" :placeholder="tr('music.cookiePh')" style="margin-bottom:8px"></el-input>
-              <div style="display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;padding:8px 0;border-top:1px dashed var(--line)">
+              <div class="row" style="gap:10px 16px;padding:8px 0;border-top:1px dashed var(--line)">
                 <span class="hint" style="font-weight:600">{{ tr('music.stratTitle') }}</span>
                 <span class="hint">{{ tr('music.modeLabel') }}</span>
                 <el-select v-model="musicStrategy.mode" size="small" style="width:110px">
