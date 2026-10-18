@@ -3202,27 +3202,27 @@
           <!-- 历史 -->
           <div v-if="page === 'history'">
             <div class="stats-grid">
-              <div class="stat-box"><div class="num">{{ histStats.total }}</div><div class="lbl">总计</div></div>
-              <div class="stat-box"><div class="num">{{ histStats.success }}</div><div class="lbl">成功</div></div>
-              <div class="stat-box"><div class="num">{{ histStats.failed }}</div><div class="lbl">失败</div></div>
-              <div class="stat-box"><div class="num">{{ histStats.success_rate }}</div><div class="lbl">成功率</div></div>
+              <div class="stat-box"><div class="num">{{ histStats.total }}</div><div class="lbl">{{ tr('history.stTotal') }}</div></div>
+              <div class="stat-box"><div class="num">{{ histStats.success }}</div><div class="lbl">{{ tr('history.stOk') }}</div></div>
+              <div class="stat-box"><div class="num">{{ histStats.failed }}</div><div class="lbl">{{ tr('history.stFail') }}</div></div>
+              <div class="stat-box"><div class="num">{{ histStats.success_rate }}</div><div class="lbl">{{ tr('history.stRate') }}</div></div>
             </div>
             <div class="row-actions" style="margin-bottom:12px">
-              <el-input size="small" v-model="histSearch" placeholder="搜索历史..." style="width:220px" clearable @input="loadHistory"></el-input>
-              <el-button size="small" @click="exportHistory">导出 CSV</el-button>
-              <el-button size="small" type="danger" plain @click="clearHistory">清空历史</el-button>
+              <el-input size="small" v-model="histSearch" :placeholder="tr('history.searchPh')" style="width:220px" clearable @input="loadHistory"></el-input>
+              <el-button size="small" @click="exportHistory">{{ tr('history.btnExport') }}</el-button>
+              <el-button size="small" type="danger" plain @click="clearHistory">{{ tr('history.btnClear') }}</el-button>
             </div>
-            <div v-if="!history.length" class="empty-tip">暂无记录</div>
+            <div v-if="!history.length" class="empty-tip">{{ tr('history.empty') }}</div>
             <div v-else class="hist-table-wrap">
               <table class="fmt-table fmt-table--fit" style="min-width:900px">
                 <thead>
                   <tr>
-                    <th class="th-sort" :class="{ 'th-on': histSort.key === 'time' }" style="width:152px" @click="toggleSort(histSort, 'time', HIST_DIR)">时间<span class="sort-ico">{{ sortIcon(histSort, 'time') }}</span></th>
-                    <th class="th-sort" :class="{ 'th-on': histSort.key === 'title' }" @click="toggleSort(histSort, 'title', HIST_DIR)">标题<span class="sort-ico">{{ sortIcon(histSort, 'title') }}</span></th>
-                    <th class="th-sort" :class="{ 'th-on': histSort.key === 'status' }" style="width:76px" @click="toggleSort(histSort, 'status', HIST_DIR)">状态<span class="sort-ico">{{ sortIcon(histSort, 'status') }}</span></th>
+                    <th class="th-sort" :class="{ 'th-on': histSort.key === 'time' }" style="width:152px" @click="toggleSort(histSort, 'time', HIST_DIR)">{{ tr('history.thTime') }}<span class="sort-ico">{{ sortIcon(histSort, 'time') }}</span></th>
+                    <th class="th-sort" :class="{ 'th-on': histSort.key === 'title' }" @click="toggleSort(histSort, 'title', HIST_DIR)">{{ tr('common.colTitle') }}<span class="sort-ico">{{ sortIcon(histSort, 'title') }}</span></th>
+                    <th class="th-sort" :class="{ 'th-on': histSort.key === 'status' }" style="width:76px" @click="toggleSort(histSort, 'status', HIST_DIR)">{{ tr('common.colStatus') }}<span class="sort-ico">{{ sortIcon(histSort, 'status') }}</span></th>
                     <th style="width:240px">URL</th>
-                    <th>原因</th>
-                    <th style="width:150px">操作</th>
+                    <th>{{ tr('common.colReason') }}</th>
+                    <th style="width:150px">{{ tr('common.colOps') }}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -3239,8 +3239,8 @@
                       {{ row.error ? friendlyError(row.error) : '—' }}
                     </td>
                     <td style="white-space:nowrap">
-                      <el-button size="small" type="primary" plain @click="redownload(row)">重下</el-button>
-                      <el-button v-if="row.filepath" size="small" plain @click="openHistoryFile(row)">打开</el-button>
+                      <el-button size="small" type="primary" plain @click="redownload(row)">{{ tr('history.btnRedl') }}</el-button>
+                      <el-button v-if="row.filepath" size="small" plain @click="openHistoryFile(row)">{{ tr('history.btnOpen') }}</el-button>
                     </td>
                   </tr>
                 </tbody>
@@ -4193,7 +4193,7 @@
                 <div v-if="subPlan.rejected.length" class="hist-table-wrap" style="margin-top:10px">
                   <table class="fmt-table fmt-table--fit">
                     <thead>
-                      <tr><th style="width:280px">{{ tr('subs.thRejected') }}</th><th>{{ tr('subs.thWhy') }}</th></tr>
+                      <tr><th style="width:280px">{{ tr('subs.thRejected') }}</th><th>{{ tr('common.colReason') }}</th></tr>
                     </thead>
                     <tbody>
                       <tr v-for="(x, i) in subPlan.rejected" :key="'rj' + i">
@@ -11530,7 +11530,7 @@
 
         async function openHistoryFile(row) {
           if (!row || !row.filepath) {
-            ElementPlus.ElMessage.warning('无文件路径');
+            ElementPlus.ElMessage.warning(tr('history.noPath'));
             return;
           }
           try {
@@ -11539,9 +11539,9 @@
               method: 'POST',
               body: JSON.stringify({ path: row.filepath })
             });
-            ElementPlus.ElMessage.success('已打开所在文件夹');
+            ElementPlus.ElMessage.success(tr('history.opened'));
           } catch (e) {
-            ElementPlus.ElMessage.error(e.message || '无法打开文件夹');
+            ElementPlus.ElMessage.error(e.message || tr('history.openFail'));
           }
         }
 
@@ -13122,7 +13122,7 @@
 
         async function clearHistory() {
           try {
-            await ElementPlus.ElMessageBox.confirm('确定清空全部历史？', '确认', { type: 'warning' });
+            await ElementPlus.ElMessageBox.confirm(tr('history.clearAsk'), tr('common.confirm'), { type: 'warning' });
             await api('/api/history/clear', { method: 'POST' });
             await loadHistory();
           } catch (_) {}

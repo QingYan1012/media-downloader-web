@@ -1951,7 +1951,6 @@
       'subs.thDate': '日期',
       'subs.thDur': '时长',
       'subs.thRejected': '被规则挡掉',
-      'subs.thWhy': '原因',
       'subs.pickedTrunc': '仅列出前 {a} 条，这一轮实际会入队 {b} 条',
       'subs.rejectedTrunc': '仅列出前 {a} 条，共 {b} 条被挡',
       'subs.archGoneNoteA': '本轮有 {n} 条已从源头消失：比它们更旧的条目还在来源里，中间空出来的这些不是翻页滑出去的。',
@@ -2518,6 +2517,29 @@
       'voice.rtStopped': '[已停止]',
       'voice.rtError': '[错误]',
       'voice.rtMicFail': '无法访问麦克风',
+      /* ---- 下载历史页（history）：四格统计 + 六个表头 + 两枚批量按钮 + 行内两枚按钮 + 三条回执。
+         「标题 / 状态 / 操作」沿用 common.colTitle / common.colStatus / common.colOps，字面一模一样；
+         「时间」不沿用 settings.timeWord（那条的英文是句中小写的 timestamp，这里是列名）；
+         「原因」原本只有订阅页那一列在用（subs.thWhy），这一页是第二个要用它的地方，
+         按 favs 那批定下的规矩挪进 common.colReason，订阅页那行跟着改，subs.thWhy 删掉；
+         行内那枚「打开」是打开成品所在的文件夹，与文件页那枚「打开」（打开文件本身）动作不同，
+         所以各留一条键、中文照旧、英文分开写。弹窗标题「确认」用 common.confirm。 ---- */
+      'history.stTotal': '总计',
+      'history.stOk': '成功',
+      'history.stFail': '失败',
+      'history.stRate': '成功率',
+      'history.searchPh': '搜索历史...',
+      'history.btnExport': '导出 CSV',
+      'history.btnClear': '清空历史',
+      'history.empty': '暂无记录',
+      'history.thTime': '时间',
+      'common.colReason': '原因',
+      'history.btnRedl': '重下',
+      'history.btnOpen': '打开',
+      'history.clearAsk': '确定清空全部历史？',
+      'history.noPath': '无文件路径',
+      'history.opened': '已打开所在文件夹',
+      'history.openFail': '无法打开文件夹',
     },
     en: {
       'live.monTitle': 'Live room monitor (auto-detect streams starting)',
@@ -4449,7 +4471,6 @@
       'subs.thDate': 'Date',
       'subs.thDur': 'Duration',
       'subs.thRejected': 'Blocked by rules',
-      'subs.thWhy': 'Reason',
       'subs.pickedTrunc': 'Only the first {a} listed; this round would actually queue {b} items',
       'subs.rejectedTrunc': 'Only the first {a} listed; {b} items blocked in total',
       'subs.archGoneNoteA': '{n} items have disappeared from the source this round: items older than them are still there, so the gap in between is not paging sliding off.',
@@ -4973,6 +4994,24 @@
       'voice.rtStopped': '[Stopped]',
       'voice.rtError': '[Error]',
       'voice.rtMicFail': 'Cannot access the microphone',
+      /* ---- Download-history page (history). 见中文那侧的注释：列名沿用 common.*，
+         「原因」这一列新进 common.colReason，行内那枚「打开」与文件页那枚动作不同，英文分开写。 ---- */
+      'history.stTotal': 'Total',
+      'history.stOk': 'Succeeded',
+      'history.stFail': 'Failed',
+      'history.stRate': 'Success rate',
+      'history.searchPh': 'Search history...',
+      'history.btnExport': 'Export CSV',
+      'history.btnClear': 'Clear history',
+      'history.empty': 'No records yet',
+      'history.thTime': 'Time',
+      'common.colReason': 'Reason',
+      'history.btnRedl': 'Download again',
+      'history.btnOpen': 'Open folder',
+      'history.clearAsk': 'Clear the whole download history?',
+      'history.noPath': 'This record has no file path',
+      'history.opened': 'Opened the folder it lives in',
+      'history.openFail': 'Could not open the folder',
     },
   };
 

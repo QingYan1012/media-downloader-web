@@ -434,7 +434,7 @@ def strip_comments(src: str) -> str:
     return re.sub(r"<!--.*?-->", "", src, flags=re.S)
 
 
-PAGES_DONE = ["home", "queue", "bt", "files", "subs", "music", "settings", "tg", "sniff", "live", "info", "search", "favs", "library", "voice"]   # ← 每翻完一页把页名加进来；登记了却没翻干净会被 I3 判红
+PAGES_DONE = ["home", "queue", "bt", "files", "subs", "music", "settings", "tg", "sniff", "live", "info", "search", "favs", "library", "voice", "history"]   # ← 每翻完一页把页名加进来；登记了却没翻干净会被 I3 判红
 ck("I2 PAGES_DONE 都是真有的页", all(page_block(k) for k in PAGES_DONE),
    str([k for k in PAGES_DONE if not page_block(k)]))
 for _pg in PAGES_DONE:
@@ -586,6 +586,11 @@ PAGE_HANDLERS = {
     # SEP_MODEL_NAMES 那张表存的是产品名（BS-RoFormer 12.97 等），本来就没有中文，不转键名。
     "voice": ["sepStatusText", "sepDeviceText", "sepEngineReason", "sepModelLabel",
               "setupSeparator", "toggleRealtime"],
+    # 下载历史页：四格统计 + 六个表头 + 两枚批量按钮 + 行内两枚，加上清空确认框与打开文件夹那三条回执。
+    # statusLabel / statusType / toggleSort / sortIcon 没登记：前两个已记在 queue 那一批（状态列的
+    # 五个词是共用的），后两个是全工程共用的排序底座，本体没有话术、埋点那句在 logSort 里归 ACTION_NAMES。
+    # redownload 与 loadHistory / exportHistory 本体一句界面文字都没有，登记进来是为了「以后有人往里加中文会红」。
+    "history": ["loadHistory", "exportHistory", "clearHistory", "redownload", "openHistoryFile"],
 }
 # 允许留中文的处理器：这些行比的是后端发来的数据（预设名、占位标题），翻成英文这行判断就失效。
 # 「允许留下」不等于「不用管」——残留的行数和那几句都钉死，改了名字或悄悄多出一行都判红
@@ -641,7 +646,10 @@ MAIDIAN_EXPECT = {"home": 0, "queue": 0, "bt": 7, "files": 4, "subs": 0, "music"
                   # 点表头的留痕在共用的 logSort 里，跟 ACTION_NAMES 那一批一起收
                   "library": 0,
                   # toggleRealtime 那两句 logAction（开始 / 停止准实时转写）等 ACTION_NAMES 那一批
-                  "voice": 2}
+                  "voice": 2,
+                  # 这一页五个处理器里没有埋点行：清历史与打开文件夹都只调 api()，没带 uiName；
+                  # 点表头那次的留痕在共用的 logSort 里（histSort.t 的「下载历史」也归 ACTION_NAMES 那一批）
+                  "history": 0}
 # 来源类型那一列的名字与提示：键不是写在 tr(' …') 里而是存在表里（labelKey / hintKey），
 # 上面那遍字面扫抓不到它们，所以单独比一遍 —— 少哪一份英文界面就印键名
 kind_meta = block(HTML, "const SUB_KIND_META = {", "};")
