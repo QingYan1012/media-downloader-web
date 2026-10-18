@@ -432,7 +432,7 @@ def strip_comments(src: str) -> str:
     return re.sub(r"<!--.*?-->", "", src, flags=re.S)
 
 
-PAGES_DONE = ["home", "queue", "bt", "files", "subs", "music", "settings", "tg", "sniff"]   # ← 每翻完一页把页名加进来；登记了却没翻干净会被 I3 判红
+PAGES_DONE = ["home", "queue", "bt", "files", "subs", "music", "settings", "tg", "sniff", "live"]   # ← 每翻完一页把页名加进来；登记了却没翻干净会被 I3 判红
 ck("I2 PAGES_DONE 都是真有的页", all(page_block(k) for k in PAGES_DONE),
    str([k for k in PAGES_DONE if not page_block(k)]))
 for _pg in PAGES_DONE:
@@ -541,6 +541,17 @@ PAGE_HANDLERS = {
               "onCatcatchConfig", "pollBrowserSniff", "runSniff", "sniffDownloadMerge",
               "sniffDownloadOne", "sniffDownloadSelected", "sniffSelectAll", "startBrowserSniff",
               "stopBrowserSniff", "toggleCatcatchRule", "triggerCatcatchImport"],
+    # 直播页：录制卡片 + 监控房间表 + 本房间设置弹窗 + 任务卡片，四张卡共用一段模板。
+    # 名单是这一页模板调到的处理器（含一层铺出来的 loadLiveMonitors）。
+    # liveDefaultMinutesText 是个 computed，登记进来靠的是 js_fn() 后来支持抠 computed 的函数体
+    # （不登记它就等于给这一页留了个没人看的洞：词表键在、闸门看不见）。
+    # isLiveRunning / fileBasename 没登记：一个谓词一个路径工具，本体没有话术，
+    # 而且 fileBasename 是队列与文件页共用的。
+    "live": ["startLiveRecord", "endAllLive", "endLiveTask", "cancelLiveTask", "pauseLiveTask",
+             "resumeLiveTask", "openLiveFile", "clearFinishedLiveTasks", "liveAutoSaveText",
+             "liveDefaultMinutesText", "addLiveMonitor", "removeLiveMonitor", "pauseLiveMonitor",
+             "resumeLiveMonitor", "scanLiveMonitors", "loadLiveMonitors", "openLiveMonitorCfg",
+             "saveLiveMonitorCfg", "liveMonitorCfgText"],
 }
 # 允许留中文的处理器：这些行比的是后端发来的数据（预设名、占位标题），翻成英文这行判断就失效。
 # 「允许留下」不等于「不用管」——残留的行数和那几句都钉死，改了名字或悄悄多出一行都判红
@@ -554,12 +565,21 @@ RESIDUE = {
 
 
 def js_fn(name: str) -> str:
-    """取 index.html 里这个 setup 函数的函数体（八个空格那一层的 } 收尾）"""
+    """取 index.html 里这个 setup 函数的函数体（八个空格那一层的 } 收尾）
+
+    函数抠不到时再认一种写法：computed 属性。直播页那句「录满 N 分钟自动保存」的读数
+    就是这么写的，登记成处理器却抠不到等于整页白翻没人看 —— 一行的 computed 仍然抠不到
+    （会把后面整个函数体一起吞进来），那种留在下面的整行断言里钉。
+    """
     m = re.search(r"^        (?:async )?function %s\(" % re.escape(name), HTML, flags=re.M)
+    tail = "\n        }\n"
+    if not m:
+        m = re.search(r"^        const %s = computed\(\(\) => \{" % re.escape(name), HTML, flags=re.M)
+        tail = "\n        });\n"
     if not m:
         return ""
     start = HTML.index("\n", m.start()) + 1
-    end = HTML.find("\n        }\n", start)
+    end = HTML.find(tail, start)
     return HTML[start:end] if end > start else ""
 
 
@@ -580,7 +600,7 @@ ck("I5b 每个允许留中文的处理器都登记在某一页里（漏登记就
 # 这两种写法都要认得到，否则「翻完了」会表现为埋点行凭空少几条。
 MAIDIAN = re.compile(r"""uiName:|logAction\(|logSort\(|ccCall\(""")
 MAIDIAN_EXPECT = {"home": 0, "queue": 0, "bt": 7, "files": 4, "subs": 0, "music": 5, "settings": 17, "tg": 1,
-                  "sniff": 0}
+                  "sniff": 0, "live": 0}
 # 来源类型那一列的名字与提示：键不是写在 tr(' …') 里而是存在表里（labelKey / hintKey），
 # 上面那遍字面扫抓不到它们，所以单独比一遍 —— 少哪一份英文界面就印键名
 kind_meta = block(HTML, "const SUB_KIND_META = {", "};")
@@ -632,6 +652,12 @@ _probe = dict(DICT["zh"])
 _probe["sniff.ccLast"] = "· 最近一次 {at}"
 ck("I11b 分隔符那条闸门自己会响（把 ccLast 的 zh 改回带点的写法必须判红）",
    bool(sep_dupes(TEMPLATE, _probe, DICT["en"])))
+# 直播任务那一筛比的是后端发来的标题里有没有「直播」两个字（is_live 之外的兜底），
+# 翻成英文这一筛就永远为空。它是一行的 computed，js_fn() 抠不到（会把后面整个函数体一起吞进来），
+# 所以整行钉住：换写法或把这个词翻掉，这里判红。
+ck("I12 liveTasks 仍按后端原话「直播」筛（翻了这一行直播页就空了）",
+   "const liveTasks = computed(() => tasks.value.filter(t => t.is_live || (t.title || '').includes('直播')));"
+   in HTML)
 for _pg, _fns in PAGE_HANDLERS.items():
     _md = 0
     for _fn in _fns:

@@ -3894,50 +3894,49 @@
           <!-- 直播录制 -->
           <div v-if="page === 'live'">
             <div class="card">
-              <div class="section-title">直播录制</div>
-              <el-input size="large" v-model="liveUrl" type="textarea" :autosize="{ minRows: 3, maxRows: 12 }" placeholder="示例：https://live.bilibili.com/xxxxx 或 YouTube 直播链接"></el-input>
+              <div class="section-title">{{ tr('live.title') }}</div>
+              <el-input size="large" v-model="liveUrl" type="textarea" :autosize="{ minRows: 3, maxRows: 12 }" :placeholder="tr('live.urlPh')"></el-input>
               <div class="row row--mt">
                 <el-button size="large" type="primary" :loading="submitting" @click="startLiveRecord">
-                  <svg class="btn-ico"><use href="#i-play"></use></svg>{{ submitting ? '提交中…' : '开始录制' }}
+                  <svg class="btn-ico"><use href="#i-play"></use></svg>{{ submitting ? tr('common.submitting') : tr('live.btnStart') }}
                 </el-button>
-                <el-button size="large" @click="endAllLive">结束全部录制</el-button>
-                <el-button size="large" @click="stopAll">停止全部任务</el-button>
-                <el-checkbox v-model="settings.live_from_start">尽可能从开头录制（YouTube）</el-checkbox>
+                <el-button size="large" @click="endAllLive">{{ tr('live.btnEndAll') }}</el-button>
+                <el-button size="large" @click="stopAll">{{ tr('live.btnStopAll') }}</el-button>
+                <el-checkbox v-model="settings.live_from_start">{{ tr('live.fromStart') }}</el-checkbox>
                 <span class="row row--tight" style="margin-left:auto">
-                  <span class="hint">录满自动保存</span>
+                  <span class="hint">{{ tr('live.autoSaveLbl') }}</span>
                   <el-input-number v-model="settings.live_max_minutes" size="small" :min="0" :max="1440" :step="30"
                                     :precision="0" controls-position="right" style="width:118px"></el-input-number>
-                  <span class="hint">分钟</span>
+                  <span class="hint">{{ tr('auth.minutesWord') }}</span>
                 </span>
               </div>
               <p class="hint hint--block">
-                支持 B站 / YouTube / Twitch 等。直播间需<strong>正在直播</strong>。录制时同步采集聊天/弹幕（B站弹幕、Twitch IRC、YouTube live_chat）。可添加「监控房间」自动检测开播。
-                录满设的分钟数会自动结束这一场并把成品收尾保存。这一格就是「设置 → 订阅与直播 → 直播默认最长录制」同一个值，在哪边改都算数；填 0 = 不限时长，录到手动结束。
+                {{ tr('live.hintA') }}<strong>{{ tr('live.hintLive') }}</strong>{{ tr('live.hintB') }}
               </p>
             </div>
 
             <div class="card">
-              <div class="section-title">直播间监控（自动检测开播）</div>
-              <el-input v-model="liveMonitorUrl" placeholder="直播间链接，开播后自动开始录制" size="large" clearable @paste="onPaste($event, 'url')"></el-input>
+              <div class="section-title">{{ tr('live.monTitle') }}</div>
+              <el-input v-model="liveMonitorUrl" :placeholder="tr('live.monPh')" size="large" clearable @paste="onPaste($event, 'url')"></el-input>
               <div class="row row--mt">
-                <el-button size="large" type="primary" @click="addLiveMonitor"><svg class="btn-ico"><use href="#i-plus"></use></svg>添加监控</el-button>
-                <el-button size="large" @click="scanLiveMonitors">立即检测开播</el-button>
+                <el-button size="large" type="primary" @click="addLiveMonitor"><svg class="btn-ico"><use href="#i-plus"></use></svg>{{ tr('live.btnMonAdd') }}</el-button>
+                <el-button size="large" @click="scanLiveMonitors">{{ tr('live.btnMonScan') }}</el-button>
               </div>
-              <div v-if="!liveMonitors.length" class="empty-tip" style="margin-top:12px">暂无监控房间</div>
+              <div v-if="!liveMonitors.length" class="empty-tip" style="margin-top:12px">{{ tr('live.monEmpty') }}</div>
               <table v-else class="fmt-table fmt-table--wrap" style="margin-top:12px;min-width:700px">
-                <thead><tr><th>链接</th><th style="width:212px">状态</th><th style="width:252px">操作</th></tr></thead>
+                <thead><tr><th>{{ tr('common.colLink') }}</th><th style="width:212px">{{ tr('common.colStatus') }}</th><th style="width:252px">{{ tr('common.colOps') }}</th></tr></thead>
                 <tbody>
                   <tr v-for="m in pagers.liveMon.paged" :key="m.id">
                     <td>
                       <div class="ell">{{ m.url }}</div>
                       <div v-if="liveMonitorCfgText(m)" class="hint" style="margin:2px 0 0">{{ liveMonitorCfgText(m) }}</div>
                     </td>
-                    <td>{{ m.status || '等待开播' }}<span v-if="m.paused" style="color:var(--warn)">（已暂停自动录制）</span></td>
+                    <td>{{ m.status || tr('live.monWaiting') }}<span v-if="m.paused" style="color:var(--warn)">{{ tr('live.monPausedTag') }}</span></td>
                     <td>
-                      <el-button size="small" plain @click="openLiveMonitorCfg(m)">设置</el-button>
-                      <el-button v-if="!m.paused" size="small" plain @click="pauseLiveMonitor(m)">暂停自动录制</el-button>
-                      <el-button v-else size="small" plain @click="resumeLiveMonitor(m)">恢复自动录制</el-button>
-                      <el-button size="small" plain type="danger" @click="removeLiveMonitor(m)">删除</el-button>
+                      <el-button size="small" plain @click="openLiveMonitorCfg(m)">{{ tr('live.cfgBtn') }}</el-button>
+                      <el-button v-if="!m.paused" size="small" plain @click="pauseLiveMonitor(m)">{{ tr('live.monPause') }}</el-button>
+                      <el-button v-else size="small" plain @click="resumeLiveMonitor(m)">{{ tr('live.monResume') }}</el-button>
+                      <el-button size="small" plain type="danger" @click="removeLiveMonitor(m)">{{ tr('common.del') }}</el-button>
                     </td>
                   </tr>
                 </tbody>
@@ -3946,57 +3945,57 @@
                              :page-size="pagers.liveMon.pageSize" :total="pagers.liveMon.total"
                              layout="total, prev, pager, next, jumper" size="small" background class="pager"></el-pagination>
 
-              <el-dialog v-model="liveRoomCfg.visible" title="本房间录制设置" width="470px">
+              <el-dialog v-model="liveRoomCfg.visible" :title="tr('live.cfgTitle')" width="470px">
                 <div class="hint hint--block">{{ liveRoomCfg.url }}</div>
                 <p class="hint hint--block">
-                  这里的设置只作用于监控自动开播后的录制，不影响上方「开始录制」按钮；未单独指定的项目沿用设置页的口径。
+                  {{ tr('live.cfgScopeHint') }}
                 </p>
                 <div class="row row--tight">
                   <div style="flex:1">
-                    <div class="tile-label">输出容器</div>
-                    <el-select v-model="liveRoomCfg.fmt" size="small" placeholder="跟随软件设置" style="width:100%">
-                      <el-option label="跟随软件设置" value=""></el-option>
+                    <div class="tile-label">{{ tr('live.cfgFmtLbl') }}</div>
+                    <el-select v-model="liveRoomCfg.fmt" size="small" :placeholder="tr('live.cfgFollow')" style="width:100%">
+                      <el-option :label="tr('live.cfgFollow')" value=""></el-option>
                       <el-option v-for="f in liveRoomFmts" :key="f" :label="f" :value="f"></el-option>
                     </el-select>
                   </div>
                   <div style="flex:1">
-                    <div class="tile-label">画质档位</div>
-                    <el-select v-model="liveRoomCfg.video_quality" size="small" placeholder="跟随软件设置" style="width:100%">
-                      <el-option label="跟随软件设置" value=""></el-option>
-                      <el-option v-for="q in liveRoomQualities" :key="q" :label="q === 'best' ? 'best（最高）' : q" :value="q"></el-option>
+                    <div class="tile-label">{{ tr('live.cfgQualLbl') }}</div>
+                    <el-select v-model="liveRoomCfg.video_quality" size="small" :placeholder="tr('live.cfgFollow')" style="width:100%">
+                      <el-option :label="tr('live.cfgFollow')" value=""></el-option>
+                      <el-option v-for="q in liveRoomQualities" :key="q" :label="q === 'best' ? tr('opt.best') : q" :value="q"></el-option>
                     </el-select>
                   </div>
                 </div>
                 <div class="row row--tight row--mt">
                   <div style="flex:1">
-                    <div class="tile-label">录完自动转码</div>
-                    <el-select v-model="liveRoomCfg.auto_transcode" size="small" placeholder="不转码" style="width:100%">
-                      <el-option label="不转码" value=""></el-option>
+                    <div class="tile-label">{{ tr('live.cfgTransLbl') }}</div>
+                    <el-select v-model="liveRoomCfg.auto_transcode" size="small" :placeholder="tr('live.cfgNoTrans')" style="width:100%">
+                      <el-option :label="tr('live.cfgNoTrans')" value=""></el-option>
                       <el-option v-for="p in transcodePresets" :key="p.id" :label="p.label" :value="p.id"></el-option>
                     </el-select>
                   </div>
                   <div style="flex:1">
-                    <div class="tile-label">最长录制时长（分钟）</div>
+                    <div class="tile-label">{{ tr('live.cfgMaxLbl') }}</div>
                     <el-input-number v-model="liveRoomCfg.max_minutes" size="small" :min="0" :max="1440" :step="30"
                                      :precision="0" controls-position="right" style="width:100%"></el-input-number>
                   </div>
                 </div>
-                <div class="hint" style="margin-top:6px">0 = 跟随「设置」里的默认最长录制时长（当前{{ liveDefaultMinutesText }}）；录满后自动结束这一场并保存成品，房间仍继续监控下次开播。转码在录制结束后后台进行，原文件保留。</div>
+                <div class="hint" style="margin-top:6px">{{ tr('live.cfgMaxHint', { cur: liveDefaultMinutesText }) }}</div>
                 <div class="row row--tight" style="margin-top:14px">
                   <div style="flex:1">
-                    <div class="tile-label">监控时段（开始）</div>
-                    <el-input v-model="liveRoomCfg.win_start" size="small" placeholder="例如 20:30，留空 = 全天"></el-input>
+                    <div class="tile-label">{{ tr('live.cfgWinStartLbl') }}</div>
+                    <el-input v-model="liveRoomCfg.win_start" size="small" :placeholder="tr('live.cfgWinStartPh')"></el-input>
                   </div>
                   <div style="flex:1">
-                    <div class="tile-label">监控时段（结束）</div>
-                    <el-input v-model="liveRoomCfg.win_end" size="small" placeholder="例如 02:00，留空 = 全天"></el-input>
+                    <div class="tile-label">{{ tr('live.cfgWinEndLbl') }}</div>
+                    <el-input v-model="liveRoomCfg.win_end" size="small" :placeholder="tr('live.cfgWinEndPh')"></el-input>
                   </div>
                 </div>
-                <div class="hint" style="margin-top:6px">两个时间都填了才按时段监控，用 24 小时制；开始晚于结束表示跨零点（22:00 至 02:00）。时段外检测到开播只标记直播中，不入队录制。</div>
+                <div class="hint" style="margin-top:6px">{{ tr('live.cfgWinHint') }}</div>
                 <template #footer>
                   <div class="row row--tight" style="justify-content:flex-end">
-                    <el-button size="small" @click="liveRoomCfg.visible = false">取消</el-button>
-                    <el-button size="small" type="primary" :loading="liveRoomCfg.saving" @click="saveLiveMonitorCfg">保存设置</el-button>
+                    <el-button size="small" @click="liveRoomCfg.visible = false">{{ tr('common.cancel') }}</el-button>
+                    <el-button size="small" type="primary" :loading="liveRoomCfg.saving" @click="saveLiveMonitorCfg">{{ tr('common.save') }}</el-button>
                   </div>
                 </template>
               </el-dialog>
@@ -4004,12 +4003,12 @@
 
             <div class="card">
               <div class="row row--spread row--tight">
-                <div class="section-title" style="margin:0">直播任务（{{ liveTasksActive.length }} 进行中 / {{ liveTasks.length }} 全部）</div>
+                <div class="section-title" style="margin:0">{{ tr('live.taskHead', { run: liveTasksActive.length, all: liveTasks.length }) }}</div>
                 <div class="row row--tight">
-                  <el-button size="small" @click="clearFinishedLiveTasks">清理已结束</el-button>
+                  <el-button size="small" @click="clearFinishedLiveTasks">{{ tr('live.btnClean') }}</el-button>
                 </div>
               </div>
-              <div v-if="!liveTasks.length" class="empty-tip" style="margin-top:12px">当前无直播录制任务 — 粘贴链接后点击「开始录制」</div>
+              <div v-if="!liveTasks.length" class="empty-tip" style="margin-top:12px">{{ tr('live.tasksEmpty') }}</div>
               <div v-for="t in pagers.liveTasks.paged" :key="t.id" class="task-card" style="margin-bottom:8px;margin-top:12px"
                 :style="t.status==='failed' ? 'opacity:0.85;border-color:var(--bad)' : (t.status==='stopped'||t.status==='finished' ? 'opacity:0.9' : '')">
                 <div class="row row--spread row--tight">
@@ -4018,25 +4017,25 @@
                 </div>
                 <el-progress v-if="isLiveRunning(t)" :percentage="Math.min(100, Math.round(t.progress||0))" :stroke-width="8" style="margin-top:8px"></el-progress>
                 <div class="hint" style="margin-top:6px">
-                  <span v-if="t.elapsed_sec != null && isLiveRunning(t)" style="font-weight:600;color:var(--accent);margin-right:8px">已录制 {{ formatDuration(t.elapsed_sec) }}</span>
+                  <span v-if="t.elapsed_sec != null && isLiveRunning(t)" style="font-weight:600;color:var(--accent);margin-right:8px">{{ tr('live.recFor', { d: formatDuration(t.elapsed_sec) }) }}</span>
                   <span v-if="liveAutoSaveText(t)" style="color:var(--ok);margin-right:8px">{{ liveAutoSaveText(t) }}</span>
-                  <span v-if="t.filepath" style="color:var(--ok);margin-right:8px">文件: {{ fileBasename(t.filepath) }}</span>
+                  <span v-if="t.filepath" style="color:var(--ok);margin-right:8px">{{ tr('live.fileLbl', { f: fileBasename(t.filepath) }) }}</span>
                   <span v-if="t.error_msg && (t.status==='failed'||t.status==='stopped')" style="color:var(--bad)">{{ friendlyError(t.error_msg) }}</span>
                   <span v-if="isLiveRunning(t)">{{ t.speed }} · {{ t.url }}</span>
                   <span v-else-if="t.url" style="color:var(--muted)">{{ t.url }}</span>
-                  <span v-if="t.chat_capturing" style="margin-left:8px;color:var(--ok)">· 聊天采集中</span>
-                  <span v-else-if="t.chat_file" style="margin-left:8px;color:var(--muted)">· 聊天已保存</span>
+                  <span v-if="t.chat_capturing" style="margin-left:8px;color:var(--ok)">{{ tr('live.chatOn') }}</span>
+                  <span v-else-if="t.chat_file" style="margin-left:8px;color:var(--muted)">{{ tr('live.chatSaved') }}</span>
                 </div>
                 <div class="row row--mt row--tight">
                   <template v-if="isLiveRunning(t)">
-                    <el-button size="small" @click="pauseLiveTask(t)">暂停</el-button>
-                    <el-button size="small" @click="resumeLiveTask(t)">继续</el-button>
-                    <el-button size="small" plain @click="endLiveTask(t)">结束录制</el-button>
-                    <el-button size="small" type="danger" plain @click="cancelLiveTask(t)">取消并移除</el-button>
+                    <el-button size="small" @click="pauseLiveTask(t)">{{ tr('queue.btnPause') }}</el-button>
+                    <el-button size="small" @click="resumeLiveTask(t)">{{ tr('queue.btnResume') }}</el-button>
+                    <el-button size="small" plain @click="endLiveTask(t)">{{ tr('live.btnEnd') }}</el-button>
+                    <el-button size="small" type="danger" plain @click="cancelLiveTask(t)">{{ tr('live.btnCancel') }}</el-button>
                   </template>
                   <template v-else>
-                    <el-button size="small" v-if="t.filepath" @click="openLiveFile(t)">打开目录</el-button>
-                    <el-button size="small" type="danger" plain @click="cancelLiveTask(t)">移除</el-button>
+                    <el-button size="small" v-if="t.filepath" @click="openLiveFile(t)">{{ tr('files.openDir') }}</el-button>
+                    <el-button size="small" type="danger" plain @click="cancelLiveTask(t)">{{ tr('live.btnRemove') }}</el-button>
                   </template>
                 </div>
               </div>
@@ -6333,7 +6332,7 @@
         // 与「设置 → 订阅与直播」是同一个值，改完由设置的自动保存落盘（页面级影子值会漂移）
         const liveDefaultMinutesText = computed(() => {
           const n = Number(settings.value.live_max_minutes || 0);
-          return n > 0 ? `录满 ${n} 分钟自动保存` : '不限时长';
+          return n > 0 ? tr('live.maxSave', { n }) : tr('live.noLimit');
         });
         const liveMonitorUrl = ref('');
         const liveMonitors = ref([]);
@@ -6693,7 +6692,7 @@
           const lim = Number((t && t.live_limit_min) || 0);
           if (!lim || !isLiveRunning(t)) return '';
           const left = lim * 60 - Number(t.elapsed_sec || 0);
-          return left > 0 ? `还剩 ${Math.max(1, Math.ceil(left / 60))} 分钟自动保存` : '正在自动保存…';
+          return left > 0 ? tr('live.leftMin', { n: Math.max(1, Math.ceil(left / 60)) }) : tr('live.savingNow');
         }
         function fileBasename(p) {
           if (!p) return '';
@@ -6704,18 +6703,18 @@
           try {
             await api('/api/open-folder', { method: 'POST', body: JSON.stringify({ path: t.filepath || '' }) });
           } catch (e) {
-            ElementPlus.ElMessage.error(e.message || '打开失败');
+            ElementPlus.ElMessage.error(e.message || tr('files.tOpenFailed'));
           }
         }
         async function clearFinishedLiveTasks() {
           const ids = liveTasks.value.filter(t => !isLiveRunning(t)).map(t => t.id);
           if (!ids.length) {
-            ElementPlus.ElMessage.info('暂无已结束的任务');
+            ElementPlus.ElMessage.info(tr('live.noFinished'));
             return;
           }
           await api('/api/delete', { method: 'POST', body: JSON.stringify({ ids }) });
           await loadTasks();
-          ElementPlus.ElMessage.success('已清理 ' + ids.length + ' 条');
+          ElementPlus.ElMessage.success(tr('live.cleaned', { n: ids.length }));
         }
         const fileSearch = ref('');
         const fileSort = ref('name');
@@ -8170,13 +8169,13 @@
         async function addLiveMonitor() {
           const u = (liveMonitorUrl.value || '').trim();
           if (!u.startsWith('http')) {
-            ElementPlus.ElMessage.warning('请输入直播间链接');
+            ElementPlus.ElMessage.warning(tr('live.needMonUrl'));
             return;
           }
           try {
             await api('/api/live/monitors/add', { method: 'POST', body: JSON.stringify({ url: u }) });
             liveMonitorUrl.value = '';
-            ElementPlus.ElMessage.success('已添加监控');
+            ElementPlus.ElMessage.success(tr('live.tMonAdded'));
             await loadLiveMonitors();
           } catch (e) {
             ElementPlus.ElMessage.error(e.message);
@@ -8188,19 +8187,19 @@
         }
         async function pauseLiveMonitor(m) {
           await api('/api/live/monitors/pause', { method: 'POST', body: JSON.stringify({ id: m.id, url: m.url }) });
-          ElementPlus.ElMessage.info('已暂停该房间自动录制');
+          ElementPlus.ElMessage.info(tr('live.tMonPaused'));
           await loadLiveMonitors();
         }
         async function resumeLiveMonitor(m) {
           await api('/api/live/monitors/resume', { method: 'POST', body: JSON.stringify({ id: m.id, url: m.url }) });
-          ElementPlus.ElMessage.success('已恢复自动录制');
+          ElementPlus.ElMessage.success(tr('live.tMonResumed'));
           await loadLiveMonitors();
           await loadTasks();
         }
         async function scanLiveMonitors() {
           try {
             const r = await api('/api/live/monitors/scan', { method: 'POST', body: '{}' });
-            ElementPlus.ElMessage.success('检测完成，新开播 ' + (r.started || 0) + ' 路');
+            ElementPlus.ElMessage.success(tr('live.tScanDone', { n: r.started || 0 }));
             await loadLiveMonitors();
             await loadTasks();
           } catch (e) {
@@ -8241,11 +8240,11 @@
             const notes = (r && r.notes) || [];
             if (notes.length) {
               // 合法的那几项后端已经落库，这里只点名没采用的，弹窗留着让人改
-              ElementPlus.ElMessage.warning('已保存，其中 ' + notes.length + ' 项设置没生效：'
-                + notes.slice(0, 3).join('；') + (notes.length > 3 ? ' 等' : ''));
+              ElementPlus.ElMessage.warning(tr('live.tSavedPartial', { n: notes.length })
+                + notes.slice(0, 3).join(tr('live.notesSep')) + (notes.length > 3 ? ' ' + tr('live.tEtc') : ''));
               await loadLiveMonitors();
             } else {
-              ElementPlus.ElMessage.success('已保存');
+              ElementPlus.ElMessage.success(tr('tg.saved'));
               c.visible = false;
               await loadLiveMonitors();
             }
@@ -8258,18 +8257,18 @@
         function liveMonitorCfgText(m) {
           if (!m) return '';
           const parts = [];
-          if (m.fmt) parts.push('封装 ' + m.fmt);
-          if (m.video_quality) parts.push('画质 ' + m.video_quality);
+          if (m.fmt) parts.push(tr('live.cfgFmt', { v: m.fmt }));
+          if (m.video_quality) parts.push(tr('live.cfgQual', { v: m.video_quality }));
           const mm = Number(m.max_minutes || 0);
           const gd = Number(settings.value.live_max_minutes || 0);
-          if (mm > 0) parts.push('录满 ' + mm + ' 分钟自动停');
-          else if (gd > 0) parts.push('录满 ' + gd + ' 分钟自动停（默认）');
+          if (mm > 0) parts.push(tr('live.cfgMax', { n: mm }));
+          else if (gd > 0) parts.push(tr('live.cfgMaxDefault', { n: gd }));
           if (m.auto_transcode) {
             const p = (transcodePresets.value || []).find(x => x.id === m.auto_transcode);
-            parts.push('录完转 ' + (p ? p.label : m.auto_transcode));
+            parts.push(tr('live.cfgTrans', { v: p ? p.label : m.auto_transcode }));
           }
-          if (m.win_start && m.win_end) parts.push('只在 ' + m.win_start + '–' + m.win_end + ' 监控');
-          return parts.length ? '本房间：' + parts.join(' · ') : '';
+          if (m.win_start && m.win_end) parts.push(tr('live.cfgWin', { a: m.win_start, b: m.win_end }));
+          return parts.length ? tr('live.cfgLead') + parts.join(' · ') : '';
         }
 
         
@@ -8510,36 +8509,36 @@
           if (!t) return;
           try {
             await api('/api/live/end', { method: 'POST', body: JSON.stringify({ ids: [t.id] }) });
-            ElementPlus.ElMessage.success('已结束录制，文件保留在下载目录');
+            ElementPlus.ElMessage.success(tr('live.tEnded'));
             await loadTasks();
           } catch (e) {
-            ElementPlus.ElMessage.error(e.message || '结束失败');
+            ElementPlus.ElMessage.error(e.message || tr('live.tEndFail'));
           }
         }
         async function endAllLive() {
           try {
             const r = await api('/api/live/end', { method: 'POST', body: JSON.stringify({ ids: [] }) });
-            ElementPlus.ElMessage.success('已结束 ' + (r.count || 0) + ' 个直播录制');
+            ElementPlus.ElMessage.success(tr('live.tEndedAll', { n: r.count || 0 }));
             await loadTasks();
           } catch (e) {
-            ElementPlus.ElMessage.error(e.message || '结束失败');
+            ElementPlus.ElMessage.error(e.message || tr('live.tEndFail'));
           }
         }
         async function cancelLiveTask(t) {
           if (!t) return;
           try {
-            await ElementPlus.ElMessageBox.confirm('取消并移除任务？已录片段仍保留在下载目录。', '确认', { type: 'warning' });
+            await ElementPlus.ElMessageBox.confirm(tr('live.cancelBody'), tr('common.confirm'), { type: 'warning' });
           } catch (_) { return; }
           await api('/api/live/end', { method: 'POST', body: JSON.stringify({ ids: [t.id] }) }).catch(() => {});
           await api('/api/tasks/delete', { method: 'POST', body: JSON.stringify({ ids: [t.id] }) });
           await loadTasks();
-          ElementPlus.ElMessage.info('已取消并移除任务');
+          ElementPlus.ElMessage.info(tr('live.tCancelled'));
         }
 
         async function startLiveRecord() {
           const u = (liveUrl.value || '').trim();
           if (!u.startsWith('http')) {
-            ElementPlus.ElMessage.warning('请输入直播链接');
+            ElementPlus.ElMessage.warning(tr('live.needUrl'));
             return;
           }
           submitting.value = true;
@@ -8557,8 +8556,8 @@
               }),
             });
             ElementPlus.ElMessage.success(mm > 0
-              ? `已加入直播录制队列，录满 ${mm} 分钟自动结束并保存`
-              : '已加入直播录制队列，将录制到手动结束');
+              ? tr('live.tQueuedMax', { n: mm })
+              : tr('live.tQueuedManual'));
             await loadTasks();
             // 留在直播页查看进行中任务
           } catch (e) {

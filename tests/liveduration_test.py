@@ -10,6 +10,7 @@
 全程不起服务、不写 config、不碰下载目录，也不真的结束任务（结束动作会杀子进程、收尾文件）。
 跑法：PYTHONIOENCODING=utf-8 python tests/liveduration_test.py
 """
+import re
 import sys
 import tempfile
 from datetime import datetime, timedelta
@@ -34,6 +35,20 @@ def ck(name, cond, extra=""):
 
 SRC = Path(S.__file__).read_text(encoding="utf-8")
 INDEX = (Path(S.__file__).parent / "static" / "index.html").read_text(encoding="utf-8")
+# 「0 = 跟随…」这句在 #70 那批整页翻进词表，模板里只剩 tr('live.cfgMaxHint')，
+# 所以这句要从字典里读，不能再用 INDEX 里的字面串去比 —— 否则一翻译就把好功能判红。
+I18N_SRC = (Path(S.__file__).parent / "static" / "i18n.js").read_text(encoding="utf-8")
+_PAIR = re.compile(r"['\"]?([A-Za-z][\w.-]*)['\"]?:\s*'((?:[^'\\]|\\.)*)'")
+
+
+def _blob(start_mark, end_mark):
+    i = I18N_SRC.find(start_mark)
+    j = I18N_SRC.find(end_mark, i) if i >= 0 else -1
+    return I18N_SRC[i:j] if i >= 0 and j > 0 else ""
+
+
+ZH = dict(_PAIR.findall(_blob("    zh: {", "\n    en: {")))
+EN = dict(_PAIR.findall(_blob("    en: {", "\n  };\n")))
 
 REAL_CFG = S.cfg
 REAL_QUEUE = S.queue
@@ -217,7 +232,9 @@ ck("G2 「开始录制」把时长发给后端", "live_max_minutes: mm," in INDE
 ck("G3 任务卡显示倒计时", "liveAutoSaveText(t)" in INDEX and "live_limit_min" in INDEX)
 ck("G4 设置页有默认时长项，且与房间设置同用 0 = 跟随这一口径",
    'v-model="settings.live_max_minutes"' in INDEX
-   and "0 = 跟随「设置」里的默认最长录制时长" in INDEX)
+   and "0 = 跟随「设置」里的默认最长录制时长" in ZH.get("live.cfgMaxHint", "")
+   and "0 = " in EN.get("live.cfgMaxHint", ""),
+   f"zh={ZH.get('live.cfgMaxHint', '')[:24]!r} en={EN.get('live.cfgMaxHint', '')[:24]!r}")
 ck("G5 新增的名字都在 setup 返回清单里（漏了就是界面空白，且没有任何报错）",
    all(n in INDEX[INDEX.rindex("return {"):] for n in
        ["liveDefaultMinutesText", "liveAutoSaveText"]))
