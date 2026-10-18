@@ -85,8 +85,37 @@ ck("P12 折叠态的分组线默认不显示、只在折叠时出现，且第一
    and ".sidebar.is-collapsed .nav-group-line { display: block; }" in HTML
    and '<div v-if="gi > 0" class="nav-group-line"></div>' in HTML)
 
+# ---- #72 Ctrl+K 面板 ----
+# 模板是 in-DOM 的，setup 返回清单里漏一个名字不是「那一块不显示」，是整页渲染抛错。
+# I7 那类闸门只覆盖登记过的页面块，面板挂在 .layout 上、不在任何页块里，所以这里自己钉。
+_PALETTE_NAMES = ["palette", "paletteInput", "paletteRows", "paletteGroups",
+                  "kbdMod", "openPalette", "closePalette", "runPalette"]
+_ret = HTML[HTML.rindex("return {"):]
+ck("P13 面板用到的每个名字都在 setup 的返回清单里（漏一个 = 整页空白且只在建应用时才报）",
+   all(re.search(r"\b%s\b" % n, _ret) for n in _PALETTE_NAMES),
+   str([n for n in _PALETTE_NAMES if not re.search(r"\b%s\b" % n, _ret)]))
+ck("P14 Ctrl+K 的监听挂了也必须摘（挂 in-DOM 模板上没人替你清）",
+   "window.addEventListener('keydown', onPaletteKey)" in HTML
+   and "window.removeEventListener('keydown', onPaletteKey)" in HTML)
+# position:fixed 的祖先一旦带 transform / filter / backdrop-filter，包含块就变成那个祖先，
+# 面板会歪进那一格里 —— 这条不是洁癖，是这类弹层最贵的坑（.card 就带 backdrop-filter）。
+ck("P15 面板的祖先（#app / .layout）身上没有 transform 与 backdrop-filter",
+   re.search(r"\.layout\s*\{[^}]*?(?:transform|backdrop-filter)", HTML) is None
+   and re.search(r"html, body, #app\s*\{[^}]*?(?:transform|backdrop-filter)", HTML) is None)
+# 别名表只拿去匹配、界面上一个都不显示；键写错（多个字、少个页）不会报错，只是那一页搜不到
+_navs_blob = HTML[HTML.find("const navs = ["):]
+_navs_blob = _navs_blob[:_navs_blob.find("];")]
+_nav_keys = set(re.findall(r"\{ key: '(\w+)'", _navs_blob))
+_alias = HTML[HTML.find("const SEARCH_ALIAS = {"):]
+_alias = _alias[:_alias.find("};")]
+_alias_keys = re.findall(r"^\s{10}(\w+):", _alias, flags=re.M)
+ck("P16 别名表的键全是真页名（写错的键不报错，只是那一页永远搜不到）",
+   bool(_nav_keys) and bool(_alias_keys) and all(k in _nav_keys for k in _alias_keys),
+   "别名 %d 键，页名 %d 个，错键 %s" % (len(_alias_keys), len(_nav_keys),
+                                    [k for k in _alias_keys if k not in _nav_keys]))
+
 print("\n== 汇总 ==")
 if FAILED:
-    print(f"共 12 条，失败 {len(FAILED)} 条\n失败清单：" + "、".join(FAILED))
+    print(f"共 16 条，失败 {len(FAILED)} 条\n失败清单：" + "、".join(FAILED))
     sys.exit(1)
-print("共 12 条，全部通过")
+print("共 16 条，全部通过")
