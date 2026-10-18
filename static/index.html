@@ -2709,56 +2709,56 @@
           <!-- 信息 -->
           <div v-if="page === 'info'">
             <div class="card">
-              <div class="section-title">解析媒体链接</div>
+              <div class="section-title">{{ tr('info.title') }}</div>
               <div class="row">
                 <el-input
                   v-model="analyzeUrl"
-                  placeholder="粘贴 YouTube / B站 / 抖音 / 小红书 等链接（可多行批量）"
+                  :placeholder="tr('info.urlPh')"
                   clearable
                   size="large"
                   style="flex:1;min-width:240px"
                   @paste="onPaste($event, 'url')"
                   @keyup.enter="analyzeFromInfoPage"></el-input>
                 <el-button size="large" type="primary" :loading="analyzing" @click="analyzeFromInfoPage">
-                  <svg class="btn-ico"><use href="#i-search"></use></svg>{{ analyzing ? '解析中…' : '确定解析' }}
+                  <svg class="btn-ico"><use href="#i-search"></use></svg>{{ analyzing ? tr('info.analyzing') : tr('info.analyzeBtn') }}
                 </el-button>
               </div>
               <div class="action-row">
-                <el-button size="large" @click="pasteAnalyzeUrl">粘贴</el-button>
-                <el-button size="large" @click="analyzeUrl=''; mediaInfo=null">清空</el-button>
+                <el-button size="large" @click="pasteAnalyzeUrl">{{ tr('common.paste') }}</el-button>
+                <el-button size="large" @click="analyzeUrl=''; mediaInfo=null">{{ tr('common.clear') }}</el-button>
               </div>
-              <p class="hint hint--block">需点击「确定解析」后才获取媒体信息</p>
+              <p class="hint hint--block">{{ tr('info.needClick') }}</p>
             </div>
-            <div v-if="!mediaInfo" class="empty-tip">请在上方输入链接后点击「确定解析」</div>
+            <div v-if="!mediaInfo" class="empty-tip">{{ tr('info.emptyTip') }}</div>
             <div v-else class="card info-block">
               <div class="row row--loose">
                 <img v-if="mediaInfo.thumbnail" :src="mediaInfo.thumbnail" style="width:220px;max-height:140px;object-fit:cover;border-radius:10px;border:1px solid var(--line)" />
                 <div style="flex:1;min-width:220px">
-                  <h3 style="margin:0 0 8px">{{ mediaInfo.title || '未知标题' }}</h3>
-                  <p style="margin:4px 0">发布者：{{ mediaInfo.uploader || '—' }}</p>
-                  <p style="margin:4px 0">时长：{{ mediaInfo.duration || '—' }}</p>
-                  <p style="margin:4px 0">类型：{{ mediaInfo.type || 'video' }} <span v-if="mediaInfo.platform">· {{ mediaInfo.platform }}</span></p>
-                  <p style="margin:4px 0;word-break:break-all">链接：{{ mediaInfo.webpage_url }}</p>
+                  <h3 style="margin:0 0 8px">{{ mediaInfo.title || tr('info.unknownTitle') }}</h3>
+                  <p style="margin:4px 0">{{ tr('info.uploader') }}{{ mediaInfo.uploader || '—' }}</p>
+                  <p style="margin:4px 0">{{ tr('info.duration') }}{{ mediaInfo.duration || '—' }}</p>
+                  <p style="margin:4px 0">{{ tr('info.typeLabel') }}{{ mediaInfo.type || 'video' }} <span v-if="mediaInfo.platform">· {{ mediaInfo.platform }}</span></p>
+                  <p style="margin:4px 0;word-break:break-all">{{ tr('info.linkLabel') }}{{ mediaInfo.webpage_url }}</p>
                   <div class="row row--mt row--tight">
-                    <el-button size="small" type="primary" @click="downloadFromInfo"><svg class="btn-ico"><use href="#i-download"></use></svg>最佳画质下载</el-button>
-                    <el-button size="small" @click="copyText(mediaInfo.webpage_url)">复制链接</el-button>
-                    <el-button size="small" v-if="mediaInfo.formats && mediaInfo.formats.length" @click="copyFormats">复制格式列表</el-button>
+                    <el-button size="small" type="primary" @click="downloadFromInfo"><svg class="btn-ico"><use href="#i-download"></use></svg>{{ tr('info.dlBest') }}</el-button>
+                    <el-button size="small" @click="copyText(mediaInfo.webpage_url)">{{ tr('info.copyLink') }}</el-button>
+                    <el-button size="small" v-if="mediaInfo.formats && mediaInfo.formats.length" @click="copyFormats">{{ tr('info.copyFormats') }}</el-button>
                   </div>
                 </div>
               </div>
               <div v-if="mediaInfo.format_gate && mediaInfo.format_gate.limited" class="warn-box" style="margin-top:14px">
-                <div style="font-weight:600;margin-bottom:4px">清晰度上限说明</div>
+                <div style="font-weight:600;margin-bottom:4px">{{ tr('info.gateTitle') }}</div>
                 <div>{{ mediaInfo.format_gate.text }}</div>
                 <ul style="margin:6px 0 0;padding-left:20px">
                   <li v-for="(t, ti) in mediaInfo.format_gate.tips" :key="ti">{{ t }}</li>
                 </ul>
                 <div class="row row--tight" style="margin-top:8px">
-                  <el-button size="small" plain @click="page='settings'">去设置</el-button>
-                  <span class="hint">改完再点一次「确定解析」即可（解析结果缓存 3 分钟，改设置后重解析会重新取流）</span>
+                  <el-button size="small" plain @click="page='settings'">{{ tr('info.goSettings') }}</el-button>
+                  <span class="hint">{{ tr('info.gateHint') }}</span>
                 </div>
               </div>
               <div v-if="mediaInfo.quality_presets && mediaInfo.quality_presets.length" style="margin-top:18px">
-                <div class="section-title">按清晰度选择（基于实际 format）</div>
+                <div class="section-title">{{ tr('info.qualityByTier') }}</div>
                 <div class="row row--flush">
                   <el-button
                     v-for="(qp, qi) in shownQualityPresets"
@@ -2772,72 +2772,72 @@
                   >{{ qp.filesize ? formatSize(qp.filesize) : '≈' + formatSize(qp.filesize_est) }}</span></el-button>
                 </div>
                 <div class="chip-row" style="margin-top:10px" v-if="infoCodecOptions.length > 1">
-                  <span class="hint">画面编码</span>
+                  <span class="hint">{{ tr('info.codecVideo') }}</span>
                   <div v-for="c in infoCodecOptions" :key="c.value" class="chip" :class="{ active: infoCodec===c.value }" @click="infoCodec=c.value">{{ c.label }}</div>
-                  <span class="hint">同一清晰度有多种编码时逐条列出；点哪条就按那条的 format_id 下</span>
+                  <span class="hint">{{ tr('info.codecHint') }}</span>
                 </div>
                 <div class="chip-row" style="margin-top:6px" v-if="(mediaInfo.audio_abrs || []).length">
-                  <span class="hint">音频质量</span>
+                  <span class="hint">{{ tr('home.audioQ') }}</span>
                   <div v-for="q in audioQualities" :key="q" class="chip" :class="{ active: opts.audio_quality===q }" @click="opts.audio_quality=q">{{ q }}</div>
-                  <span class="hint">选非「最佳」时改按码率上限挑音频轨（源里最高约 {{ infoAudioTop }}）；源里没有那一档会自动回到最佳码率，不会下失败</span>
+                  <span class="hint">{{ tr('info.audioAbrHint', { top: infoAudioTop }) }}</span>
                 </div>
-                <div v-else class="hint" style="margin-top:6px">这个源没有独立音轨：画面和声音在同一条流里，音质跟着清晰度走，没有可选项。</div>
+                <div v-else class="hint" style="margin-top:6px">{{ tr('info.audioNoTrack') }}</div>
                 <div v-if="tierSizeText" class="hint hint--block" style="margin-top:8px">{{ tierSizeText }}</div>
-                <div class="hint" style="margin-top:8px">选择任一清晰度即按对应 format_id 下载（纯视频轨会自动合并 bestaudio）</div>
+                <div class="hint" style="margin-top:8px">{{ tr('info.tierFmtHint') }}</div>
               </div>
               <div v-if="mediaInfo.entries && mediaInfo.entries.length" style="margin-top:18px">
-                <div class="section-title">播放列表 / 合集条目（{{ mediaInfo.entries.length }}）</div>
+                <div class="section-title">{{ tr('info.entriesCount', { n: mediaInfo.entries.length }) }}</div>
                 <div class="row row--flush" style="margin-bottom:8px">
-                  <el-button size="small" type="primary" @click="downloadAllEntries"><svg class="btn-ico"><use href="#i-download"></use></svg>全部加入队列</el-button>
-                  <el-button size="small" :disabled="!entrySel.length" @click="downloadSelectedEntries">下载选中 {{ entrySel.length }} 条</el-button>
+                  <el-button size="small" type="primary" @click="downloadAllEntries"><svg class="btn-ico"><use href="#i-download"></use></svg>{{ tr('info.addAll') }}</el-button>
+                  <el-button size="small" :disabled="!entrySel.length" @click="downloadSelectedEntries">{{ tr('info.dlSelected', { n: entrySel.length }) }}</el-button>
                   <el-popover placement="bottom-start" trigger="click" :width="320">
                     <template #reference>
-                      <el-button size="small">按序号区间勾选</el-button>
+                      <el-button size="small">{{ tr('info.rangeBtn') }}</el-button>
                     </template>
                     <div class="row row--tight">
-                      <span class="hint">第</span>
+                      <span class="hint">{{ tr('info.rangeFromWord') }}</span>
                       <el-input-number size="small" v-model="entryRange.from" :min="1" :max="mediaInfo.entries.length" :step="1" :precision="0" controls-position="right" style="width:104px"></el-input-number>
-                      <span class="hint">到第</span>
+                      <span class="hint">{{ tr('info.rangeToWord') }}</span>
                       <el-input-number size="small" v-model="entryRange.to" :min="1" :max="mediaInfo.entries.length" :step="1" :precision="0" controls-position="right" style="width:104px"></el-input-number>
-                      <span class="hint">条</span>
+                      <span class="hint">{{ tr('info.rangeUnit') }}</span>
                     </div>
-                    <div class="hint hint--block">区间起点：{{ entryAt(entryRange.from) }} · 区间终点：{{ entryAt(entryRange.to) }}</div>
+                    <div class="hint hint--block">{{ tr('info.rangeEnds', { from: entryAt(entryRange.from), to: entryAt(entryRange.to) }) }}</div>
                     <div class="row row--tight row--mt">
-                      <el-button size="small" type="primary" plain @click="selectEntryRange">勾选这一区间</el-button>
-                      <el-button size="small" @click="clearEntrySel">清空勾选</el-button>
+                      <el-button size="small" type="primary" plain @click="selectEntryRange">{{ tr('info.rangeApply') }}</el-button>
+                      <el-button size="small" @click="clearEntrySel">{{ tr('info.rangeClear') }}</el-button>
                     </div>
                   </el-popover>
-                  <span class="hint">序号按播放列表自身的顺序，与表头的排序无关</span>
+                  <span class="hint">{{ tr('info.rangeOrderHint') }}</span>
                 </div>
                 <el-table ref="entryTableRef" :data="mediaInfo.entries" size="small" max-height="280" stripe @selection-change="onEntrySelection">
                   <el-table-column type="selection" width="42"></el-table-column>
-                  <el-table-column prop="title" label="标题" min-width="220" show-overflow-tooltip sortable :sort-method="cmp('title')"></el-table-column>
-                  <el-table-column prop="duration" label="时长" width="90" sortable :sort-method="cmp('duration')"></el-table-column>
+                  <el-table-column prop="title" :label="tr('common.colTitle')" min-width="220" show-overflow-tooltip sortable :sort-method="cmp('title')"></el-table-column>
+                  <el-table-column prop="duration" :label="tr('common.colDuration')" width="90" sortable :sort-method="cmp('duration')"></el-table-column>
                   <el-table-column prop="id" label="ID" width="120" sortable :sort-method="cmp('id')"></el-table-column>
-                  <el-table-column label="操作" min-width="320" width="360" align="left">
+                  <el-table-column :label="tr('common.colOps')" min-width="320" width="360" align="left">
                   <template #default="{ row }">
                     <div class="file-ops">
-                      <el-button size="small" plain @click="downloadEntry(row)">下载</el-button>
+                      <el-button size="small" plain @click="downloadEntry(row)">{{ tr('common.dl') }}</el-button>
                     </div>
                   </template>
                   </el-table-column>
                 </el-table>
               </div>
               <div v-if="mediaInfo.formats && mediaInfo.formats.length" style="margin-top:18px">
-                <div class="section-title">完整格式列表（{{ mediaInfo.formats.length }}）</div>
+                <div class="section-title">{{ tr('info.formatsCount', { n: mediaInfo.formats.length }) }}</div>
                 <div style="max-height:420px;overflow:auto">
                   <table class="fmt-table">
                     <thead>
                       <tr>
                         <th class="th-sort" :class="{ 'th-on': fmtSort.key === 'id' }" @click="toggleSort(fmtSort, 'id', FMT_DIR)">ID<span class="sort-ico">{{ sortIcon(fmtSort, 'id') }}</span></th>
-                        <th class="th-sort" :class="{ 'th-on': fmtSort.key === 'res' }" @click="toggleSort(fmtSort, 'res', FMT_DIR)">分辨率<span class="sort-ico">{{ sortIcon(fmtSort, 'res') }}</span></th>
-                        <th class="th-sort" :class="{ 'th-on': fmtSort.key === 'ext' }" @click="toggleSort(fmtSort, 'ext', FMT_DIR)">封装<span class="sort-ico">{{ sortIcon(fmtSort, 'ext') }}</span></th>
-                        <th class="th-sort" :class="{ 'th-on': fmtSort.key === 'tbr' }" @click="toggleSort(fmtSort, 'tbr', FMT_DIR)">码率<span class="sort-ico">{{ sortIcon(fmtSort, 'tbr') }}</span></th>
-                        <th class="th-sort" :class="{ 'th-on': fmtSort.key === 'size' }" @click="toggleSort(fmtSort, 'size', FMT_DIR)">大小<span class="sort-ico">{{ sortIcon(fmtSort, 'size') }}</span></th>
-                        <th>视频编码</th>
-                        <th>音频编码</th>
-                        <th>备注</th>
-                        <th>操作</th>
+                        <th class="th-sort" :class="{ 'th-on': fmtSort.key === 'res' }" @click="toggleSort(fmtSort, 'res', FMT_DIR)">{{ tr('info.colRes') }}<span class="sort-ico">{{ sortIcon(fmtSort, 'res') }}</span></th>
+                        <th class="th-sort" :class="{ 'th-on': fmtSort.key === 'ext' }" @click="toggleSort(fmtSort, 'ext', FMT_DIR)">{{ tr('info.colContainer') }}<span class="sort-ico">{{ sortIcon(fmtSort, 'ext') }}</span></th>
+                        <th class="th-sort" :class="{ 'th-on': fmtSort.key === 'tbr' }" @click="toggleSort(fmtSort, 'tbr', FMT_DIR)">{{ tr('info.colTbr') }}<span class="sort-ico">{{ sortIcon(fmtSort, 'tbr') }}</span></th>
+                        <th class="th-sort" :class="{ 'th-on': fmtSort.key === 'size' }" @click="toggleSort(fmtSort, 'size', FMT_DIR)">{{ tr('common.colSize') }}<span class="sort-ico">{{ sortIcon(fmtSort, 'size') }}</span></th>
+                        <th>{{ tr('info.colVcodec') }}</th>
+                        <th>{{ tr('info.colAcodec') }}</th>
+                        <th>{{ tr('info.colNote') }}</th>
+                        <th>{{ tr('common.colOps') }}</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -2855,7 +2855,7 @@
                         <td>{{ f.acodec }}</td>
                         <td>{{ f.note }}</td>
                         <td>
-                          <el-button size="small" plain @click="downloadSpecificFormat(f)">下载该格式</el-button>
+                          <el-button size="small" plain @click="downloadSpecificFormat(f)">{{ tr('info.dlThisFmt') }}</el-button>
                         </td>
                       </tr>
                     </tbody>
@@ -12726,8 +12726,8 @@
           let n = Math.floor(Number(i) || 1);
           n = Math.min(Math.max(n, 1), rows.length);
           const r = rows[n - 1];
-          const t = String((r && (r.title || r.id)) || '未命名').trim();
-          return '第 ' + n + ' 条《' + (t.length > 20 ? t.slice(0, 20) + '…' : t) + '》';
+          const t = String((r && (r.title || r.id)) || tr('info.entryUnnamed')).trim();
+          return tr('info.entryAt', { n: n, t: t.length > 20 ? t.slice(0, 20) + '…' : t });
         }
         function selectEntryRange() {
           const rows = (mediaInfo.value && mediaInfo.value.entries) || [];
@@ -12739,7 +12739,7 @@
           a = Math.min(Math.max(a, 1), rows.length);
           b = Math.min(Math.max(b, 1), rows.length);
           rows.forEach((r, i) => tb.toggleRowSelection(r, i + 1 >= a && i + 1 <= b));
-          ElementPlus.ElMessage.success('已勾选第 ' + a + '–' + b + ' 条，共 ' + (b - a + 1) + ' 条');
+          ElementPlus.ElMessage.success(tr('info.tRangeDone', { a: a, b: b, n: b - a + 1 }));
         }
         function clearEntrySel() {
           if (entryTableRef.value) entryTableRef.value.clearSelection();
@@ -12749,11 +12749,11 @@
           if (!rows.length) return;
           const urls = rows.map(e => (e && e.url) || '').filter(u => u.startsWith('http'));
           if (!urls.length) {
-            ElementPlus.ElMessage.warning('所选条目都没有单条链接，请改用「全部加入队列」整表下载');
+            ElementPlus.ElMessage.warning(tr('info.tNoUrlsAtAll'));
             return;
           }
           if (urls.length < rows.length) {
-            ElementPlus.ElMessage.warning('其中 ' + (rows.length - urls.length) + ' 条没有单条链接，已跳过');
+            ElementPlus.ElMessage.warning(tr('info.tSomeNoUrl', { n: rows.length - urls.length }));
           }
           // 勾出来的这一段仍然属于同一个合集，落点跟「全部加入队列」同一口径
           opts.value.playlist_folder = mediaInfo.value.title || '';
@@ -12777,7 +12777,7 @@
             urlText.value = mediaInfo.value.webpage_url;
             opts.value.allow_playlist = true;
           } else {
-            ElementPlus.ElMessage.warning('该条目无可用链接');
+            ElementPlus.ElMessage.warning(tr('info.tNoLink'));
             return;
           }
           // 逐集补下也归进同一合集：否则一单的东西会分在文件夹内外两处
@@ -12804,7 +12804,7 @@
           const lines = mediaInfo.value.formats.map(f =>
             `${f.format_id}\t${f.resolution}\t${f.ext}\t${f.tbr}\t${f.vcodec}\t${f.acodec}\t${f.note || ''}`
           );
-          copyText(['ID\t分辨率\t封装\t码率\t视频\t音频\t备注', ...lines].join('\n'));
+          copyText([tr('info.formatsHeader'), ...lines].join('\n'));
         }
 
         async function loadFiles(subdir = '') {
@@ -12906,7 +12906,7 @@
             if (last && last.b === b) last.ts.push(t);
             else out.push({ ts: [t], b });
           });
-          const name = t => (t === 'best' ? '最佳' : t);
+          const name = t => (t === 'best' ? tr('info.tierBest') : t);
           return out.map(g => g.ts.map(name).join('/') + ' ≈' + formatSize(g.b)).join(' · ');
         }
         // 解析页的编码筛选：同一清晰度有多种编码时（4K 常见 AV1＋VP9）把它们摊开成可点的芯片；
@@ -12918,7 +12918,7 @@
             if (!p || !(p.height > 0) || !p.codec_family) return;
             if (!seen.some(s => s.value === p.prefer_codec)) seen.push({ value: p.prefer_codec, label: p.codec_family });
           });
-          return seen.length > 1 ? [{ value: '', label: '全部编码' }].concat(seen) : [];
+          return seen.length > 1 ? [{ value: '', label: tr('info.allCodecs') }].concat(seen) : [];
         });
         const shownQualityPresets = computed(() => {
           const ps = (mediaInfo.value && mediaInfo.value.quality_presets) || [];
@@ -12936,14 +12936,14 @@
           const aq = opts.value.audio_quality || 'best';
           const bits = [];
           const vid = tierSizeGroup(videoQualities, t => videoTierBytes(info, t, aq));
-          if (vid) bits.push('视频＋音频：' + vid);
+          if (vid) bits.push(tr('info.tierVideoAudio') + vid);
           const aud = tierSizeGroup(audioQualities, t => {
             const r = tierRows(info, 'audio').find(x => x.tier === t);
             return Number(r && r.bytes) || 0;
           });
-          if (aud) bits.push('只下音频：' + aud);
+          if (aud) bits.push(tr('info.tierAudioOnly') + aud);
           if (!bits.length) return '';
-          return '各档预估体积（音频按「音频质量」当前档位 ' + aq + ' 计）：' + bits.join('；') + '；实际大小以下到的流为准';
+          return tr('info.tierSizeHead', { aq: aq }) + bits.join(tr('info.tierSizeSep')) + tr('info.tierSizeTail');
         });
         // 播放量 / 粉丝数：折成中文习惯的万、亿；平台已格式化的字符串原样返回
         function formatCount(v) {

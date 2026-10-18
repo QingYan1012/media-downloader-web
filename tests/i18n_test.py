@@ -434,7 +434,7 @@ def strip_comments(src: str) -> str:
     return re.sub(r"<!--.*?-->", "", src, flags=re.S)
 
 
-PAGES_DONE = ["home", "queue", "bt", "files", "subs", "music", "settings", "tg", "sniff", "live"]   # ← 每翻完一页把页名加进来；登记了却没翻干净会被 I3 判红
+PAGES_DONE = ["home", "queue", "bt", "files", "subs", "music", "settings", "tg", "sniff", "live", "info"]   # ← 每翻完一页把页名加进来；登记了却没翻干净会被 I3 判红
 ck("I2 PAGES_DONE 都是真有的页", all(page_block(k) for k in PAGES_DONE),
    str([k for k in PAGES_DONE if not page_block(k)]))
 for _pg in PAGES_DONE:
@@ -554,6 +554,15 @@ PAGE_HANDLERS = {
              "liveDefaultMinutesText", "addLiveMonitor", "removeLiveMonitor", "pauseLiveMonitor",
              "resumeLiveMonitor", "scanLiveMonitors", "loadLiveMonitors", "openLiveMonitorCfg",
              "saveLiveMonitorCfg", "liveMonitorCfgText"],
+    # 解析页（info）：模板里那些清晰度芯片、编码芯片、区间勾选弹层都是这一页自己的话。
+    # downloadSpecificFormat / downloadQualityPreset / pasteAnalyzeUrl 归 home 那一批（它们最早是给
+    # 下载页那一串动作写的，同一函数登记两遍只会把同一句中文数两次）；analyze / doAnalyze 同理。
+    # copyText 仍然没登记（七页共用，「已复制 / 复制失败」跟共用底座那一批收）。
+    # tierSizeText / infoCodecOptions 是 computed 但它是这一页上屏的那句话，照 live 页的先例登记；
+    # tierSizeGroup 是它唯一的调用者，「最佳」那一档的名字就在里面，漏登记等于这一句没人看。
+    "info": ["analyzeFromInfoPage", "downloadFromInfo", "downloadAllEntries",
+             "downloadSelectedEntries", "downloadEntry", "entryAt", "selectEntryRange",
+             "clearEntrySel", "copyFormats", "tierSizeGroup", "tierSizeText", "infoCodecOptions"],
 }
 # 允许留中文的处理器：这些行比的是后端发来的数据（预设名、占位标题），翻成英文这行判断就失效。
 # 「允许留下」不等于「不用管」——残留的行数和那几句都钉死，改了名字或悄悄多出一行都判红
@@ -602,7 +611,7 @@ ck("I5b 每个允许留中文的处理器都登记在某一页里（漏登记就
 # 这两种写法都要认得到，否则「翻完了」会表现为埋点行凭空少几条。
 MAIDIAN = re.compile(r"""uiName:|logAction\(|logSort\(|ccCall\(""")
 MAIDIAN_EXPECT = {"home": 0, "queue": 0, "bt": 7, "files": 4, "subs": 0, "music": 5, "settings": 17, "tg": 1,
-                  "sniff": 0, "live": 0}
+                  "sniff": 0, "live": 0, "info": 0}
 # 来源类型那一列的名字与提示：键不是写在 tr(' …') 里而是存在表里（labelKey / hintKey），
 # 上面那遍字面扫抓不到它们，所以单独比一遍 —— 少哪一份英文界面就印键名
 kind_meta = block(HTML, "const SUB_KIND_META = {", "};")
