@@ -4533,37 +4533,35 @@
           <div v-if="page === 'library'">
             <div class="card">
               <div class="row row--spread row--tight">
-                <div class="section-title" style="margin:0">本地资源库</div>
+                <div class="section-title" style="margin:0">{{ tr('library.title') }}</div>
                 <div class="row row--tight">
                   <el-select v-model="libraryFilter" style="width:120px" size="small">
-                    <el-option label="全部" value="all"></el-option>
-                    <el-option label="视频" value="video"></el-option>
-                    <el-option label="音频" value="audio"></el-option>
+                    <el-option :label="tr('library.filterAll')" value="all"></el-option>
+                    <el-option :label="tr('library.filterVideo')" value="video"></el-option>
+                    <el-option :label="tr('library.filterAudio')" value="audio"></el-option>
                   </el-select>
-                  <el-button size="small" :loading="libraryLoading" @click="loadLibrary(true)">重新扫描</el-button>
+                  <el-button size="small" :loading="libraryLoading" @click="loadLibrary(true)">{{ tr('library.rescan') }}</el-button>
                   <el-button size="small" plain :loading="libQaLoading"
-                             title="逐个读成品自己带的标签，对照音乐页「并行策略」里的「音质要求」报实际档位；只读不改文件，读过的成品不会重复解析"
-                             @click="checkLibraryQuality()">核对音质</el-button>
+                             :title="tr('library.qaTip')"
+                             @click="checkLibraryQuality()">{{ tr('library.qaBtn') }}</el-button>
                 </div>
               </div>
-              <p class="hint hint--block">扫描下载目录：音频优先读文件自带标签（标题 / 歌手 / 专辑 / 位深 / 采样率），标签缺的再用 ffprobe 探测；读过的文件在内容未变动时不重复解析</p>
-              <p v-if="libQaDone" class="hint hint--block">音质核对：已逐份读过 {{ libQaDone }} 份成品的标签（本批要求 {{ libQaSpec || '未设' }}）——
-                {{ libQaLow }} 份确认低于要求，{{ libQaUnknown }} 份有一维读不出所以只算没核到<span v-if="libQaMissing">，{{ libQaMissing }} 份已不在原位</span><span v-if="libQaRefLow">，{{ libQaRefLow }} 份低于无损参照</span>。
-                参照那一步只比元数据，不取第三方音频。</p>
-              <div v-if="!libraryFiltered.length" class="empty-tip">暂无媒体，请点击重新扫描，或先下载文件</div>
+              <p class="hint hint--block">{{ tr('library.scanHint') }}</p>
+              <p v-if="libQaDone" class="hint hint--block">{{ tr('library.qaLead', { n: libQaDone, spec: libQaSpec || tr('library.qaUnset') }) }} {{ tr('library.qaMid', { low: libQaLow, unknown: libQaUnknown }) }}<span v-if="libQaMissing">{{ tr('library.qaMissingPart', { n: libQaMissing }) }}</span><span v-if="libQaRefLow">{{ tr('library.qaRefPart', { n: libQaRefLow }) }}</span>{{ tr('library.qaTail') }}</p>
+              <div v-if="!libraryFiltered.length" class="empty-tip">{{ tr('library.empty') }}</div>
               <div v-else class="table-scroll" style="margin-top:10px">
               <table class="fmt-table">
                 <thead>
                   <tr>
-                    <th class="th-sort" :class="{ 'th-on': libSort.key === 'name' }" @click="toggleSort(libSort, 'name', LIB_DIR)">文件名<span class="sort-ico">{{ sortIcon(libSort, 'name') }}</span></th>
-                    <th class="th-sort" :class="{ 'th-on': libSort.key === 'kind' }" @click="toggleSort(libSort, 'kind', LIB_DIR)">类型<span class="sort-ico">{{ sortIcon(libSort, 'kind') }}</span></th>
-                    <th class="th-sort" :class="{ 'th-on': libSort.key === 'res' }" @click="toggleSort(libSort, 'res', LIB_DIR)">分辨率<span class="sort-ico">{{ sortIcon(libSort, 'res') }}</span></th>
-                    <th class="th-sort" :class="{ 'th-on': libSort.key === 'audio' }" @click="toggleSort(libSort, 'audio', LIB_DIR)">音质<span class="sort-ico">{{ sortIcon(libSort, 'audio') }}</span></th>
-                    <th class="th-sort" :class="{ 'th-on': libSort.key === 'duration' }" @click="toggleSort(libSort, 'duration', LIB_DIR)">时长<span class="sort-ico">{{ sortIcon(libSort, 'duration') }}</span></th>
-                    <th class="th-sort" :class="{ 'th-on': libSort.key === 'size' }" @click="toggleSort(libSort, 'size', LIB_DIR)">大小<span class="sort-ico">{{ sortIcon(libSort, 'size') }}</span></th>
-                    <th class="th-sort" :class="{ 'th-on': libSort.key === 'mtime' }" @click="toggleSort(libSort, 'mtime', LIB_DIR)">修改时间<span class="sort-ico">{{ sortIcon(libSort, 'mtime') }}</span></th>
-                    <th style="width:240px">转码</th>
-                    <th style="width:150px">操作</th>
+                    <th class="th-sort" :class="{ 'th-on': libSort.key === 'name' }" @click="toggleSort(libSort, 'name', LIB_DIR)">{{ tr('library.colFile') }}<span class="sort-ico">{{ sortIcon(libSort, 'name') }}</span></th>
+                    <th class="th-sort" :class="{ 'th-on': libSort.key === 'kind' }" @click="toggleSort(libSort, 'kind', LIB_DIR)">{{ tr('common.colType') }}<span class="sort-ico">{{ sortIcon(libSort, 'kind') }}</span></th>
+                    <th class="th-sort" :class="{ 'th-on': libSort.key === 'res' }" @click="toggleSort(libSort, 'res', LIB_DIR)">{{ tr('info.colRes') }}<span class="sort-ico">{{ sortIcon(libSort, 'res') }}</span></th>
+                    <th class="th-sort" :class="{ 'th-on': libSort.key === 'audio' }" @click="toggleSort(libSort, 'audio', LIB_DIR)">{{ tr('library.colAudio') }}<span class="sort-ico">{{ sortIcon(libSort, 'audio') }}</span></th>
+                    <th class="th-sort" :class="{ 'th-on': libSort.key === 'duration' }" @click="toggleSort(libSort, 'duration', LIB_DIR)">{{ tr('common.colDuration') }}<span class="sort-ico">{{ sortIcon(libSort, 'duration') }}</span></th>
+                    <th class="th-sort" :class="{ 'th-on': libSort.key === 'size' }" @click="toggleSort(libSort, 'size', LIB_DIR)">{{ tr('common.colSize') }}<span class="sort-ico">{{ sortIcon(libSort, 'size') }}</span></th>
+                    <th class="th-sort" :class="{ 'th-on': libSort.key === 'mtime' }" @click="toggleSort(libSort, 'mtime', LIB_DIR)">{{ tr('common.colMtime') }}<span class="sort-ico">{{ sortIcon(libSort, 'mtime') }}</span></th>
+                    <th style="width:240px">{{ tr('library.colTranscode') }}</th>
+                    <th style="width:150px">{{ tr('common.colOps') }}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -4583,11 +4581,11 @@
                         <select v-model="it._preset">
                           <option v-for="p in transcodePresets" :key="p.id" :value="p.id">{{ p.label }}</option>
                         </select>
-                        <el-button size="small" plain :loading="it._tc" @click="runTranscode(it)">执行</el-button>
+                        <el-button size="small" plain :loading="it._tc" @click="runTranscode(it)">{{ tr('library.run') }}</el-button>
                       </div>
                     </td>
                     <td style="white-space:nowrap">
-                      <el-button size="small" plain @click="openLibFolder(it)">打开目录</el-button>
+                      <el-button size="small" plain @click="openLibFolder(it)">{{ tr('files.openDir') }}</el-button>
                     </td>
                   </tr>
                 </tbody>
@@ -6907,20 +6905,21 @@
         const libQa = ref({});
         const libQaLoading = ref(false);
         const libQaSpec = ref('');
+        // 这一张表存键名不存字面：语言是运行时切的，模块初始化时把中文焊死就翻不动
         const QA_TAGS = {
-          low: { type: 'danger', text: '低于要求' },
-          ok: { type: 'success', text: '符合' },
-          unknown: { type: 'warning', text: '没核到' },
-          missing: { type: 'danger', text: '文件不在' },
-          none: { type: 'info', text: '未设要求' },
+          low: { type: 'danger', textKey: 'library.qaLowTag' },
+          ok: { type: 'success', textKey: 'library.qaOkTag' },
+          unknown: { type: 'warning', textKey: 'library.qaUnknownTag' },
+          missing: { type: 'danger', textKey: 'library.qaMissingTag' },
+          none: { type: 'info', textKey: 'library.qaNoneTag' },
         };
         function libQaTag(it) {
           const r = libQa.value[it.path];
           const base = r && QA_TAGS[r.state];
           if (!base) return null;
-          let tip = r.note || (r.state === 'ok' ? `已确认不低于「${libQaSpec.value || '本批要求'}」` : '');
-          if (r.ref_note) tip += `｜与无损参照：${r.ref_note}`;
-          return { type: base.type, text: base.text, tip };
+          let tip = r.note || (r.state === 'ok' ? tr('library.qaTipOk', { spec: libQaSpec.value || tr('library.qaBatchSpec') }) : '');
+          if (r.ref_note) tip += tr('library.qaRefJoin', { note: r.ref_note });
+          return { type: base.type, text: tr(base.textKey), tip };
         }
         const libQaAll = computed(() => Object.values(libQa.value));
         const libQaDone = computed(() => libQaAll.value.length);
@@ -6931,7 +6930,7 @@
         const libQaRefLow = computed(() => libQaAll.value.filter(r => r.ref_state === 'below').length);
         async function checkLibraryQuality() {
           const list = libraryFiltered.value.filter(x => x.kind === 'audio');
-          if (!list.length) { ElementPlus.ElMessage.warning('当前列表里没有音频成品可核对'); return; }
+          if (!list.length) { ElementPlus.ElMessage.warning(tr('library.qaNoAudio')); return; }
           libQaLoading.value = true;
           try {
             const r = await api('/api/music/check_quality', {
@@ -6943,11 +6942,11 @@
             libQa.value = map;
             libQaSpec.value = qualitySpecLabel(r.spec);
             const low = (r.below_spec || 0) + (r.below_reference || 0);
-            if (low) ElementPlus.ElMessage.warning(`已核对 ${r.count} 份：${r.below_spec || 0} 份低于本批音质要求`
-                                                   + (r.below_reference ? `，${r.below_reference} 份低于无损参照` : ''));
-            else ElementPlus.ElMessage.success(`已核对 ${r.count} 份，没有低于本批音质要求（${libQaSpec.value || '未设'}）的成品`);
+            if (low) ElementPlus.ElMessage.warning(tr('library.qaWarn', { n: r.count, low: r.below_spec || 0 })
+                                                   + (r.below_reference ? tr('library.qaRefPart', { n: r.below_reference }) : ''));
+            else ElementPlus.ElMessage.success(tr('library.qaDoneToast', { n: r.count, spec: libQaSpec.value || tr('library.qaUnset') }));
           } catch (e) {
-            ElementPlus.ElMessage.error(e.message || '音质核对失败');
+            ElementPlus.ElMessage.error(e.message || tr('library.qaFail'));
           } finally {
             libQaLoading.value = false;
           }
@@ -9021,7 +9020,7 @@
               : await api('/api/library');
             libraryItems.value = (r.items || []).map(x => ({ ...x, _preset: 'mp4', _tc: false }));
           } catch (e) {
-            ElementPlus.ElMessage.error(e.message || '扫描失败');
+            ElementPlus.ElMessage.error(e.message || tr('library.scanFail'));
           } finally {
             libraryLoading.value = false;
           }
@@ -9033,17 +9032,17 @@
           } catch (e) {}
         }
         async function runTranscode(it) {
-          if (!it._preset) { ElementPlus.ElMessage.warning('请选择预设'); return; }
+          if (!it._preset) { ElementPlus.ElMessage.warning(tr('library.needPreset')); return; }
           it._tc = true;
           try {
             const r = await api('/api/transcode', {
               method: 'POST',
               body: JSON.stringify({ path: it.path, preset: it._preset, delete_source: false }),
             });
-            ElementPlus.ElMessage.success('转码完成: ' + (r.name || ''));
+            ElementPlus.ElMessage.success(tr('library.tcDone', { name: r.name || '' }));
             await loadLibrary(true);
           } catch (e) {
-            ElementPlus.ElMessage.error(e.message || '转码失败');
+            ElementPlus.ElMessage.error(e.message || tr('library.tcFail'));
           } finally {
             it._tc = false;
           }
@@ -9052,7 +9051,7 @@
           try {
             await api('/api/open-folder', { method: 'POST', body: JSON.stringify({ path: it.path }) });
           } catch (e) {
-            ElementPlus.ElMessage.error(e.message || '打开失败');
+            ElementPlus.ElMessage.error(e.message || tr('library.openFail'));
           }
         }
         async function endLiveTask(t) {

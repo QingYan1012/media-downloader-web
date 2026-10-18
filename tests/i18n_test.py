@@ -434,7 +434,7 @@ def strip_comments(src: str) -> str:
     return re.sub(r"<!--.*?-->", "", src, flags=re.S)
 
 
-PAGES_DONE = ["home", "queue", "bt", "files", "subs", "music", "settings", "tg", "sniff", "live", "info", "search", "favs"]   # ← 每翻完一页把页名加进来；登记了却没翻干净会被 I3 判红
+PAGES_DONE = ["home", "queue", "bt", "files", "subs", "music", "settings", "tg", "sniff", "live", "info", "search", "favs", "library"]   # ← 每翻完一页把页名加进来；登记了却没翻干净会被 I3 判红
 ck("I2 PAGES_DONE 都是真有的页", all(page_block(k) for k in PAGES_DONE),
    str([k for k in PAGES_DONE if not page_block(k)]))
 for _pg in PAGES_DONE:
@@ -572,6 +572,12 @@ PAGE_HANDLERS = {
     # onFavSelChange 没登记：它是一行的函数，js_fn() 会把后面整个函数体一起吞进来（同 subs 页那两个 one-liner）。
     "favs": ["applyFavList", "loadFavTab", "loadFavFolderItems", "loadYtPlaylist", "onFavSortChange",
              "downloadFavSelected", "downloadFavOne", "subscribeFavSelected", "subscribeFavOne"],
+    # 资源库页：九列表头 + 音质核对那一段汇总 + 这一页弹出来的句子。
+    # libQaTag 也登记：QA_TAGS 那张表从「存字面」改成「存键名」，上屏的那句话只在取值处才拼得出来。
+    # toggleSort / sortIcon / applySort / libAudioText / formatSize / formatDuration 没登记：
+    # 前四个是全工程共用的排序与格式化底座（本体没有话术，埋点那句在 logSort 里、归 ACTION_NAMES 那一批），
+    # 后两个早已登记在 settings 那一批里 —— 同一函数数两遍只会把同一句中文报在错的页头上。
+    "library": ["loadLibrary", "checkLibraryQuality", "libQaTag", "runTranscode", "openLibFolder"],
 }
 # 允许留中文的处理器：这些行比的是后端发来的数据（预设名、占位标题），翻成英文这行判断就失效。
 # 「允许留下」不等于「不用管」——残留的行数和那几句都钉死，改了名字或悄悄多出一行都判红
@@ -622,7 +628,10 @@ MAIDIAN = re.compile(r"""uiName:|logAction\(|logSort\(|ccCall\(""")
 MAIDIAN_EXPECT = {"home": 0, "queue": 0, "bt": 7, "files": 4, "subs": 0, "music": 5, "settings": 17, "tg": 1,
                   "sniff": 0, "live": 0, "info": 0, "search": 0,
                   # applyFavList 那句 logAction（ tab 名来自 FAV_TAB_NAMES）+ onFavSortChange 那句 logSort
-                  "favs": 2}
+                  "favs": 2,
+                  # 这一页五个处理器里没有埋点行：loadLibrary / runTranscode 那两次 api 都没带 uiName，
+                  # 点表头的留痕在共用的 logSort 里，跟 ACTION_NAMES 那一批一起收
+                  "library": 0}
 # 来源类型那一列的名字与提示：键不是写在 tr(' …') 里而是存在表里（labelKey / hintKey），
 # 上面那遍字面扫抓不到它们，所以单独比一遍 —— 少哪一份英文界面就印键名
 kind_meta = block(HTML, "const SUB_KIND_META = {", "};")
