@@ -159,7 +159,12 @@ ck("B11 发出去之前仍过一遍敏感词（#53 之后过的是 zh、en 与 k
 # 这三条是这次留下的界线：由外部触发的一次性动作，不是「翻页面」
 ck("B12 点系统通知跳过来仍记一行（句子搬进词表后按 ui.goto_* 两个键钉，磁力与队列各一条）",
    "logAction(isBt ? 'ui.goto_bt' : 'ui.goto_queue');" in HTML)
-ck("B13 点更新弹窗跳设置仍记一行", "logAction('弹窗跳转：设置 → 组件与依赖');" in HTML)
+ck("B13 点更新弹窗跳设置仍记一行（跳转句搬进 gotoCard 的第三个参数，落盘那句一字没改）",
+   "gotoCard('settings', 'comp-card', '弹窗跳转：设置 → 组件与依赖')" in HTML
+   and re.search(r"function gotoCard\([^)]*\)\s*\{\s*logAction\(", HTML) is not None)
+ck("B13b 通知条的两个跳转各记一行，句子在词表里（不是硬编码中文）",
+   "gotoCard('settings', 'comp-card', 'ui.goto_comp')" in HTML
+   and "gotoCard('settings', 'outbox-card', 'ui.goto_outbox')" in HTML)
 ck("B14 主题与明暗仍记（它们真的写进配置）",
    "logAction('切换主题为「'" in HTML and "logAction(settings.value.dark_mode" in HTML)
 

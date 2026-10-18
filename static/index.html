@@ -9,6 +9,9 @@
   <style>
     :root {
       --sidebar-w: 212px;
+      /* .content 的上下留白：通知条要靠 sticky 吸在可视顶上，就得从这个数反推偏移量，
+         两处共用一个变量，别让它俩各自写死一个 22 然后哪天错开 */
+      --content-pad-y: 22px;
       --bg: var(--g2);
       --card: var(--g0);
       --ink: var(--g9);
@@ -377,7 +380,7 @@
       flex: 1;
       overflow-x: hidden;
       overflow-y: auto;
-      padding: 22px 24px;
+      padding: var(--content-pad-y) 24px;
     }
     /* 底部常驻播放条：跟着 .main 而不是某一页，切页时 <audio> 不会被销毁 */
     .playbar {
@@ -726,6 +729,75 @@
       color: var(--muted);
       flex: none;
     }
+    /* ---- 顶部常驻通知条 ----
+       贴在内容区顶上、跟着滚（sticky），因为这类提醒讲的是「此刻在场」；
+       底色与字色沿用 .warn-box 那套令牌，暗色由令牌自己翻转，不另写一套。
+       行内按钮的悬停底用 currentColor 掺出来：warn 底在亮色是浅橙、暗色是深棕，
+       写死 rgba(255,255,255,.5) 会在暗色上糊出一块白斑。 */
+    .banner-stack {
+      position: sticky;
+      /* 浏览器把 sticky 的贴合线算在内容盒上，不是可视边：吸顶时按 0 会正好卡在
+         padding-top 下面，滚动的那 22px 从条上面穿过去，看着像被切了一刀 */
+      top: calc(var(--content-pad-y) * -1);
+      z-index: 6;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+    .banner {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 8px 9px 12px;
+      border: 1px solid var(--warn-line);
+      border-left: 3px solid var(--warn);
+      border-radius: var(--r-sm);
+      background: var(--warn-bg);
+      color: var(--warn);
+      font-size: var(--fs-ui-xs);
+      line-height: 1.5;
+      box-shadow: var(--shadow-1);
+    }
+    .banner--info {
+      border-color: var(--line);
+      border-left-color: var(--accent);
+      background: var(--card);
+      color: var(--ink);
+    }
+    .banner__ico { width: 15px; height: 15px; flex: none; }
+    .banner__text { flex: 1; min-width: 0; }
+    .banner__act {
+      flex: none;
+      height: 24px;
+      padding: 0 9px;
+      border: 1px solid currentColor;
+      border-radius: 7px;
+      background: transparent;
+      color: inherit;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .banner__act:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
+    .banner__act:active { transform: translateY(1px); }
+    .banner__x {
+      flex: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 22px;
+      height: 22px;
+      padding: 0;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: inherit;
+      opacity: .6;
+      cursor: pointer;
+    }
+    .banner__x:hover { opacity: 1; background: color-mix(in srgb, currentColor 12%, transparent); }
+    .banner__x svg { width: 13px; height: 13px; }
     /* 防止下拉被裁切 */
     .el-select-dropdown,
     .el-popper {
@@ -1960,6 +2032,18 @@
           </div>
         </div>
         <div class="content">
+          <!-- 顶部常驻通知条：只挂「此刻在场、但要进某一页才看得见」的事，一条一个事由，能就地办就就地办 -->
+          <div v-if="banners.length" class="banner-stack">
+            <div v-for="b in banners" :key="b.id" class="banner" :class="'banner--' + b.tone">
+              <svg class="banner__ico" aria-hidden="true"><use :href="b.icon"></use></svg>
+              <span class="banner__text">{{ b.text }}</span>
+              <button v-for="(a, ai) in b.actions" :key="ai" type="button" class="banner__act" @click="a.run()">{{ a.label }}</button>
+              <button type="button" class="banner__x" :title="tr('banner.dismiss')" :aria-label="tr('banner.dismiss')"
+                      @click="dismissBanner(b.id)">
+                <svg><use href="#i-x"></use></svg>
+              </button>
+            </div>
+          </div>
 
           <!-- 下载页 -->
           <div v-if="page === 'home'">
@@ -5143,7 +5227,7 @@
                   </div>
                 </div>
                   
-                <div class="card">
+                <div class="card" id="outbox-card">
                   <div class="section-title">{{ tr('notify.outboxTitle') }}</div>
                   <div class="hint" style="margin-bottom:10px">
                     {{ tr('notify.outboxLead') }} <code>notify_outbox.json</code> {{ tr('notify.outboxBy') }}
@@ -7708,12 +7792,10 @@
         }
 
         /* ---- 组件上游版本自动检测：查询在后端后台线程跑，界面读状态、缺一次就补发 ---- */
-        const COMP_POPUP_KEY = 'mdCompUpdatePopupShown';
         const compUpdates = ref([]);   // 确有可更新版本的组件；未安装的和查不到上游版的都不算
         const compCheckAt = ref('');
         const compCheckError = ref('');
         const compCheckBusy = ref(false);
-        let compPopupShown = false;
 
         function navDot(k) {
           if (k !== 'settings' || !compUpdates.value.length) return '';
@@ -7726,11 +7808,16 @@
           if (!compCheckAt.value) return tr('settings.compNotYet');
           const at = compCheckAt.value.slice(5);  // 去掉年份，界面里只留「月-日 时:分:秒」
           if (!compUpdates.value.length) return tr('settings.compAllLatest', { t: at });
-          const names = compUpdates.value.map((u) => u.label.split('（')[0]);
-          const shown = names.slice(0, 3).join(tr('settings.dunSep'))
-            + (names.length > 3 ? ' ' + tr('settings.compEtcN', { n: names.length }) : '');
-          return tr('settings.compSomeUpd', { t: at, list: shown });
+          return tr('settings.compSomeUpd', { t: at, list: compUpdateList() });
         });
+        // 那串名单设置页那行与顶部通知条共用一份拼法（超过三个收成「等 n 项」）
+        function joinCapped(names) {
+          return names.slice(0, 3).join(tr('settings.dunSep'))
+            + (names.length > 3 ? ' ' + tr('settings.compEtcN', { n: names.length }) : '');
+        }
+        function compUpdateList() {
+          return joinCapped(compUpdates.value.map((u) => u.label.split('（')[0]));
+        }
 
         // 自动检测已经拿到最新版，直接补进表格的「最新」列，不用再点一次「查询上游最新版本」
         function mergeCompLatest() {
@@ -7790,20 +7877,12 @@
             return;
           }
           compCheckBusy.value = false;
-          if (d && (fromUser || d.auto_check)) maybePopupCompUpdates(fromUser);
+          // 自动检测改由顶部常驻通知条提醒（banners），弹窗只留给手动「立即检测」
+          if (d && fromUser) maybePopupCompUpdates();
         }
 
-        function maybePopupCompUpdates(fromUser) {
+        function maybePopupCompUpdates() {
           if (!compUpdates.value.length) return;
-          if (!fromUser) {
-            // 自动检测每次浏览器会话只弹一次，之后靠侧栏「设置」上的橙点提醒，不再打扰
-            if (compPopupShown) return;
-            compPopupShown = true;
-            try {
-              if (sessionStorage.getItem(COMP_POPUP_KEY)) return;
-              sessionStorage.setItem(COMP_POPUP_KEY, '1');
-            } catch (_) {}
-          }
           const rows = compUpdates.value.map((u) => `<li><b>${escHtml(u.label)}</b>`
             + `${tr('settings.compAllRowArrow', { from: escHtml(u.current), to: escHtml(u.latest) })}</li>`);
           ElementPlus.ElMessageBox.confirm(
@@ -7813,15 +7892,8 @@
             + `${tr('settings.compPopupBody2')}</div>`,
             tr('settings.compPopupTitle', { n: compUpdates.value.length }),
             { dangerouslyUseHTMLString: true, confirmButtonText: tr('settings.compPopupGoBtn'), cancelButtonText: tr('queue.btnLater'), type: 'warning' }
-          ).then(() => {
-            logAction('弹窗跳转：设置 → 组件与依赖');
-            page.value = 'settings';
-            // 切页时 .content 正在放 translateY 入场动画，这段时间里 smooth 滚动会被浏览器静默丢弃，只用瞬时滚动
-            setTimeout(() => {
-              const el = document.getElementById('comp-card');
-              if (el) el.scrollIntoView({ block: 'start' });
-            }, 120);
-          }).catch(() => {});
+          ).then(() => gotoCard('settings', 'comp-card', '弹窗跳转：设置 → 组件与依赖')
+          ).catch(() => {});
         }
 
         async function bootCompCheck() {
@@ -7835,7 +7907,6 @@
               applyCompCheck(d);
             }
             if (d.status === 'running') d = await waitCompCheck();
-            if (d && d.auto_check) maybePopupCompUpdates(false);
           } catch (_) {}
         }
 
@@ -13407,13 +13478,17 @@ const CFG_KEYS = {
           outboxBusy.value = true;
           try {
             const r = await api('/api/notify/outbox/retry', { method: 'POST', noLog: true });
-            if (r && r.ok !== false) applyOutbox(r, tr('settings.outboxRequeued', { n: r.queued || 0 }));
-            else outboxText.value = (r && r.message) || tr('settings.outboxNoQueue');
+            if (r && r.ok !== false) {
+              applyOutbox(r, tr('settings.outboxRequeued', { n: r.queued || 0 }));
+              return true;
+            }
+            outboxText.value = (r && r.message) || tr('settings.outboxNoQueue');
           } catch (e) {
             ElementPlus.ElMessage.error(e.message || e);
           } finally {
             outboxBusy.value = false;
           }
+          return false;
         }
         function clearOutbox() {
           ElementPlus.ElMessageBox.confirm(tr('settings.outboxClearBody'), tr('settings.outboxClearTitle'),
@@ -13430,6 +13505,89 @@ const CFG_KEYS = {
         }
         watch(page, p => { if (p === 'settings' && !(outbox.value.records || []).length) loadOutbox(); });
         watch(page, p => { if (p === 'settings') loadAuthStatus(true); });
+
+        /* ---- 顶部常驻通知条：只挂「此刻在场、但要进某一页才看得见」的事 ----
+           关闭记在 sessionStorage，键是事由（comp / outbox / throttle）本身而不是计数：
+           同一次浏览器会话里一件事只关一次，重开页面还会再提醒 —— 和它替掉的那个自动弹窗同一个规矩。 */
+        const BANNER_DISMISS_KEY = 'md_banner_dismiss';
+        function readBannerOff() {
+          try {
+            const a = JSON.parse(sessionStorage.getItem(BANNER_DISMISS_KEY) || '[]');
+            return Array.isArray(a) ? a : [];
+          } catch (_) { return []; }
+        }
+        const bannerOff = ref(readBannerOff());
+        function dismissBanner(id) {
+          if (bannerOff.value.indexOf(id) < 0) bannerOff.value = bannerOff.value.concat(id);
+          try { sessionStorage.setItem(BANNER_DISMISS_KEY, JSON.stringify(bannerOff.value)); } catch (_) {}
+        }
+
+        // 目标页是 v-if：切过去那一拍卡片还不存在，定一个 120 ms 的闹钟纯是赌（实测赌输过：
+        // 停在原地不动，也不报错）。改成逐帧问到得了为止，最多约一秒半。
+        // 藏在折叠组里的卡片高度是 0，等不到 —— 所以调用方要先替它把组展开。
+        // 只用瞬时滚动：入场动画那 300 ms 里 smooth 会被浏览器静默丢弃。
+        // 另外「滚到顶」不等于「滚对了」：页面刚挂上时目标卡片上面那些还是空壳，数据陆续填进来
+        // 会把它往下挤，实测一次就差了 1358 px（停在原地、不报错）。所以落点每变一次就重新对齐一次，
+        // 连着几帧不动才收手。顶部通知条是 sticky 压在内容区上沿的，落点还要让出它的高度。
+        function gotoCard(p, anchorId, logKey) {
+          logAction(logKey);
+          page.value = p;
+          let tries = 0, last = null, still = 0;
+          const step = () => {
+            const sc = document.querySelector('.content');
+            const el = document.getElementById(anchorId);
+            const box = el && el.getBoundingClientRect();
+            if (sc && box && box.height > 0) {
+              const stack = document.querySelector('.banner-stack');
+              const pad = (stack ? stack.getBoundingClientRect().height : 0) + 10;
+              const off = Math.round(box.top - sc.getBoundingClientRect().top);
+              if (Math.abs(off - pad) > 1) sc.scrollTop += off - pad;
+              if (off === last) { if (++still >= 4) return; } else { still = 0; last = off; }
+            }
+            if (++tries < 90) requestAnimationFrame(step);
+          };
+          requestAnimationFrame(step);
+        }
+
+        const banners = computed(() => {
+          const out = [];
+          if (compUpdates.value.length) out.push({
+            id: 'comp', tone: 'info', icon: '#i-refresh',
+            text: tr('banner.comp', { n: compUpdates.value.length, list: compUpdateList() }),
+            actions: [{ label: tr('banner.goComp'), run: () => gotoCard('settings', 'comp-card', 'ui.goto_comp') }],
+          });
+          const pending = (outbox.value.counts || {}).pending || 0;
+          if (pending) out.push({
+            id: 'outbox', tone: 'warn', icon: '#i-send',
+            text: tr('banner.outbox', { n: pending }),
+            actions: [
+              { label: tr('banner.retryNow'), run: retryFromBanner },
+              { label: tr('banner.goOutbox'), run: () => { foldRare.value = true; gotoCard('settings', 'outbox-card', 'ui.goto_outbox'); } },
+            ],
+          });
+          const th = status.value.throttle || [];
+          if (th.length) out.push({
+            id: 'throttle', tone: 'warn', icon: '#i-pause',
+            text: tr('banner.throttle', { hosts: joinCapped(th.map((t) => t.host)) }),
+            actions: [{ label: tr('banner.resumeAll'), run: () => resetThrottle() }],
+          });
+          return out.filter((b) => bannerOff.value.indexOf(b.id) < 0);
+        });
+
+        // 在通知条上点「立即重发」时人不在设置页，那行提示看不到，所以把同一句话再浮一次
+        async function retryFromBanner() {
+          logAction('ui.retry_outbox');
+          if (await retryOutbox()) ElementPlus.ElMessage.success(outboxText.value);
+        }
+
+        // 后台线程按递增间隔自己重试，欠发数会在页面开着时变小；降速冷却也会自己过。
+        // 两条都跟着兜底轮询 quietly 再读一次，别让已经过去了的事还挂在顶上（不碰 outboxBusy，免得设置页按钮凭空转圈）
+        async function refreshOutboxQuietly() {
+          try {
+            const r = await api('/api/notify/outbox', { noLog: true });
+            if (r && r.ok !== false) applyOutbox(r);
+          } catch (_) {}
+        }
 
         const mirrorOpts = ref({ github: [], pypi: [] });
         const mirrorProbing = ref('');
@@ -13623,7 +13781,8 @@ const CFG_KEYS = {
           await loadConfig();
           await loadStatus();
           ensureMusicStatus().catch(() => {});   // 一进页面就知道 musicdl 是否内置，决定「安装」按钮显不显示
-          bootCompCheck();                        // 读后端的上游版本检测结果：有新版弹一次，侧栏「设置」标橙点
+          loadOutbox();                          // 通知条在别的页面上也要能说「还欠着几条」：不预取一次就一直是空的
+          bootCompCheck();                        // 读后端的上游版本检测结果：有新版走顶部通知条，侧栏「设置」标橙点
           try {
             if ('Notification' in window && Notification.permission === 'default') {
               Notification.requestPermission();
@@ -13639,6 +13798,10 @@ const CFG_KEYS = {
               if (page.value === 'queue' || page.value === 'live' || status.value.running > 0) loadTasks();
               if (page.value === 'queue' && (status.value.running > 0 || (status.value.throttle || []).length)) loadStatus();
               if (page.value === 'log') loadLogs();
+              // 通知条不管人在哪一页都得说真话：欠发数会被后台线程自己补掉、降速冷却会自己过，
+              // 所以顶上还挂着这两条时，跟着兜底那一拍再读一次，别让过去了的事继续赖在屏上
+              if ((outbox.value.counts || {}).pending) refreshOutboxQuietly();
+              if ((status.value.throttle || []).length) loadStatus();
             }
             if (page.value === 'live') loadLiveMonitors();
           }, 1500);
@@ -13712,7 +13875,7 @@ const CFG_KEYS = {
         });
 
         return {
-          page, navCollapsed, navs, navGroups, CREDITS, appVersion, tr, uiLang, UI_LANGS, epLocale, setLang, palette, paletteInput, paletteRows, paletteGroups, kbdMod, openPalette, closePalette, runPalette, queueStat, subNewTotal, navBadge, navDot, pageTitle, urlText, urlPasteStat, extractUrls, friendlyError, glossaryStat, checkGlossary, speedWinStat, checkSpeedWindows, queueWindow, windowHeld, queueRows, runWinStat, checkRunWindows, exportBilingual, exportBilingualSelected, pipelineRow, pipelineView, showPipeline, closePipeline, refreshPipeline, rerunStage, pipeStatusLabel, pipeStatusType, opts, videoQualities, audioQualities, formats, codecOptions,
+          page, navCollapsed, navs, navGroups, CREDITS, appVersion, tr, uiLang, UI_LANGS, epLocale, setLang, palette, paletteInput, paletteRows, paletteGroups, kbdMod, openPalette, closePalette, runPalette, banners, dismissBanner, queueStat, subNewTotal, navBadge, navDot, pageTitle, urlText, urlPasteStat, extractUrls, friendlyError, glossaryStat, checkGlossary, speedWinStat, checkSpeedWindows, queueWindow, windowHeld, queueRows, runWinStat, checkRunWindows, exportBilingual, exportBilingualSelected, pipelineRow, pipelineView, showPipeline, closePipeline, refreshPipeline, rerunStage, pipeStatusLabel, pipeStatusType, opts, videoQualities, audioQualities, formats, codecOptions,
           pagers, favSort, onFavSortChange, musicSort, onMusicSortChange, tgSort, onTgSortChange,
           subLangOptions, subLangList, selectAllSubLangs, clearSubLangs, toggleSubLang,
           selectedIds, selectAll, queuePaused, taskSort, sseOn, toggleSelect, toggleSelectAll,

@@ -114,8 +114,56 @@ ck("P16 别名表的键全是真页名（写错的键不报错，只是那一页
    "别名 %d 键，页名 %d 个，错键 %s" % (len(_alias_keys), len(_nav_keys),
                                     [k for k in _alias_keys if k not in _nav_keys]))
 
+# ---------------------------------------------------------------- #73 顶部常驻通知条
+_banner_names = ["banners", "dismissBanner"]
+_ret73 = HTML[HTML.rindex("return {"):]
+ck("P17 通知条模板用到的名字都在 setup 的返回清单里（同 P13：漏一个整页空白）",
+   all(re.search(r"\b%s\b" % n, _ret73) for n in _banner_names),
+   str([n for n in _banner_names if not re.search(r"\b%s\b" % n, _ret73)]))
+# 「常驻」靠的是挂在 .content 顶上、17 页共用一处；谁把它挪进某一页的 v-if 块里，
+# 别的页面就静默没有提醒了 —— 静态切一片就知道位置对不对
+_c_at = HTML.find('<div class="content">')
+_b_at = HTML.find('class="banner-stack"')
+_home_at = HTML.find("<!-- 下载页 -->")
+ck("P18 通知条排在 .content 的最前、任何一页的块之前（这才叫常驻，切页不重写）",
+   -1 < _c_at < _b_at < _home_at, "content %d / stack %d / 首页块 %d" % (_c_at, _b_at, _home_at))
+ck("P19 关闭写 sessionStorage、名单从 sessionStorage 读回，且每条事由都过一遍过滤",
+   "const BANNER_DISMISS_KEY = 'md_banner_dismiss';" in HTML
+   and "sessionStorage.setItem(BANNER_DISMISS_KEY, JSON.stringify(bannerOff.value))" in HTML
+   and "JSON.parse(sessionStorage.getItem(BANNER_DISMISS_KEY) || '[]')" in HTML
+   and "out.filter((b) => bannerOff.value.indexOf(b.id) < 0)" in HTML)
+# 旧的自动弹窗换成通知条之后，这三处残留一个都算「改了但没改干净」：
+# 会话一次性变量留着 = 自动检测还能弹窗；存储键留着 = 老用户浏览器里躺一个没人读的键
+_b_boot = HTML[HTML.find("async function bootCompCheck() {"):HTML.find("async function bootCompCheck() {") + 900]
+ck("P20 自动检测那条弹窗路径真断了：bootCompCheck 不再调它，会话变量与旧存储键一起清了",
+   "maybePopupCompUpdates" not in _b_boot and "compPopupShown" not in HTML
+   and "mdCompUpdatePopupShown" not in HTML)
+# gotoCard 的锚点写错（或卡片搬进折叠组没跟着展开）不会报错，只是点「查看」页面跳过去了却停在原地
+_anchors = set(re.findall(r"gotoCard\(\s*'[\w']+',\s*'([^']+)'", HTML))
+ck("P21 每个跳转锚点在模板里都真有一个同 id 的元素",
+   bool(_anchors) and all('id="%s"' % a in HTML for a in _anchors),
+   str([a for a in _anchors if 'id="%s"' % a not in HTML]))
+ck("P22 补发队列那张卡片在「不常用项」折叠组里，跳转前必须先展开，否则滚不动它",
+   "foldRare.value = true; gotoCard('settings', 'outbox-card'" in HTML)
+_b_computed = HTML[HTML.find("const banners = computed("):]
+_b_computed = _b_computed[:_b_computed.find("\n        });")]
+ck("P23 通知条的文案全走词表（事由行里除了注释不许有硬编码中文）",
+   not [ln for ln in _b_computed.splitlines()
+        if re.search(r"[一-鿿]", ln) and not ln.strip().startswith(("//", "/*", "*"))],
+   str([ln.strip()[:40] for ln in _b_computed.splitlines()
+        if re.search(r"[一-鿿]", ln) and not ln.strip().startswith(("//", "/*", "*"))]))
+ck("P24 开机预取一次补发队列（不预取的话通知条在别的页面上永远是空的）", "loadOutbox();" in boot)
+# gotoCard 改成逐帧对齐不是摆设：一次「去更新」实测停在偏 1358 px 的地方（页面还在往目标上面填内容）。
+# 谁改回「找到就 scrollIntoView 一次」，这个偏位不会报错、只会让人以为按钮没反应
+_gc73 = HTML[HTML.find("function gotoCard("):HTML.find("function gotoCard(") + 1400]
+ck("P25 跳转是逐帧重对齐（落点变了再滚一次、连续几帧不动才收手），不是一次性 scrollIntoView",
+   "sc.scrollTop += off - pad" in _gc73 and "requestAnimationFrame(step)" in _gc73
+   and "scrollIntoView" not in _gc73, _gc73[:60].replace("\n", " "))
+ck("P26 落点让出顶部通知条的高度（通知条是 sticky 压在内容区上沿的，齐平等于把卡片头藏进条子里）",
+   "document.querySelector('.banner-stack')" in _gc73 and "+ 10" in _gc73)
+
 print("\n== 汇总 ==")
 if FAILED:
-    print(f"共 16 条，失败 {len(FAILED)} 条\n失败清单：" + "、".join(FAILED))
+    print(f"共 26 条，失败 {len(FAILED)} 条\n失败清单：" + "、".join(FAILED))
     sys.exit(1)
-print("共 16 条，全部通过")
+print("共 26 条，全部通过")
