@@ -434,7 +434,7 @@ def strip_comments(src: str) -> str:
     return re.sub(r"<!--.*?-->", "", src, flags=re.S)
 
 
-PAGES_DONE = ["home", "queue", "bt", "files", "subs", "music", "settings", "tg", "sniff", "live", "info", "search"]   # ← 每翻完一页把页名加进来；登记了却没翻干净会被 I3 判红
+PAGES_DONE = ["home", "queue", "bt", "files", "subs", "music", "settings", "tg", "sniff", "live", "info", "search", "favs"]   # ← 每翻完一页把页名加进来；登记了却没翻干净会被 I3 判红
 ck("I2 PAGES_DONE 都是真有的页", all(page_block(k) for k in PAGES_DONE),
    str([k for k in PAGES_DONE if not page_block(k)]))
 for _pg in PAGES_DONE:
@@ -567,6 +567,11 @@ PAGE_HANDLERS = {
     # 语言是运行时切的，模块初始化时把中文焊死就翻不动了。后端来的那条原因（n.text）仍显示原文。
     "search": ["doSearch", "setSearchSort", "normalizeSearchUrl", "downloadSearchItem",
                "analyzeSearchItem", "subscribeSearchItem"],
+    # 收藏关注页：六个标签 + 三张表头 + 两个批量按钮，加上这一页弹出来的那九句。
+    # applyFavList 也登记：它是这三张卡的共同出口，那句埋点行归 ACTION_NAMES 那一批、由 I8 数着。
+    # onFavSelChange 没登记：它是一行的函数，js_fn() 会把后面整个函数体一起吞进来（同 subs 页那两个 one-liner）。
+    "favs": ["applyFavList", "loadFavTab", "loadFavFolderItems", "loadYtPlaylist", "onFavSortChange",
+             "downloadFavSelected", "downloadFavOne", "subscribeFavSelected", "subscribeFavOne"],
 }
 # 允许留中文的处理器：这些行比的是后端发来的数据（预设名、占位标题），翻成英文这行判断就失效。
 # 「允许留下」不等于「不用管」——残留的行数和那几句都钉死，改了名字或悄悄多出一行都判红
@@ -615,7 +620,9 @@ ck("I5b 每个允许留中文的处理器都登记在某一页里（漏登记就
 # 这两种写法都要认得到，否则「翻完了」会表现为埋点行凭空少几条。
 MAIDIAN = re.compile(r"""uiName:|logAction\(|logSort\(|ccCall\(""")
 MAIDIAN_EXPECT = {"home": 0, "queue": 0, "bt": 7, "files": 4, "subs": 0, "music": 5, "settings": 17, "tg": 1,
-                  "sniff": 0, "live": 0, "info": 0, "search": 0}
+                  "sniff": 0, "live": 0, "info": 0, "search": 0,
+                  # applyFavList 那句 logAction（ tab 名来自 FAV_TAB_NAMES）+ onFavSortChange 那句 logSort
+                  "favs": 2}
 # 来源类型那一列的名字与提示：键不是写在 tr(' …') 里而是存在表里（labelKey / hintKey），
 # 上面那遍字面扫抓不到它们，所以单独比一遍 —— 少哪一份英文界面就印键名
 kind_meta = block(HTML, "const SUB_KIND_META = {", "};")

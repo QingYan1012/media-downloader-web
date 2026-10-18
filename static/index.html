@@ -3841,53 +3841,53 @@
           <!-- 收藏 / 关注 / 稍后再看 -->
           <div v-if="page === 'favs'">
             <div class="card">
-              <div class="section-title">账号收藏 / 播放列表（需对应平台 Cookie）</div>
+              <div class="section-title">{{ tr('favs.title') }}</div>
               <div class="row row--mb">
                 <el-radio-group v-model="favTab" size="small" @change="loadFavTab">
-                  <el-radio-button label="folders">B站收藏夹</el-radio-button>
-                  <el-radio-button label="toview">B站稍后再看</el-radio-button>
-                  <el-radio-button label="followings">B站关注</el-radio-button>
-                  <el-radio-button label="yt_liked">YT喜欢</el-radio-button>
-                  <el-radio-button label="yt_wl">YT稍后再看</el-radio-button>
-                  <el-radio-button label="yt_pl">YT播放列表</el-radio-button>
+                  <el-radio-button label="folders">{{ tr('favs.tabFolders') }}</el-radio-button>
+                  <el-radio-button label="toview">{{ tr('favs.tabToView') }}</el-radio-button>
+                  <el-radio-button label="followings">{{ tr('favs.tabFollowings') }}</el-radio-button>
+                  <el-radio-button label="yt_liked">{{ tr('favs.tabYtLiked') }}</el-radio-button>
+                  <el-radio-button label="yt_wl">{{ tr('favs.tabYtWl') }}</el-radio-button>
+                  <el-radio-button label="yt_pl">{{ tr('favs.tabYtPl') }}</el-radio-button>
                 </el-radio-group>
-                <el-button size="small" @click="loadFavTab">刷新</el-button>
-                <el-button size="small" type="primary" :disabled="!favSelected.length" @click="downloadFavSelected"><svg class="btn-ico"><use href="#i-download"></use></svg>批量下载（{{ favSelected.length }}）</el-button>
-                <el-button size="small" :disabled="!favSelected.length" @click="subscribeFavSelected">批量订阅</el-button>
+                <el-button size="small" @click="loadFavTab">{{ tr('common.refresh') }}</el-button>
+                <el-button size="small" type="primary" :disabled="!favSelected.length" @click="downloadFavSelected"><svg class="btn-ico"><use href="#i-download"></use></svg>{{ tr('favs.batchDl', { n: favSelected.length }) }}</el-button>
+                <el-button size="small" :disabled="!favSelected.length" @click="subscribeFavSelected">{{ tr('favs.batchSub') }}</el-button>
               </div>
               <div v-if="favTab==='folders'" style="margin-bottom:12px">
-                <el-select size="small" v-model="favFolderId" placeholder="选择收藏夹" style="width:280px" filterable @change="loadFavFolderItems">
+                <el-select size="small" v-model="favFolderId" :placeholder="tr('favs.folderPh')" style="width:280px" filterable @change="loadFavFolderItems">
                   <el-option v-for="f in favFolders" :key="f.id" :label="(f.title||'') + ' (' + (f.media_count||0) + ')'" :value="f.id"></el-option>
                 </el-select>
               </div>
               <div v-if="favTab==='yt_pl'" class="row row--mb row--tight">
-                <el-input size="small" v-model="ytPlaylistUrl" placeholder="粘贴 YouTube 播放列表链接 list=..." style="width:420px" clearable @paste="onPaste($event, 'url')" @keyup.enter="loadYtPlaylist"></el-input>
-                <el-button size="small" type="primary" @click="loadYtPlaylist"><svg class="btn-ico"><use href="#i-list"></use></svg>加载列表</el-button>
+                <el-input size="small" v-model="ytPlaylistUrl" :placeholder="tr('favs.ytPlPh')" style="width:420px" clearable @paste="onPaste($event, 'url')" @keyup.enter="loadYtPlaylist"></el-input>
+                <el-button size="small" type="primary" @click="loadYtPlaylist"><svg class="btn-ico"><use href="#i-list"></use></svg>{{ tr('favs.ytPlBtn') }}</el-button>
               </div>
-              <p v-if="favMeta.truncated" class="hint hint--block">该列表共 {{ favMeta.total }} 条，平台接口本次只返回前 {{ favItems.length }} 条；排序与翻页只对已加载的部分生效。</p>
-              <p v-else-if="favMeta.missing" class="hint hint--block">已取回 {{ favItems.length }} 条，列表记录为 {{ favMeta.total }} 条；差额为已失效或不可见的条目。</p>
-              <div v-if="favLoading" class="empty-tip">加载中…</div>
-              <div v-else-if="!favItems.length" class="empty-tip">暂无内容。请配置对应平台的 Cookie（B站可扫码，YouTube 需浏览器或文件 Cookie）。</div>
+              <p v-if="favMeta.truncated" class="hint hint--block">{{ tr('favs.truncated', { total: favMeta.total, loaded: favItems.length }) }}</p>
+              <p v-else-if="favMeta.missing" class="hint hint--block">{{ tr('favs.missing', { got: favItems.length, total: favMeta.total }) }}</p>
+              <div v-if="favLoading" class="empty-tip">{{ tr('favs.loading') }}</div>
+              <div v-else-if="!favItems.length" class="empty-tip">{{ tr('favs.empty') }}</div>
               <el-table v-else :data="pagers.fav.paged" size="small" stripe @selection-change="onFavSelChange" @sort-change="onFavSortChange">
                 <el-table-column type="selection" width="42"></el-table-column>
-                <el-table-column label="封面" width="90">
+                <el-table-column :label="tr('favs.colCover')" width="90">
                   <template #default="{ row }">
                     <img v-if="row.thumbnail" :src="row.thumbnail" referrerpolicy="no-referrer" style="width:72px;height:42px;object-fit:cover;border-radius:6px" />
                   </template>
                 </el-table-column>
-                <el-table-column prop="title" label="标题" min-width="200" sortable="custom" :sort-orders="['ascending', 'descending']"></el-table-column>
-                <el-table-column prop="uploader" label="UP/频道" width="120" sortable="custom" :sort-orders="['ascending', 'descending']"></el-table-column>
-                <el-table-column prop="platform" label="平台" width="90" sortable="custom" :sort-orders="['ascending', 'descending']"></el-table-column>
-                <el-table-column label="操作" width="160">
+                <el-table-column prop="title" :label="tr('common.colTitle')" min-width="200" sortable="custom" :sort-orders="['ascending', 'descending']"></el-table-column>
+                <el-table-column prop="uploader" :label="tr('favs.colUp')" width="120" sortable="custom" :sort-orders="['ascending', 'descending']"></el-table-column>
+                <el-table-column prop="platform" :label="tr('favs.colPlatform')" width="90" sortable="custom" :sort-orders="['ascending', 'descending']"></el-table-column>
+                <el-table-column :label="tr('common.colOps')" width="160">
                   <template #default="{ row }">
-                    <el-button size="small" plain @click="downloadFavOne(row)">下载</el-button>
-                    <el-button size="small" plain @click="subscribeFavOne(row)">订阅</el-button>
+                    <el-button size="small" plain @click="downloadFavOne(row)">{{ tr('common.dl') }}</el-button>
+                    <el-button size="small" plain @click="subscribeFavOne(row)">{{ tr('favs.subBtn') }}</el-button>
                   </template>
                 </el-table-column>
               </el-table>
               <el-pagination v-if="pagers.fav.show" v-model:current-page="pagers.fav.page" :page-size="pagers.fav.pageSize"
                              :total="pagers.fav.total" layout="total, prev, pager, next, jumper" size="small" background class="pager"></el-pagination>
-              <div v-if="pagers.fav.show" class="hint hint--block">翻页后当前页的勾选会清空，请分页勾选后分别执行批量操作</div>
+              <div v-if="pagers.fav.show" class="hint hint--block">{{ tr('favs.pagerHint') }}</div>
             </div>
           </div>
 
@@ -9231,7 +9231,7 @@
               if (ytPlaylistUrl.value) await loadYtPlaylist();
             }
           } catch (e) {
-            ElementPlus.ElMessage.error(e.message || '加载失败（请检查对应平台 Cookie）');
+            ElementPlus.ElMessage.error(e.message || tr('favs.loadFail'));
           } finally {
             favLoading.value = false;
           }
@@ -9239,16 +9239,16 @@
         async function loadYtPlaylist() {
           const u = (ytPlaylistUrl.value || '').trim();
           if (!u) {
-            ElementPlus.ElMessage.warning('请粘贴 YouTube 播放列表链接');
+            ElementPlus.ElMessage.warning(tr('favs.needPlUrl'));
             return;
           }
           favLoading.value = true;
           try {
             const r = await api('/api/favorites/youtube/playlist?url=' + encodeURIComponent(u) + '&limit=200');
             applyFavList(r);
-            if (!favItems.value.length) ElementPlus.ElMessage.info('列表为空');
+            if (!favItems.value.length) ElementPlus.ElMessage.info(tr('favs.emptyList'));
           } catch (e) {
-            ElementPlus.ElMessage.error(e.message || '加载播放列表失败');
+            ElementPlus.ElMessage.error(e.message || tr('favs.plFail'));
           } finally {
             favLoading.value = false;
           }
@@ -9261,7 +9261,7 @@
             const r = await api('/api/favorites/bili/folder-items?media_id=' + encodeURIComponent(favFolderId.value) + '&fetch_all=true');
             applyFavList(r);
           } catch (e) {
-            ElementPlus.ElMessage.error(e.message || '加载收藏夹失败');
+            ElementPlus.ElMessage.error(e.message || tr('favs.folderFail'));
           } finally {
             favLoading.value = false;
           }
@@ -9272,18 +9272,18 @@
           if (!urls.length) return;
           try {
             const r = await api('/api/favorites/download', { method: 'POST', body: JSON.stringify({ urls }) });
-            ElementPlus.ElMessage.success('已加入下载：' + (r.count || urls.length));
+            ElementPlus.ElMessage.success(tr('favs.queuedN', { n: r.count || urls.length }));
           } catch (e) {
-            ElementPlus.ElMessage.error(e.message || '下载失败');
+            ElementPlus.ElMessage.error(e.message || tr('favs.dlFail'));
           }
         }
         async function downloadFavOne(row) {
           if (!row || !row.url) return;
           try {
             await api('/api/favorites/download', { method: 'POST', body: JSON.stringify({ urls: [row.url] }) });
-            ElementPlus.ElMessage.success('已加入下载');
+            ElementPlus.ElMessage.success(tr('favs.queued'));
           } catch (e) {
-            ElementPlus.ElMessage.error(e.message || '失败');
+            ElementPlus.ElMessage.error(e.message || tr('favs.fail'));
           }
         }
         async function subscribeFavSelected() {
@@ -9292,15 +9292,15 @@
               try { await api('/api/subs/add', { method: 'POST', body: JSON.stringify({ url: row.url, title: row.title || '' }) }); } catch (_) {}
             }
           }
-          ElementPlus.ElMessage.success('已提交订阅');
+          ElementPlus.ElMessage.success(tr('favs.subSubmitted'));
         }
         async function subscribeFavOne(row) {
           if (!row || !row.url) return;
           try {
             await api('/api/subs/add', { method: 'POST', body: JSON.stringify({ url: row.url, title: row.title || '' }) });
-            ElementPlus.ElMessage.success('已订阅');
+            ElementPlus.ElMessage.success(tr('favs.subOk'));
           } catch (e) {
-            ElementPlus.ElMessage.error(e.message || '订阅失败');
+            ElementPlus.ElMessage.error(e.message || tr('favs.subFail'));
           }
         }
         async function startBiliQr() {
