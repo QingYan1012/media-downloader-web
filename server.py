@@ -3598,7 +3598,7 @@ class ConfigManager:
         "roformer_model": "bs_1297",
         "ai_device": "auto",
         "vocal_native_fp16": False,
-        "edge_tts_voice": "",  # 空 = 用引擎自己的默认音色
+        "edge_tts_voice": "",  # 空 = 按字幕目标语言挑预设音色（voice_tools.EDGE_VOICE_PRESETS）
         # 字幕机翻（DeepL / OpenAI）
         "subtitle_translate_provider": "deepl",  # deepl|openai|claude|gemini|google|azure|none
         "subtitle_target_lang": "zh",

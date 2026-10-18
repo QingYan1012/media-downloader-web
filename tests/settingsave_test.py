@@ -459,17 +459,15 @@ try:
        and "会被清空的密钥（{n} 项）" in ZH.get("settings.defAllSecLead", ""))
     # 有控制项却不在 loadConfig 里回填 = 界面显示的是 JS 默认值，不是后端存着的那个。
     # #78 的活体跑就是这么抓到人声分离那五格的（配置存 cuda、页面开出来显示「自动」，
-    # 而引擎其实一直照 cuda 跑 —— 只有显示在骗人）。剩下这六个是这次之前就有的，另开一次提交补，
-    # 但写死在这张表里：以后再有新键忘了回填，这条直接红，不会再靠人肉发现。
-    UNHYDRATED_KNOWN = {"ai_polish", "ai_summarize", "components_auto_check",
-                        "edge_tts_voice", "subtitle_first", "translate_auto_fallback"}
+    # 而引擎其实一直照 cuda 跑 —— 只有显示在骗人）；顺带查出的那六个老键在紧接着的那次提交里补完了，
+    # 所以这张表现在是空的。空着写死是故意的：谁想靠往这里加键名把 I27 蒙过去，得先让 I28 红一次。
+    UNHYDRATED_KNOWN = set()
     hydr = set(re.findall(r"settings\.value\.([a-z0-9_]+)\s*=", LOADCFG_BODY))
-    ck("I27 界面上有控制项的键都会被 loadConfig 回填（豁免表以外的一个都不许漏）",
+    ck("I27 界面上有控制项的键都会被 loadConfig 回填（这张豁免表现在是空的）",
        not (bound - hydr - UNHYDRATED_KNOWN),
        "漏回填: %s" % sorted(bound - hydr - UNHYDRATED_KNOWN)[:8])
-    ck("I28 豁免表里那六个确实是这次改动之前就有的老键（补完就该从表里划掉）",
-       UNHYDRATED_KNOWN <= bound and not (UNHYDRATED_KNOWN & hydr),
-       str(sorted(UNHYDRATED_KNOWN & hydr)))
+    ck("I28 豁免表必须保持空（往里加键名等于承认界面在骗人，先去补回填）",
+       not UNHYDRATED_KNOWN, str(sorted(UNHYDRATED_KNOWN))[:120])
 
     # ------------------------------------------------------------ J 段：日志口径
     d = fresh(concurrent=9, telegram_bot_token="TOK-IN-LOG")

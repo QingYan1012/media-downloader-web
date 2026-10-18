@@ -3293,7 +3293,10 @@
               </div>
               <el-form label-position="top" size="small">
                 <el-form-item label="Edge-TTS 音色">
-                  <el-select size="small" v-model="settings.edge_tts_voice" filterable style="width:280px">
+                  <!-- 空串在这一格有含义：后端拿它按字幕目标语言挑预设音色（voice_tools.EDGE_VOICE_PRESETS）。
+                       el-select 把空值当「没选」，所以不做成选项，改用 placeholder 说清它的效果、clearable 让人清得回去。 -->
+                  <el-select size="small" v-model="settings.edge_tts_voice" filterable clearable
+                             placeholder="跟随字幕目标语言" style="width:280px">
                     <el-option label="晓晓（中文）" value="zh-CN-XiaoxiaoNeural"></el-option>
                     <el-option label="云希（中文男）" value="zh-CN-YunxiNeural"></el-option>
                     <el-option label="Jenny（英文）" value="en-US-JennyNeural"></el-option>
@@ -8266,13 +8269,21 @@
             settings.value.po_provider_url = data.po_provider_url || 'http://127.0.0.1:4416';
             settings.value.github_mirror = data.github_mirror != null ? data.github_mirror : 'https://ghproxy.net/';
             settings.value.pip_mirror = data.pip_mirror != null ? data.pip_mirror : 'https://pypi.tuna.tsinghua.edu.cn/simple';
+            settings.value.components_auto_check = data.components_auto_check !== false;
             settings.value.sub_first_download_n = data.sub_first_download_n || 0;
+            settings.value.subtitle_first = data.subtitle_first !== false;
+            settings.value.ai_polish = !!data.ai_polish;
+            settings.value.ai_summarize = !!data.ai_summarize;
+            settings.value.translate_auto_fallback = data.translate_auto_fallback !== false;
             settings.value.local_ai_transcribe = !!data.local_ai_transcribe;
             settings.value.local_ai_translate = !!data.local_ai_translate;
             settings.value.local_ai_lang = data.local_ai_lang || 'zh';
             settings.value.whisper_model = data.whisper_model || 'base';
             settings.value.whisper_device = data.whisper_device || 'auto';
             settings.value.whisper_compute = data.whisper_compute || 'auto';
+            // 这一格的空值有含义：后端拿它按字幕目标语言挑预设音色，界面必须显得出「没指定」这个状态。
+            // 顶成默认音色会让人以为存的是晓晓，而点出去发的其实不是晓晓 —— 存的和发的不是同一个音色。
+            settings.value.edge_tts_voice = data.edge_tts_voice || '';
             // 分离这五格后端一直在读，界面却只写不读：存的是「只用 GPU」，页面一开显示「自动」，
             // 人只会以为自己的选择没保住（引擎其实照旧）。活体跑出来的读数，钉在 settingsave_test 的 I27。
             settings.value.vocal_engine = ['roformer', 'demucs'].includes(data.vocal_engine) ? data.vocal_engine : 'roformer';
