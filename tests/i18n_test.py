@@ -434,7 +434,7 @@ def strip_comments(src: str) -> str:
     return re.sub(r"<!--.*?-->", "", src, flags=re.S)
 
 
-PAGES_DONE = ["home", "queue", "bt", "files", "subs", "music", "settings", "tg", "sniff", "live", "info"]   # ← 每翻完一页把页名加进来；登记了却没翻干净会被 I3 判红
+PAGES_DONE = ["home", "queue", "bt", "files", "subs", "music", "settings", "tg", "sniff", "live", "info", "search"]   # ← 每翻完一页把页名加进来；登记了却没翻干净会被 I3 判红
 ck("I2 PAGES_DONE 都是真有的页", all(page_block(k) for k in PAGES_DONE),
    str([k for k in PAGES_DONE if not page_block(k)]))
 for _pg in PAGES_DONE:
@@ -563,6 +563,10 @@ PAGE_HANDLERS = {
     "info": ["analyzeFromInfoPage", "downloadFromInfo", "downloadAllEntries",
              "downloadSelectedEntries", "downloadEntry", "entryAt", "selectEntryRange",
              "clearEntrySel", "copyFormats", "tierSizeGroup", "tierSizeText", "infoCodecOptions"],
+    # 聚合搜索页：三张名字表（平台 / 内容类型 / 排序）现在存的是键名，取值处现翻 ——
+    # 语言是运行时切的，模块初始化时把中文焊死就翻不动了。后端来的那条原因（n.text）仍显示原文。
+    "search": ["doSearch", "setSearchSort", "normalizeSearchUrl", "downloadSearchItem",
+               "analyzeSearchItem", "subscribeSearchItem"],
 }
 # 允许留中文的处理器：这些行比的是后端发来的数据（预设名、占位标题），翻成英文这行判断就失效。
 # 「允许留下」不等于「不用管」——残留的行数和那几句都钉死，改了名字或悄悄多出一行都判红
@@ -611,7 +615,7 @@ ck("I5b 每个允许留中文的处理器都登记在某一页里（漏登记就
 # 这两种写法都要认得到，否则「翻完了」会表现为埋点行凭空少几条。
 MAIDIAN = re.compile(r"""uiName:|logAction\(|logSort\(|ccCall\(""")
 MAIDIAN_EXPECT = {"home": 0, "queue": 0, "bt": 7, "files": 4, "subs": 0, "music": 5, "settings": 17, "tg": 1,
-                  "sniff": 0, "live": 0, "info": 0}
+                  "sniff": 0, "live": 0, "info": 0, "search": 0}
 # 来源类型那一列的名字与提示：键不是写在 tr(' …') 里而是存在表里（labelKey / hintKey），
 # 上面那遍字面扫抓不到它们，所以单独比一遍 —— 少哪一份英文界面就印键名
 kind_meta = block(HTML, "const SUB_KIND_META = {", "};")
@@ -669,6 +673,21 @@ ck("I11b 分隔符那条闸门自己会响（把 ccLast 的 zh 改回带点的�
 ck("I12 liveTasks 仍按后端原话「直播」筛（翻了这一行直播页就空了）",
    "const liveTasks = computed(() => tasks.value.filter(t => t.is_live || (t.title || '').includes('直播')));"
    in HTML)
+# formatCount 只有搜索页一处调用（正文里那行「UP · 1.2万 次播放」），它是这页英文界面唯一的
+# 中文残留来源：活体 A/B 量到英文页上印着 16.0亿/1.2万。两套断点必须按语言分开钉住 ——
+# 中文那支的字面与阈值一个字节都不能动（A/B 的中文逐行等式靠它），英文那支不许漏出 万/亿。
+_fc_body = js_fn("formatCount")
+_zh_at = _fc_body.find("uiLang.value !== 'en'")
+_en_at = _fc_body.find("if (n >= 1e9)")
+ck("I13a formatCount 抠到了、两支都在（改名或挪走要连带改这一闸门）",
+   bool(_fc_body) and 0 <= _zh_at < _en_at, f"body={bool(_fc_body)} zh={_zh_at} en={_en_at}")
+_fc_zh, _fc_en = _fc_body[_zh_at:_en_at], _fc_body[_en_at:]
+ck("I13b 中文那支仍是 1e4/1e8 + 万/亿（切英文不该动中文读数）",
+   "'亿'" in _fc_zh and "'万'" in _fc_zh and "n >= 1e8" in _fc_zh and "n >= 1e4" in _fc_zh,
+   repr(_fc_zh[:120]))
+ck("I13c 英文那支用 K/M/B，且这一支里不许再有中文",
+   "'B'" in _fc_en and "'M'" in _fc_en and "'K'" in _fc_en and not CJK.search(_fc_en),
+   repr(_fc_en[:120]))
 for _pg, _fns in PAGE_HANDLERS.items():
     _md = 0
     for _fn in _fns:
@@ -806,6 +825,14 @@ rec('g35_added_zh_join',
 rec('g36_args_zh_join',
     w.I.t('home.tArgsNotApplied', { n: 5, list: ['甲', '乙', '丙'].join(w.I.t('home.tListSep', null, 'zh')) + ' 等' }, 'zh'),
     '「自定义 yt-dlp 参数」有 5 项没生效：甲；乙；丙 等');
+// 搜索页那句运行日志：中文这份要与改造前 index.html 里那条模板串一字不差，
+// 英文这份证明「键 + kv」落盘后日志页能按当前语言现拼出来（数字与关键词是数据，不跟着翻）
+rec('g37_search_log_zh',
+    w.I.t('search.log_ran_notes', { q: 'sorry', total: 120, shown: 100, n: 3 }, 'zh'),
+    '聚合搜索「sorry」：取回 120 条，显示 100 条，3 条空结果原因');
+rec('g38_search_log_en',
+    w.I.t('search.log_ran', { q: 'sorry', total: 120, shown: 100, n: 0 }, 'en'),
+    'Aggregated search "sorry": got 120, showing 100');
 
 fs.writeFileSync(OUT, JSON.stringify(R));
 """
@@ -837,9 +864,9 @@ R = run_node()
 ck("G0 node 跑通了（本机没有 node 就别假绿）", bool(R), "harness 没产出" if not R else "")
 if R:
     names = [k for k in R if k != "g0_loaded"]
-    ck("G1 行为读数一条不缺（37 条 rec，除首条装载检查外 36 条）", len(names) == 36, f"{len(names)} 项")
+    ck("G1 行为读数一条不缺（39 条 rec，除首条装载检查外 38 条）", len(names) == 38, f"{len(names)} 项")
     reds = sorted(k for k in names if not R[k]["pass"])
-    ck("G2 这 36 条读数与预期全部一致", not reds, show(*reds[:4]) if reds else "")
+    ck("G2 这 38 条读数与预期全部一致", not reds, show(*reds[:4]) if reds else "")
     ck("G3 t()：两份词表都取得到、未知键回键名、没传 vars 时占位符原样留着",
        all(R[k]["pass"] for k in ("g1_nav_zh", "g2_nav_en", "g3_ph_zh", "g4_ph_en", "g5_unknown", "g6_ph_leftalone")),
        show("g3_ph_zh", "g4_ph_en", "g5_unknown"))

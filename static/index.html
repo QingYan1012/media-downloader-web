@@ -3721,41 +3721,41 @@
           <!-- 聚合搜索 -->
           <div v-if="page === 'search'">
             <div class="card">
-              <div class="section-title">聚合搜索</div>
+              <div class="section-title">{{ tr('page.search') }}</div>
               <div class="row">
-                <el-input v-model="searchQuery" placeholder="输入关键词，例如 sorry" size="large" clearable style="flex:1;min-width:240px" @paste="onPaste($event, 'text')" @keyup.enter="doSearch"></el-input>
+                <el-input v-model="searchQuery" :placeholder="tr('search.kwPh')" size="large" clearable style="flex:1;min-width:240px" @paste="onPaste($event, 'text')" @keyup.enter="doSearch"></el-input>
                 <el-button size="large" type="primary" :loading="searching" @click="doSearch">
-                  <svg class="btn-ico"><use href="#i-search"></use></svg>{{ searching ? '搜索中…' : '开始搜索' }}
+                  <svg class="btn-ico"><use href="#i-search"></use></svg>{{ searching ? tr('search.doing') : tr('search.go') }}
                 </el-button>
               </div>
               <div class="stack row--mt">
                 <div class="chip-row">
-                  <div class="chip" :class="{ active: searchPlatform==='all' }" @click="searchPlatform='all'">全部平台</div>
+                  <div class="chip" :class="{ active: searchPlatform==='all' }" @click="searchPlatform='all'">{{ tr('search.platAll') }}</div>
                   <div class="chip" :class="{ active: searchPlatform==='youtube' }" @click="searchPlatform='youtube'">YouTube</div>
-                  <div class="chip" :class="{ active: searchPlatform==='bilibili' }" @click="searchPlatform='bilibili'">B站</div>
-                  <div class="chip" :class="{ active: searchPlatform==='douyin' }" @click="searchPlatform='douyin'">抖音</div>
+                  <div class="chip" :class="{ active: searchPlatform==='bilibili' }" @click="searchPlatform='bilibili'">{{ tr('settings.platformBilibili') }}</div>
+                  <div class="chip" :class="{ active: searchPlatform==='douyin' }" @click="searchPlatform='douyin'">{{ tr('search.platDouyin') }}</div>
                 </div>
                 <div class="chip-row">
-                  <div class="chip" :class="{ active: searchContentType==='all' }" @click="searchContentType='all'">全部</div>
-                  <div class="chip" :class="{ active: searchContentType==='video' }" @click="searchContentType='video'">视频</div>
-                  <div class="chip" :class="{ active: searchContentType==='channel' }" @click="searchContentType='channel'">UP主/频道</div>
-                  <div class="chip" :class="{ active: searchContentType==='playlist' }" @click="searchContentType='playlist'">合集/播放列表</div>
+                  <div class="chip" :class="{ active: searchContentType==='all' }" @click="searchContentType='all'">{{ tr('search.ctAll') }}</div>
+                  <div class="chip" :class="{ active: searchContentType==='video' }" @click="searchContentType='video'">{{ tr('search.ctVideo') }}</div>
+                  <div class="chip" :class="{ active: searchContentType==='channel' }" @click="searchContentType='channel'">{{ tr('search.ctChannel') }}</div>
+                  <div class="chip" :class="{ active: searchContentType==='playlist' }" @click="searchContentType='playlist'">{{ tr('search.ctPlaylist') }}</div>
                 </div>
                 <div class="chip-row">
-                  <span class="hint">排序</span>
-                  <div class="chip" :class="{ active: searchSort==='relevance' }" @click="setSearchSort('relevance')">相似度</div>
-                  <div class="chip" :class="{ active: searchSort==='views' }" @click="setSearchSort('views')">播放量</div>
-                  <div class="chip" :class="{ active: searchSort==='newest' }" @click="setSearchSort('newest')">发布时间</div>
+                  <span class="hint">{{ tr('search.sortWord') }}</span>
+                  <div class="chip" :class="{ active: searchSort==='relevance' }" @click="setSearchSort('relevance')">{{ tr('search.sortRelevance') }}</div>
+                  <div class="chip" :class="{ active: searchSort==='views' }" @click="setSearchSort('views')">{{ tr('search.sortViews') }}</div>
+                  <div class="chip" :class="{ active: searchSort==='newest' }" @click="setSearchSort('newest')">{{ tr('search.sortNewest') }}</div>
                 </div>
               </div>
             </div>
-            <div v-if="!searchResults.length && !searching && !searchNotes.length" class="empty-tip">请输入关键词搜索 YouTube / B站</div>
-            <div v-if="searchResults.length" class="hint" style="margin-bottom:10px">共 {{ searchResults.length }} 个结果<span v-if="searchTruncated">（上游返回 {{ searchTotal }} 条，一次最多显示 {{ searchResults.length }} 条，可缩小平台或内容类型后再搜）</span></div>
-            <p v-if="searchResults.length && searchSort === 'newest'" class="hint hint--block">发布时间按各平台自身返回顺序排列；YouTube 搜索结果不返回发布时间，故不参与其中。</p>
+            <div v-if="!searchResults.length && !searching && !searchNotes.length" class="empty-tip">{{ tr('search.empty') }}</div>
+            <div v-if="searchResults.length" class="hint" style="margin-bottom:10px">{{ tr('search.count', { n: searchResults.length }) }}<span v-if="searchTruncated">{{ tr('search.truncated', { total: searchTotal, max: searchResults.length }) }}</span></div>
+            <p v-if="searchResults.length && searchSort === 'newest'" class="hint hint--block">{{ tr('search.newestNote') }}</p>
             <div v-if="searchNotes.length" class="warn-box">
-              <div style="font-weight:600;margin-bottom:2px">这些平台这次没有给出结果：</div>
+              <div style="font-weight:600;margin-bottom:2px">{{ tr('search.notesLead') }}</div>
               <div v-for="(n,i) in searchNotes" :key="'sn'+i">
-                · {{ SEARCH_PLAT_NAMES[n.platform] || n.platform }} —— {{ n.text }}
+                · {{ SEARCH_PLAT_NAMES[n.platform] ? tr(SEARCH_PLAT_NAMES[n.platform]) : n.platform }} —— {{ n.text }}
                 <span v-if="n.action" class="hint hint--block">{{ n.action }}</span>
               </div>
             </div>
@@ -3763,19 +3763,19 @@
               <div v-for="(r,i) in pagers.search.paged" :key="(pagers.search.page - 1) * pagers.search.pageSize + i" class="search-card">
                 <div class="search-thumb-wrap">
                   <img v-if="r.thumbnail" :src="r.thumbnail" class="search-thumb" referrerpolicy="no-referrer" loading="lazy" />
-                  <div v-else class="search-thumb search-thumb-empty">无封面</div>
+                  <div v-else class="search-thumb search-thumb-empty">{{ tr('search.noThumb') }}</div>
                   <span class="search-badge">{{ (r.platform || '').toUpperCase() }}</span>
-                  <span v-if="r.content_type && r.content_type!=='video'" class="search-badge" style="left:auto;right:8px;background:var(--accent)">{{ r.content_type==='channel'?'频道':'合集' }}</span>
+                  <span v-if="r.content_type && r.content_type!=='video'" class="search-badge" style="left:auto;right:8px;background:var(--accent)">{{ r.content_type==='channel' ? tr('notify.groupChannel') : tr('search.badgeCollect') }}</span>
                   <span v-if="r.duration" class="search-dur">{{ r.duration }}</span>
                 </div>
                 <div class="search-body">
                   <div class="search-title" :title="r.title">{{ r.title }}</div>
-                  <div class="hint search-meta">{{ r.uploader || '未知' }}<span v-if="r.views"> · {{ formatCount(r.views) }}{{ r.content_type === 'channel' ? '粉丝' : '次播放' }}</span><span v-if="r.publish_date"> · {{ r.publish_date }}</span></div>
+                  <div class="hint search-meta">{{ r.uploader || tr('search.upUnknown') }}<span v-if="r.views"> · {{ formatCount(r.views) }}{{ r.content_type === 'channel' ? tr('search.fans') : tr('search.viewsUnit') }}</span><span v-if="r.publish_date"> · {{ r.publish_date }}</span></div>
                   <div class="search-actions">
-                    <el-button type="primary" size="small" @click="downloadSearchItem(r)"><svg class="btn-ico"><use href="#i-download"></use></svg>下载</el-button>
-                    <el-button size="small" @click="analyzeSearchItem(r)">解析</el-button>
-                    <el-button size="small" @click="subscribeSearchItem(r)">订阅</el-button>
-                    <el-button size="small" @click="copyText(normalizeSearchUrl(r))">复制</el-button>
+                    <el-button type="primary" size="small" @click="downloadSearchItem(r)"><svg class="btn-ico"><use href="#i-download"></use></svg>{{ tr('common.dl') }}</el-button>
+                    <el-button size="small" @click="analyzeSearchItem(r)">{{ tr('search.analyzeBtn') }}</el-button>
+                    <el-button size="small" @click="subscribeSearchItem(r)">{{ tr('search.subBtn') }}</el-button>
+                    <el-button size="small" @click="copyText(normalizeSearchUrl(r))">{{ tr('auth.copyBtn') }}</el-button>
                   </div>
                 </div>
               </div>
@@ -11237,13 +11237,13 @@
             ensureMusicStatus().catch(() => {});
           }
         }
-        const SEARCH_PLAT_NAMES = { all: '全部平台', youtube: 'YouTube', bilibili: 'B站', douyin: '抖音' };
-        const SEARCH_TYPE_NAMES = { all: '全部内容', video: '视频', channel: 'UP主/频道', playlist: '合集/播放列表' };
-        const SORT_LABELS = { relevance: '相似度', views: '播放量', newest: '发布时间' };
+        const SEARCH_PLAT_NAMES = { all: 'search.platAll', youtube: 'settings.platformYoutube', bilibili: 'settings.platformBilibili', douyin: 'search.platDouyin' };
+        const SEARCH_TYPE_NAMES = { all: 'search.ctAllFull', video: 'search.ctVideo', channel: 'search.ctChannel', playlist: 'search.ctPlaylist' };
+        const SORT_LABELS = { relevance: 'search.sortRelevance', views: 'search.sortViews', newest: 'search.sortNewest' };
         async function doSearch() {
           const q = (searchQuery.value || '').trim();
           if (!q) {
-            ElementPlus.ElMessage.warning('请输入关键词');
+            ElementPlus.ElMessage.warning(tr('search.needKw'));
             return;
           }
           searching.value = true;
@@ -11259,13 +11259,17 @@
             searchTotal.value = data.total || searchResults.value.length;
             searchTruncated.value = !!data.truncated;
             searchNotes.value = data.notes || [];
-            logAction(`聚合搜索「${q}」：取回 ${searchTotal.value} 条，显示 ${searchResults.value.length} 条`
-                      + (searchNotes.value.length ? `，${searchNotes.value.length} 条空结果原因` : ''));
+            // 这句按「键」交给 logAction：日志里存的是键 + 参数，日志页按当前界面语言现拼，
+            // 切回中文/英文都能看到本句。带不带「空结果原因」那半句是两种说法，各给一个键，
+            // 省得把 UI 文字塞进 kv（kv 里的东西不会再翻，塞进去就把点那一刻的语言冻住了）。
+            logAction(searchNotes.value.length ? 'search.log_ran_notes' : 'search.log_ran', undefined,
+                      { q: q, total: searchTotal.value, shown: searchResults.value.length,
+                        n: searchNotes.value.length });
             if (!searchResults.value.length) {
               if (searchNotes.value.length) {
-                ElementPlus.ElMessage.warning('没有可用结果，原因见下方提示');
+                ElementPlus.ElMessage.warning(tr('search.noneWithNotes'));
               } else {
-                ElementPlus.ElMessage.info('无结果');
+                ElementPlus.ElMessage.info(tr('search.none'));
               }
             }
           } catch (e) {
@@ -11306,7 +11310,7 @@
         async function downloadSearchItem(r) {
           const u = normalizeSearchUrl(r);
           if (!u) {
-            ElementPlus.ElMessage.warning('无可用链接');
+            ElementPlus.ElMessage.warning(tr('search.noUrl'));
             return;
           }
           urlText.value = u;
@@ -11316,7 +11320,7 @@
         async function analyzeSearchItem(r) {
           const u = normalizeSearchUrl(r);
           if (!u) {
-            ElementPlus.ElMessage.warning('无可用链接');
+            ElementPlus.ElMessage.warning(tr('search.noUrl'));
             return;
           }
           analyzeUrl.value = u;
@@ -11326,7 +11330,7 @@
         async function subscribeSearchItem(r) {
           const u = normalizeSearchUrl(r);
           if (!u) {
-            ElementPlus.ElMessage.warning('无可用链接');
+            ElementPlus.ElMessage.warning(tr('search.noUrl'));
             return;
           }
           try {
@@ -11336,9 +11340,9 @@
               body: JSON.stringify({ url: u, title })
             });
             const cnt = (res && res.init_count) || 0;
-            ElementPlus.ElMessage.success(cnt ? `已订阅并索引 ${cnt} 条` : '已加入订阅');
+            ElementPlus.ElMessage.success(cnt ? tr('search.subIndexed', { n: cnt }) : tr('search.subAdded'));
           } catch (e) {
-            ElementPlus.ElMessage.error(e.message || '订阅失败');
+            ElementPlus.ElMessage.error(e.message || tr('search.subFailed'));
           }
         }
         async function exportSync() {
@@ -12950,8 +12954,16 @@
         function formatCount(v) {
           const n = Number(v);
           if (!Number.isFinite(n) || n <= 0) return String(v == null ? '' : v);
-          if (n >= 1e8) return (n / 1e8).toFixed(1) + '亿';
-          if (n >= 1e4) return (n / 1e4).toFixed(1) + '万';
+          /* 计数单位按界面语言走两套断点：中文是 1e4/1e8 的「万/亿」，英文是 1e3/1e6/1e9 的 K/M/B。
+             中文那支的字面与断点一个字节都没动 —— 活体 A/B 逐行比过，切英文不该让中文读数变样。 */
+          if (uiLang.value !== 'en') {
+            if (n >= 1e8) return (n / 1e8).toFixed(1) + '亿';
+            if (n >= 1e4) return (n / 1e4).toFixed(1) + '万';
+            return String(Math.round(n));
+          }
+          if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
+          if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+          if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
           return String(Math.round(n));
         }
         function formatDuration(sec) {
@@ -14016,9 +14028,14 @@ const CFG_KEYS = {
         watch(fileSearch, () => { pagers.files.page = 1; });
         /* 搜索条件切换本身不发请求，自动埋点抓不到，这里单独留痕 */
         watch([searchPlatform, searchContentType, searchSort], () => {
-          logAction(`聚合搜索条件：${SEARCH_PLAT_NAMES[searchPlatform.value] || searchPlatform.value}`
-            + ` / ${SEARCH_TYPE_NAMES[searchContentType.value] || searchContentType.value}`
-            + ` / 按${SORT_LABELS[searchSort.value] || searchSort.value}`);
+          // 这一句和上面那两句不同：三个参数本身就是界面文字（平台名 / 类型名 / 排序名），
+          // 交给 logAction 当 kv 存起来就再翻不动了（kv 里的东西按原样代入）。所以整句先按当前
+          // 语言拼好再落盘 —— 这条日志读起来是它写下那一刻的语言。
+          logAction(tr('search.logFilter', {
+            plat: SEARCH_PLAT_NAMES[searchPlatform.value] ? tr(SEARCH_PLAT_NAMES[searchPlatform.value]) : searchPlatform.value,
+            type: SEARCH_TYPE_NAMES[searchContentType.value] ? tr(SEARCH_TYPE_NAMES[searchContentType.value]) : searchContentType.value,
+            sort: SORT_LABELS[searchSort.value] ? tr(SORT_LABELS[searchSort.value]) : searchSort.value,
+          }));
         });
 
         return {
