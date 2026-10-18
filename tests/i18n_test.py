@@ -432,7 +432,7 @@ def strip_comments(src: str) -> str:
     return re.sub(r"<!--.*?-->", "", src, flags=re.S)
 
 
-PAGES_DONE = ["home", "queue", "bt", "files", "subs", "music", "settings"]   # ← 每翻完一页把页名加进来；登记了却没翻干净会被 I3 判红
+PAGES_DONE = ["home", "queue", "bt", "files", "subs", "music", "settings", "tg"]   # ← 每翻完一页把页名加进来；登记了却没翻干净会被 I3 判红
 ck("I2 PAGES_DONE 都是真有的页", all(page_block(k) for k in PAGES_DONE),
    str([k for k in PAGES_DONE if not page_block(k)]))
 for _pg in PAGES_DONE:
@@ -522,6 +522,15 @@ PAGE_HANDLERS = {
         "updateNm3u8", "updateWhisper", "updateYtdlp", "useSystemProxy",
         "verCmp", "waitCompCheck",
     ],
+    # Telegram 频道页：匿名 / 账号会话两套界面共用一个卡片，会话那套的凭据框与登录流程都在本页脚本里。
+    # 名单来自 tmp/tg_scope.py（模板直接调到的 + 沿调用链铺出来的）。五个 one-liner 没登记
+    # （downloadTgSelected / downloadTgRow / openTgRow / tgRowSelectable / tgTypeLabel）：
+    # js_fn() 会把它们后面整个函数体一起抠进来，登记等于把 tgEnqueue 数第二遍。
+    # 共用的 onPaste 也没登记（bt / music 那两批同样没登记它）：它只做粘贴归一、本体没有话术，
+    # 而且六个页面都在用，归到任何一页都会让 I5 报在错的人头上。
+    "tg": ["clearTgResults", "copyTgUrls", "gotoSubsAdd", "listTgChannel", "loadTgMtStatus",
+           "onTgSortChange", "saveTgMtConfig", "tgAckProtected", "tgEnqueue",
+           "tgMtLogout", "tgMtSendCode", "tgMtSignIn"],
 }
 # 允许留中文的处理器：这些行比的是后端发来的数据（预设名、占位标题），翻成英文这行判断就失效。
 # 「允许留下」不等于「不用管」——残留的行数和那几句都钉死，改了名字或悄悄多出一行都判红
@@ -560,7 +569,7 @@ ck("I5b 每个允许留中文的处理器都登记在某一页里（漏登记就
 # logAction 认到左括号为止、ccCall 同理：设置页那一批把句子换成了 tr(...)，动作名却在参数里留着中文，
 # 这两种写法都要认得到，否则「翻完了」会表现为埋点行凭空少几条。
 MAIDIAN = re.compile(r"""uiName:|logAction\(|logSort\(|ccCall\(""")
-MAIDIAN_EXPECT = {"home": 0, "queue": 0, "bt": 7, "files": 4, "subs": 0, "music": 5, "settings": 17}
+MAIDIAN_EXPECT = {"home": 0, "queue": 0, "bt": 7, "files": 4, "subs": 0, "music": 5, "settings": 17, "tg": 1}
 # 来源类型那一列的名字与提示：键不是写在 tr(' …') 里而是存在表里（labelKey / hintKey），
 # 上面那遍字面扫抓不到它们，所以单独比一遍 —— 少哪一份英文界面就印键名
 kind_meta = block(HTML, "const SUB_KIND_META = {", "};")
@@ -568,6 +577,14 @@ kind_keys = re.findall(r"(?:labelKey|hintKey): '([^']*)'", kind_meta)
 ck("I9 来源类型表里的键两份词表都有，且四类来源的提示一个都没漏",
    len(kind_keys) >= 6 and not [k for k in kind_keys if k not in DICT["zh"] or k not in DICT["en"]],
    f"{len(kind_keys)} 个键，缺：{[k for k in kind_keys if k not in DICT['zh'] or k not in DICT['en']]}")
+# Telegram 那张类型表也存的是键（labelKey），渲染处 tr(t.labelKey)：上面 I4 那遍只认 tr(' 后面，
+# 键名写在表里它抓不到，所以单独比一遍 —— 少哪一份，下拉与表格那一列就印 tg.typeVideo 这种原文。
+tg_type_blob = block(HTML, "const tgTypeOptions = [", "];")
+tg_type_keys = re.findall(r"labelKey: '([^']*)'", tg_type_blob)
+tg_type_miss = [k for k in tg_type_keys if k not in DICT["zh"] or k not in DICT["en"]]
+ck("I10 Telegram 类型表五个键两份词表都有，表里也不留第二份 label",
+   len(tg_type_keys) == 5 and not tg_type_miss and "label:" not in tg_type_blob,
+   f"{len(tg_type_keys)} 个键，缺：{tg_type_miss}")
 for _pg, _fns in PAGE_HANDLERS.items():
     _md = 0
     for _fn in _fns:

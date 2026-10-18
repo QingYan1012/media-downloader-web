@@ -3285,134 +3285,134 @@
           <!-- Telegram 频道批量 -->
           <div v-if="page === 'tg'">
             <div class="card">
-              <div class="section-title">Telegram 频道批量</div>
+              <div class="section-title">{{ tr('tg.pageTitle') }}</div>
               <div class="row row--mb">
                 <el-radio-group v-model="tgMode" size="small">
-                  <el-radio-button label="anon">匿名读取公开频道</el-radio-button>
-                  <el-radio-button label="mt">使用账号会话（私有 / 需登录）</el-radio-button>
+                  <el-radio-button label="anon">{{ tr('tg.modeAnon') }}</el-radio-button>
+                  <el-radio-button label="mt">{{ tr('tg.modeMt') }}</el-radio-button>
                 </el-radio-group>
                 <span class="hint">
                   <template v-if="tgMode === 'anon'">
-                    列表仅读取、不下载。勾选后逐条加入队列，由 yt-dlp 在开始下载时现场重新获取直链 —— telesco.pe 的地址带时效很短的 token，提前抓取入队会失效。
-                    公开频道的<b>视频</b>无需任何账号；<b>文件 / 音频帖</b>在匿名页仅提供文件名和大小，实际链接需 Telegram 登录会话 —— 这类条目仍会列出，但无法勾选，原因标注在对应行内。
+                    {{ tr('tg.anonHint1') }}
+                    {{ tr('tg.anonHint2a') }}<b>{{ tr('tg.typeVideo') }}</b>{{ tr('tg.anonHint2b') }}<b>{{ tr('tg.boldFilesAudio') }}</b>{{ tr('tg.anonHint2c') }}
                   </template>
                   <template v-else>
-                    使用已登录的 Telegram 账号：<b>私有频道</b>，以及匿名页无法获取直链的<b>文件 / 音频帖</b>均可列出并下载，下载由队列中的 MTProto 会话完成，不经过 yt-dlp。
-                    频道开启「限制保存内容」时，条目会标红；若获取文件时被 Telegram 拒绝，原因会原样显示在界面上，不绕过该保护。
+                    {{ tr('tg.mtHint1a') }}<b>{{ tr('tg.boldPrivate') }}</b>{{ tr('tg.mtHint1b') }}<b>{{ tr('tg.boldFilesAudio') }}</b>{{ tr('tg.mtHint1c') }}
+                    {{ tr('tg.mtHint2') }}
                   </template>
                 </span>
               </div>
               <div v-if="tgMode === 'mt'" style="margin-bottom:10px">
                 <div class="row row--tight row--mb">
                   <el-tag :type="tgMt.installed ? 'success' : 'danger'" size="small" effect="plain">
-                    telethon {{ tgMt.installed ? '已安装 ' + (tgMt.version || '') : '未安装' }}</el-tag>
+                    telethon {{ tgMt.installed ? tr('tg.installed') + ' ' + (tgMt.version || '') : tr('tg.notInstalled') }}</el-tag>
                   <el-tag :type="tgMt.configured ? 'success' : 'warning'" size="small" effect="plain">
-                    {{ tgMt.configured ? '凭据已填写' : '缺少 api_id / api_hash' }}</el-tag>
+                    {{ tgMt.configured ? tr('tg.credOk') : tr('tg.credMissing') }}</el-tag>
                   <el-tag :type="tgMt.logged_in ? 'success' : 'info'" size="small" effect="plain">
-                    {{ tgMt.logged_in ? ('已登录：' + ((tgMt.user && (tgMt.user.name || tgMt.user.phone || tgMt.user.id)) || '')) : '未登录' }}</el-tag>
+                    {{ tgMt.logged_in ? (tr('tg.loggedInPrefix') + ((tgMt.user && (tgMt.user.name || tgMt.user.phone || tgMt.user.id)) || '')) : tr('tg.notLoggedIn') }}</el-tag>
                   <span v-if="tgMt.next_step" class="hint" style="color:var(--warn)">{{ tgMt.next_step }}</span>
                   <el-button size="small" plain @click="tgMtShowCred = !tgMtShowCred">
-                    {{ tgMtShowCred ? '收起凭据/登录' : '凭据 / 登录' }}</el-button>
+                    {{ tgMtShowCred ? tr('tg.credCollapse') : tr('tg.credOpen') }}</el-button>
                 </div>
                 <div v-show="tgMtShowCred" style="padding:10px 12px;border:1px solid var(--el-border-color);border-radius:8px">
                   <div class="row row--tight row--mb">
                     <el-input v-model="tgMtForm.api_id" size="small" style="width:150px" placeholder="api_id"></el-input>
                     <el-input v-model="tgMtForm.api_hash" size="small" style="width:230px" type="password" show-password
-                              :placeholder="tgMt.has_hash ? 'api_hash（已保存，如需修改请重新填写）' : 'api_hash'"></el-input>
-                    <el-input v-model="tgMtForm.proxy" size="small" style="width:180px" placeholder="SOCKS5 代理 host:port（可留空）"></el-input>
-                    <el-input v-model="tgMtForm.session_name" size="small" style="width:150px" placeholder="session 名称"></el-input>
-                    <el-button size="small" type="primary" :loading="tgMtBusy" @click="saveTgMtConfig"><svg class="btn-ico"><use href="#i-save"></use></svg>保存凭据</el-button>
+                              :placeholder="tgMt.has_hash ? tr('tg.hashPhSaved') : 'api_hash'"></el-input>
+                    <el-input v-model="tgMtForm.proxy" size="small" style="width:180px" :placeholder="tr('tg.proxyPh')"></el-input>
+                    <el-input v-model="tgMtForm.session_name" size="small" style="width:150px" :placeholder="tr('tg.sessionPh')"></el-input>
+                    <el-button size="small" type="primary" :loading="tgMtBusy" @click="saveTgMtConfig"><svg class="btn-ico"><use href="#i-save"></use></svg>{{ tr('tg.saveCred') }}</el-button>
                     <span class="hint">
-                      api_id / api_hash 需在 <code>my.telegram.org</code> 使用该手机号申请；代理留空表示直连 ——
-                      Python 不读取系统代理，网络受阻时需在此手动填写 socks5，否则仅会超时。
+                      {{ tr('tg.credHint1') }} <code>my.telegram.org</code> {{ tr('tg.credHint2') }}
+                      {{ tr('tg.credHint3') }}
                     </span>
                   </div>
                   <div class="row row--tight">
                     <el-input v-model="tgMtPhone" size="small" style="width:170px" placeholder="+8613800000000"></el-input>
-                    <el-button size="small" :loading="tgMtBusy" @click="tgMtSendCode">发送验证码</el-button>
-                    <el-input v-model="tgMtCode" size="small" style="width:120px" placeholder="收到的验证码"></el-input>
-                    <el-input v-model="tgMtPwd" size="small" style="width:150px" type="password" show-password placeholder="两步验证云密码（如无请留空）"></el-input>
-                    <el-button size="small" type="primary" :loading="tgMtBusy" @click="tgMtSignIn"><svg class="btn-ico"><use href="#i-login"></use></svg>登录</el-button>
-                    <el-button size="small" plain :loading="tgMtBusy" @click="tgMtLogout">退出并删除会话</el-button>
-                    <span class="hint">验证码发送至手机上的 Telegram 客户端（不一定通过短信）；会话文件保存在本机的 tg_session 目录，不会进入分享包。</span>
+                    <el-button size="small" :loading="tgMtBusy" @click="tgMtSendCode">{{ tr('tg.sendCode') }}</el-button>
+                    <el-input v-model="tgMtCode" size="small" style="width:120px" :placeholder="tr('tg.codePh')"></el-input>
+                    <el-input v-model="tgMtPwd" size="small" style="width:150px" type="password" show-password :placeholder="tr('tg.pwdPh')"></el-input>
+                    <el-button size="small" type="primary" :loading="tgMtBusy" @click="tgMtSignIn"><svg class="btn-ico"><use href="#i-login"></use></svg>{{ tr('tg.signIn') }}</el-button>
+                    <el-button size="small" plain :loading="tgMtBusy" @click="tgMtLogout">{{ tr('tg.logout') }}</el-button>
+                    <span class="hint">{{ tr('tg.codeHint') }}</span>
                   </div>
                 </div>
               </div>
               <div class="row row--tight">
                 <el-input size="small" v-model="tgChannel" clearable style="width:250px" @paste="onPaste($event, 'url')" @keyup.enter="listTgChannel"
-                          :placeholder="tgMode === 'anon' ? '频道：@name / t.me/name / t.me/s/name' : '频道：@name / t.me/name / t.me/c/内部id / -100…'"></el-input>
+                          :placeholder="tgMode === 'anon' ? tr('tg.chanPhAnon') : tr('tg.chanPhMt')"></el-input>
                 <el-select v-model="tgTypes" multiple collapse-tags size="small" style="width:200px">
-                  <el-option v-for="t in tgTypeOptions" :key="t.value" :label="t.label" :value="t.value"></el-option>
+                  <el-option v-for="t in tgTypeOptions" :key="t.value" :label="tr(t.labelKey)" :value="t.value"></el-option>
                 </el-select>
-                <span class="hint">条数上限</span>
+                <span class="hint">{{ tr('tg.limitLabel') }}</span>
                 <el-input-number v-model="tgLimit" :min="1" :max="2000" size="small" style="width:100px"></el-input-number>
-                <span class="hint">日期范围</span>
-                <el-date-picker v-model="tgRange" type="daterange" size="small" unlink-panels range-separator="至"
-                                start-placeholder="起始" end-placeholder="结束" value-format="YYYY-MM-DD"
+                <span class="hint">{{ tr('tg.rangeLabel') }}</span>
+                <el-date-picker v-model="tgRange" type="daterange" size="small" unlink-panels :range-separator="tr('subs.dateTo')"
+                                :start-placeholder="tr('subs.dateStart')" :end-placeholder="tr('subs.dateEnd')" value-format="YYYY-MM-DD"
                                 :shortcuts="dateShortcuts" clearable style="width:230px"></el-date-picker>
-                <span class="hint" title="整个抓取过程的时间预算，到期后仅返回已获取的部分">时间预算（秒）</span>
+                <span class="hint" :title="tr('tg.budgetTip')">{{ tr('tg.budgetLabel') }}</span>
                 <el-input-number v-model="tgBudget" :min="10" :max="1800" size="small" style="width:96px"></el-input-number>
                 <template v-if="tgMode === 'anon'">
-                  <span class="hint" title="两页之间的间隔；翻页过快会被 t.me 限流">翻页间隔（秒）</span>
+                  <span class="hint" :title="tr('tg.sleepTip')">{{ tr('tg.sleepLabel') }}</span>
                   <el-input-number v-model="tgSleep" :min="0" :max="10" :step="0.2" :precision="1" size="small" style="width:96px"></el-input-number>
                 </template>
                 <el-checkbox v-if="tgMode === 'mt'" v-model="tgSkipSeen" size="small"
-                             title="已存在于本地下载记录的条目不再列出">跳过已下载</el-checkbox>
-                <el-button size="small" type="primary" :loading="tgListing" @click="listTgChannel"><svg class="btn-ico"><use href="#i-list"></use></svg>列出历史</el-button>
-                <el-button size="small" plain @click="gotoSubsAdd">长期追更 → 前往「订阅」页</el-button>
-                <el-button size="small" plain @click="clearTgResults">清空结果</el-button>
+                             :title="tr('tg.skipSeenTip')">{{ tr('tg.skipSeen') }}</el-checkbox>
+                <el-button size="small" type="primary" :loading="tgListing" @click="listTgChannel"><svg class="btn-ico"><use href="#i-list"></use></svg>{{ tr('tg.listBtn') }}</el-button>
+                <el-button size="small" plain @click="gotoSubsAdd">{{ tr('tg.gotoSubs') }}</el-button>
+                <el-button size="small" plain @click="clearTgResults">{{ tr('tg.clearBtn') }}</el-button>
               </div>
             </div>
             <div class="card">
               <div class="row row--spread row--mb">
                 <span class="hint">
-                  共 {{ tgResults.length }} 条 · 可下载 {{ tgDownloadable.length }} 条
-                  <span v-if="tgMode === 'mt' && tgProtectedRows.length"> · 限制保存 {{ tgProtectedRows.length }} 条</span>
-                  <span v-if="tgDiag.scanned"> · 扫描 {{ tgDiag.scanned }} 条消息 · {{ tgDiag.stopped }}</span>
-                  <span v-else-if="tgDiag.pages"> · 翻页 {{ tgDiag.pages }} 页 · {{ tgDiag.stopped }}</span>
+                  {{ tr('tg.countLine', { n: tgResults.length, m: tgDownloadable.length }) }}
+                  <span v-if="tgMode === 'mt' && tgProtectedRows.length">{{ tr('tg.protCount', { n: tgProtectedRows.length }) }}</span>
+                  <span v-if="tgDiag.scanned">{{ tr('tg.scannedCount', { n: tgDiag.scanned }) }} {{ tgDiag.stopped }}</span>
+                  <span v-else-if="tgDiag.pages">{{ tr('tg.pagedCount', { n: tgDiag.pages }) }} {{ tgDiag.stopped }}</span>
                 </span>
                 <div class="row row--tight">
-                  <el-checkbox v-model="tgAudioOnly" size="small" title="仅保留音频轨，不下载视频画面">仅下载音频</el-checkbox>
-                  <el-button type="primary" size="small" :disabled="!tgSelected.length" @click="downloadTgSelected"><svg class="btn-ico"><use href="#i-download"></use></svg>选中项加入队列 ({{ tgSelected.length }})</el-button>
-                  <el-button size="small" plain :disabled="!tgResults.length" @click="copyTgUrls">复制全部链接</el-button>
+                  <el-checkbox v-model="tgAudioOnly" size="small" :title="tr('tg.audioOnlyTip')">{{ tr('tg.audioOnly') }}</el-checkbox>
+                  <el-button type="primary" size="small" :disabled="!tgSelected.length" @click="downloadTgSelected"><svg class="btn-ico"><use href="#i-download"></use></svg>{{ tr('tg.enqueueSel', { n: tgSelected.length }) }}</el-button>
+                  <el-button size="small" plain :disabled="!tgResults.length" @click="copyTgUrls">{{ tr('tg.copyAll') }}</el-button>
                 </div>
               </div>
-              <div v-if="!tgResults.length" class="empty-tip">填写频道名后点击「列出历史」；仅需确认频道是否正确时，可把条数上限调小后少量尝试</div>
+              <div v-if="!tgResults.length" class="empty-tip">{{ tr('tg.emptyTip') }}</div>
               <div v-if="tgErrors.length" class="warn-box">
-                <div style="font-weight:600;margin-bottom:2px">本次读取报错：</div>
+                <div style="font-weight:600;margin-bottom:2px">{{ tr('tg.errorsTitle') }}</div>
                 <div v-for="[k, v] in tgErrors" :key="k">· {{ k }} —— {{ v }}</div>
               </div>
               <el-table v-if="tgResults.length" :data="pagers.tg.paged" size="small" stripe @selection-change="onTgSelection" @sort-change="onTgSortChange">
                 <el-table-column type="selection" width="42" :selectable="tgRowSelectable"></el-table-column>
-                <el-table-column label="类型" width="80">
+                <el-table-column :label="tr('tg.colType')" width="80">
                   <template #default="{ row }">{{ tgTypeLabel(row.type) }}</template>
                 </el-table-column>
-                <el-table-column prop="date" label="日期" width="100" sortable="custom" :sort-orders="['ascending', 'descending']"></el-table-column>
-                <el-table-column prop="duration" label="时长" width="66"></el-table-column>
-                <el-table-column prop="title" label="标题 / 文件名" min-width="260" sortable="custom" :sort-orders="['ascending', 'descending']">
+                <el-table-column prop="date" :label="tr('tg.colDate')" width="100" sortable="custom" :sort-orders="['ascending', 'descending']"></el-table-column>
+                <el-table-column prop="duration" :label="tr('common.colDuration')" width="66"></el-table-column>
+                <el-table-column prop="title" :label="tr('tg.colTitleFile')" min-width="260" sortable="custom" :sort-orders="['ascending', 'descending']">
                   <template #default="{ row }">
                     <span>{{ row.title }}</span>
                     <span v-if="row.size_text" class="hint"> · {{ row.size_text }}</span>
                   </template>
                 </el-table-column>
-                <el-table-column label="状态" width="170">
+                <el-table-column :label="tr('common.colStatus')" width="170">
                   <template #default="{ row }">
-                    <el-tag v-if="row.protected" type="danger" size="small" effect="dark" :title="row.note">限制保存内容</el-tag>
-                    <span v-if="row.downloadable && !row.protected" style="color:var(--ok)">可下载</span>
-                    <span v-else-if="!row.downloadable" style="color:var(--bad)" :title="row.note">仅可列出</span>
-                    <span v-if="row.note && row.protected" class="hint" style="font-size:12px">无法获取时将如实报错</span>
+                    <el-tag v-if="row.protected" type="danger" size="small" effect="dark" :title="row.note">{{ tr('tg.protTag') }}</el-tag>
+                    <span v-if="row.downloadable && !row.protected" style="color:var(--ok)">{{ tr('tg.dlOk') }}</span>
+                    <span v-else-if="!row.downloadable" style="color:var(--bad)" :title="row.note">{{ tr('tg.listOnly') }}</span>
+                    <span v-if="row.note && row.protected" class="hint" style="font-size:12px">{{ tr('tg.protNote') }}</span>
                   </template>
                 </el-table-column>
-                <el-table-column label="操作" width="150">
+                <el-table-column :label="tr('common.colOps')" width="150">
                   <template #default="{ row }">
-                    <el-button size="small" plain :disabled="!row.downloadable" @click="downloadTgRow(row)">入队</el-button>
-                    <el-button size="small" plain @click="openTgRow(row)">查看帖子</el-button>
+                    <el-button size="small" plain :disabled="!row.downloadable" @click="downloadTgRow(row)">{{ tr('tg.enqueueRow') }}</el-button>
+                    <el-button size="small" plain @click="openTgRow(row)">{{ tr('tg.viewPost') }}</el-button>
                   </template>
                 </el-table-column>
               </el-table>
               <el-pagination v-if="pagers.tg.show" v-model:current-page="pagers.tg.page" :page-size="pagers.tg.pageSize"
                              :total="pagers.tg.total" layout="total, prev, pager, next, jumper" size="small" background class="pager"></el-pagination>
-              <div v-if="pagers.tg.show" class="hint hint--block">翻页后当前页的勾选会清空，请分页勾选后分别执行批量操作</div>
+              <div v-if="pagers.tg.show" class="hint hint--block">{{ tr('files.pagerHint') }}</div>
             </div>
           </div>
 
@@ -11255,17 +11255,17 @@
         const tgMtShowCred = ref(false);
         const tgSkipSeen = ref(true);
         const tgTypeOptions = [
-          { value: 'video', label: '视频' },
-          { value: 'audio', label: '音频文件' },
-          { value: 'document', label: '文档' },
-          { value: 'voice', label: '语音' },
-          { value: 'photo', label: '图片' },
+          { value: 'video', labelKey: 'tg.typeVideo' },
+          { value: 'audio', labelKey: 'tg.typeAudio' },
+          { value: 'document', labelKey: 'tg.typeDocument' },
+          { value: 'voice', labelKey: 'tg.typeVoice' },
+          { value: 'photo', labelKey: 'tg.typePhoto' },
         ];
-        const tgTypeMap = { video: '视频', audio: '音频文件', document: '文档', voice: '语音', photo: '图片' };
+        const tgTypeKeys = Object.fromEntries(tgTypeOptions.map(t => [t.value, t.labelKey]));
         const tgErrors = computed(() => Object.entries(tgDiag.value.errors || {}));
         const tgDownloadable = computed(() => tgResults.value.filter(r => r.downloadable));
         const tgProtectedRows = computed(() => tgResults.value.filter(r => r.protected));
-        function tgTypeLabel(t) { return tgTypeMap[t] || t; }
+        function tgTypeLabel(t) { const k = tgTypeKeys[t]; return k ? tr(k) : t; }
         function tgRowSelectable(row) { return !!row.downloadable; }
         function onTgSelection(rows) { tgSelected.value = rows || []; }
         function clearTgResults() {
@@ -11281,14 +11281,14 @@
             tgSkipSeen.value = r.skip_seen !== false;
             if (!r.has_hash) tgMtForm.value.api_hash = '';
           } catch (e) {
-            if (loud) ElementPlus.ElMessage.error('会话状态没拿到：' + String(e.message || e));
+            if (loud) ElementPlus.ElMessage.error(tr('tg.statusFail') + String(e.message || e));
           }
         }
         async function saveTgMtConfig() {
           const f = tgMtForm.value;
           if (!String(f.api_id || '').trim() || !String(f.api_hash || '').trim()) {
             if (!tgMt.value.has_hash) {
-              ElementPlus.ElMessage.warning('api_id 和 api_hash 都要填：去 my.telegram.org 用这个手机号申请');
+              ElementPlus.ElMessage.warning(tr('tg.credRequired'));
               return;
             }
           }
@@ -11298,7 +11298,7 @@
           tgMtBusy.value = true;
           try {
             const r = await api('/api/telegram/mt/config', { method: 'POST', body: JSON.stringify(body) });
-            ElementPlus.ElMessage.success(r.message || '已保存');
+            ElementPlus.ElMessage.success(r.message || tr('tg.saved'));
             tgMtForm.value.api_hash = '';
             await loadTgMtStatus(true);
           } catch (e) {
@@ -11313,9 +11313,9 @@
             const r = await api('/api/telegram/mt/send-code', {
               method: 'POST', body: JSON.stringify({ phone: tgMtPhone.value }),
             });
-            if (!r.ok) { ElementPlus.ElMessage.error(r.message || '验证码没发出去'); return; }
+            if (!r.ok) { ElementPlus.ElMessage.error(r.message || tr('tg.sendFail')); return; }
             ElementPlus.ElMessage.success(
-              `码已发到 ${r.phone}（${r.is_email ? '注册邮箱' : '手机上的 Telegram 客户端'}，${r.length} 位），填回来点「登录」`);
+              tr('tg.sentA', { p: r.phone }) + (r.is_email ? tr('tg.sentEmail') : tr('tg.sentClient')) + tr('tg.sentB', { n: r.length }));
             await loadTgMtStatus(false);
           } catch (e) {
             ElementPlus.ElMessage.error(String(e.message || e));
@@ -11325,7 +11325,7 @@
         }
         async function tgMtSignIn() {
           if (!String(tgMtCode.value || '').trim()) {
-            ElementPlus.ElMessage.warning('先点「发验证码」，再把收到的码填进来');
+            ElementPlus.ElMessage.warning(tr('tg.needCode'));
             return;
           }
           tgMtBusy.value = true;
@@ -11335,12 +11335,12 @@
               body: JSON.stringify({ code: tgMtCode.value, password: tgMtPwd.value || '' }),
             });
             if (r.needs_password) {
-              ElementPlus.ElMessage.warning(r.message || '该账号已开启两步验证：请填写云密码后再次点击登录');
+              ElementPlus.ElMessage.warning(r.message || tr('tg.needPwd'));
               return;
             }
-            if (!r.ok) { ElementPlus.ElMessage.error(r.message || '登录失败'); return; }
+            if (!r.ok) { ElementPlus.ElMessage.error(r.message || tr('tg.signInFail')); return; }
             const u = r.user || {};
-            ElementPlus.ElMessage.success(`已登录：${u.name || u.phone || u.id || ''}`);
+            ElementPlus.ElMessage.success(tr('tg.loggedInPrefix') + (u.name || u.phone || u.id || ''));
             tgMtCode.value = ''; tgMtPwd.value = '';
             await loadTgMtStatus(true);
           } catch (e) {
@@ -11352,13 +11352,13 @@
         async function tgMtLogout() {
           try {
             await ElementPlus.ElMessageBox.confirm(
-              '退出将删除本机的 Telegram 会话文件，下次读取历史需重新接收验证码。凭据（api_id / api_hash）不会被删除。',
-              '退出 Telegram 会话', { type: 'warning', confirmButtonText: '退出并删除会话', cancelButtonText: '取消' });
+              tr('tg.logoutBody'),
+              tr('tg.logoutTitle'), { type: 'warning', confirmButtonText: tr('tg.logout'), cancelButtonText: tr('common.cancel') });
           } catch (_) { return; }
           tgMtBusy.value = true;
           try {
             const r = await api('/api/telegram/mt/logout', { method: 'POST', body: '{}' });
-            ElementPlus.ElMessage.success(r.ok ? '已退出，本地会话已删除' : (r.message || '退出未完成'));
+            ElementPlus.ElMessage.success(r.ok ? tr('tg.loggedOut') : (r.message || tr('tg.logoutIncomplete')));
             await loadTgMtStatus(true);
           } catch (e) {
             ElementPlus.ElMessage.error(String(e.message || e));
@@ -11373,11 +11373,11 @@
         }
         async function listTgChannel() {
           if (!String(tgChannel.value || '').trim()) {
-            ElementPlus.ElMessage.warning('请先填写频道名');
+            ElementPlus.ElMessage.warning(tr('tg.needChannel'));
             return;
           }
           if (!(tgTypes.value || []).length) {
-            ElementPlus.ElMessage.warning('至少选一种类型');
+            ElementPlus.ElMessage.warning(tr('tg.needTypes'));
             return;
           }
           const isMt = tgMode.value === 'mt';
@@ -11385,7 +11385,7 @@
             tgMtShowCred.value = true;
             await loadTgMtStatus(true);
             if (!tgMt.value.logged_in) {
-              ElementPlus.ElMessage.warning(tgMt.value.next_step || '先用上面的凭据框登录你的 Telegram 账号');
+              ElementPlus.ElMessage.warning(tgMt.value.next_step || tr('tg.needLogin'));
               return;
             }
           }
@@ -11417,12 +11417,12 @@
             tgDiag.value = r.diag || {};
             tgSelected.value = [];
             if (!tgResults.value.length) {
-              ElementPlus.ElMessage.warning((r.diag && r.diag.stopped) || '未列出条目');
+              ElementPlus.ElMessage.warning((r.diag && r.diag.stopped) || tr('tg.noneListed'));
             } else {
               ElementPlus.ElMessage.success(isMt
-                ? `会话列出 ${tgResults.value.length} 条` + (tgProtectedRows.value.length
-                    ? `，其中 ${tgProtectedRows.value.length} 条来自开启「限制保存内容」的频道` : '')
-                : `列出 ${tgResults.value.length} 条，其中 ${tgDownloadable.value.length} 条可匿名下载`);
+                ? tr('tg.listedMt', { n: tgResults.value.length }) + (tgProtectedRows.value.length
+                    ? tr('tg.listedMtProt', { n: tgProtectedRows.value.length }) : '')
+                : tr('tg.listedAnon', { n: tgResults.value.length, m: tgDownloadable.value.length }));
             }
           } catch (e) {
             ElementPlus.ElMessage.error(String(e.message || e));
@@ -11439,9 +11439,9 @@
           const names = pending.map(([peer, name]) => `${name}（${peer}）`).join('、');
           try {
             await ElementPlus.ElMessageBox.confirm(
-              `这些频道开启了「限制保存内容」：${names}。条目可以列出，但获取文件时 Telegram 很可能直接拒绝 —— `
-              + '这是频道主人的设置，本工具不绕过该保护；被拒绝时会把原因如实写入任务。仍要逐条尝试吗？',
-              '受限频道首次确认', { type: 'warning', confirmButtonText: '已知风险，继续', cancelButtonText: '暂不下载这些' });
+              tr('tg.protBodyA') + names + tr('tg.protBodyB') + ' '
+              + tr('tg.protBodyC'),
+              tr('tg.protTitle'), { type: 'warning', confirmButtonText: tr('tg.protGo'), cancelButtonText: tr('tg.protSkip') });
           } catch (_) { return false; }
           for (const [peer] of pending) {
             try {
@@ -11458,8 +11458,8 @@
           const urls = [...new Set(usable.map(key))];
           if (!urls.length) {
             ElementPlus.ElMessage.warning(isMt
-              ? '选中的条目没有可下载的链接，请先重新列出历史'
-              : '选中的条目匿名无法获取直链，请切换到「使用账号会话」后重试');
+              ? tr('tg.noLinkMt')
+              : tr('tg.noLinkAnon'));
             return;
           }
           if (isMt && !(await tgAckProtected(usable))) return;
@@ -11475,10 +11475,10 @@
             });
             const mergedPosts = usable.length - urls.length;
             ElementPlus.ElMessage.success(
-              `已入队 ${r.added} 条` + (isMt ? '（走 Telegram 账号会话）' : '帖子')
-              + (!isMt && mergedPosts ? ` · 同帖多视频合并掉 ${mergedPosts} 条` : '')
-              + (r.merged ? ` · 去掉重复 ${r.merged} 条` : '')
-              + (r.skipped ? ` · ${r.skipped} 条链接无效被忽略` : ''));
+              tr('tg.enqueued', { n: r.added }) + (isMt ? tr('tg.enqueuedMt') : tr('tg.enqueuedPosts'))
+              + (!isMt && mergedPosts ? ' ' + tr('tg.mergedPosts', { n: mergedPosts }) : '')
+              + (r.merged ? ' ' + tr('tg.deduped', { n: r.merged }) : '')
+              + (r.skipped ? ' ' + tr('tg.badLinks', { n: r.skipped }) : ''));
             page.value = 'queue';
             loadTasks();
           } catch (e) {
@@ -11492,9 +11492,9 @@
           const text = tgResults.value.map(r => r.url).join('\n');
           try {
             await navigator.clipboard.writeText(text);
-            ElementPlus.ElMessage.success(`已复制 ${tgResults.value.length} 条帖子链接`);
+            ElementPlus.ElMessage.success(tr('tg.copied', { n: tgResults.value.length }));
           } catch (e) {
-            ElementPlus.ElMessage.error('浏览器拒绝了剪贴板写入，可从表格里逐条打开');
+            ElementPlus.ElMessage.error(tr('tg.clipFail'));
           }
         }
 
