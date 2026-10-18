@@ -432,7 +432,7 @@ def strip_comments(src: str) -> str:
     return re.sub(r"<!--.*?-->", "", src, flags=re.S)
 
 
-PAGES_DONE = ["home", "queue", "bt", "files", "subs", "music", "settings", "tg"]   # ← 每翻完一页把页名加进来；登记了却没翻干净会被 I3 判红
+PAGES_DONE = ["home", "queue", "bt", "files", "subs", "music", "settings", "tg", "sniff"]   # ← 每翻完一页把页名加进来；登记了却没翻干净会被 I3 判红
 ck("I2 PAGES_DONE 都是真有的页", all(page_block(k) for k in PAGES_DONE),
    str([k for k in PAGES_DONE if not page_block(k)]))
 for _pg in PAGES_DONE:
@@ -531,6 +531,16 @@ PAGE_HANDLERS = {
     "tg": ["clearTgResults", "copyTgUrls", "gotoSubsAdd", "listTgChannel", "loadTgMtStatus",
            "onTgSortChange", "saveTgMtConfig", "tgAckProtected", "tgEnqueue",
            "tgMtLogout", "tgMtSendCode", "tgMtSignIn"],
+    # 嗅探页：三张卡（浏览器 CDP 嗅探 / 静态页面嗅探 / 接收猫抓推送）都在同一段模板里，
+    # 名单来自 tmp/sniff_scope.py（模板调用点 + 一层铺出来的 pollBrowserSniff）。
+    # 遇到共用底座就停：sniffDownloadSelected 背后那串 loadTasks → applyTaskList → notifyDone
+    # 归队列页，登记过来只会把同一句中文数两遍、报在错的页头上。
+    # copyText 同样没登记（六页共用，那两枚「已复制 / 复制失败」跟着共用底座那一批收）；
+    # sniffSelectNone 是一行的函数，js_fn() 会把后面整个函数体一起抠进来，登记等于把 runSniff 数两遍。
+    "sniff": ["clearBrowserSniff", "clearCatcatchRules", "deleteCatcatchRule", "loadCatcatch",
+              "onCatcatchConfig", "pollBrowserSniff", "runSniff", "sniffDownloadMerge",
+              "sniffDownloadOne", "sniffDownloadSelected", "sniffSelectAll", "startBrowserSniff",
+              "stopBrowserSniff", "toggleCatcatchRule", "triggerCatcatchImport"],
 }
 # 允许留中文的处理器：这些行比的是后端发来的数据（预设名、占位标题），翻成英文这行判断就失效。
 # 「允许留下」不等于「不用管」——残留的行数和那几句都钉死，改了名字或悄悄多出一行都判红
@@ -569,7 +579,8 @@ ck("I5b 每个允许留中文的处理器都登记在某一页里（漏登记就
 # logAction 认到左括号为止、ccCall 同理：设置页那一批把句子换成了 tr(...)，动作名却在参数里留着中文，
 # 这两种写法都要认得到，否则「翻完了」会表现为埋点行凭空少几条。
 MAIDIAN = re.compile(r"""uiName:|logAction\(|logSort\(|ccCall\(""")
-MAIDIAN_EXPECT = {"home": 0, "queue": 0, "bt": 7, "files": 4, "subs": 0, "music": 5, "settings": 17, "tg": 1}
+MAIDIAN_EXPECT = {"home": 0, "queue": 0, "bt": 7, "files": 4, "subs": 0, "music": 5, "settings": 17, "tg": 1,
+                  "sniff": 0}
 # 来源类型那一列的名字与提示：键不是写在 tr(' …') 里而是存在表里（labelKey / hintKey），
 # 上面那遍字面扫抓不到它们，所以单独比一遍 —— 少哪一份英文界面就印键名
 kind_meta = block(HTML, "const SUB_KIND_META = {", "};")
@@ -585,6 +596,42 @@ tg_type_miss = [k for k in tg_type_keys if k not in DICT["zh"] or k not in DICT[
 ck("I10 Telegram 类型表五个键两份词表都有，表里也不留第二份 label",
    len(tg_type_keys) == 5 and not tg_type_miss and "label:" not in tg_type_blob,
    f"{len(tg_type_keys)} 个键，缺：{tg_type_miss}")
+# 分隔符这类字符（· ， 、）到底算文案还是算排版，两边写重了只有浏览器看得出来：
+# 值里带「·」、模板那一行又留了一份，界面印成「· ·」；反过来值里没有、模板里的空格又被 Vue 压掉，
+# 点前少一个空格。 sniff 页撞上的正是第一种（sniff.ccLast 与它前面那个字面「·」），活体 A/B 量出来的。
+# 认的是「同一个分隔符在插值两边紧邻的模板文本里又出现了一次」，两边都不许。
+SEP_CH = "·，、；,·"
+_tr_hit = re.compile(r"\{\{\s*tr\('([\w.-]+)'\s*[,)]")
+
+
+def sep_dupes(tpl: str, zh: dict, en: dict) -> list:
+    out = []
+    for m in _tr_hit.finditer(tpl):
+        k = m.group(1)
+        ls = tpl.rfind("\n", 0, m.start()) + 1
+        gap_b = tpl[max(tpl.rfind("}}", ls, m.start()), ls):m.start()]
+        ne = tpl.find("{{", m.end())
+        ne = len(tpl) if ne < 0 else ne
+        after = tpl[m.end():ne]
+        gap_a = after[after.find("}}") + 2:] if "}}" in after else after
+        for half, d in (("zh", zh), ("en", en)):
+            v = d.get(k) or ""
+            if not v:
+                continue
+            if v[0] in SEP_CH and v[0] in gap_b:
+                out.append("%s/%s 值开头那个「%s」，模板前面又写了一遍：%r" % (half, k, v[0], gap_b[-46:]))
+            if v[-1] in SEP_CH and v[-1] in gap_a:
+                out.append("%s/%s 值结尾那个「%s」，模板后面又写了一遍：%r" % (half, k, v[-1], gap_a[:46]))
+    return out
+
+
+_sep_now = sep_dupes(TEMPLATE, DICT["zh"], DICT["en"])
+ck("I11a 模板与词表没有把同一个分隔符各写一份", not _sep_now, str(_sep_now[:4]))
+# 反向对照：把 ccLast 的 zh 改回带点的那份写法，上面那条必须报错 —— 不然它可能是空转
+_probe = dict(DICT["zh"])
+_probe["sniff.ccLast"] = "· 最近一次 {at}"
+ck("I11b 分隔符那条闸门自己会响（把 ccLast 的 zh 改回带点的写法必须判红）",
+   bool(sep_dupes(TEMPLATE, _probe, DICT["en"])))
 for _pg, _fns in PAGE_HANDLERS.items():
     _md = 0
     for _fn in _fns:

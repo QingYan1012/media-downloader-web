@@ -4046,59 +4046,59 @@
           <!-- 网页嗅探 -->
           <div v-if="page === 'sniff'">
             <div class="card">
-              <div class="section-title">浏览器网络嗅探（推荐，与下蛋一致）</div>
+              <div class="section-title">{{ tr('sniff.titleBrowser') }}</div>
               <p class="hint hint--block">
-                连接本机 Chrome/Edge，监听页面实际加载的视频/音频/HLS。适用于需登录、点击播放后才出现流地址的网站。
+                {{ tr('sniff.browserHint') }}
               </p>
               <div class="row row--tight row--mb">
-                <el-input size="small" v-model="sniffUrl" clearable placeholder="可选：启动时打开的网址" style="flex:1;min-width:220px"></el-input>
+                <el-input size="small" v-model="sniffUrl" clearable :placeholder="tr('sniff.urlPh')" style="flex:1;min-width:220px"></el-input>
                 <el-input-number v-model="browserSniffPort" :min="9222" :max="65535" size="small"></el-input-number>
-                <el-button size="small" type="primary" :loading="browserSniffLoading" :disabled="browserSniff.running" @click="startBrowserSniff('launch')"><svg class="btn-ico"><use href="#i-play"></use></svg>启动托管浏览器</el-button>
-                <el-button size="small" :loading="browserSniffLoading" :disabled="browserSniff.running" @click="startBrowserSniff('attach')">连接已有 Chrome</el-button>
-                <el-button size="small" type="danger" plain :disabled="!browserSniff.running" @click="stopBrowserSniff">停止监听</el-button>
-                <el-button size="small" plain @click="clearBrowserSniff">清空列表</el-button>
+                <el-button size="small" type="primary" :loading="browserSniffLoading" :disabled="browserSniff.running" @click="startBrowserSniff('launch')"><svg class="btn-ico"><use href="#i-play"></use></svg>{{ tr('sniff.btnLaunch') }}</el-button>
+                <el-button size="small" :loading="browserSniffLoading" :disabled="browserSniff.running" @click="startBrowserSniff('attach')">{{ tr('sniff.btnAttach') }}</el-button>
+                <el-button size="small" type="danger" plain :disabled="!browserSniff.running" @click="stopBrowserSniff">{{ tr('sniff.btnStop') }}</el-button>
+                <el-button size="small" plain @click="clearBrowserSniff">{{ tr('sniff.btnClear') }}</el-button>
               </div>
               <div class="hint" style="margin-bottom:12px">
-                状态：<strong>{{ browserSniff.status || 'idle' }}</strong>
-                · 端口 {{ browserSniff.port || 9222 }}
-                · 资源 {{ browserSniff.count || 0 }}
-                <span v-if="browserSniff.tabs && browserSniff.tabs.length"> · 标签 {{ browserSniff.tabs.length }}</span>
+                {{ tr('sniff.stateLabel') }}<strong>{{ browserSniff.status || 'idle' }}</strong>
+                {{ tr('sniff.statePort', { p: browserSniff.port || 9222 }) }}
+                {{ tr('sniff.stateRes', { r: browserSniff.count || 0 }) }}
+                <span v-if="browserSniff.tabs && browserSniff.tabs.length"> {{ tr('sniff.stateTabs', { t: browserSniff.tabs.length }) }}</span>
                 <span v-if="browserSniff.error" style="color:var(--bad)"> · {{ browserSniff.error }}</span>
               </div>
               <div class="hint" style="margin-bottom:14px;padding:10px;background:var(--accent-soft);border-radius:10px;line-height:1.6">
-                <b>用法（与下蛋类似）</b><br/>
-                1. 单击「启动托管浏览器」，或先手动以调试模式启动 Chrome：<code>chrome --remote-debugging-port=9222</code>，再单击「连接」<br/>
-                2. 在浏览器中打开目标页面，完成登录 / 验证码 / 点击播放<br/>
-                3. 下方列表实时显示 m3u8、mp4、音视频流，勾选后下载<br/>
-                4. 若连接失败，请关闭全部 Chrome 窗口后重试「启动托管浏览器」
+                <b>{{ tr('sniff.usageHead') }}</b><br/>
+                {{ tr('sniff.usageStep1a') }}<code>chrome --remote-debugging-port=9222</code>{{ tr('sniff.usageStep1b') }}<br/>
+                {{ tr('sniff.usageStep2') }}<br/>
+                {{ tr('sniff.usageStep3') }}<br/>
+                {{ tr('sniff.usageStep4') }}
               </div>
             </div>
             <div class="card">
-              <div class="section-title">静态页面嗅探（无需浏览器）</div>
-              <p class="hint hint--block">仅请求 HTML + yt-dlp，适用于公开页面；动态加载的流请使用上方浏览器嗅探。</p>
+              <div class="section-title">{{ tr('sniff.titleStatic') }}</div>
+              <p class="hint hint--block">{{ tr('sniff.staticHint') }}</p>
               <div class="path-row">
                 <el-input size="small" v-model="sniffUrl" clearable placeholder="https://example.com/watch/..." @keyup.enter="runSniff"></el-input>
-                <el-button size="small" type="primary" :loading="sniffLoading" @click="runSniff"><svg class="btn-ico"><use href="#i-search"></use></svg>开始嗅探</el-button>
+                <el-button size="small" type="primary" :loading="sniffLoading" @click="runSniff"><svg class="btn-ico"><use href="#i-search"></use></svg>{{ tr('sniff.btnRun') }}</el-button>
               </div>
               <div class="row row--mt row--tight" v-if="sniffDisplayItems.length">
-                <el-button size="small" @click="sniffSelectAll">全选</el-button>
-                <el-button size="small" @click="sniffSelectNone">取消全选</el-button>
-                <el-button type="primary" size="small" :disabled="!sniffSelected.length" @click="sniffDownloadSelected"><svg class="btn-ico"><use href="#i-download"></use></svg>下载选中 ({{ sniffSelected.length }})</el-button>
+                <el-button size="small" @click="sniffSelectAll">{{ tr('common.selectAll') }}</el-button>
+                <el-button size="small" @click="sniffSelectNone">{{ tr('common.deselectAll') }}</el-button>
+                <el-button type="primary" size="small" :disabled="!sniffSelected.length" @click="sniffDownloadSelected"><svg class="btn-ico"><use href="#i-download"></use></svg>{{ tr('sniff.btnDlSel', { n: sniffSelected.length }) }}</el-button>
                 <el-button type="primary" plain size="small" :disabled="!canSniffMerge" :loading="sniffMergeLoading" @click="sniffDownloadMerge">
-                  下载并合并音视频
+                  {{ tr('sniff.btnMerge') }}
                 </el-button>
-                <span v-if="sniffSelected.length && !canSniffMerge" class="hint" style="margin:0">请分别勾选 1 条 video 与 1 条 audio</span>
+                <span v-if="sniffSelected.length && !canSniffMerge" class="hint" style="margin:0">{{ tr('sniff.mergeNeed') }}</span>
               </div>
-              <div v-if="!sniffDisplayItems.length && sniffDone && !browserSniff.running" class="empty-tip" style="margin-top:16px">未发现媒体链接</div>
+              <div v-if="!sniffDisplayItems.length && sniffDone && !browserSniff.running" class="empty-tip" style="margin-top:16px">{{ tr('sniff.noMedia') }}</div>
               <table v-if="sniffDisplayItems.length" class="fmt-table" style="margin-top:14px">
                 <thead>
                   <tr>
                     <th style="width:40px"></th>
-                    <th>类型</th>
-                    <th>来源</th>
-                    <th>标题 / 说明</th>
-                    <th>链接</th>
-                    <th>操作</th>
+                    <th>{{ tr('common.colType') }}</th>
+                    <th>{{ tr('common.colSource') }}</th>
+                    <th>{{ tr('sniff.colTitleNote') }}</th>
+                    <th>{{ tr('common.colLink') }}</th>
+                    <th>{{ tr('common.colOps') }}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -4109,8 +4109,8 @@
                     <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis" :title="it.title || it.note">{{ it.title || it.note || '-' }}</td>
                     <td style="max-width:280px;overflow:hidden;text-overflow:ellipsis" :title="it.url">{{ it.url }}</td>
                     <td style="white-space:nowrap">
-                      <el-button size="small" plain @click="sniffDownloadOne(it)">下载</el-button>
-                      <el-button size="small" plain @click="copyText(it.url)">复制</el-button>
+                      <el-button size="small" plain @click="sniffDownloadOne(it)">{{ tr('common.dl') }}</el-button>
+                      <el-button size="small" plain @click="copyText(it.url)">{{ tr('auth.copyBtn') }}</el-button>
                     </td>
                   </tr>
                 </tbody>
@@ -4119,44 +4119,44 @@
                              :total="pagers.sniff.total" layout="total, prev, pager, next, jumper" size="small" background class="pager"></el-pagination>
             </div>
             <div class="card">
-              <div class="section-title">接收猫抓（cat-catch）推送</div>
+              <div class="section-title">{{ tr('sniff.titleCatcatch') }}</div>
               <p class="hint hint--block">
-                猫抓是浏览器资源嗅探扩展。在它的「设置 → 发送数据」里填下面两项，并把「请求方法」选为 POST，之后在猫抓的资源列表里点发送，地址会直接进本工具的下载队列。
+                {{ tr('sniff.ccHint') }}
               </p>
               <div class="row row--tight row--mb">
-                <span class="hint" style="margin:0;min-width:92px">发送数据 URL</span>
+                <span class="hint" style="margin:0;min-width:92px">{{ tr('sniff.ccLblSend') }}</span>
                 <el-input size="small" :model-value="catcatch.endpoint" readonly style="flex:1;min-width:260px"></el-input>
-                <el-button size="small" @click="copyText(catcatch.endpoint)">复制</el-button>
+                <el-button size="small" @click="copyText(catcatch.endpoint)">{{ tr('auth.copyBtn') }}</el-button>
               </div>
               <div class="row row--tight row--mb">
-                <span class="hint" style="margin:0;min-width:92px">请求体模板</span>
+                <span class="hint" style="margin:0;min-width:92px">{{ tr('sniff.ccLblBody') }}</span>
                 <el-input size="small" :model-value="catcatch.bodyTemplate" readonly style="flex:1;min-width:260px"></el-input>
-                <el-button size="small" @click="copyText(catcatch.bodyTemplate)">复制</el-button>
+                <el-button size="small" @click="copyText(catcatch.bodyTemplate)">{{ tr('auth.copyBtn') }}</el-button>
               </div>
               <div class="hint" style="margin-bottom:12px">
-                累计接收 {{ catcatch.stat.received || 0 }} 条 · 被规则挡下 {{ catcatch.stat.dropped || 0 }} 条 ·
-                待用解密钥 {{ catcatch.keys_waiting || 0 }} 个<span v-if="catcatch.stat.last"> · 最近一次 {{ catcatch.stat.last }}</span>
+                {{ tr('sniff.ccStatA', { got: catcatch.stat.received || 0, dropped: catcatch.stat.dropped || 0 }) }}
+                {{ tr('sniff.ccStatB', { waiting: catcatch.keys_waiting || 0 }) }}<span v-if="catcatch.stat.last"> · {{ tr('sniff.ccLast', { at: catcatch.stat.last }) }}</span>
               </div>
               <div class="hint" style="margin-bottom:14px;padding:10px;background:var(--accent-soft);border-radius:10px;line-height:1.7">
-                <b>两点须知</b><br/>
-                一、推送内容里带有该网站的登录 Cookie，请把「发送数据 URL」保持为上面这个 127.0.0.1 地址，不要改成外网地址。<br/>
-                二、猫抓官方文档写明该功能仍在测试，不同版本的推送格式略有差异；接收端对常见格式都能识别，识别不了时会在「运行日志」里点名原因。
+                <b>{{ tr('sniff.ccNotesTitle') }}</b><br/>
+                {{ tr('sniff.ccNote1') }}<br/>
+                {{ tr('sniff.ccNote2') }}
               </div>
               <div class="row row--tight">
-                <el-button size="small" @click="triggerCatcatchImport">导入猫抓配置文件</el-button>
+                <el-button size="small" @click="triggerCatcatchImport">{{ tr('sniff.btnImportCfg') }}</el-button>
                 <input ref="catcatchFileInput" type="file" accept=".txt,.json,text/plain" style="display:none" @change="onCatcatchConfig" />
-                <el-button size="small" plain :disabled="!catcatch.rules.length" @click="clearCatcatchRules">清空规则</el-button>
-                <el-button size="small" plain @click="loadCatcatch">刷新</el-button>
+                <el-button size="small" plain :disabled="!catcatch.rules.length" @click="clearCatcatchRules">{{ tr('sniff.btnClearRules') }}</el-button>
+                <el-button size="small" plain @click="loadCatcatch">{{ tr('common.refresh') }}</el-button>
               </div>
-              <div class="hint" style="margin-top:8px">导入的是猫抓「设置 → 导入/导出配置」导出的 txt 文件，只取其中的正则规则，用来提前排除不想接收的地址。没有规则时所有推送进来的地址都会入队。</div>
+              <div class="hint" style="margin-top:8px">{{ tr('sniff.importCfgHint') }}</div>
               <table v-if="catcatch.rules.length" class="fmt-table" style="margin-top:14px">
                 <thead>
                   <tr>
-                    <th style="width:120px">名称</th>
-                    <th>正则</th>
-                    <th style="width:90px">扩展名</th>
-                    <th style="width:90px">作用</th>
-                    <th style="width:130px">操作</th>
+                    <th style="width:120px">{{ tr('common.colName') }}</th>
+                    <th>{{ tr('common.colRegex') }}</th>
+                    <th style="width:90px">{{ tr('common.colExt') }}</th>
+                    <th style="width:90px">{{ tr('common.colEffect') }}</th>
+                    <th style="width:130px">{{ tr('common.colOps') }}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -4164,10 +4164,10 @@
                     <td>{{ r.name || '-' }}</td>
                     <td style="max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="r.regex">{{ r.regex }}</td>
                     <td>{{ r.ext ? '.' + r.ext : '-' }}</td>
-                    <td><el-tag size="small" :type="r.blacklist ? 'danger' : 'info'">{{ r.blacklist ? '排除' : '标注' }}</el-tag></td>
+                    <td><el-tag size="small" :type="r.blacklist ? 'danger' : 'info'">{{ tr(r.blacklist ? 'sniff.ruleExclude' : 'sniff.ruleMark') }}</el-tag></td>
                     <td style="white-space:nowrap">
-                      <el-button size="small" plain @click="toggleCatcatchRule(i)">{{ r.enabled === false ? '启用' : '停用' }}</el-button>
-                      <el-button size="small" plain @click="deleteCatcatchRule(i)">删除</el-button>
+                      <el-button size="small" plain @click="toggleCatcatchRule(i)">{{ tr(r.enabled === false ? 'common.enable' : 'common.disable') }}</el-button>
+                      <el-button size="small" plain @click="deleteCatcatchRule(i)">{{ tr('common.del') }}</el-button>
                     </td>
                   </tr>
                 </tbody>
@@ -8298,12 +8298,12 @@
             });
             browserSniff.value = r;
             ElementPlus.ElMessage.success(
-              mode === 'attach' ? '已连接浏览器' : '已启动托管浏览器，请打开目标页并播放'
+              mode === 'attach' ? tr('sniff.tAttached') : tr('sniff.tLaunched')
             );
             if (browserSniffTimer) clearInterval(browserSniffTimer);
             browserSniffTimer = setInterval(pollBrowserSniff, 1500);
           } catch (e) {
-            ElementPlus.ElMessage.error(e.message || '启动失败');
+            ElementPlus.ElMessage.error(e.message || tr('sniff.tLaunchFail'));
           } finally {
             browserSniffLoading.value = false;
           }
@@ -8316,9 +8316,9 @@
               clearInterval(browserSniffTimer);
               browserSniffTimer = null;
             }
-            ElementPlus.ElMessage.info('已停止监听');
+            ElementPlus.ElMessage.info(tr('sniff.tStopped'));
           } catch (e) {
-            ElementPlus.ElMessage.error(e.message || '停止失败');
+            ElementPlus.ElMessage.error(e.message || tr('sniff.tStopFail'));
           }
         }
         async function clearBrowserSniff() {
@@ -8331,7 +8331,7 @@
         }
         async function runSniff() {
           const u = (sniffUrl.value || '').trim();
-          if (!u) { ElementPlus.ElMessage.warning('请输入网页链接'); return; }
+          if (!u) { ElementPlus.ElMessage.warning(tr('sniff.tNeedUrl')); return; }
           sniffLoading.value = true;
           sniffDone.value = false;
           sniffSelected.value = [];
@@ -8339,9 +8339,9 @@
             const r = await api('/api/sniff', { method: 'POST', body: JSON.stringify({ url: u }) });
             sniffItems.value = r.items || [];
             sniffDone.value = true;
-            ElementPlus.ElMessage.success('发现 ' + (r.count || 0) + ' 条');
+            ElementPlus.ElMessage.success(tr('sniff.tFound', { n: r.count || 0 }));
           } catch (e) {
-            ElementPlus.ElMessage.error(e.message || '嗅探失败');
+            ElementPlus.ElMessage.error(e.message || tr('sniff.tFail'));
           } finally {
             sniffLoading.value = false;
           }
@@ -8353,17 +8353,17 @@
         async function sniffDownloadSelected() {
           if (!sniffSelected.value.length) return;
           await api('/api/sniff/download', { method: 'POST', body: JSON.stringify({ urls: sniffSelected.value }) });
-          ElementPlus.ElMessage.success('已加入下载队列');
+          ElementPlus.ElMessage.success(tr('sniff.tQueued'));
           page.value = 'queue';
           await loadTasks();
         }
         async function sniffDownloadOne(it) {
           await api('/api/sniff/download', { method: 'POST', body: JSON.stringify({ urls: [it.url] }) });
-          ElementPlus.ElMessage.success('已加入下载队列');
+          ElementPlus.ElMessage.success(tr('sniff.tQueued'));
         }
         async function sniffDownloadMerge() {
           if (!canSniffMerge.value) {
-            ElementPlus.ElMessage.warning('请各勾选 1 条 video（或 hls/dash）和 1 条 audio');
+            ElementPlus.ElMessage.warning(tr('sniff.tMergeNeed'));
             return;
           }
           const selected = sniffDisplayItems.value.filter(it => sniffSelected.value.includes(it.url));
@@ -8381,11 +8381,11 @@
                 title,
               }),
             });
-            ElementPlus.ElMessage.success('已加入合并下载队列');
+            ElementPlus.ElMessage.success(tr('sniff.tMergeQueued'));
             page.value = 'queue';
             await loadTasks();
           } catch (e) {
-            ElementPlus.ElMessage.error(e.message || '合并下载失败');
+            ElementPlus.ElMessage.error(e.message || tr('sniff.tMergeFail'));
           } finally {
             sniffMergeLoading.value = false;
           }
@@ -8403,7 +8403,7 @@
             catcatch.stat = r.stat || {};
             catcatch.keys_waiting = r.keys_waiting || 0;
           } catch (e) {
-            ElementPlus.ElMessage.error(e.message || '读取猫抓接收状态失败');
+            ElementPlus.ElMessage.error(e.message || tr('sniff.tReadFail'));
           }
         }
         function triggerCatcatchImport() {
@@ -8417,9 +8417,9 @@
               method: 'POST',
               body: JSON.stringify({ text: await f.text() }),
             });
-            let msg = `猫抓正则规则共 ${r.found} 条：新增 ${r.added}，重复跳过 ${r.duplicated}`;
+            let msg = tr('sniff.importOk', { found: r.found, added: r.added, dup: r.duplicated });
             if ((r.invalid || []).length) {
-              msg += `，${r.invalid.length} 条在本机编译不过已跳过（第一条：${r.invalid[0].reason}）`;
+              msg += tr('sniff.importInvalid', { n: r.invalid.length, reason: r.invalid[0].reason });
             }
             ElementPlus.ElMessage.success(msg);
             await loadCatcatch();
@@ -8433,25 +8433,25 @@
             const r = await api('/api/catcatch/rules/toggle', { method: 'POST', body: JSON.stringify({ index: i }) });
             catcatch.rules = r.rules || [];
           } catch (e) {
-            ElementPlus.ElMessage.error(e.message || '操作失败');
+            ElementPlus.ElMessage.error(e.message || tr('settings.opFailed'));
           }
         }
         async function deleteCatcatchRule(i) {
           try {
             const r = await api('/api/catcatch/rules/delete', { method: 'POST', body: JSON.stringify({ index: i }) });
             catcatch.rules = r.rules || [];
-            ElementPlus.ElMessage.success('已删除该规则');
+            ElementPlus.ElMessage.success(tr('sniff.tRuleDeleted'));
           } catch (e) {
-            ElementPlus.ElMessage.error(e.message || '删除失败');
+            ElementPlus.ElMessage.error(e.message || tr('sniff.tDelFail'));
           }
         }
         async function clearCatcatchRules() {
           try {
             await api('/api/catcatch/rules/clear', { method: 'POST', body: '{}' });
             await loadCatcatch();
-            ElementPlus.ElMessage.success('已清空猫抓规则');
+            ElementPlus.ElMessage.success(tr('sniff.tRulesCleared'));
           } catch (e) {
-            ElementPlus.ElMessage.error(e.message || '清空失败');
+            ElementPlus.ElMessage.error(e.message || tr('sniff.tClearFail'));
           }
         }
 
