@@ -2866,17 +2866,23 @@
                         <el-button size="small" plain @click.stop><svg class="btn-ico"><use href="#i-more"></use></svg>{{ tr('queue.btnMore') }}</el-button>
                         <template #dropdown>
                           <el-dropdown-menu>
+                            <!-- 分组线按「这一项确有一族在前」来放：转写/翻译 | 流水线 | 音频分析 | 字幕成品 | 音乐标签。
+                                 每一项都由 v-if 决定在不在，所以组首不能一律写死 divided ——
+                                 「一条龙」「人声分离」只在 isMediaFile 时出现，前面必有「转写」，写死安全；
+                                 配音（仅 .srt）与硬字幕（仅视频）互斥，各自写死也不会叠出两条线；
+                                 Picard 这一族在 flac/ogg/wma/opus 上是整个菜单的第一项（isMediaFile 不含这些扩展名），
+                                 那种时候线要收起来，否则顶上凭空多一条。 -->
                             <el-dropdown-item v-if="isMediaFile(row)" :command="'aiTranscribe|' + $index">{{ tr('files.miTranscribe') }}</el-dropdown-item>
                             <el-dropdown-item v-if="isMediaFile(row) || isSrtFile(row)" :command="'aiTranslateSrt|' + $index">{{ tr('files.miTranslate') }}</el-dropdown-item>
-                            <el-dropdown-item v-if="isMediaFile(row)" :command="'aiPipeline|' + $index">{{ tr('files.miPipeline') }}</el-dropdown-item>
+                            <el-dropdown-item v-if="isMediaFile(row)" divided :command="'aiPipeline|' + $index">{{ tr('files.miPipeline') }}</el-dropdown-item>
                             <el-dropdown-item v-if="isMediaFile(row)" :command="'showPipeline|' + $index">{{ tr('files.miOutputs') }}</el-dropdown-item>
-                            <el-dropdown-item v-if="isMediaFile(row)" :command="'aiDemucs|' + $index">{{ tr('files.miVocal') }}</el-dropdown-item>
+                            <el-dropdown-item v-if="isMediaFile(row)" divided :command="'aiDemucs|' + $index">{{ tr('files.miVocal') }}</el-dropdown-item>
                             <el-dropdown-item v-if="isMediaFile(row)" :command="'analyzeAudioFile|' + $index">{{ tr('files.miAnalyze') }}</el-dropdown-item>
-                            <el-dropdown-item v-if="(row.ext||'').toLowerCase()==='.srt'" :command="'aiTts|' + $index">{{ tr('files.miTts') }}</el-dropdown-item>
+                            <el-dropdown-item v-if="(row.ext||'').toLowerCase()==='.srt'" divided :command="'aiTts|' + $index">{{ tr('files.miTts') }}</el-dropdown-item>
                             <el-dropdown-item v-if="isSrtFile(row)" :command="'aiCalibrateSrt|' + $index">{{ tr('files.miCalibrate') }}</el-dropdown-item>
                             <el-dropdown-item v-if="isSrtFile(row)" :command="'exportBilingual|' + $index">{{ tr('files.miBilingual') }}</el-dropdown-item>
-                            <el-dropdown-item v-if="isVideoFile(row)" :command="'openBurn|' + $index">{{ tr('files.miBurn') }}</el-dropdown-item>
-                            <el-dropdown-item v-if="isAudioFile(row)" :command="'openPicard|' + $index">Picard</el-dropdown-item>
+                            <el-dropdown-item v-if="isVideoFile(row)" divided :command="'openBurn|' + $index">{{ tr('files.miBurn') }}</el-dropdown-item>
+                            <el-dropdown-item v-if="isAudioFile(row)" :divided="isMediaFile(row)" :command="'openPicard|' + $index">Picard</el-dropdown-item>
                             <el-dropdown-item v-if="isAudioFile(row)" :command="'mbTagFile|' + $index">{{ tr('files.miMbTag') }}</el-dropdown-item>
                             <el-dropdown-item v-if="isAudioFile(row)" :command="'mbEnrichFile|' + $index">{{ tr('files.miMbMatch') }}</el-dropdown-item>
                             <el-dropdown-item v-if="isAudioFile(row)" :command="'fingerprintFile|' + $index">{{ tr('files.miFingerprint') }}</el-dropdown-item>

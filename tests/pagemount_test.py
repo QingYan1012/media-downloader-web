@@ -49,8 +49,24 @@ ck("P6 资源库行内下拉是原生 select，不是 el-select",
 ck("P7 原生下拉留了箭头的位置（右侧 padding 比左侧重）",
    re.search(r"\.lib-transcode select\s*\{[^}]*padding:\s*0 20px 0 6px", HTML) is not None)
 
+# 文件页那一行「更多」里 15 项全靠 v-if 按文件类型增减，分组线只能挂在「确有前族」的组首上。
+# Element Plus 2.8.8 的 divided 是给这一项前面另插一个 <li role="separator">，
+# 所以线挂错地方 = 菜单顶上凭空一条，源码看不出来（2026-10-18 沙箱逐类文件量过）。
+_FM_MARK = '<el-dropdown v-if="!row.is_dir && (isMediaFile(row) || isSrtFile(row) || isAudioFile(row))"'
+_fm_at = HTML.find(_FM_MARK)
+_fm = HTML[_fm_at:HTML.find("</el-dropdown-menu>", _fm_at)] if _fm_at >= 0 else ""
+# 只数挂在项上的，别把讲这段话的注释也算进去
+_fm_items = [l for l in _fm.splitlines() if l.strip().startswith("<el-dropdown-item")]
+_fm_div = [l.strip()[:120] for l in _fm_items if re.search(r"(?::divided=|\sdivided(?!=))", l)]
+ck("P8 文件页行内下拉的分组线只挂在五个组首（流水线 / 分离人声 / 配音 / 烧录字幕 / Picard）",
+   len(_fm_div) == 5 and len(_fm_items) == 15,
+   "项 %d，带线 %d：%s" % (len(_fm_items), len(_fm_div), [d.split("command=")[0].strip()[:40] for d in _fm_div]))
+ck("P9 Picard 那条线是条件的：flac/ogg/wma/opus 不在 isMediaFile 里，这类行的菜单从 Picard 开头，写死就悬空一条",
+   ':divided="isMediaFile(row)"' in _fm
+   and re.search(r'v-if="isAudioFile\(row\)"\s+divided\b', _fm) is None)
+
 print("\n== 汇总 ==")
 if FAILED:
-    print(f"共 7 条，失败 {len(FAILED)} 条\n失败清单：" + "、".join(FAILED))
+    print(f"共 9 条，失败 {len(FAILED)} 条\n失败清单：" + "、".join(FAILED))
     sys.exit(1)
-print("共 7 条，全部通过")
+print("共 9 条，全部通过")
