@@ -65,8 +65,28 @@ ck("P9 Picard 那条线是条件的：flac/ogg/wma/opus 不在 isMediaFile 里�
    ':divided="isMediaFile(row)"' in _fm
    and re.search(r'v-if="isAudioFile\(row\)"\s+divided\b', _fm) is None)
 
+# ---- #71 侧栏折叠 ----
+# 折叠只改一个 CSS 变量，宽度、主区让位、过渡全跟着它走；
+# 一旦有人把 212/64 写死在两条规则里，折叠就变成「图标挤在一块儿，主区宽度不动」。
+_SB_W = re.search(r"\.sidebar\s*\{[^}]*width:\s*var\(--sidebar-w\)", HTML)
+ck("P10 侧栏宽度仍只由 --sidebar-w 一处决定，折叠是在同一个元素上改这个变量",
+   _SB_W is not None and ".sidebar.is-collapsed { --sidebar-w: 64px; }" in HTML
+   and not re.search(r"\.sidebar(\.is-collapsed)?\s*\{[^}]*width:\s*\d+px", HTML),
+   "找到 %r" % (_SB_W.group(0)[-40:] if _SB_W else None))
+# navCollapsed 漏在 setup 返回清单里 = 按钮点不动、界面上什么都不显示，且不报错
+ck("P11 navCollapsed 有声明、在返回清单里、且记在浏览器本地（漏任一处都是静默失效）",
+   "const navCollapsed = ref(" in HTML
+   and re.search(r"return \{[^}]*\bpage, navCollapsed, navs\b", HTML) is not None
+   and "localStorage.getItem('md_nav_collapsed')" in HTML
+   and "localStorage.setItem('md_nav_collapsed'" in HTML)
+# 折叠态收起分组标题，换成组间一条线：5 组 4 条、第一组顶上不留（沙箱 2026-10-18 量过）
+ck("P12 折叠态的分组线默认不显示、只在折叠时出现，且第一条不画（v-if=gi > 0）",
+   ".nav-group-line { display: none;" in HTML
+   and ".sidebar.is-collapsed .nav-group-line { display: block; }" in HTML
+   and '<div v-if="gi > 0" class="nav-group-line"></div>' in HTML)
+
 print("\n== 汇总 ==")
 if FAILED:
-    print(f"共 9 条，失败 {len(FAILED)} 条\n失败清单：" + "、".join(FAILED))
+    print(f"共 12 条，失败 {len(FAILED)} 条\n失败清单：" + "、".join(FAILED))
     sys.exit(1)
-print("共 9 条，全部通过")
+print("共 12 条，全部通过")

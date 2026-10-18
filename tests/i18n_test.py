@@ -203,7 +203,9 @@ ck("C10 语言钮的选中态读 settings.ui_language（与主题色板同一个
    "(settings.ui_language || 'auto') === lg.key" in HTML)
 ck("C11 UI_LANGS 的选项来自 i18n.js，不在这里再抄一遍",
    "const UI_LANGS = (window.MD_I18N && window.MD_I18N.langs)" in HTML)
-ret_line = block(HTML, "          page, navs, navGroups,", "\n")
+# 锚点取的是这一串里不会随新增名字挪位的片段：早先锚的是「page, navs, navGroups,」，
+# #71 在 page 后面插了 navCollapsed 就把整行锚断了（闸门红得没错，但错的原因不好猜）
+ret_line = block(HTML, "navs, navGroups, CREDITS", "\n")
 ck("C12 setup 返回清单里 tr / uiLang / UI_LANGS / epLocale / setLang 都在",
    all(n in ret_line for n in ("tr,", "uiLang,", "UI_LANGS,", "epLocale,", "setLang,")),
    ret_line.strip()[:120])

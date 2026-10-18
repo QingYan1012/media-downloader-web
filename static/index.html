@@ -578,6 +578,44 @@
       flex: none;
     }
     .nav-badge + .nav-dot { margin-left: 6px; }
+    /* ---- 侧栏折叠 ----
+       宽度仍然只由 --sidebar-w 一处决定：折叠时在这个元素自己身上把变量改了，
+       不在每条规则里各写一遍 64px（那样一改宽度就得满文件找齐）。 */
+    .sidebar { transition: width .18s ease; }
+    .sidebar.is-collapsed { --sidebar-w: 64px; }
+    .nav-collapse {
+      display: flex;
+      width: 100%;
+      padding: 7px 16px;
+      justify-content: flex-end;
+      align-items: center;
+      border: 0;
+      border-bottom: 1px solid rgba(255,255,255,.06);
+      background: transparent;
+      color: rgba(255,255,255,.5);
+      cursor: pointer;
+      transition: color .18s ease, background .18s ease;
+    }
+    .nav-collapse:hover { color: #fff; background: rgba(255,255,255,.07); }
+    .nav-collapse svg { width: 16px; height: 16px; transition: transform .18s ease; }
+    .sidebar.is-collapsed .nav-collapse { justify-content: center; padding: 7px 0; }
+    /* 同一个箭头转 180 度当「展开」，省得为两种状态各存一份图标 */
+    .sidebar.is-collapsed .nav-collapse svg { transform: rotate(180deg); }
+    .sidebar.is-collapsed .sidebar-logo { justify-content: center; padding: 20px 0 14px; }
+    .sidebar.is-collapsed .sidebar-logo .brand,
+    .sidebar.is-collapsed .sidebar-foot,
+    .sidebar.is-collapsed .nav-group,
+    .sidebar.is-collapsed .nav-label { display: none; }
+    .sidebar.is-collapsed .nav-item { justify-content: center; position: relative; padding: 9px 0; margin: 2px 8px; }
+    .sidebar.is-collapsed .nav-lucide { margin-right: 0; }
+    /* 分组标题收掉了，「这几项是一族」得换个东西说，所以补一条线；展开时它不存在 */
+    .nav-group-line { display: none; margin: 7px 12px 3px; border-top: 1px solid rgba(255,255,255,.09); }
+    .sidebar.is-collapsed .nav-group-line { display: block; }
+    /* 角标/橙点在只留图标时贴到图标右上角，留在行内的话 64px 里会把图标顶歪 */
+    .sidebar.is-collapsed .nav-badge,
+    .sidebar.is-collapsed .nav-dot { position: absolute; top: 3px; right: 7px; margin-left: 0; }
+    .sidebar.is-collapsed .nav-badge { min-width: 15px; height: 15px; padding: 0 4px; font-size: 10px; }
+    /* 折叠后表头的标题栏不用跟着动：主区是 flex:1，侧栏窄了它自己就宽出去了 */
     /* 防止下拉被裁切 */
     .el-select-dropdown,
     .el-popper {
@@ -1743,7 +1781,7 @@
 
     <div class="layout">
       <!-- 侧边栏 -->
-      <div class="sidebar">
+      <div class="sidebar" :class="{ 'is-collapsed': navCollapsed }">
         <div class="sidebar-logo">
           <img class="logo-svg" src="/static/logo_icon.svg" alt="logo" width="36" height="36" />
           <div class="brand">
@@ -1751,17 +1789,24 @@
             <span class="brand-sub">Media Stream</span>
           </div>
         </div>
+        <button type="button" class="nav-collapse" :title="navCollapsed ? tr('header.expandNav') : tr('header.collapseNav')"
+                :aria-label="navCollapsed ? tr('header.expandNav') : tr('header.collapseNav')" :aria-expanded="!navCollapsed" @click="navCollapsed = !navCollapsed">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+        </button>
         <div class="nav-scroll">
-          <template v-for="g in navGroups" :key="g.id">
+          <template v-for="(g, gi) in navGroups" :key="g.id">
+            <!-- 第一组顶上不该压一条线：它上面是折叠按钮，那条线没有左边可分 -->
+            <div v-if="gi > 0" class="nav-group-line"></div>
             <div class="nav-group">{{ tr('navGroup.' + g.id) }}</div>
             <div
               v-for="item in g.items"
               :key="item.key"
               class="nav-item"
               :class="{ active: page === item.key }"
+              :title="navCollapsed ? tr('nav.' + item.key) : null"
               @click="page = item.key"
             >
-              <i :data-lucide="item.icon" class="nav-lucide"></i><span>{{ tr('nav.' + item.key) }}</span>
+              <i :data-lucide="item.icon" class="nav-lucide"></i><span class="nav-label">{{ tr('nav.' + item.key) }}</span>
               <span v-if="navBadge(item.key)" class="nav-badge">{{ navBadge(item.key) }}</span>
               <span v-if="navDot(item.key)" class="nav-dot" :title="navDot(item.key)"></span>
             </div>
@@ -5845,6 +5890,11 @@
     createApp({
       setup() {
         const page = ref('home');
+        /* 侧栏折叠到只留图标：跟设置页「不常用项」那一组一样记在浏览器本地，不占配置文件 ——
+           这是这台浏览器此刻的视野偏好，不是这个实例应该长什么样，换机器或恢复默认都不该动它。 */
+        const navCollapsed = ref(false);
+        try { navCollapsed.value = localStorage.getItem('md_nav_collapsed') === '1'; } catch (_) {}
+        watch(navCollapsed, v => { try { localStorage.setItem('md_nav_collapsed', v ? '1' : '0'); } catch (_) {} });
         /* 界面语言：uiLang 是响应式的当前语言（zh/en），tr() 在渲染里读它，切语言时模板自己重算。
            词表与回落规则在 static/i18n.js；这里只负责「读哪一份」，后端话术不进词表。
            名字用 tr 不用 t：模板里有 7 处 v-for="t in ..."（任务卡、色板等），叫 t 会在那些子树里被遮蔽。 */
@@ -13410,7 +13460,7 @@ const CFG_KEYS = {
         });
 
         return {
-          page, navs, navGroups, CREDITS, appVersion, tr, uiLang, UI_LANGS, epLocale, setLang, queueStat, subNewTotal, navBadge, navDot, pageTitle, urlText, urlPasteStat, extractUrls, friendlyError, glossaryStat, checkGlossary, speedWinStat, checkSpeedWindows, queueWindow, windowHeld, queueRows, runWinStat, checkRunWindows, exportBilingual, exportBilingualSelected, pipelineRow, pipelineView, showPipeline, closePipeline, refreshPipeline, rerunStage, pipeStatusLabel, pipeStatusType, opts, videoQualities, audioQualities, formats, codecOptions,
+          page, navCollapsed, navs, navGroups, CREDITS, appVersion, tr, uiLang, UI_LANGS, epLocale, setLang, queueStat, subNewTotal, navBadge, navDot, pageTitle, urlText, urlPasteStat, extractUrls, friendlyError, glossaryStat, checkGlossary, speedWinStat, checkSpeedWindows, queueWindow, windowHeld, queueRows, runWinStat, checkRunWindows, exportBilingual, exportBilingualSelected, pipelineRow, pipelineView, showPipeline, closePipeline, refreshPipeline, rerunStage, pipeStatusLabel, pipeStatusType, opts, videoQualities, audioQualities, formats, codecOptions,
           pagers, favSort, onFavSortChange, musicSort, onMusicSortChange, tgSort, onTgSortChange,
           subLangOptions, subLangList, selectAllSubLangs, clearSubLangs, toggleSubLang,
           selectedIds, selectAll, queuePaused, taskSort, sseOn, toggleSelect, toggleSelectAll,
