@@ -1219,6 +1219,9 @@
       'banner.throttle': '{hosts} 被限流降过速，冷却期内每个站点同时只跑 1 个任务',
       'banner.resumeAll': '解除降速',
       'banner.dismiss': '本次会话不再提醒（重新打开页面还会再出现）',
+      /* ---- 行内右键菜单（菜单项从那一行现有的按钮读出来，这里只有菜单自己的话）---- */
+      'ctx.ariaRow': '这一行的操作',
+      'ctx.more': '更多操作…',
       /* ---- 解析页（home）正文：一批一页，见 tests/i18n_test.py 的 I 组 ---- */
       'home.aiTranscribe': '本地 AI 转写',
       'home.aiTranslate': '本地 AI 翻译',
@@ -3447,6 +3450,8 @@
       'banner.throttle': '{hosts} was throttled after a rate limit; one task at a time per site until the cooldown ends',
       'banner.resumeAll': 'Lift throttle',
       'banner.dismiss': 'Hide for this session (it returns after a reload)',
+      'ctx.ariaRow': 'Actions for this row',
+      'ctx.more': 'More actions…',
       /* ---- 解析页（home）正文：一批一页，见 tests/i18n_test.py 的 I 组 ---- */
       'home.aiTranscribe': 'Local AI transcription',
       'home.aiTranslate': 'Local AI translation',

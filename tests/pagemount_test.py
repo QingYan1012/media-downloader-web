@@ -162,8 +162,47 @@ ck("P25 跳转是逐帧重对齐（落点变了再滚一次、连续几帧不动
 ck("P26 落点让出顶部通知条的高度（通知条是 sticky 压在内容区上沿的，齐平等于把卡片头藏进条子里）",
    "document.querySelector('.banner-stack')" in _gc73 and "+ 10" in _gc73)
 
+# ---------------------------------------------------------------- #75 行内右键菜单
+_ctx_names = ["ctxMenu", "runCtxItem"]
+ck("P27 右键菜单模板用到的名字都在 setup 的返回清单里（同 P13：漏一个整页空白）",
+   all(re.search(r"\b%s\b" % n, _ret73) for n in _ctx_names),
+   str([n for n in _ctx_names if not re.search(r"\b%s\b" % n, _ret73)]))
+# 同 P15 那个坑：.card 带 backdrop-filter，弹层写进任何一张卡片里都会歪进那一格。
+# 菜单必须和面板同一侧 —— 在 .layout 里、在 .main 外
+_at_cmdk = HTML.find('class="cmdk-mask"')
+_at_ctx = HTML.find('class="ctx-menu"')
+ck("P28 菜单模板挂在 .layout 里、.main 外（排在面板之后、config-provider 收尾之前）",
+   -1 < _at_cmdk < _at_ctx < HTML.find("</el-config-provider>"),
+   "cmdk %d / ctx %d" % (_at_cmdk, _at_ctx))
+_ctx_fn = HTML[HTML.find("function ctxItemsOf("):HTML.find("function onCtxPointer(")]
+ck("P29 菜单项是从那一行现有的按钮读出来的（不许在这里另写一份动作名单——那是第二个真源）",
+   "row.querySelectorAll('button')" in _ctx_fn
+   and not re.search(r"tr\('(files|queue|library)\.", _ctx_fn),
+   str(re.findall(r"tr\('[a-z]+\.[\w.]+'", _ctx_fn)))
+ck("P30 代管下拉的那一项走词表，且只有行里真有「更多」时才多这一项",
+   "const more = row.querySelector('.el-dropdown button');" in HTML
+   and "if (more && !more.disabled && more.offsetParent !== null)" in HTML
+   and "tr('ctx.more')" in HTML)
+ck("P31 全局 contextmenu 监听挂了也必须摘（同 P14 那条规矩）",
+   "document.addEventListener('contextmenu', onDocContextmenu)" in HTML
+   and "document.removeEventListener('contextmenu', onDocContextmenu)" in HTML)
+# 三种行式样（EP 表格 / 任务卡片 / 原生 table）都要认，少写一种就是那一页右键什么都不出
+_sel75 = HTML[HTML.find("const CTX_ROW_SEL ="):]
+_sel75 = _sel75[:_sel75.find(";")]
+ck("P32 行的认定覆盖三种式样（.el-table__row / .task-card / tbody tr）",
+   all(k in _sel75 for k in (".el-table__row", ".task-card", "tbody tr")), _sel75.strip())
+# 原生右键让路是这一项的边界：输入框里粘贴、选完字的复制，都不该被菜单抢走
+ck("P33 输入框/选字/没有动作这三类情况让回浏览器原生菜单（不 preventDefault）",
+   "e.target.closest('input, textarea, select, [contenteditable], .el-select, .el-checkbox')" in HTML
+   and "sel.isCollapsed" in HTML and "if (!items.length) return false;" in HTML)
+# 染红判据必须是按钮自带的类：按「删除」这两个字猜，词表一切成英文就整条失灵
+ck("P34 破坏性那一项的红是跟按钮走的，不是按字面猜的",
+   "b.classList.contains('el-button--danger')" in _ctx_fn
+   and "'ctx-menu__item--bad': it.bad" in HTML
+   and not re.search(r"label === '删除'|/删除/\.test\(label", HTML))
+
 print("\n== 汇总 ==")
 if FAILED:
-    print(f"共 26 条，失败 {len(FAILED)} 条\n失败清单：" + "、".join(FAILED))
+    print(f"共 34 条，失败 {len(FAILED)} 条\n失败清单：" + "、".join(FAILED))
     sys.exit(1)
-print("共 26 条，全部通过")
+print("共 34 条，全部通过")
