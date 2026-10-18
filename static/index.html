@@ -3134,7 +3134,7 @@
             </div>
             <div class="card">
               <div v-if="!filteredFiles.length" class="empty-tip">{{ tr('files.emptyDir') }}</div>
-              <el-table v-else :data="pagers.files.paged" size="small" stripe :default-sort="{ prop: 'name', order: 'ascending' }" @sort-change="onFileSortChange" @row-click="onFileRowClick" @selection-change="onFileSelectionChange">
+              <el-table v-else :data="pagers.files.paged" size="small" stripe :default-sort="{ prop: 'mtime', order: 'descending' }" @sort-change="onFileSortChange" @row-click="onFileRowClick" @selection-change="onFileSelectionChange">
                 <el-table-column type="selection" width="42" :selectable="(row) => !row.is_dir"></el-table-column>
                 <el-table-column prop="name" :label="tr('common.colName')" min-width="240" sortable="custom" :sort-orders="['ascending', 'descending']">
                   <template #default="{ row }">
@@ -7164,7 +7164,8 @@
           ElementPlus.ElMessage.success(tr('live.cleaned', { n: ids.length }));
         }
         const fileSearch = ref('');
-        const fileSort = ref('name');
+        // 默认按修改时间倒序（跟资源库同口径）：刚下完的东西要在最上面，按名排会把新目录埋进字母序里
+        const fileSort = ref('mtime');
         const urlFileInput = ref(null);
         const musicNeedsMatch = computed(() => musicResults.value.filter(r => r && r.needs_match).length);
         const musicScoreLine = computed(() => {
@@ -7175,7 +7176,7 @@
 
         /* ---- 表头排序：各表共用。点同一列切升/降序，换列回到该列默认方向 ---- */
         const FILE_DIR = { name: 'asc', size: 'desc', mtime: 'desc' };
-        const fileSortDir = ref('asc');
+        const fileSortDir = ref('desc');
         function toggleSort(state, key, dirs) {
           if (state.key === key) state.dir = state.dir === 'asc' ? 'desc' : 'asc';
           else { state.key = key; state.dir = (dirs && dirs[key]) || 'asc'; }

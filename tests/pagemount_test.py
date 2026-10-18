@@ -201,8 +201,17 @@ ck("P34 破坏性那一项的红是跟按钮走的，不是按字面猜的",
    and "'ctx-menu__item--bad': it.bad" in HTML
    and not re.search(r"label === '删除'|/删除/\.test\(label", HTML))
 
+# 默认排序是三处联动的：表头箭头看模板的 default-sort，行序看两个 ref，改一处就会出现
+# 「箭头指着修改时间、行却按名字排」。目录永远在最前这条也不能被时间序碰坏。
+ck("P35 文件页默认按修改时间倒序，三处联动一致（目录仍钉在最前）",
+   "const fileSort = ref('mtime');" in HTML
+   and "const fileSortDir = ref('desc');" in HTML
+   and ':default-sort="{ prop: \'mtime\', order: \'descending\' }"' in HTML
+   and "const FILE_DIR = { name: 'asc', size: 'desc', mtime: 'desc' };" in HTML
+   and "if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;" in HTML)
+
 print("\n== 汇总 ==")
 if FAILED:
-    print(f"共 34 条，失败 {len(FAILED)} 条\n失败清单：" + "、".join(FAILED))
+    print(f"共 35 条，失败 {len(FAILED)} 条\n失败清单：" + "、".join(FAILED))
     sys.exit(1)
-print("共 34 条，全部通过")
+print("共 35 条，全部通过")
