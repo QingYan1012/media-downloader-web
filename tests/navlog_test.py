@@ -3,9 +3,12 @@
 """「翻页面不写运行日志」离线自检（#33）。
 
 钉两层：
-1. 行为层（node）：把 `index.html` 里 `watch(page, …)` 的**回调体**与 `api()` 原样抠出来跑。
-   翻遍 17 个页面一条埋点都不发，但每页该加载的数据照旧加载（这次删的只是那一行日志，不是加载）；
-   写操作照旧记一行、GET 与轮询照旧不记、`/api/ui_event` 自己不再进埋点（否则无限递归）。
+1. 行为层（node）：把 `index.html` 里 `watch(page, …)` 的**回调体**、`api()` 与埋点那三层
+   （`logAction` + 路径表 + `actionRef`/`failRef`/`logRef`）原样抠出来跑，词表也用 `static/i18n.js`
+   那份真的。翻遍 17 个页面一条埋点都不发，但每页该加载的数据照旧加载（这次删的只是那一行日志，
+   不是加载）；写操作照旧记一行、GET 与轮询照旧不记、`/api/ui_event` 自己不再进埋点（否则无限递归）。
+   #55 之前这里 stub 的是 logAction 本身，界面真发出去的那句对不对完全没测到 —— 键拼错、
+   词表少一条，只有跑真词表才当场红。
 2. 后端 `/api/ui_event` 那条通道本身没被改坏：空文本不记、换行压平、200 字截断、level 只认
    info / warning。界面少发一类事件，不等于通道换成另一副样子。
 
@@ -67,6 +70,23 @@ PAGE_WATCH_FULL = slice_between(HTML.find(WATCH_MARK), "\n        });")
 API_FN_FULL = slice_between(HTML.find(API_MARK), "\n        }\n") + "\n        }"
 # 回调体：去掉 `watch(page, (p) => {` 这一行头
 PAGE_WATCH_BODY = PAGE_WATCH_FULL[len(WATCH_MARK):] if PAGE_WATCH_FULL else ""
+
+# 埋点那套机器：#55 之后 api() 不再直接 logAction(中文)，而是 actionRef/failRef/logRef 三层。
+# node 里再照抄一遍这三层就成了「测我自己写的替身」，所以整段从 index.html 原样抠出来跑，
+# 词表也用 static/i18n.js 那份真的 —— 落盘的句子与界面看到的句子才算对过账。
+EMIT_MARK = "function logAction(textOrKey, level, kv) {"
+EMIT_TAIL = "function logRef(ref, level) { logAction(ref.k, level, ref.v); }"
+EMIT_FULL = (slice_between(HTML.find(EMIT_MARK), "\n        " + EMIT_TAIL) + "\n        " + EMIT_TAIL
+             if HTML.find(EMIT_MARK) >= 0 else "")
+
+
+def one_line(mark: str) -> str:
+    i = HTML.find(mark)
+    return HTML[i:HTML.index("\n", i)] if i >= 0 else ""
+
+
+UI_EVENT_LINE = one_line("const UI_EVENT_PATH = ")
+SENSITIVE_LINE = one_line("const SENSITIVE_RE = ")
 
 PAGES = ["home", "sniff", "queue", "bt", "info", "search", "music", "tg", "live", "subs",
          "library", "files", "favs", "history", "voice", "log", "settings"]
@@ -149,8 +169,8 @@ ck("B3 页面切换回调里再没有 logAction", "logAction" not in PAGE_WATCH_
 ck("B4 全站没有「切换到「X」」这种埋点", not re.search(r"logAction\(\s*[`'\"][^\n]*切换到", HTML))
 ck("B5 每页的加载动作还在这段回调里", "if (p === 'queue'" in PAGE_WATCH_BODY
    and "p === 'settings'" in PAGE_WATCH_BODY)
-ck("B6 写操作的埋点分支还在", "if (tracked) logAction(uiName || actionName(path));" in HTML)
-ck("B7 失败也记一行并降成 warning", "+ '（失败）', 'warning'" in HTML)
+ck("B6 写操作的埋点分支还在", "if (tracked) logRef(ref);" in HTML)
+ck("B7 失败也记一行并降成 warning", "if (tracked) logRef(failRef(ref), 'warning');" in HTML)
 ck("B8 埋点只认非 GET", "String(init.method || 'GET').toUpperCase() !== 'GET'" in HTML)
 ck("B9 /api/ui_event 自己不再进埋点（否则无限递归）",
    "String(path).indexOf(UI_EVENT_PATH) !== 0" in HTML)
@@ -169,7 +189,12 @@ ck("B13b 通知条的两个跳转各记一行，句子在词表里（不是硬�
    "gotoCard('settings', 'comp-card', 'ui.goto_comp')" in HTML
    and "gotoCard('settings', 'outbox-card', 'ui.goto_outbox')" in HTML)
 ck("B14 主题与明暗仍记（它们真的写进配置）",
-   "logAction('切换主题为「'" in HTML and "logAction(settings.value.dark_mode" in HTML)
+   "logAction(settings.value.dark_mode ? 'ui.dark_on' : 'ui.dark_off')" in HTML
+   and "logAction('ui.theme_switch'" in HTML)
+# 抠不出这三层，C 段就是在跑替身而不是跑界面代码，整段行为层等于没测
+ck("B18 埋点机器整段抠得出（logAction → ACTION_NAMES → actionRef/failRef/logRef）",
+   EMIT_MARK in HTML and EMIT_FULL.count("function ") >= 3 and len(EMIT_FULL) > 4000
+   and UI_EVENT_LINE and SENSITIVE_LINE, f"{len(EMIT_FULL)} 字")
 
 # 这句口径 #55 第 17 页翻进词表后住在 i18n.js 里，界面上的字仍在，只是换了个文件；
 # 所以两边都要查：词表里有这句话，模板里确实引了这个键。
@@ -185,9 +210,16 @@ print("== C. node：翻遍 17 页与几类请求 ==")
 JS = """
 const fs = require('fs');
 const RES = %s;
-const calls = [];
+const EMIT = [];   // logAction 真发出去的那一句（POST /api/ui_event 的 body），界面落到日志页的就是它
 const seen = [];
-globalThis.logAction = (t, level) => calls.push([String(t), level === 'warning' ? 'warning' : 'info']);
+
+// 词表用 static/i18n.js 那份真的：落盘中文由它按 zh 现拼，英文界面按 en 现拼。
+// 浏览器里 window 就是 global，logAction 那句 `window.MD_I18N && MD_I18N.has(...)` 才写得这么省；
+// node 里要让两种写法都成立，所以直接拿 globalThis 当 window 用，只补它没有的两个成员。
+const window = globalThis;
+window.localStorage = { _m: {}, setItem(k, v) { this._m[k] = String(v); }, getItem(k) { return this._m[k] || null; } };
+window.document = { documentElement: { setAttribute() {}, style: {} }, title: '', addEventListener() {}, querySelector: () => null };
+new Function('window', fs.readFileSync(%s, 'utf8'))(window);
 
 // 给回调体里每一个名字一个「能调用、有 .value、再点下去还有下一层」的替身，省掉维护名单
 function u(name) {
@@ -213,19 +245,28 @@ const ctx = new Proxy(Object.create(null), {
 const pageWatch = new Function('p', 'ctx', 'with (ctx) {' + %s + '}');
 const perPage = {};
 for (const p of %s) {
-  calls.length = 0; seen.length = 0;
+  EMIT.length = 0; seen.length = 0;
   let err = '';
   try { pageWatch(p, ctx); } catch (e) { err = String((e && e.message) || e); }
-  perPage[p] = { logs: calls.slice(), loads: seen.slice(), err };
+  perPage[p] = { logs: EMIT.slice(), loads: seen.slice(), err };
 }
 
-// 2) api()：GET / 写操作 / 点名不记 / 埋点自身 / 失败
-const UI_EVENT_PATH = '/api/ui_event';
-function actionName(path) { return '动作:' + path; }
+// 2) api()：GET / 写操作 / 点名不记 / 埋点自身 / 失败。埋点那三层（logAction、路径表、
+//    actionRef/failRef/logRef）与两个常量都是 index.html 原样抠来的，不是替身
+%s
+%s
+%s
 function friendlyError(x) { return '友好:' + String(x); }
 const authGate = { needed: false, reason: '' };
 let fetchMode = 'ok';
 globalThis.fetch = async (path, init) => {
+  let body = null;
+  try { body = init && init.body ? JSON.parse(init.body) : null; } catch (_) { body = null; }
+  // 只有 logAction 那种带 text 的 body 才算一条埋点；api() 自己 POST /api/ui_event 时 body 是业务参数
+  if (String(path) === UI_EVENT_PATH && body && typeof body.text === 'string') {
+    EMIT.push(body);
+    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+  }
   if (fetchMode === 'fail') {
     return { ok: false, status: 401, statusText: 'Unauthorized',
              json: async () => ({ detail: 'nope', auth_required: true, reason: 'locked' }) };
@@ -236,20 +277,24 @@ globalThis.fetch = async (path, init) => {
 (async () => {
   const out = {};
   const one = async (path, opt) => {
-    calls.length = 0;
+    EMIT.length = 0;
     let threw = false;
-    try { await api(path, opt); } catch (_) { threw = true; }
-    return { logs: calls.slice(), threw };
+    let err = '';
+    try { await api(path, opt); } catch (e) { threw = true; err = String((e && e.message) || e); }
+    return { logs: EMIT.slice(), threw, err };
   };
   out.getByGet = await one('/api/tasks');
   out.postByApi = await one('/api/download', { method: 'POST', body: '{}' });
   out.postWithNoLog = await one('/api/logs', { method: 'POST', noLog: true });
   out.postSelf = await one('/api/ui_event', { method: 'POST', body: '{}' });
-  out.postNamed = await one('/api/config', { method: 'POST', uiName: '保存设置' });
+  out.postNamed = await one('/api/config', { method: 'POST', uiName: 'ui.auth_clear_locks' });
   fetchMode = 'fail';
   out.postFail = await one('/api/download', { method: 'POST' });
   out.postFailGate = authGate.needed === true;
-  out.putFail = await one('/api/tasks/clear', { method: 'PUT' });
+  fetchMode = 'ok';   // PUT 这一条要的是「非 GET 就算写操作」，别混进失败分支（那样记的是 act.fail）
+  out.putOk = await one('/api/tasks/clear', { method: 'PUT' });
+  out.enFail = window.MD_I18N.t('act.fail', { s: 'act.download' }, 'en');
+  out.zhFail = window.MD_I18N.t('act.fail', { s: 'act.download' }, 'zh');
   fs.writeFileSync(RES, JSON.stringify({ perPage, out }));
 })();
 """
@@ -262,7 +307,9 @@ def run_node() -> dict:
     res = tmp / "navlog_result.json"
     if res.exists():
         res.unlink()
-    js = JS % (json.dumps(str(res)), json.dumps(PAGE_WATCH_BODY), json.dumps(PAGES), API_FN_FULL)
+    js = JS % (json.dumps(str(res)), json.dumps(str(ROOT / "static" / "i18n.js")),
+               json.dumps(PAGE_WATCH_BODY), json.dumps(PAGES),
+               UI_EVENT_LINE, SENSITIVE_LINE, EMIT_FULL, API_FN_FULL)
     harness = tmp / "navlog_harness.js"
     harness.write_text(js, encoding="utf-8")
     p = subprocess.run(["node", str(harness)], capture_output=True, text=True, encoding="utf-8")
@@ -293,25 +340,40 @@ if R:
        "loadConfigDefaults" in (per.get("settings") or {}).get("loads", [])
        and "loadCleanup" in (per.get("settings") or {}).get("loads", []),
        str((per.get("settings") or {}).get("loads")))
-    ck("C5 GET 不记（轮询刷不出日志）", (out.get("getByGet") or {}).get("logs") == [],
-       str(out.get("getByGet")))
+    # 这四条以前只看「没记」，harness 一抛（threw=True）就照样空，等于白过 —— 现在两头都钉：
+    # 一条埋点不发，且这一趟真跑完了没抛。
+    def quiet_case(name):
+        v = out.get(name) or {}
+        return v.get("logs") == [] and v.get("threw") is False, f"{v.get('logs')} / threw={v.get('threw')} {v.get('err')}"
+    okc, exc = quiet_case("getByGet")
+    ck("C5 GET 不记（轮询刷不出日志）", okc, exc)
     pb = (out.get("postByApi") or {}).get("logs") or []
-    ck("C6 写操作记一行，名字来自路径映射", len(pb) == 1 and pb[0][0].startswith("动作:/api/download"),
-       str(pb))
-    ck("C7 点名不记的写操作照旧不记", (out.get("postWithNoLog") or {}).get("logs") == [],
-       str(out.get("postWithNoLog")))
-    ck("C8 埋点接口自己不给自己记（递归那条）", (out.get("postSelf") or {}).get("logs") == [],
-       str(out.get("postSelf")))
-    ck("C9 同一个接口被不同按钮共用时写的是按钮名",
-       (out.get("postNamed") or {}).get("logs") == [["保存设置", "info"]], str(out.get("postNamed")))
+    ck("C6 写操作记一行，名字来自路径映射（键 + 按 zh 拼出的那句一起发）",
+       len(pb) == 1 and pb[0].get("k") == "act.download" and pb[0].get("level") == "info"
+       and pb[0].get("text") == "加入下载队列", str(pb))
+    okc, exc = quiet_case("postWithNoLog")
+    ck("C7 点名不记的写操作照旧不记", okc, exc)
+    okc, exc = quiet_case("postSelf")
+    ck("C8 埋点接口自己不给自己记（递归那条）", okc, exc)
+    pn = (out.get("postNamed") or {}).get("logs") or []
+    ck("C9 同一个接口被不同按钮共用时写的是按钮自己那个键",
+       len(pn) == 1 and pn[0].get("k") == "ui.auth_clear_locks"
+       and pn[0].get("level") == "info" and pn[0].get("text") != "ui.auth_clear_locks", str(pn))
     pf = (out.get("postFail") or {}).get("logs") or []
-    ck("C10 失败那一下记成 warning 且带「（失败）」",
-       len(pf) == 1 and pf[0][1] == "warning" and pf[0][0].endswith("（失败）"), str(pf))
+    ck("C10 失败那一下记成 warning，键是 act.fail、{s} 指回原动作、按 zh 拼出「（失败）」",
+       len(pf) == 1 and pf[0].get("level") == "warning" and pf[0].get("k") == "act.fail"
+       and (pf[0].get("kv") or {}).get("s") == "act.download"
+       and str(pf[0].get("text", "")).endswith("（失败）"), str(pf))
     ck("C11 失败仍然抛（埋点没把错误咽掉）", (out.get("postFail") or {}).get("threw") is True)
     ck("C12 401 仍走登录门", out.get("postFailGate") is True)
-    pu = (out.get("putFail") or {}).get("logs") or []
-    ck("C13 PUT 也算写操作（不是只认 POST）",
-       len(pu) == 1 and pu[0][0].startswith("动作:/api/tasks/clear"), str(pu))
+    pu = (out.get("putOk") or {}).get("logs") or []
+    ck("C13 PUT 也算写操作（不是只认 POST）；表里没这条路径时退到 act.call 带 {p}",
+       len(pu) == 1 and pu[0].get("k") == "act.call" and pu[0].get("level") == "info"
+       and (pu[0].get("kv") or {}).get("p") == "tasks/clear"
+       and pu[0].get("text") == "调用 tasks/clear", str(pu))
+    ck("C14 同一条埋点两份词表都拼得出：zh 是落盘那句，en 带「(failed)」",
+       out.get("zhFail") == "加入下载队列（失败）" and "(failed)" in str(out.get("enFail") or ""),
+       f"zh={out.get('zhFail')} / en={out.get('enFail')}")
 
 print("== 汇总 ==")
 ck("Z1 后端那份 log_mgr 已还原", S.log_mgr is _REAL_LOG)
