@@ -6883,7 +6883,7 @@
           return libraryItems.value.filter(x => x.kind === f);
         });
         // 默认按修改时间倒序：刚下完的成品排第一，进这一页十有八九是来找刚下那条的
-        const libSort = ref({ key: 'mtime', dir: 'desc', t: '资源库' });
+        const libSort = ref({ key: 'mtime', dir: 'desc', t: 'list.library' });
         const LIB_DIR = { name: 'asc', kind: 'asc', res: 'desc', audio: 'desc', duration: 'desc', size: 'desc', mtime: 'desc' };
         const LIB_GETTERS = {
           name: x => x.name || '',
@@ -7284,16 +7284,23 @@
           else { state.key = key; state.dir = (dirs && dirs[key]) || 'asc'; }
           if (state.t) logSort(state.t, state.key, state.dir);
         }
-        /* 列名 → 中文，排序留痕用；未收录的列名原样写出 */
-        const COL_LABELS = {
-          name: '文件名', title: '标题', uploader: '上传方', platform: '平台', kind: '类型',
-          res: '分辨率', duration: '时长', size: '大小', mtime: '修改时间', time: '时间',
-          status: '状态', id: 'ID', ext: '封装', tbr: '码率', url: '链接',
-          last_check: '上次检查', new_count: '新增', date: '日期', views: '播放量',
-          artists: '歌手', album: '专辑',
+        /* 列名 → 词表里的键（col.*），排序留痕用。没收录的列名原样写出去：
+           它不是键，t() 那一层不会替它展开。 */
+        const COL_KEYS = {
+          name: 'col.name', title: 'col.title', uploader: 'col.uploader', platform: 'col.platform',
+          kind: 'col.kind', res: 'col.res', duration: 'col.duration', size: 'col.size',
+          mtime: 'col.mtime', time: 'col.time', status: 'col.status', id: 'col.id',
+          ext: 'col.ext', tbr: 'col.tbr', url: 'col.url', last_check: 'col.last_check',
+          new_count: 'col.new_count', date: 'col.date', views: 'col.views',
+          artists: 'col.artists', album: 'col.album',
         };
+        /* 传进来的 listTitle 是词表里的键（list.xxx）：整句交给 ui.sort_line 现拼，
+           {list}/{col}/{dir} 三截都是键，由 t() 按当句语言各展开各的。
+           片段用 list./col./sort./theme./favtab./dir. 这些前缀，不占 ui.* —— ui.* 是整句，
+           英文那份自带「[UI] 」（闸门 H10 按前缀分工钉着），片段带了前缀会拼进句子中间。 */
         function logSort(listTitle, key, dir) {
-          logAction(`「${listTitle}」按${COL_LABELS[key] || key}${dir === 'asc' ? '升序' : '降序'}排序`);
+          logAction('ui.sort_line', undefined,
+            { list: listTitle, col: COL_KEYS[key] || key, dir: dir === 'asc' ? 'sort.asc' : 'sort.desc' });
         }
         function sortIcon(state, key) {
           if (state.key !== key) return '↕';
@@ -7338,7 +7345,7 @@
           const key = prop === 'size' ? 'size' : prop === 'mtime' ? 'mtime' : 'name';
           fileSort.value = key;
           fileSortDir.value = order === 'ascending' ? 'asc' : 'desc';
-          logSort('文件列表', key, fileSortDir.value);
+          logSort('list.files', key, fileSortDir.value);
         }
         function cmp(key) {
           return (a, b) => {
@@ -7349,12 +7356,12 @@
           };
         }
         const HIST_DIR = { time: 'desc', title: 'asc', status: 'asc' };
-        const histSort = ref({ key: 'time', dir: 'desc', t: '下载历史' });
+        const histSort = ref({ key: 'time', dir: 'desc', t: 'list.history' });
         const HIST_GETTERS = { time: x => x.time || '', title: x => x.title || '', status: x => x.status || '' };
         const historySorted = computed(() => applySort(history.value, histSort.value, HIST_GETTERS));
 
         const FMT_DIR = { id: 'asc', res: 'desc', ext: 'asc', tbr: 'desc', size: 'desc' };
-        const fmtSort = ref({ key: '', dir: 'asc', t: '可用格式' });
+        const fmtSort = ref({ key: '', dir: 'asc', t: 'list.formats' });
         const FMT_GETTERS = {
           id: f => f.format_id || '',
           res: f => f.height || 0,
@@ -7365,7 +7372,7 @@
         const formatsSorted = computed(() => applySort((mediaInfo.value && mediaInfo.value.formats) || [], fmtSort.value, FMT_GETTERS));
 
         const SUB_DIR = { kind: 'asc', title: 'asc', status: 'asc', url: 'asc', last_check: 'desc', new_count: 'desc' };
-        const subSort = ref({ key: '', dir: 'asc', t: '订阅列表' });
+        const subSort = ref({ key: '', dir: 'asc', t: 'list.subs' });
         const SUB_GETTERS = {
           kind: s => s.kind || '',
           title: s => s.title || '',
@@ -7539,7 +7546,11 @@
             const t = String(zh).replace(/[\r\n]+/g, ' ').trim();
             if (!t) return;
             // 藏原文就得连键一起藏：只藏 message 的话，英文界面会照 kv 把那句话再拼出来
-            const leaky = [t, hasK ? MD_I18N.t(textOrKey, params, 'en') : '', ...Object.values(params || {})]
+            /* 要查的是「会落盘的这句」和「用户填进去的参数值」。两种都不查键名本身：
+               act.cookiecloud.push 这类值本身就是键，键名里带 cookie/token 是命名，不是泄密；
+               英文那句也不查 —— 两份词表的占位符一模一样（闸门 A5 钉着），要泄只能从参数泄，
+               而查它会让「保存登录凭证」这种中文无辜、英文撞词（cookies）的记录凭空消失。 */
+            const leaky = [t, ...Object.values(params || {}).filter((v) => !MD_I18N.has(String(v)))]
               .some((s) => SENSITIVE_RE.test(String(s)));
             fetch(UI_EVENT_PATH, {
               method: 'POST',
@@ -7553,153 +7564,162 @@
             }).catch(() => {});
           } catch (_) {}
         }
+        /* 路径 → 动作名的键。名字本身在 i18n.js 的词表里（act.*）：
+           落盘的中文由 logAction 按 zh 现拼，英文界面按 en 现拼，这里只负责「这条路径算哪个动作」。
+           前缀匹配照旧（长的先试），所以子路径没单列时也能归到父动作。 */
         const ACTION_NAMES = {
-          '/api/download': '加入下载队列',
-          '/api/analyze': '解析网址',
-          '/api/search': '聚合搜索',
-          '/api/pause': '暂停任务',
-          '/api/resume': '继续任务',
-          '/api/stop': '停止下载',
-          '/api/retry': '重试全部失败任务',
-          '/api/retry-one': '重试任务',
-          '/api/delete': '清理已结束任务',
-          '/api/clear-finished': '清除已完成任务',
-          '/api/cleanup-parts': '清理未完成的分片文件',
-          '/api/tasks/delete': '删除任务',
-          '/api/tasks/edit': '修改任务设置',
-          '/api/tasks/pin': '置顶任务',
-          '/api/tasks/unpin': '取消置顶任务',
-          '/api/tasks/top': '把任务移到队首',
-          '/api/tasks/later': '把任务设为稍后下载',
-          '/api/tasks/start-later': '启动稍后下载的任务',
-          '/api/config': '保存设置',
-          '/api/auth/login': '登录访问保护',
-          '/api/auth/logout': '退出登录',
-          '/api/auth/password': '设置访问口令',
-          '/api/auth/machine_token': '重置机器令牌',
-          '/api/auth/unlock': '解锁登录锁定',
-          '/api/components/update-all': '一键更新组件与依赖',
-          '/api/components/update-check': '检测组件上游版本',
-          '/api/open-folder': '打开下载目录',
-          '/api/browse': '选择本机文件或文件夹',
-          '/api/test-cookie': '检测浏览器登录凭证可用性',
-          '/api/platforms/cookies': '读取浏览器登录凭证',
-          '/api/platforms/cookies/save-text': '粘贴保存登录凭证',
-          '/api/platforms/cookies/clear-flag': '清除平台 Cookie 的登录态标记',
-          '/api/cookiecloud/account': '保存 CookieCloud 同步设置',
-          '/api/cookiecloud/test': '测试 CookieCloud 连接',
-          '/api/cookiecloud/pull': '从 CookieCloud 拉取 Cookie',
-          '/api/cookiecloud/push': '把本机 Cookie 推给 CookieCloud',
-          '/api/cleanup/account': '保存按龄清理设置',
-          '/api/cleanup/preview': '按龄清理：先看名单',
-          '/api/cleanup/run': '按龄清理：按名单删除',
-          '/api/cleanup/restore': '按龄清理：从回收目录放回',
-          '/api/files/delete': '删除文件',
-          '/api/files/clear-archive': '清空已下载记录',
-          '/api/files/zip': '打包下载文件',
-          '/api/diagnostics/export': '导出诊断包',
-          '/api/history/clear': '清空下载历史',
-          '/api/logs/clear': '清空运行日志',
-          '/api/library/scan': '扫描资源库',
-          '/api/transcode': '转码文件',
-          '/api/subtitle/glossary_check': '检查字幕术语表',
-          '/api/config/speed_windows/check': '检查限速时段格式',
-          '/api/config/run_window/check': '检查队列定时窗格式',
-          '/api/subtitle/qc': '检查字幕翻译质量',
-          '/api/subtitle/rewrap': '重排字幕每行字数',
-          '/api/sniff': '嗅探网页媒体',
-          '/api/sniff/browser/start': '启动浏览器嗅探',
-          '/api/sniff/browser/stop': '停止浏览器嗅探',
-          '/api/sniff/browser/clear': '清空嗅探结果',
-          '/api/sniff/download': '下载嗅探到的地址',
-          '/api/sniff/download_merge': '下载并合并嗅探到的分片',
-          '/api/catcatch/import-config': '导入猫抓配置文件的正则规则',
-          '/api/catcatch/rules/toggle': '启用或停用猫抓规则',
-          '/api/catcatch/rules/delete': '删除猫抓规则',
-          '/api/catcatch/rules/clear': '清空猫抓规则',
-          '/api/live/end': '结束直播录制',
-          '/api/live/monitors/add': '添加直播监控',
-          '/api/live/monitors/remove': '移除直播监控',
-          '/api/live/monitors/pause': '暂停直播监控',
-          '/api/live/monitors/resume': '恢复直播监控',
-          '/api/live/monitors/scan': '扫描直播监控',
-          '/api/live/monitors/set': '修改直播房间录制设置',
-          '/api/subs/add': '添加订阅',
-          '/api/subs/remove': '删除订阅',
-          '/api/subs/toggle': '启用或停用订阅',
-          '/api/subs/rules': '保存订阅规则',
-          '/api/subs/scan': '扫描全部订阅',
-          '/api/subs/scan-one': '扫描单个订阅',
-          '/api/subs/backfill': '按日期回填订阅历史',
-          '/api/subs/preview': '预览订阅同步计划',
-          '/api/subs/archived/clear': '清空上游删除归档',
-          '/api/subs/archived': '查看上游删除归档',
-          '/api/favorites/download': '批量下载收藏内容',
-          '/api/music/search': '搜索音乐',
-          '/api/music/download': '下载音乐',
-          '/api/music/playlist': '解析音乐歌单 / 单曲',
-          '/api/music/probe': '探测音乐来源',
-          '/api/music/check_quality': '核对成品音质',
-          '/api/music/lyrics': '获取歌词',
-          '/api/music/local_scan': '扫描本地音乐库',
-          '/api/music/install': '安装音乐下载组件',
-          '/api/music/tag': '写入音乐标签',
-          '/api/music/guess_tags': '自动推测音乐标签',
-          '/api/music/fingerprint': '音频指纹识别',
-          '/api/music/mb_lookup': '查询 MusicBrainz 匹配',
-          '/api/music/mb_enrich': '用 MusicBrainz 补全标签',
-          '/api/ai/batch': '批量 AI 处理',
-          '/api/ai/pipeline': '运行 AI 流水线',
-          '/api/ai/analyze': '音频分析',
-          '/api/ai/transcribe': '语音转写',
-          '/api/ai/realtime': '准实时转写翻译',
-          '/api/ai/translate_srt': '翻译字幕',
-          '/api/ai/srt_calibrate': '校正字幕',
-          '/api/ai/srt/save': '保存逐句字幕校对',
-          '/api/ai/subtitle_export': '导出字幕',
-          '/api/ai/hardsub': '烧录硬字幕',
-          '/api/ai/hardsub_stop': '停止硬字幕烧录',
-          '/api/ai/vocal_separate': '人声分离',
-          '/api/ai/tts': '字幕配音',
-          '/api/ai/install_voice': '安装语音模型包',
-          '/api/telegram/test': '测试 Telegram 通知',
-          '/api/telegram/list': '拉取 Telegram 频道内容',
-          '/api/telegram/mt/config': '保存 Telegram 会话凭据',
-          '/api/telegram/mt/send-code': '发送 Telegram 登录验证码',
-          '/api/telegram/mt/sign-in': '提交 Telegram 登录验证码',
-          '/api/telegram/mt/logout': '退出 Telegram 登录',
-          '/api/telegram/mt/list': '拉取 Telegram 会话内容',
-          '/api/telegram/mt/ack': '标记 Telegram 频道已读',
-          '/api/wecom/test': '测试企业微信通知',
-          '/api/storage/test': '测试云存储连通',
-          '/api/bili/qr/poll': '轮询 B 站扫码登录结果',
-          '/api/music/cookies': '保存音乐平台登录 Cookie',
-          '/api/music/netease/qr/generate': '获取网易云登录二维码',
-          '/api/music/netease/qr/poll': '轮询网易云扫码登录结果',
-          '/api/risk/preset': '应用反风控预设',
-          '/api/po_token/check': 'PO 凭证可用性自检',
-          '/api/net/use_system_proxy': '改用系统代理',
-          '/api/net/reset': '重置网络设置',
-          '/api/queue/throttle_reset': '解除站点降速',
-          '/api/env/path': '更新 PATH 环境变量',
-          '/api/plugins/reload': '重载解析插件',
-          '/api/torrent/upload': '上传种子文件',
-          '/api/torrent/select': '改选种子内文件',
-          '/api/torrent/stop-seed': '停止做种',
-          '/api/sync/import': '导入配置备份',
-          '/api/update/whisper': '更新 Whisper 模型',
-          '/api/update/n_m3u8dl': '更新 N_m3u8DL-RE',
-          '/api/update/ytdlp': '更新 yt-dlp',
-          '/api/update/ffmpeg': '更新 FFmpeg',
-          '/api/update/pkg': '更新 Python 依赖',
+          '/api/download': 'act.download',
+          '/api/analyze': 'act.analyze',
+          '/api/search': 'act.search',
+          '/api/pause': 'act.pause',
+          '/api/resume': 'act.resume',
+          '/api/stop': 'act.stop',
+          '/api/retry': 'act.retry',
+          '/api/retry-one': 'act.retry_one',
+          '/api/delete': 'act.delete',
+          '/api/clear-finished': 'act.clear_finished',
+          '/api/cleanup-parts': 'act.cleanup_parts',
+          '/api/tasks/delete': 'act.tasks.delete',
+          '/api/tasks/edit': 'act.tasks.edit',
+          '/api/tasks/pin': 'act.tasks.pin',
+          '/api/tasks/unpin': 'act.tasks.unpin',
+          '/api/tasks/top': 'act.tasks.top',
+          '/api/tasks/later': 'act.tasks.later',
+          '/api/tasks/start-later': 'act.tasks.start_later',
+          '/api/config': 'act.config',
+          '/api/auth/login': 'act.auth.login',
+          '/api/auth/logout': 'act.auth.logout',
+          '/api/auth/password': 'act.auth.password',
+          '/api/auth/machine_token': 'act.auth.machine_token',
+          '/api/auth/unlock': 'act.auth.unlock',
+          '/api/components/update-all': 'act.components.update_all',
+          '/api/components/update-check': 'act.components.update_check',
+          '/api/open-folder': 'act.open_folder',
+          '/api/browse': 'act.browse',
+          '/api/test-cookie': 'act.test_cookie',
+          '/api/platforms/cookies': 'act.platforms.cookies',
+          '/api/platforms/cookies/save-text': 'act.platforms.cookies.save_text',
+          '/api/platforms/cookies/clear-flag': 'act.platforms.cookies.clear_flag',
+          '/api/cookiecloud/account': 'act.cookiecloud.account',
+          '/api/cookiecloud/test': 'act.cookiecloud.test',
+          '/api/cookiecloud/pull': 'act.cookiecloud.pull',
+          '/api/cookiecloud/push': 'act.cookiecloud.push',
+          '/api/cleanup/account': 'act.cleanup.account',
+          '/api/cleanup/preview': 'act.cleanup.preview',
+          '/api/cleanup/run': 'act.cleanup.run',
+          '/api/cleanup/restore': 'act.cleanup.restore',
+          '/api/files/delete': 'act.files.delete',
+          '/api/files/clear-archive': 'act.files.clear_archive',
+          '/api/files/zip': 'act.files.zip',
+          '/api/diagnostics/export': 'act.diagnostics.export',
+          '/api/history/clear': 'act.history.clear',
+          '/api/logs/clear': 'act.logs.clear',
+          '/api/library/scan': 'act.library.scan',
+          '/api/transcode': 'act.transcode',
+          '/api/subtitle/glossary_check': 'act.subtitle.glossary_check',
+          '/api/config/speed_windows/check': 'act.config.speed_windows.check',
+          '/api/config/run_window/check': 'act.config.run_window.check',
+          '/api/subtitle/qc': 'act.subtitle.qc',
+          '/api/subtitle/rewrap': 'act.subtitle.rewrap',
+          '/api/sniff': 'act.sniff',
+          '/api/sniff/browser/start': 'act.sniff.browser.start',
+          '/api/sniff/browser/stop': 'act.sniff.browser.stop',
+          '/api/sniff/browser/clear': 'act.sniff.browser.clear',
+          '/api/sniff/download': 'act.sniff.download',
+          '/api/sniff/download_merge': 'act.sniff.download_merge',
+          '/api/catcatch/import-config': 'act.catcatch.import_config',
+          '/api/catcatch/rules/toggle': 'act.catcatch.rules.toggle',
+          '/api/catcatch/rules/delete': 'act.catcatch.rules.delete',
+          '/api/catcatch/rules/clear': 'act.catcatch.rules.clear',
+          '/api/live/end': 'act.live.end',
+          '/api/live/monitors/add': 'act.live.monitors.add',
+          '/api/live/monitors/remove': 'act.live.monitors.remove',
+          '/api/live/monitors/pause': 'act.live.monitors.pause',
+          '/api/live/monitors/resume': 'act.live.monitors.resume',
+          '/api/live/monitors/scan': 'act.live.monitors.scan',
+          '/api/live/monitors/set': 'act.live.monitors.set',
+          '/api/subs/add': 'act.subs.add',
+          '/api/subs/remove': 'act.subs.remove',
+          '/api/subs/toggle': 'act.subs.toggle',
+          '/api/subs/rules': 'act.subs.rules',
+          '/api/subs/scan': 'act.subs.scan',
+          '/api/subs/scan-one': 'act.subs.scan_one',
+          '/api/subs/backfill': 'act.subs.backfill',
+          '/api/subs/preview': 'act.subs.preview',
+          '/api/subs/archived/clear': 'act.subs.archived.clear',
+          '/api/subs/archived': 'act.subs.archived',
+          '/api/favorites/download': 'act.favorites.download',
+          '/api/music/search': 'act.music.search',
+          '/api/music/download': 'act.music.download',
+          '/api/music/playlist': 'act.music.playlist',
+          '/api/music/probe': 'act.music.probe',
+          '/api/music/check_quality': 'act.music.check_quality',
+          '/api/music/lyrics': 'act.music.lyrics',
+          '/api/music/local_scan': 'act.music.local_scan',
+          '/api/music/install': 'act.music.install',
+          '/api/music/tag': 'act.music.tag',
+          '/api/music/guess_tags': 'act.music.guess_tags',
+          '/api/music/fingerprint': 'act.music.fingerprint',
+          '/api/music/mb_lookup': 'act.music.mb_lookup',
+          '/api/music/mb_enrich': 'act.music.mb_enrich',
+          '/api/ai/batch': 'act.ai.batch',
+          '/api/ai/pipeline': 'act.ai.pipeline',
+          '/api/ai/analyze': 'act.ai.analyze',
+          '/api/ai/transcribe': 'act.ai.transcribe',
+          '/api/ai/realtime': 'act.ai.realtime',
+          '/api/ai/translate_srt': 'act.ai.translate_srt',
+          '/api/ai/srt_calibrate': 'act.ai.srt_calibrate',
+          '/api/ai/srt/save': 'act.ai.srt.save',
+          '/api/ai/subtitle_export': 'act.ai.subtitle_export',
+          '/api/ai/hardsub': 'act.ai.hardsub',
+          '/api/ai/hardsub_stop': 'act.ai.hardsub_stop',
+          '/api/ai/vocal_separate': 'act.ai.vocal_separate',
+          '/api/ai/tts': 'act.ai.tts',
+          '/api/ai/install_voice': 'act.ai.install_voice',
+          '/api/telegram/test': 'act.telegram.test',
+          '/api/telegram/list': 'act.telegram.list',
+          '/api/telegram/mt/config': 'act.telegram.mt.config',
+          '/api/telegram/mt/send-code': 'act.telegram.mt.send_code',
+          '/api/telegram/mt/sign-in': 'act.telegram.mt.sign_in',
+          '/api/telegram/mt/logout': 'act.telegram.mt.logout',
+          '/api/telegram/mt/list': 'act.telegram.mt.list',
+          '/api/telegram/mt/ack': 'act.telegram.mt.ack',
+          '/api/wecom/test': 'act.wecom.test',
+          '/api/storage/test': 'act.storage.test',
+          '/api/bili/qr/poll': 'act.bili.qr.poll',
+          '/api/music/cookies': 'act.music.cookies',
+          '/api/music/netease/qr/generate': 'act.music.netease.qr.generate',
+          '/api/music/netease/qr/poll': 'act.music.netease.qr.poll',
+          '/api/risk/preset': 'act.risk.preset',
+          '/api/po_token/check': 'act.po_token.check',
+          '/api/net/use_system_proxy': 'act.net.use_system_proxy',
+          '/api/net/reset': 'act.net.reset',
+          '/api/queue/throttle_reset': 'act.queue.throttle_reset',
+          '/api/env/path': 'act.env.path',
+          '/api/plugins/reload': 'act.plugins.reload',
+          '/api/torrent/upload': 'act.torrent.upload',
+          '/api/torrent/select': 'act.torrent.select',
+          '/api/torrent/stop-seed': 'act.torrent.stop_seed',
+          '/api/sync/import': 'act.sync.import',
+          '/api/update/whisper': 'act.update.whisper',
+          '/api/update/n_m3u8dl': 'act.update.n_m3u8dl',
+          '/api/update/ytdlp': 'act.update.ytdlp',
+          '/api/update/ffmpeg': 'act.update.ffmpeg',
+          '/api/update/pkg': 'act.update.pkg',
         };
         const ACTION_KEYS = Object.keys(ACTION_NAMES).sort((a, b) => b.length - a.length);
-        function actionName(path) {
+        /* 一条埋点 = 一个键 + 拼这句要的参。表里没有这条路径时退到 act.call 带 {p}，
+           与改前那句「调用 xxx」同一口径；路径是数据不是键，所以它不参与展开。 */
+        function actionRef(path) {
           const clean = String(path || '').split('?')[0];
-          if (ACTION_NAMES[clean]) return ACTION_NAMES[clean];
+          if (ACTION_NAMES[clean]) return { k: ACTION_NAMES[clean] };
           const hit = ACTION_KEYS.find((k) => clean.indexOf(k) === 0);
-          return hit ? ACTION_NAMES[hit] : '调用 ' + clean.replace(/^\/api\//, '');
+          if (hit) return { k: ACTION_NAMES[hit] };
+          return { k: 'act.call', v: { p: clean.replace(/^\/api\//, '') } };
         }
+        // 失败态交给 act.fail 的 {s}：那截动作名由 t() 按当句语言现展开
+        function failRef(ref) { return { k: 'act.fail', v: Object.assign({ s: ref.k }, ref.v || {}) }; }
+        function logRef(ref, level) { logAction(ref.k, level, ref.v); }
 
         /* 访问保护（登录）：开关、口令、锁定名单都在「设置 → 访问保护」这一张卡里。
            这里只负责两件事：非本机来的连接被 401 挡下时弹登录窗，以及那张卡要的读数。 */
@@ -7753,7 +7773,7 @@
           authBusy.value = true;
           try {
             await api('/api/config', {
-              method: 'POST', uiName: '保存访问保护设置',
+              method: 'POST', uiName: 'ui.auth_save_config',
               body: JSON.stringify({
                 web_auth_enabled: !!settings.value.web_auth_enabled,
                 web_auth_session_hours: Number(settings.value.web_auth_session_hours) || 12,
@@ -7782,7 +7802,7 @@
           authBusy.value = true;
           try {
             await api('/api/auth/password', {
-              method: 'POST', uiName: '设置访问口令',
+              method: 'POST', uiName: 'act.auth.password',
               body: JSON.stringify({ password: pw, current: authForm.current || '' }),
             });
             authForm.current = '';
@@ -7814,7 +7834,7 @@
         function rotateMachineToken() {
           ElementPlus.ElMessageBox.confirm(tr('settings.tokenRotateBody'),
             tr('settings.tokenRotateTitle'), { type: 'warning', confirmButtonText: tr('auth.rotateBtn'), cancelButtonText: tr('settings.clSkipBtn') })
-            .then(() => api('/api/auth/machine_token', { method: 'POST', uiName: '重置机器令牌' }))
+            .then(() => api('/api/auth/machine_token', { method: 'POST', uiName: 'act.auth.machine_token' }))
             .then(r => {
               auth.value.machine_token = (r && r.machine_token) || '';
               authTokenShown.value = true;
@@ -7824,7 +7844,7 @@
         }
 
         function unlockIp(ip) {
-          api('/api/auth/unlock', { method: 'POST', uiName: '解锁登录锁定', body: JSON.stringify({ ip }) })
+          api('/api/auth/unlock', { method: 'POST', uiName: 'act.auth.unlock', body: JSON.stringify({ ip }) })
             .then(r => { auth.value.locks = (r && r.locks) || []; ElementPlus.ElMessage.success(tr('settings.unlockIpDone', { ip: ip })); })
             .catch(e => ElementPlus.ElMessage.error(String(e.message || e)));
         }
@@ -7832,13 +7852,14 @@
         function unlockAll() {
           ElementPlus.ElMessageBox.confirm(tr('settings.unlockAllBody'),
             tr('settings.unlockAllBtn'), { type: 'warning', confirmButtonText: tr('settings.unlockAllBtn'), cancelButtonText: tr('settings.unlockKeepBtn') })
-            .then(() => api('/api/auth/unlock', { method: 'POST', uiName: '清空登录锁定', body: JSON.stringify({}) }))
+            .then(() => api('/api/auth/unlock', { method: 'POST', uiName: 'ui.auth_clear_locks', body: JSON.stringify({}) }))
             .then(r => { auth.value.locks = (r && r.locks) || []; ElementPlus.ElMessage.success(tr('settings.unlockCleared')); })
             .catch(e => { if (e && e.message) ElementPlus.ElMessage.error(String(e.message || e)); });
         }
 
         async function api(path, options = {}) {
           const uiName = options.uiName;      // 同一个接口被不同按钮共用时，日志要写清是哪一下
+          const ref = uiName ? { k: uiName } : actionRef(path);
           const noLog = options.noLog === true;   // 定时轮询的写操作别刷日志，登录那一下后端会记
           const init = { ...options };
           delete init.uiName;
@@ -7857,10 +7878,10 @@
               authGate.needed = true;
               authGate.reason = String(err.reason || 'empty');
             }
-            if (tracked) logAction((uiName || actionName(path)) + '（失败）', 'warning');
+            if (tracked) logRef(failRef(ref), 'warning');
             throw new Error(friendlyError(err.detail || res.statusText));
           }
-          if (tracked) logAction(uiName || actionName(path));
+          if (tracked) logRef(ref);
           return res.json();
         }
 
@@ -8041,7 +8062,7 @@
               method: 'POST',
               body: JSON.stringify({ force: !!fromUser }),
               noLog: !fromUser,
-              uiName: fromUser ? '组件与依赖：点「立即检测」联网查询上游版本' : undefined,
+              uiName: fromUser ? 'ui.comp_check_user' : undefined,
             });
             applyCompCheck(d);
             if (d.status === 'running') d = await waitCompCheck();
@@ -8409,14 +8430,15 @@
         function toggleDark() {
           settings.value.dark_mode = !settings.value.dark_mode;
           applyDark(settings.value.dark_mode);
-          logAction(settings.value.dark_mode ? '切换为深色模式' : '切换为浅色模式');
+          logAction(settings.value.dark_mode ? 'ui.dark_on' : 'ui.dark_off');
         }
+        /* name 是那颗色点要摆的两个名字；nameKey 给留痕用，主题名换语言了在日志页现拼 */
         const UI_THEMES = [
-          { key: 'blue', name: { zh: '年度蓝', en: 'Luminous Blue' } },
-          { key: 'orange', name: { zh: '活力橘', en: 'Energy Orange' } },
-          { key: 'pink', name: { zh: '流行粉', en: 'Pop Pink' } },
-          { key: 'green', name: { zh: '草地绿', en: 'Meadowland Green' } },
-          { key: 'clay', name: { zh: '陶土色', en: 'Clay' } },
+          { key: 'blue', nameKey: 'theme.blue', name: { zh: '年度蓝', en: 'Luminous Blue' } },
+          { key: 'orange', nameKey: 'theme.orange', name: { zh: '活力橘', en: 'Energy Orange' } },
+          { key: 'pink', nameKey: 'theme.pink', name: { zh: '流行粉', en: 'Pop Pink' } },
+          { key: 'green', nameKey: 'theme.green', name: { zh: '草地绿', en: 'Meadowland Green' } },
+          { key: 'clay', nameKey: 'theme.clay', name: { zh: '陶土色', en: 'Clay' } },
         ];
         function applyTheme(name) {
           document.body.dataset.theme = UI_THEMES.some(t => t.key === name) ? name : 'blue';
@@ -8425,7 +8447,7 @@
           settings.value.ui_theme = name;
           applyTheme(name);
           const t = UI_THEMES.find(x => x.key === name);
-          logAction('切换主题为「' + ((t && t.name.zh) || name) + '」');
+          logAction('ui.theme_switch', undefined, { name: (t && t.nameKey) || name });
         }
         /* 界面语言：钮上的三个选项来自 i18n.js 的 langs（同一份数据，免得这里再抄一遍名字）。
            切语言改的是界面文字；后端返回的报错正文仍是中文，运行日志按条目分：带消息键的跟着切，
@@ -9212,9 +9234,10 @@
           } catch (_) {}
         }
         /* 收藏页统一入口：接口返回的 total 可能大于实际取回的条数，区分「上限截断」和「失效条目」 */
-        const FAV_TAB_NAMES = {
-          folders: 'B站收藏夹', toview: 'B站稍后再看', followings: 'B站关注',
-          yt_liked: 'YouTube 我喜欢', yt_wl: 'YouTube 稍后再看', yt_pl: 'YouTube 播放列表',
+        /* 页签 → 词表里的键，只给那句留痕用；页签上的字另有 ui.tab* 之外的界面文案 */
+        const FAV_TAB_KEYS = {
+          folders: 'favtab.bili_folders', toview: 'favtab.bili_to_view', followings: 'favtab.bili_followings',
+          yt_liked: 'favtab.yt_liked', yt_wl: 'favtab.yt_wl', yt_pl: 'favtab.yt_pl',
         };
         function applyFavList(r) {
           favItems.value = (r && r.items) || [];
@@ -9224,7 +9247,8 @@
             truncated: !!(r && r.partial),
             missing: Math.max(0, total - favItems.value.length),
           };
-          logAction(`加载${FAV_TAB_NAMES[favTab.value] || '收藏列表'}：取回 ${favItems.value.length} 条（平台记录 ${total} 条）`);
+          logAction('ui.fav_load', undefined,
+            { tab: FAV_TAB_KEYS[favTab.value] || 'list.favs', n: favItems.value.length, total });
         }
         async function loadFavTab() {
           favLoading.value = true;
@@ -9842,7 +9866,7 @@
             try { if (_rtMedia) _rtMedia.getTracks().forEach(t => t.stop()); } catch(_){}
             if (_rtTimer) { clearInterval(_rtTimer); _rtTimer = null; }
             rtLog.value += '\n' + tr('voice.rtStopped') + '\n';
-            logAction('停止准实时转写');
+            logAction('ui.rt_stop');
             return;
           }
           try {
@@ -9872,7 +9896,7 @@
             };
             rtRecording.value = true;
             rtLog.value = tr('voice.rtStarted') + '\n';
-            logAction('开始准实时转写');
+            logAction('ui.rt_start');
             _rtRecorder.start();
             setTimeout(() => { try { if (_rtRecorder.state === 'recording') _rtRecorder.stop(); } catch(_){} }, 4000);
           } catch (e) {
@@ -10142,7 +10166,7 @@
           try {
             const r = await api('/api/ai/srt/save', {
               method: 'POST',
-              uiName: '保存逐句字幕校对',
+              uiName: 'act.ai.srt.save',
               body: JSON.stringify({
                 path: transcriptPath.value,
                 base_mtime: srtEdit.mtimeTs,
@@ -10160,7 +10184,7 @@
           }
         }
         function zipPath(path, name) {
-          logAction(actionName('/api/files/zip'));
+          logRef(actionRef('/api/files/zip'));
           const a = document.createElement('a');
           a.href = '/api/files/zip';
           // 使用 fetch POST 下载 blob
@@ -10257,7 +10281,7 @@
             };
             if ((cc.value.key || '').trim()) body.key = cc.value.key;
             const d = await api('/api/cookiecloud/account', {
-              method: 'POST', body: JSON.stringify(body), uiName: '保存 CookieCloud 设置',
+              method: 'POST', body: JSON.stringify(body), uiName: 'ui.cc_save',
             });
             ccApply(d);
             ccMsg.value = tr('settings.ccSavedCfg')
@@ -10272,7 +10296,7 @@
           ElementPlus.ElMessageBox.confirm(tr('settings.ccClearKeyBody'),
             tr('settings.ccClearKeyTitle'), { type: 'warning', confirmButtonText: tr('settings.ccClearGoBtn'), cancelButtonText: tr('settings.clSkipBtn') })
             .then(() => api('/api/cookiecloud/account', {
-              method: 'POST', body: JSON.stringify({ clear_key: true }), uiName: '清掉 CookieCloud 密钥',
+              method: 'POST', body: JSON.stringify({ clear_key: true }), uiName: 'ui.cc_clear_key',
             }))
             .then(d => {
               ccApply(d);
@@ -10299,10 +10323,10 @@
           } finally { ccBusy.value = ''; }
         }
         function testCookieCloud() {
-          return ccCall('test', '/api/cookiecloud/test', '测试 CookieCloud 连接', tr('settings.ccTestPass'));
+          return ccCall('test', '/api/cookiecloud/test', 'act.cookiecloud.test', tr('settings.ccTestPass'));
         }
         function pullCookieCloud() {
-          return ccCall('pull', '/api/cookiecloud/pull', '从 CookieCloud 拉取 Cookie', tr('settings.ccPullWritten'));
+          return ccCall('pull', '/api/cookiecloud/pull', 'act.cookiecloud.pull', tr('settings.ccPullWritten'));
         }
         async function pushCookieCloud() {
           try {
@@ -10310,7 +10334,7 @@
               tr('settings.ccPushBody'),
               tr('settings.ccPushBtn'), { type: 'warning', confirmButtonText: tr('settings.ccPushGoBtn'), cancelButtonText: tr('settings.clSkipBtn') });
           } catch (_) { return; }
-          await ccCall('push', '/api/cookiecloud/push', '把本机 Cookie 推给 CookieCloud', tr('settings.ccPushedOk'));
+          await ccCall('push', '/api/cookiecloud/push', 'act.cookiecloud.push', tr('settings.ccPushedOk'));
         }
 
         /* 按龄清理（#31）。前端的 clPlanStale 只是把按钮早一分钟变灰，真拦人的是后端那两道：
@@ -10334,7 +10358,7 @@
           clBusy.value = 'save';
           try {
             const d = await api('/api/cleanup/account', {
-              method: 'POST', uiName: '保存按龄清理设置',
+              method: 'POST', uiName: 'act.cleanup.account',
               body: JSON.stringify({ enabled: !!cl.value.enabled, log_days: Number(cl.value.log_days) || 0,
                                      backup_days: Number(cl.value.backup_days) || 0,
                                      download_days: Number(cl.value.download_days) || 0,
@@ -10355,7 +10379,7 @@
           clBusy.value = 'preview';
           try {
             const d = await api('/api/cleanup/preview', { method: 'POST', body: '{}',
-                                                          uiName: '按龄清理：先看名单' });
+                                                          uiName: 'act.cleanup.preview' });
             clPlan.value = d;
             clPlanStale.value = false;
             clearTimeout(clPlanTimer);
@@ -10379,7 +10403,7 @@
           clBusy.value = 'run';
           try {
             const d = await api('/api/cleanup/run', {
-              method: 'POST', uiName: '按龄清理：按名单删除',
+              method: 'POST', uiName: 'act.cleanup.run',
               body: JSON.stringify({ hash: clPlan.value.hash, groups }),
             });
             clMsg.value = d.message || tr('settings.clDoneWord');
@@ -10445,7 +10469,7 @@
           clBusy.value = 'restore';
           try {
             const d = await api('/api/cleanup/restore', {
-              method: 'POST', uiName: '按龄清理：从回收目录放回',
+              method: 'POST', uiName: 'act.cleanup.restore',
               body: JSON.stringify({ ids }),
             });
             clMsg.value = d.message || tr('settings.clRestored');
@@ -11260,7 +11284,7 @@
             const r = await api('/api/music/favorites', {
               method: 'POST',
               body: JSON.stringify({ rows: list.map(x => ({ ...x })) }),
-              uiName: '收进收藏清单',
+              uiName: 'ui.fav_add',
             });
             const bits = [tr('music.favAdded', { n: r.added || 0 })];
             if (r.duplicated) bits.push(tr('music.favDuplicated', { n: r.duplicated }));
@@ -11278,7 +11302,7 @@
           if (!ids.length) return;
           try {
             const r = await api('/api/music/favorites/remove', {
-              method: 'POST', body: JSON.stringify({ ids }), uiName: '从收藏清单删除',
+              method: 'POST', body: JSON.stringify({ ids }), uiName: 'ui.fav_remove',
             });
             ElementPlus.ElMessage.success(tr('music.favRemoved', { n: r.removed, total: r.total }));
             await loadMusicFavs();
@@ -11314,7 +11338,7 @@
                 sources: (musicStrategy.value && musicStrategy.value.match_sources) || [],
                 cookies: musicCookies.value || '',
               }),
-              uiName: '收藏清单换源',
+              uiName: 'ui.fav_source',
             });
             const fails = (r.results || []).filter(x => !x.ok)
               .map(x => tr('music.favFailLine', { name: x.title || x.id, why: x.reason || tr('music.noGateResult') }));
@@ -11348,7 +11372,7 @@
                 quality_spec: musicQualityBody(),
                 cookies: musicCookies.value || '',
               }),
-              uiName: (rows && rows.length) ? '下载收藏清单勾选行' : '收藏清单整单下载',
+              uiName: (rows && rows.length) ? 'ui.fav_dl_sel' : 'ui.fav_dl_all',
             });
             ElementPlus.ElMessage.success((r.message || tr('music.dlRunning'))
               + (r.reminted ? ' ' + tr('music.remintedPart', { n: r.reminted }) : ''));
@@ -12185,7 +12209,7 @@
           btSelecting.value = true;
           try {
             const r = await api('/api/torrent/select', {
-              method: 'POST', uiName: '改选种子内文件',
+              method: 'POST', uiName: 'act.torrent.select',
               body: JSON.stringify({ task_id: t.id, indices }),
             });
             btFileRows.value = (r.files || []).map(f => ({ ...f }));
@@ -12219,7 +12243,7 @@
             const isUrl = /^magnet:/i.test(v) || /\.torrent$/i.test(v) || /^file:\/\//i.test(v)
               || /^https?:\/\//i.test(v);
             const r = await api('/api/torrent/rules/test', {
-              method: 'POST', uiName: '试自动分类规则',
+              method: 'POST', uiName: 'ui.try_auto_dir',
               body: JSON.stringify(isUrl ? { url: v } : { name: v }),
             });
             // 名字是空的（普通下载链接、没带 dn 的磁力）就别写「比的是「」」：那句只会让人以为出了错
@@ -12263,7 +12287,7 @@
         async function stopSeed(target) {
           const body = target && target.gid ? { gids: [target.gid] } : { ids: [target.id] };
           try {
-            const r = await api('/api/torrent/stop-seed', { method: 'POST', uiName: '停止做种', body: JSON.stringify(body) });
+            const r = await api('/api/torrent/stop-seed', { method: 'POST', uiName: 'act.torrent.stop_seed', body: JSON.stringify(body) });
             ElementPlus.ElMessage.success(r.stopped ? tr('bt.tSeedStopped', { n: r.stopped }) : (r.message || tr('bt.tNoSeeding')));
             await Promise.all([loadSeeding(), loadTasks()]);
           } catch (e) {
@@ -12275,7 +12299,7 @@
             await ElementPlus.ElMessageBox.confirm(tr('bt.confirmStopAll'), tr('common.confirm'), { type: 'warning' });
           } catch (_) { return; }
           try {
-            const r = await api('/api/torrent/stop-seed', { method: 'POST', uiName: '全部停止做种', body: JSON.stringify({ all: true }) });
+            const r = await api('/api/torrent/stop-seed', { method: 'POST', uiName: 'ui.stop_all_seed', body: JSON.stringify({ all: true }) });
             ElementPlus.ElMessage.success(tr('bt.tSeedStoppedAll', { n: r.stopped }));
             await loadSeeding();
           } catch (e) {
@@ -12350,7 +12374,7 @@
           btTrackerRefreshing.value = true;
           try {
             const r = await api('/api/bt/trackers/refresh', {
-              method: 'POST', uiName: '立即获取 tracker 列表', body: JSON.stringify({}),
+              method: 'POST', uiName: 'ui.tracker_now', body: JSON.stringify({}),
             });
             // r.message 是后端那句抓取结果，按口径不翻；后缀是界面补的
             (r.failed || []).length
@@ -12386,7 +12410,7 @@
             if (dl) body.download = dl;
             if (ul) body.upload = ul;
             const r = await api('/api/bt/limit', {
-              method: 'POST', uiName: '改任务限速', body: JSON.stringify(body),
+              method: 'POST', uiName: 'ui.task_speed_limit', body: JSON.stringify(body),
             });
             // 后端回的是从 aria2 读回来的值，界面只报这个，不报用户刚敲的那串（值是后端写的，不翻）
             btLimitResult.value = (r.ok ? tr('bt.tLimitApplied') : tr('bt.tLimitUnconfirmed')) + r.message;
@@ -12418,7 +12442,7 @@
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok) throw new Error(friendlyError(data.detail || resp.statusText));
             btText.value = (btText.value.trim() ? btText.value.trim() + '\n' : '') + data.url;
-            logAction('上传种子文件');
+            logAction('act.torrent.upload');
             ElementPlus.ElMessage.success(tr('bt.tTorrentFilled', { n: data.name, size: formatSize(data.size) }));
           } catch (e) {
             ElementPlus.ElMessage.error(String(e.message || e));
@@ -12996,7 +13020,7 @@
         }
         function onFileRowClick(row) {
           if (row.is_dir) {
-            logAction('文件页进入目录：' + row.path);
+            logAction('ui.file_enter_dir', undefined, { path: row.path });
             loadFiles(row.path);
           }
         }
@@ -13008,7 +13032,7 @@
           const parts = filesPath.value.replace(/\\/g, '/').split('/').filter(Boolean);
           parts.pop();
           const next = parts.join('/');
-          logAction('文件页返回上级目录：' + (next || '根目录'));
+          logAction('ui.file_up_dir', undefined, { path: next || 'dir.root' });
           loadFiles(next);
         }
         async function deleteFile(row) {
@@ -13163,7 +13187,7 @@
         }
         // 诊断包是发给别人看的：密钥和 Cookie 内容由后端摘掉，前端只负责把文件收下来
         async function exportDiagnostics() {
-          const done = actionName('/api/diagnostics/export');
+          const done = actionRef('/api/diagnostics/export');
           const tip = ElementPlus.ElMessage({ message: tr('logs.tPacking'), duration: 0 });
           try {
             const res = await fetch('/api/diagnostics/export', { method: 'POST' });
@@ -13183,9 +13207,9 @@
             a.click();
             URL.revokeObjectURL(url);
             ElementPlus.ElMessage.success(tr('logs.exported', { p: name }));
-            logAction(done);
+            logRef(done);
           } catch (e) {
-            logAction(done + '（失败）', 'warning');
+            logRef(failRef(done), 'warning');
             ElementPlus.ElMessage.error(e.message || tr('logs.exportFail'));
           } finally {
             tip.close();
@@ -13201,7 +13225,7 @@
           try {
             const r = await api('/api/open-folder', {
               method: 'POST',
-              uiName: '打开日志文件夹',
+              uiName: 'ui.open_log_dir',
               body: JSON.stringify({ path: logLoc.value.dir })
             });
             ElementPlus.ElMessage.success(tr('logs.opened', { p: r.path || logLoc.value.dir }));
@@ -14155,7 +14179,7 @@ const CFG_KEYS = {
         function onFavSortChange({ prop, order }) {
           if (!order) return;
           favSort.value = nextSort(favSort.value, prop, order, FAV_DIR);
-          logSort('收藏列表', favSort.value.key, favSort.value.dir);
+          logSort('list.favs', favSort.value.key, favSort.value.dir);
         }
 
         const MUSIC_GETTERS = { title: x => x.title || '', artists: x => x.artists || '', album: x => x.album || '' };
@@ -14164,7 +14188,7 @@ const CFG_KEYS = {
         function onMusicSortChange({ prop, order }) {
           if (!order) return;
           musicSort.value = nextSort(musicSort.value, prop, order, {});
-          logSort('音乐搜索结果', musicSort.value.key, musicSort.value.dir);
+          logSort('list.music', musicSort.value.key, musicSort.value.dir);
         }
 
         const TG_DIR = { date: 'desc', title: 'asc' };
@@ -14174,7 +14198,7 @@ const CFG_KEYS = {
         function onTgSortChange({ prop, order }) {
           if (!order) return;
           tgSort.value = nextSort(tgSort.value, prop, order, TG_DIR);
-          logSort('Telegram 内容', tgSort.value.key, tgSort.value.dir);
+          logSort('list.tg', tgSort.value.key, tgSort.value.dir);
         }
 
         /* ---- 超长列表统一分页：每页 50 条，翻页只换切片，排序与筛选始终作用于全量 ---- */

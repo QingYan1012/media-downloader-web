@@ -45,6 +45,11 @@ I18N_SRC = (ROOT / "static" / "i18n.js").read_text(encoding="utf-8")
 SERVER_SRC = (ROOT / "server.py").read_text(encoding="utf-8")
 PACK = (ROOT / "pack_release.py").read_text(encoding="utf-8")
 SELF_TXT = (ROOT / "tests" / "i18n_test.py").read_text(encoding="utf-8")
+# 埋点这批（#89）的落盘基线：改前 index.html 里的每句中文 + 改后对应的键，机器抽出来人过一遍
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from maidian_baseline_zh import MANUAL_BASELINE, SENT_BASELINE  # noqa: E402
+
+MAIDIAN_BASE = SENT_BASELINE + MANUAL_BASELINE
 # 模板区（#app 到 Vue 那几个 script 之间）：数 v-for 这类只有模板里才有的写法时用它，
 # 免得把解释这段代码的那句注释本身也数进去（注释里写的字面量是真的出现，但它不在模板里）
 _t0 = HTML.find('<div id="app">')
@@ -346,13 +351,16 @@ F6_OK = {"bt.binFound", "music.favFailLine", "music.statsWrap", "music.switchFai
          # CookieCloud 那行备注的外壳同理：（{list}）→ () ，括号里的原话来自后端
          "settings.ccNotesParen",
          # 一键更新那行的外壳同理：组件名（后端给的失败原因）——括号里那句是人家的话，不是界面文案
-         "settings.compAllReason"}
+         "settings.compAllReason",
+         # 排序那一批的列名片段里，ID 这一列两边就叫 ID（界面原文如此，编成「标识」是我新写的话）
+         "col.id"}
 zh_plain = [k for k, v in DICT["zh"].items()
             if not CJK.search(str(v)) and latin.search(str(v)) and k not in F6_OK]
 ck("F6 zh 那份每条要么含中文、要么只是不含字母的标点（词表里的分隔符）——不许混进其实是英文的条目",
    not zh_plain, str(zh_plain[:6]))
 # 专有名词照抄才是对的：这几条两边一致不算「没翻」
-F7_OK = {"settings.platformYoutube", "settings.platformTwitch", "settings.optFlv", "settings.optHls"}
+F7_OK = {"settings.platformYoutube", "settings.platformTwitch", "settings.optFlv", "settings.optHls",
+         "col.id"}
 same = [k for k in set(DICT["zh"]) & set(DICT["en"])
         if DICT["zh"][k] == DICT["en"][k] and k not in F7_OK]
 ck("F7 en 那份没有哪条与 zh 一字不差（那样等于根本没翻）", not same, str(same[:6]))
@@ -414,14 +422,17 @@ ck("H8 埋点接口把 k/kv 交给 log()，键形不过关就退化成只记那�
 ck("H9 后端带键的那句，与词表 zh 的值是同一句（漂了中文界面就会显示另一套话）",
    DICT["zh"].get("log.settings_saved") == "[界面] 保存设置（{n} 项变更）",
    repr(DICT["zh"].get("log.settings_saved")))
-log_keys = [k for k in DICT["zh"] if k.startswith(("log.", "ui."))]
-bad_pre = [k for k in log_keys
-           if (k.startswith("log.") and not DICT["zh"][k].startswith("[界面] "))
-           or (k.startswith("ui.") and ("[界面]" in DICT["zh"][k] or "[界面]" in DICT["en"][k]))
-           or (k.startswith("ui.") and not DICT["en"][k].startswith("[UI] "))]
+log_keys = [k for k in DICT["zh"] if k.startswith(("log.", "ui.", "act."))]
+# act.fail 是「{s}（失败）」这层包装：前缀在 s 展开出来的那句上，它自己再带一份就成「[UI] [UI] xxx」
+BAD_PRE_EXEMPT = {"act.fail"}
+bad_pre = [k for k in log_keys if k not in BAD_PRE_EXEMPT
+           and ((k.startswith("log.") and not DICT["zh"][k].startswith("[界面] "))
+                or (k.startswith(("ui.", "act."))
+                    and ("[界面]" in DICT["zh"][k] or "[界面]" in DICT["en"][k]))
+                or (k.startswith(("ui.", "act.")) and not DICT["en"][k].startswith("[UI] ")))]
 ck("H10 前缀分工没写反：log.* 的 zh 带「[界面] 」（后端拼进 message 的就是它），"
-   "ui.* 的 zh 不带（前缀由 /api/ui_event 加）、en 自带「[UI] 」",
-   bool(log_keys) and not bad_pre, f"log/ui 键 {len(log_keys)} 个，写反的 {bad_pre}")
+   "ui.* 与 act.* 的 zh 不带（前缀由 /api/ui_event 加）、en 自带「[UI] 」",
+   bool(log_keys) and not bad_pre, f"log/ui/act 键 {len(log_keys)} 个，写反的 {bad_pre}")
 ck("H11 前端只在英文界面、且这个词两份都在时才拼；中文界面永远是后端原话",
    "if (!e || !e.k || uiLang.value !== 'en') return msg;" in HTML and "MD_I18N.has(e.k)" in HTML)
 ck("H12 搜索按渲染结果匹配（英文态不敲服务端那句中文原话）",
@@ -436,6 +447,43 @@ ck("H15 停在日志页切语言会重取一次（搜索是按当时语言筛的
 ck("H16 藏原文时连键一起藏：不然英文界面会照 kv 把那句话再拼出来",
    "k: leaky ? '' : (hasK ? String(textOrKey) : '')," in HTML
    and "kv: leaky ? null : params," in HTML)
+
+# ---- #89 埋点键的形与词表：前端把 k 发给 /api/ui_event，后端先拿 _LOG_KEY_RE 量一遍，
+# 量不过就退化成「只记那句 text」—— 键丢了，英文界面再也没法按语言现拼第二句。
+# 所以「键写得对不对」不能等活体点一遍才知道，这里静态全量盯。
+_m_an = re.search(r"const ACTION_NAMES = \{(.*?)\n        \};", HTML, re.S)
+KB_PREFIX = ("act.", "ui.", "log.")
+_pairs_an = re.findall(r"'(/api/[^']+)':\s*'([^']+)'", _m_an.group(1)) if _m_an else []
+kb = {v for _, v in _pairs_an}
+for _ln in HTML.splitlines():
+    if re.search(r"""uiName:|logAction\(|logRef\(|failRef\(|actionRef\(""", _ln):
+        kb |= {x for x in re.findall(r"'([a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+)'", _ln)
+               if x.startswith(KB_PREFIX)}
+_kb_dyn = sorted(k for k in kb if k.endswith("_"))          # 'ui.lang_' + pref 这种拼出来的前缀
+kb -= set(_kb_dyn)
+ck("H17 埋点键抠得出（ACTION_NAMES 138 条 + 各调用点的 uiName/logAction 字面键）",
+   len(kb) > 150, f"{len(kb)} 个，动态前缀 {len(_kb_dyn)} 个：{_kb_dyn}")
+_kb_bad = sorted(k for k in kb if not S._LOG_KEY_RE.fullmatch(k))
+ck("H18 每个会当 k 发给后端的键都过后端那把尺 _LOG_KEY_RE"
+   "（大小写或段数超了会被 server 退化成只记 text，英文界面拼不出第二句）",
+   not _kb_bad, str(_kb_bad[:8]))
+_kb_miss = sorted(k for k in kb if k not in DICT["zh"] or k not in DICT["en"])
+ck("H19 每个会当 k 发给后端的键两份词表都有（少一份，日志页那句就退回后端原话）",
+   not _kb_miss, str(_kb_miss[:8]))
+ck("H20 ACTION_NAMES 只剩「路径 → 键」：138 条一个不多一个不少，表里不再写中文",
+   bool(_m_an) and len(_pairs_an) == 138 and not CJK.search(_m_an.group(1))
+   and all(v.startswith("act.") for _, v in _pairs_an),
+   f"{len(_pairs_an)} 条")
+# 片段键（拼进整句里的列名/排序方向/页签名/主题名/目录名）不占 ui.*：H10 认定 ui.* 的 en 自带「[UI] 」，
+# 片段带了会拼到句子中间。它们只当 kv 的值发，永远不当 k。
+FRAG = [k for k in DICT["zh"] if k.startswith(("list.", "col.", "sort.", "favtab.", "theme.", "dir."))]
+ck("H21 片段键自成一批前缀（list./col./sort./favtab./theme./dir.），两份都有、en 不带「[UI] 」、也不当 k 用",
+   len(FRAG) >= 40 and not [k for k in FRAG if k not in DICT["en"]
+                             or DICT["en"][k].startswith("[UI] ") or k in kb],
+   f"{len(FRAG)} 个片段键")
+ck("H22 落盘基线本身够分量（改前那句中文逐条在册，G39 才有得比；基线空了等于这条闸门没跑）",
+   len(MAIDIAN_BASE) >= 210 and len({k for k, _, _ in MAIDIAN_BASE}) >= 200,
+   f"{len(MAIDIAN_BASE)} 条 / {len({k for k, _, _ in MAIDIAN_BASE})} 个键")
 
 # ---------------------------------------------------------------- I. 逐页正文闸门
 print("== I. 逐页推进：翻完的那几页，块里除注释以外不许再有中文 ==")
@@ -661,27 +709,11 @@ ck("I5a 每个登记了处理动作的页名都是真有的页",
 _registered = {f for _fns in PAGE_HANDLERS.values() for f in _fns}
 ck("I5b 每个允许留中文的处理器都登记在某一页里（漏登记就没人盯它了）",
    all(f in _registered for f in RESIDUE), str([f for f in RESIDUE if f not in _registered]))
-# 埋点那一句（uiName / logAction 的动作名）是发给后端进运行日志的记录，排在 ACTION_NAMES 那一批再收。
-# I5 不算它，但每一页有几条要钉住：悄悄多出一条埋点，或者那一批改完忘了删这里的名额，都会判红。
-# uiName 认到冒号为止：音乐页那条是三元表达式（勾选行 / 整单两种说法），值不写在引号里，也只算一行。
-# logAction 认到左括号为止、ccCall 同理：设置页那一批把句子换成了 tr(...)，动作名却在参数里留着中文，
-# 这两种写法都要认得到，否则「翻完了」会表现为埋点行凭空少几条。
+# 埋点那一句（uiName / logAction 的动作名）是发给后端进运行日志的记录。
+# #89 那一批把动作名全换成了词表里的键（act.* / ui.*），所以处理器块里「带中文的埋点行」应当归零：
+# 悄悄多出一条硬编码中文句子，或者键改回手拼，这里都会判红。
 MAIDIAN = re.compile(r"""uiName:|logAction\(|logSort\(|ccCall\(""")
-MAIDIAN_EXPECT = {"home": 0, "queue": 0, "bt": 7, "files": 4, "subs": 0, "music": 5, "settings": 17, "tg": 1,
-                  "sniff": 0, "live": 0, "info": 0, "search": 0,
-                  # applyFavList 那句 logAction（ tab 名来自 FAV_TAB_NAMES）+ onFavSortChange 那句 logSort
-                  "favs": 2,
-                  # 这一页五个处理器里没有埋点行：loadLibrary / runTranscode 那两次 api 都没带 uiName，
-                  # 点表头的留痕在共用的 logSort 里，跟 ACTION_NAMES 那一批一起收
-                  "library": 0,
-                  # toggleRealtime 那两句 logAction（开始 / 停止准实时转写）等 ACTION_NAMES 那一批
-                  "voice": 2,
-                  # 这一页五个处理器里没有埋点行：清历史与打开文件夹都只调 api()，没带 uiName；
-                  # 点表头那次的留痕在共用的 logSort 里（histSort.t 的「下载历史」也归 ACTION_NAMES 那一批）
-                  "history": 0,
-                  # 这一页两行：openLogDir 的 uiName '打开日志文件夹' 与 exportDiagnostics 收尾那句
-                  # logAction(done + '（失败）')。动作名本身归 ACTION_NAMES 那一批，落盘侧不跟界面语言。
-                  "log": 2}
+MAIDIAN_EXPECT = {k: 0 for k in PAGE_HANDLERS}
 # 来源类型那一列的名字与提示：键不是写在 tr(' …') 里而是存在表里（labelKey / hintKey），
 # 上面那遍字面扫抓不到它们，所以单独比一遍 —— 少哪一份英文界面就印键名
 kind_meta = block(HTML, "const SUB_KIND_META = {", "};")
@@ -771,7 +803,7 @@ for _pg, _fns in PAGE_HANDLERS.items():
                str([ln[:60] for ln in _nowords]))
         else:
             ck(f"I5[{_pg}.{_fn}] 处理动作弹给用户的句子全走词表", not _nowords, str(_nowords[:3]))
-    ck(f"I8[{_pg}] 埋点动作名仍只有 {MAIDIAN_EXPECT[_pg]} 行在等 ACTION_NAMES 那一批",
+    ck(f"I8[{_pg}] 这一页的埋点行不再留着中文句子（动作名全走词表里的键）",
        _md == MAIDIAN_EXPECT[_pg], f"实际 {_md} 行")
 # 模板里调用的处理器必须出现在 setup 的 return 名单里：漏一个不是「那一行不显示」，
 # 是整页渲染抛错 —— 静态切片看不出来，只有浏览器里才炸（沙箱实测就是这么撞上的）
@@ -900,6 +932,33 @@ rec('g38_search_log_en',
     w.I.t('search.log_ran', { q: 'sorry', total: 120, shown: 100, n: 0 }, 'en'),
     'Aggregated search "sorry": got 120, showing 100');
 
+// ---- #89 埋点这批：落盘中文的逐条对照（基线由改前的 index.html 抽出，见 tests/maidian_baseline_zh.py）
+const wm = mkWin({ lang: 'zh-CN' });
+const zhBad = [];
+(__BASE__ || []).forEach((row) => {
+  const got = wm.I.t(row[0], row[1], 'zh');
+  if (got !== row[2]) zhBad.push([row[0], got, row[2]]);
+});
+rec('g39_maidian_zh_baseline', zhBad, []);
+
+// 英文那侧同一批键：占位符的值本身是键时要按当句语言展开，且「[UI] 」只出现一次
+const we = mkWin({ lang: 'en-US' });
+rec('g40_nest_fail_zh', we.I.t('act.fail', { s: 'act.config' }, 'zh'), '保存设置（失败）');
+rec('g41_nest_fail_en', we.I.t('act.fail', { s: 'act.config' }, 'en'), '[UI] Saved settings (failed)');
+rec('g42_nest_two_layers', we.I.t('act.fail', { s: 'act.call', p: 'no_such' }, 'en'),
+    '[UI] Called no_such (failed)');
+rec('g43_nest_sort_en', we.I.t('ui.sort_line',
+    { list: 'list.files', col: 'col.mtime', dir: 'sort.asc' }, 'en'),
+    '[UI] Sorted files by modified time (ascending)');
+rec('g44_nest_fav_en', we.I.t('ui.fav_load', { tab: 'favtab.yt_liked', n: 3, total: 120 }, 'en'),
+    '[UI] Loaded YouTube liked: got 3 of 120 entries the site reports');
+rec('g45_nest_root_en', we.I.t('ui.file_up_dir', { path: 'dir.root' }, 'en'),
+    '[UI] Files page moved up to: the root folder');
+// 值不是键的时候原样透传（路径、数字这类数据不参与展开），且展开只走一层
+rec('g46_plain_value_pass', we.I.t('ui.file_enter_dir', { path: 'Music/A B' }, 'en'),
+    '[UI] Files page opened folder: Music/A B');
+rec('g47_only_one_layer', we.I.t('act.fail', { s: '{p}' }, 'zh'), '{p}（失败）');
+
 fs.writeFileSync(OUT, JSON.stringify(R));
 """
 
@@ -914,6 +973,7 @@ def run_node() -> dict:
     if RES.exists():
         RES.unlink()
     js = JS.replace("__OUT__", json.dumps(str(RES))).replace("__SRC__", json.dumps(I18N_SRC))
+    js = js.replace("__BASE__", json.dumps([[k, v, s] for k, v, s in MAIDIAN_BASE], ensure_ascii=False))
     HARNESS.write_text(js, encoding="utf-8")
     p = subprocess.run(["node", str(HARNESS)], capture_output=True, text=True, encoding="utf-8")
     if not RES.exists():
@@ -930,9 +990,9 @@ R = run_node()
 ck("G0 node 跑通了（本机没有 node 就别假绿）", bool(R), "harness 没产出" if not R else "")
 if R:
     names = [k for k in R if k != "g0_loaded"]
-    ck("G1 行为读数一条不缺（39 条 rec，除首条装载检查外 38 条）", len(names) == 38, f"{len(names)} 项")
+    ck("G1 行为读数一条不缺（48 条 rec，除首条装载检查外 47 条）", len(names) == 47, f"{len(names)} 项")
     reds = sorted(k for k in names if not R[k]["pass"])
-    ck("G2 这 38 条读数与预期全部一致", not reds, show(*reds[:4]) if reds else "")
+    ck("G2 这 47 条读数与预期全部一致", not reds, show(*reds[:4]) if reds else "")
     ck("G3 t()：两份词表都取得到、未知键回键名、没传 vars 时占位符原样留着",
        all(R[k]["pass"] for k in ("g1_nav_zh", "g2_nav_en", "g3_ph_zh", "g4_ph_en", "g5_unknown", "g6_ph_leftalone")),
        show("g3_ph_zh", "g4_ph_en", "g5_unknown"))
