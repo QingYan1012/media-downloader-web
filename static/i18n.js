@@ -2837,6 +2837,13 @@
       'srv.plugin.reload': '插件热加载: {n} 个',
       'srv.queue.stop_all': '已停止全部下载',
       'srv.tasks.params_updated': '[{tid}] 任务参数已更新 ({what})',
+      'srv.sniff.all_audio_failed': '[{tid}] 全部音频轨失败（将仅保留视频）: {e}',
+      'srv.sniff.done': '[{tid}] 完成: {name}',
+      'srv.sniff.merge_failed': '[{tid}] 嗅探合并失败: {e}',
+      'srv.sniff.merge_start': '[{tid}] 开始 ffmpeg 合并…',
+      'srv.sniff.video_done_audio_start': '[{tid}] 视频轨完成，开始下载音频轨…',
+      'srv.sniff.video_only_saved': '[{tid}] 仅视频轨已保存（无声）: {name}',
+      'srv.sniff.video_start': '[{tid}] 开始下载视频轨…',
     },
     en: {
       'live.monTitle': 'Live room monitor (auto-detect streams starting)',
@@ -5599,6 +5606,13 @@
       'srv.plugin.reload': 'Hot-reloaded {n} plugin(s)',
       'srv.queue.stop_all': 'All downloads stopped',
       'srv.tasks.params_updated': '[{tid}] Task parameters updated ({what})',
+      'srv.sniff.all_audio_failed': '[{tid}] Every audio track failed (only the video will be kept): {e}',
+      'srv.sniff.done': '[{tid}] Done: {name}',
+      'srv.sniff.merge_failed': '[{tid}] Sniff merge failed: {e}',
+      'srv.sniff.merge_start': '[{tid}] Starting the ffmpeg merge…',
+      'srv.sniff.video_done_audio_start': '[{tid}] Video track done, starting the audio track…',
+      'srv.sniff.video_only_saved': '[{tid}] Saved the video track alone (no sound): {name}',
+      'srv.sniff.video_start': '[{tid}] Starting the video track download…',
     },
   };
 

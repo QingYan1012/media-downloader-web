@@ -21748,20 +21748,24 @@ def _run_sniff_merge_task(
         a_list = [audio_url] + [u for u in (alt_audio_urls or []) if u != audio_url]
         a_list = sorted(set(a_list), key=_cdn_host_score, reverse=True)
 
-        log_mgr.log(f"[{task_id[:8]}] 开始下载视频轨…")
+        log_mgr.log(f"[{task_id[:8]}] 开始下载视频轨…",
+                    k="srv.sniff.video_start", kv={"tid": task_id[:8]})
         task.progress = 10
         try_download(v_list, video_tmp, "视频轨")
         task.progress = 45
-        log_mgr.log(f"[{task_id[:8]}] 视频轨完成，开始下载音频轨…")
+        log_mgr.log(f"[{task_id[:8]}] 视频轨完成，开始下载音频轨…",
+                    k="srv.sniff.video_done_audio_start", kv={"tid": task_id[:8]})
         audio_ok = False
         try:
             audio_ok = try_download(a_list, audio_tmp, "音频轨")
         except Exception as e:
-            log_mgr.log(f"[{task_id[:8]}] 全部音频轨失败（将仅保留视频）: {e}", "warning")
+            log_mgr.log(f"[{task_id[:8]}] 全部音频轨失败（将仅保留视频）: {e}", "warning",
+                        k="srv.sniff.all_audio_failed", kv={"tid": task_id[:8], "e": str(e)})
 
         task.progress = 75
         if audio_ok:
-            log_mgr.log(f"[{task_id[:8]}] 开始 ffmpeg 合并…")
+            log_mgr.log(f"[{task_id[:8]}] 开始 ffmpeg 合并…",
+                        k="srv.sniff.merge_start", kv={"tid": task_id[:8]})
             ok = _merge_video_audio_with_ffmpeg(video_tmp, audio_tmp, out_path, log=log_mgr.log)
         else:
             # 仅视频：复制为 mkv/mp4 容器尝试
@@ -21769,7 +21773,9 @@ def _run_sniff_merge_task(
             try:
                 shutil.copy2(video_tmp, out_path)
                 ok = out_path.exists()
-                log_mgr.log(f"[{task_id[:8]}] 仅视频轨已保存（无声）: {out_path.name}", "warning")
+                log_mgr.log(f"[{task_id[:8]}] 仅视频轨已保存（无声）: {out_path.name}", "warning",
+                            k="srv.sniff.video_only_saved",
+                            kv={"tid": task_id[:8], "name": out_path.name})
             except Exception:
                 ok = False
 
@@ -21778,7 +21784,8 @@ def _run_sniff_merge_task(
             task.progress = 100
             task.filepath = str(out_path)
             task.title = out_path.name
-            log_mgr.log(f"[{task_id[:8]}] 完成: {out_path.name}")
+            log_mgr.log(f"[{task_id[:8]}] 完成: {out_path.name}",
+                        k="srv.sniff.done", kv={"tid": task_id[:8], "name": out_path.name})
             try:
                 queue.history.add({
                     "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -21795,7 +21802,8 @@ def _run_sniff_merge_task(
     except Exception as e:
         task.status = TaskStatus.FAILED.value
         task.error_msg = str(e)[:200]
-        log_mgr.log(f"[{task_id[:8]}] 嗅探合并失败: {e}", "error")
+        log_mgr.log(f"[{task_id[:8]}] 嗅探合并失败: {e}", "error",
+                    k="srv.sniff.merge_failed", kv={"tid": task_id[:8], "e": str(e)})
     finally:
         try:
             if tmp_dir.exists():

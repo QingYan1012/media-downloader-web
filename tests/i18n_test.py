@@ -518,6 +518,15 @@ class _SrvLogScan(ast.NodeVisitor):
 
     def __init__(self):
         self.rows = []
+        self.nonliteral = []   # 带 k= 但键是表达式（if/查表拼出来的）—— 这种调用点扫不出键名，等于漏网
+        self.fn = []           # 当前所在的函数链，用来认出「就是那处转发口」
+
+    def visit_FunctionDef(self, node):
+        self.fn.append(node.name)
+        self.generic_visit(node)
+        self.fn.pop()
+
+    visit_AsyncFunctionDef = visit_FunctionDef
 
     def visit_Call(self, node):
         f = node.func
@@ -531,6 +540,12 @@ class _SrvLogScan(ast.NodeVisitor):
                 kk = next((kw for kw in node.keywords if kw.arg == "k"), None)
                 kname = kk.value.value if isinstance(kk, ast.keyword) and isinstance(
                     kk.value, ast.Constant) and isinstance(kk.value.value, str) else ""
+                if kk is not None and not kname:
+                    try:
+                        shown = ast.unparse(kk.value)
+                    except Exception:
+                        shown = "?"
+                    self.nonliteral.append(("/".join(self.fn), node.lineno, shown[:48]))
                 if kname.startswith("srv."):
                     if tpl is None:
                         self.rows.append((node.lineno, kname, None, None))
@@ -608,6 +623,11 @@ _srv_pre = [k for k in _srv_keys
             or "[界面]" in DICT["en"][k]]
 ck("K8 srv.* 是后端自记的记录，不带「[界面] 」也不带「[UI] 」（那两枚前缀各有归属：log.* 与 ui./act.）",
    not _srv_pre, str(_srv_pre[:6]))
+_fwd_ok = [x for x in _scan.nonliteral if x[0].endswith("api_ui_event")]
+_fwd_bad = [(x[0], x[1], x[2]) for x in _scan.nonliteral if not x[0].endswith("api_ui_event")]
+ck("K9 带 k= 的调用点，键必须写成字面串：键由 if 或查表挑出来的话这一段扫描根本看不见它，"
+   "词表对不对、洞对不对全成盲区（唯一的例外是 api_ui_event 那处转发，键本来就从前端的 k 字段来）",
+   not _fwd_bad, f"转发口 {len(_fwd_ok)} 处 / 键是表达式的越界点 {len(_fwd_bad)} 处：{str(_fwd_bad[:3])}")
 
 # ---------------------------------------------------------------- I. 逐页正文闸门
 print("== I. 逐页推进：翻完的那几页，块里除注释以外不许再有中文 ==")
