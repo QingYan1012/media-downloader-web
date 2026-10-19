@@ -356,7 +356,7 @@ def check_present(dst: Path) -> None:
     missing = [n for n in ("static/index.html", "server.py", "CHANGELOG.md", "README.md",
                            "README.en.md", "requirements.txt", "components_bundled.json",
                            "启动.bat", "使用说明.txt") if not (dst / n).is_file()]
-    empty = [d for d in ("static", "plugins", "extension")
+    empty = [d for d in ("static", "static/vendor", "plugins", "extension")
              if (APP_DIR / d).is_dir() and not any((dst / d).rglob("*"))]
     if missing or empty:
         raise SystemExit(f"[ABORT] 包里缺文件：{missing or ''} 空目录：{empty or ''}"

@@ -48,7 +48,10 @@ SELF_TXT = (ROOT / "tests" / "i18n_test.py").read_text(encoding="utf-8")
 # 模板区（#app 到 Vue 那几个 script 之间）：数 v-for 这类只有模板里才有的写法时用它，
 # 免得把解释这段代码的那句注释本身也数进去（注释里写的字面量是真的出现，但它不在模板里）
 _t0 = HTML.find('<div id="app">')
-TEMPLATE = HTML[_t0:HTML.find("/vue@3", _t0)] if _t0 > 0 else ""
+# 边界原先锚 CDN 上的 "/vue@3"，#87 把框架文件搬到 static/vendor/ 后那个字面就没了（find 返 -1
+# 会退化成整份文件，把注释里那句字面量也数进去）。改锚「模板之后的第一枚 <script」——
+# 那正是原先 Vue 那几件的位置，且不依赖任何文件名。
+TEMPLATE = HTML[_t0:HTML.find("<script", _t0)] if _t0 > 0 else ""
 
 FAILED: list[str] = []
 TOTAL = 0
@@ -186,7 +189,7 @@ ck("C1 i18n.js 在 index.html 里被引用", i_script > 0)
 ck("C2 引用它在 createApp 之前（否则 window.MD_I18N 还是 undefined）",
    0 < i_script < i_create, f"script={i_script} createApp={i_create}")
 ck("C3 boot() 也在 createApp 之前", 0 < i_boot < i_create, f"boot={i_boot}")
-ck("C4 Element Plus 的 en 词包有加载", "dist/locale/en.min.js" in HTML)
+ck("C4 Element Plus 的 en 词包有加载", "element-plus.locale.en.min.js" in HTML)
 ck("C5 创建应用时的 locale 不再写死 zh-cn",
    "locale: window.MD_I18N ? window.MD_I18N.elementLocale() : window.ElementPlusLocaleZhCn" in HTML)
 ck("C6 整棵子树被 el-config-provider 包住（一开一合）",

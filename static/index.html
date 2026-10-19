@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>多媒体下载器</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/element-plus@2.8.8/dist/index.css" />
+  <link rel="stylesheet" href="/static/vendor/element-plus.index.css" />
   <style>
     :root {
       --sidebar-w: 212px;
@@ -1896,7 +1896,7 @@
     }
 
   </style>
-  <script src="https://cdn.jsdelivr.net/npm/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+  <script src="/static/vendor/lucide.min.js"></script>
 </head>
 <body data-theme="blue">
   <svg aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">
@@ -6211,10 +6211,11 @@
     </el-config-provider>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/vue@3.5.12/dist/vue.global.prod.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/element-plus@2.8.8/dist/index.full.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/element-plus@2.8.8/dist/locale/zh-cn.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/element-plus@2.8.8/dist/locale/en.min.js"></script>
+  <!-- 框架四件套（连同 <head> 里的 EP 样式与 lucide）走本地 /static/vendor/：挂在 CDN 上时链路一慢，这几枚阻塞脚本会挨个等超时，页面迟迟挂不起来。版本钉死，升级即换文件。 -->
+  <script src="/static/vendor/vue.global.prod.js"></script>
+  <script src="/static/vendor/element-plus.full.min.js"></script>
+  <script src="/static/vendor/element-plus.locale.zh-cn.js"></script>
+  <script src="/static/vendor/element-plus.locale.en.min.js"></script>
   <script src="/static/i18n.js"></script>
   <script>
     /* 建应用之前先按上次生效的语言镜像定一次：刷新后第一帧就是对的，不会闪一下另一种语言 */

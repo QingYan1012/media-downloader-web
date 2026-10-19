@@ -8,9 +8,14 @@ r"""页面挂载闸门：一次按键的重画只该付当前页的钱。
 这三条都是能被顺手改回去的，所以钉在这里。
 
 跑法：`python tests/pagemount_test.py`（纯读文件，不起 server）。
+
+第二起因（2026-10-19 实测）：首屏那 6 件框架文件原先挂在 jsdelivr 上，链路一卡就各等 28 秒、还是串行的，
+DOMContentLoaded 168 秒、页面里 1332 处裸 {{ }}、一次 /api 都没发；搬到 /static/vendor/ 后同一臂 0.4 秒挂载。
+P38-P40 钉的就是「不许再引外部 CDN，且这六件本地文件字节得对」。
 """
 from __future__ import annotations
 
+import hashlib
 import pathlib
 import re
 import sys
@@ -231,8 +236,28 @@ ck("P37 两档位置各靠一条规则：展开用 margin-left:auto 顶到右端
    "btn=%r clLogo=%r clBtn=%r" % (_btn_rule and _btn_rule.group(1), _cl_logo and _cl_logo.group(1),
                                   _cl_btn and _cl_btn.group(1)))
 
+VENDOR = {
+    "vue.global.prod.js": "89bc6871c5ebe1f55e65deca4de0c81b37ffea58720f601a9617794c4e9e1e36",
+    "element-plus.full.min.js": "9f1e40409d9efba7464b72e77bb038aff7bcb9e924bd61e61159b23877e36bf1",
+    "element-plus.index.css": "f23e78f5016cee5505829e416cfecfd8954bd5cc484d4ef3dde40b240dd3d009",
+    "element-plus.locale.zh-cn.js": "21e89d13b18fdf57e116cce052f614ea2fa74b84487b7b79569996c534e363b3",
+    "element-plus.locale.en.min.js": "615fe4dd0e851bebcfed011367a8dba3d5de2168e744c33c049bdd6052458b27",
+    "lucide.min.js": "3411692820cb8d47543f69496aa25fd603a358f4498046f41c508a5a3342210e",
+}
+_ext = re.findall(r'<(?:script[^>]+\bsrc|link[^>]+\bhref)="(https?://[^"]+)"', HTML)
+ck("P38 首屏不再挂任何外部 CDN（挂上去时链路一慢，阻塞脚本挨个等超时，页面几分钟起不来）",
+   not _ext, "仍外链：" + "、".join(_ext[:3]))
+_root = pathlib.Path(__file__).resolve().parent.parent / "static" / "vendor"
+_bad = [n for n, d in VENDOR.items()
+        if not _root.is_dir() or not (_root / n).is_file()
+        or hashlib.sha256((_root / n).read_bytes()).hexdigest() != d]
+ck("P39 六件框架文件真在 static/vendor/ 且字节没被改坏（半截文件或空目录都算红）",
+   _root.is_dir() and not _bad, "不对的文件：" + "、".join(_bad))
+ck("P40 index.html 引的就是这六件本地路径（漏一件就还在走外网）",
+   all(f'/static/vendor/{n}"' in HTML for n in VENDOR))
+
 print("\n== 汇总 ==")
 if FAILED:
-    print(f"共 37 条，失败 {len(FAILED)} 条\n失败清单：" + "、".join(FAILED))
+    print(f"共 40 条，失败 {len(FAILED)} 条\n失败清单：" + "、".join(FAILED))
     sys.exit(1)
-print("共 37 条，全部通过")
+print("共 40 条，全部通过")

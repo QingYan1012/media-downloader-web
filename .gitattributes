@@ -1,0 +1,3 @@
+# vendored 框架文件：字节要和上游发布完全一致（tests/pagemount_test.py 的 P39 钉的是 sha256），
+# 而本机 core.autocrlf=true 会在检出时把 LF 换成 CRLF，摘要就对不上了。点名关掉转换。
+static/vendor/** -text
