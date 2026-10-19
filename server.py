@@ -9933,8 +9933,10 @@ class TaskQueue:
                         expanded.append((nu, ropts, resolved.get("title") or ""))
                     self.log.log(
                         f"插件解析: {u[:60]}… → {len(resolved['urls'])} 条 "
-                        f"({resolved.get('_plugin', '')})"
-                    )
+                        f"({resolved.get('_plugin', '')})",
+                        k="srv.queue.plugin_resolved",
+                        kv={"url": u[:60], "n": len(resolved['urls']),
+                            "plugin": resolved.get('_plugin', '')})
                 else:
                     expanded.append((u, {}, ""))
             # 重建 urls 与 per-url options 合并
@@ -9969,7 +9971,8 @@ class TaskQueue:
             want_hex, want_algo, hash_err = normalize_hash_expect(
                 options.get("expect_hash"), options.get("hash_algo") or "auto")
             if hash_err:
-                self.log.log(f"这条期望校验值没被采用：{hash_err}", "warning")
+                self.log.log(f"这条期望校验值没被采用：{hash_err}", "warning",
+                             k="srv.queue.hash_check_skipped", kv={"why": hash_err})
             task = DownloadTask(
                 id=tid,
                 url=u,
@@ -9996,7 +9999,8 @@ class TaskQueue:
             ids.append(tid)
             existing.add(key)
         if merged:
-            self.log.log(f"已合并 {merged} 条重复链接（同一内容的不同分享参数）")
+            self.log.log(f"已合并 {merged} 条重复链接（同一内容的不同分享参数）",
+                         k="srv.queue.dupes_merged", kv={"n": merged})
         if not download_later:
             self._pump()
         return ids
@@ -10211,7 +10215,8 @@ class TaskQueue:
         if seed_only and (cfg.get("bt_auto_rules") or []):
             # 只做种不下载新东西，成品就躺在本地原来的位置；再按规则换个落点，
             # 下面逐个查文件时只会得到一句「下载目录里找不到种子里的 N 个文件」，白白吓人
-            self.log.log("自动分类：这条勾了「只做种」，不改落点（规则只管新下载的内容存到哪）")
+            self.log.log("自动分类：这条勾了「只做种」，不改落点（规则只管新下载的内容存到哪）",
+                         k="srv.queue.seed_only_keeps_dir")
         else:
             out_dir, task.category, _cat_why = bt_target_dir(ref, cfg, out_dir, self.log.log,
                                                              url=task.url)
@@ -10272,7 +10277,8 @@ class TaskQueue:
                     followed = True
                     task.gid = watch
                     task.resume_hint = f"aria2 {watch[:10]}"
-                    self.log.log(f"磁力元数据到手，改跟真文件那一段下载（任务号 {watch[:10]}）")
+                    self.log.log(f"磁力元数据到手，改跟真文件那一段下载（任务号 {watch[:10]}）",
+                                 k="srv.queue.magnet_metadata_ready", kv={"gid": watch[:10]})
                     continue
             if status in ("error", "removed"):
                 return False, "", bt_error_text(str(st.get("errorCode") or ""),
@@ -10383,7 +10389,9 @@ class TaskQueue:
                               "name": Path(primary).name if primary else task.title}
         task.seeding = True
         self._bt_watch_start()
-        self.log.log(f"[只做种] {task.title}：本地 {len(want)} 个文件已交给 aria2 挂做种（{out_dir}）")
+        self.log.log(f"[只做种] {task.title}：本地 {len(want)} 个文件已交给 aria2 挂做种（{out_dir}）",
+                     k="srv.queue.seed_local_files",
+                     kv={"title": task.title, "n": len(want), "dir": out_dir})
         return True, primary, f"{len(want)} 个文件已挂上做种，没有重新下载"
 
     def _bt_watch_start(self):
@@ -10436,7 +10444,9 @@ class TaskQueue:
                     if t:
                         t.seeding = False
                         t.resume_hint = f"{why}，不再做种"
-                    self.log.log(f"做种看护：{(t.title if t else w.get('name'))} {why}，已摘掉「做种中」")
+                    self.log.log(f"做种看护：{(t.title if t else w.get('name'))} {why}，已摘掉「做种中」",
+                                 k="srv.queue.seed_unwatched",
+                                 kv={"name": t.title if t else w.get('name'), "why": why})
                     continue
                 if stt == "paused":
                     # 暂停的做种任务 aria2 不列进 tellActive（实测），但它确实还在传不了东西的状态里：
@@ -10468,7 +10478,9 @@ class TaskQueue:
                         t.seeding = False
                         # 任务卡上还写着「一直做种」的话就是假话：做种结束时一并改掉那行
                         t.resume_hint = f"做种结束（{stop}），已停止上传"
-                    self.log.log(f"磁力做种结束：{(t.title if t else w.get('name'))}（{stop}），已停止上传")
+                    self.log.log(f"磁力做种结束：{(t.title if t else w.get('name'))}（{stop}），已停止上传",
+                                 k="srv.queue.seed_stopped",
+                                 kv={"name": t.title if t else w.get('name'), "stop": stop})
 
     def _run(self, task: DownloadTask):
         opts = getattr(task, "_opts", {}) or {}
@@ -10908,7 +10920,8 @@ class TaskQueue:
                     _stop_live_recorder_children(hints, log=self.log.log)
                 except Exception as e:
                     try:
-                        self.log.log(f"收拉流子进程失败: {e}", "warning")
+                        self.log.log(f"收拉流子进程失败: {e}", "warning",
+                                     k="srv.live.stream_proc_reap_failed", kv={"e": str(e)})
                     except Exception:
                         pass
                 time.sleep(0.4)
@@ -10937,15 +10950,18 @@ class TaskQueue:
                             chats.append(str(p))
                     if chats:
                         t.chat_file = chats[-1]
-                        self.log.log(f"聊天/弹幕文件: {Path(chats[-1]).name}")
+                        self.log.log(f"聊天/弹幕文件: {Path(chats[-1]).name}",
+                                     k="srv.live.chat_file", kv={"name": Path(chats[-1]).name})
                 except Exception as e:
                     try:
-                        self.log.log(f"收尾失败: {e}", "warning")
+                        self.log.log(f"收尾失败: {e}", "warning",
+                                     k="srv.live.finalize_failed", kv={"e": str(e)})
                     except Exception:
                         pass
                 count += 1
                 try:
-                    self.log.log(f"已结束直播录制: {(t.title or t.url)[:60]}")
+                    self.log.log(f"已结束直播录制: {(t.title or t.url)[:60]}",
+                                 k="srv.live.recording_ended", kv={"what": (t.title or t.url)[:60]})
                 except Exception:
                     pass
         # 暂停对应直播监控，避免立刻再次自动开录
@@ -10963,12 +10979,14 @@ class TaskQueue:
                             m["status"] = "录制已暂停"
                             m["last_live"] = True
                             changed = True
-                            self.log.log(f"已暂停监控自动录制: {mu}")
+                            self.log.log(f"已暂停监控自动录制: {mu}",
+                                         k="srv.live.monitor_paused", kv={"mu": mu})
                 if changed:
                     _save_live_monitors(items)
             except Exception as e:
                 try:
-                    self.log.log(f"暂停监控失败: {e}", "warning")
+                    self.log.log(f"暂停监控失败: {e}", "warning",
+                                 k="srv.live.monitor_pause_failed", kv={"e": str(e)})
                 except Exception:
                     pass
         return count
@@ -10993,7 +11011,7 @@ class TaskQueue:
                     self.engine.stop(t.id)
                 except Exception:
                     pass
-        self.log.log("队列已暂停")
+        self.log.log("队列已暂停", k="srv.queue.paused")
 
     def resume_all(self):
         self.paused = False
@@ -11004,7 +11022,7 @@ class TaskQueue:
                 t.error_msg = ""
                 if tid not in self.pending:
                     self.pending.append(tid)
-        self.log.log("队列已继续")
+        self.log.log("队列已继续", k="srv.queue.resumed")
         self._pump()
 
     def pause_tasks(self, ids: List[str]):
@@ -11048,7 +11066,8 @@ class TaskQueue:
         try:
             _bt_client(dict(self.cfg.data)).remove(gid)
         except Exception as e:
-            self.log.log(f"通知 aria2 移除任务失败（{gid[:10]}）：{e}", "warning")
+            self.log.log(f"通知 aria2 移除任务失败（{gid[:10]}）：{e}", "warning",
+                         k="srv.queue.aria2_remove_failed", kv={"gid": gid[:10], "e": str(e)})
 
     def delete_tasks(self, ids: List[str]):
         idset = set(ids or [])
