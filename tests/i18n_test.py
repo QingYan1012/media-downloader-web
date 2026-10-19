@@ -557,6 +557,7 @@ _badtpl = [f"{ln}:{k}" for ln, k, parts, names in _srv if parts is None]
 ck("K2 每个带键调用点的 message 都是整句字面（变量拼的那类加键钉不住，只能先把句子收成一条 f-string）",
    not _badtpl, str(_badtpl[:6]))
 _drift = []
+_built_rows = []          # (行号, 键, 由源码重建出的整句)
 for _ln, _k, _parts, _names in _srv:
     if _parts is None:
         continue
@@ -569,6 +570,7 @@ for _ln, _k, _parts, _names in _srv:
         else:
             _built.append(_p)
     _want = "".join(_built)
+    _built_rows.append((_ln, _k, _want))
     if len(_names) != len([p for p in _parts if p is None]):
         _drift.append(f"{_ln}:{_k} 洞 {len([p for p in _parts if p is None])} 个 / kv {len(_names)} 个")
     elif DICT["zh"].get(_k) != _want:
@@ -586,9 +588,21 @@ ck("K5 每个 srv. 键两份词表都在（少 en 那条英文界面退回中文
 _orphan = sorted(k for k in DICT["zh"] if k.startswith("srv.") and k not in _srv_keys)
 ck("K6 词表里的 srv. 键都有真调用点（没调用点的等于凭空多一条没人用的句子）",
    not _orphan, str(_orphan[:6]))
-_dup = {k for k in _srv_keys if len([1 for _, kk, _, _ in _srv if kk == k]) > 1}
-ck("K7 srv. 键与调用点一比一（同一个键在两个地方拼出不同句子，K3 会只红一半）",
-   len(_srv_keys) == len(_srv) and not _dup, f"键 {len(_srv_keys)} 个 / 调用点 {len(_srv)} 处，重键 {sorted(_dup)[:4]}")
+_byk = {}
+for _ln, _k, _want in _built_rows:
+    _byk.setdefault(_k, set()).add(_want)
+_multi = sorted(k for k, v in _byk.items() if len(v) > 1)
+_bysent = {}
+for _ln, _k, _want in _built_rows:
+    _bysent.setdefault(_want, set()).add(_k)
+_twins = sorted("「%s」=%s" % (s[:24], sorted(ks)) for s, ks in _bysent.items() if len(ks) > 1)
+ck("K7 一键一句：同一个键在多处调用可以，但那几处必须重建出同一句（否则 K3 只红一半）；"
+   "不同键不许撞同一句中文（撞了就是词表里存了两份重复话，改的时候只会改到一处）",
+   not _multi and not _twins, f"多句 {_multi[:3]} 撞句 {_twins[:3]}")
+ck("K7b 调用点与键的账对得上：抠出的调用点数不少于键数，且每个键至少有一处真调用",
+   len(_srv) >= len(_srv_keys) and all(
+       len([1 for _, kk, _, _ in _srv if kk == k]) >= 1 for k in _srv_keys),
+   f"键 {len(_srv_keys)} 个 / 调用点 {len(_srv)} 处")
 _srv_pre = [k for k in _srv_keys
             if DICT["zh"][k].startswith("[界面] ") or DICT["en"][k].startswith("[UI] ")
             or "[界面]" in DICT["en"][k]]

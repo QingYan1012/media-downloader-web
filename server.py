@@ -14472,7 +14472,8 @@ def api_net_use_system_proxy():
         cfg.save()
     except Exception:
         pass
-    log_mgr.log(f"已填入系统代理: {sp}（来源：{src}）")
+    log_mgr.log(f"已填入系统代理: {sp}（来源：{src}）",
+                k="srv.net.system_proxy_filled", kv={"sp": sp, "src": src})
     return {"ok": True, "proxy": sp, "source": src, "data": net_info_payload()}
 
 
@@ -14499,8 +14500,10 @@ def api_net_reset():
         browser_sniffer.clear()
         cleared.append("嗅探到的资源列表")
     except Exception as e:
-        log_mgr.log(f"清空嗅探浏览器 profile 失败: {e}", "warning")
-    log_mgr.log("网络设置已重置：" + ("、".join(cleared) if cleared else "本来就是空的"))
+        log_mgr.log(f"清空嗅探浏览器 profile 失败: {e}", "warning",
+                    k="srv.net.sniff_profile_clear_failed", kv={"e": str(e)})
+    cleared_text = "、".join(cleared) if cleared else "本来就是空的"
+    log_mgr.log(f"网络设置已重置：{cleared_text}", k="srv.net.reset", kv={"what": cleared_text})
     return {"ok": True, "cleared": cleared, "data": net_info_payload()}
 
 
@@ -14596,7 +14599,8 @@ def api_download(body: AddUrlsBody):
               if (u.lower().startswith("magnet:") or u.lower().startswith("file://")) and u not in bt_ok]
     if bt_bad:
         msgs = "；".join(dict.fromkeys(torrent_reject_reason(u) for u in bt_bad if torrent_reject_reason(u)))
-        log_mgr.log(f"入队前检查未通过（任务没有创建）：{msgs}", "error")
+        log_mgr.log(f"入队前检查未通过（任务没有创建）：{msgs}", "error",
+                    k="srv.download.precheck_failed", kv={"why": msgs})
         raise HTTPException(400, "入队前检查未通过：" + msgs)
     urls = [u for u in raw if u.startswith("http") or u.lower().startswith("tgmt://") or u in bt_ok]
     skipped = len(raw) - len(urls)
@@ -14607,7 +14611,8 @@ def api_download(body: AddUrlsBody):
     for msg in warns:
         log_mgr.log(msg, "warning")
     if errs:
-        log_mgr.log("入队前检查未通过（任务没有创建）：" + "；".join(errs), "error")
+        log_mgr.log(f"入队前检查未通过（任务没有创建）：{'；'.join(errs)}", "error",
+                    k="srv.download.precheck_failed", kv={"why": "；".join(errs)})
         raise HTTPException(400, "入队前检查未通过：" + "；".join(errs))
     # 自定义 yt-dlp 参数入队前先核对一遍：被挡掉的项当场回给界面，别等任务跑起来才在日志里发现
     arg_text = str(opts.get("ytdlp_extra_args") or cfg.data.get("ytdlp_extra_args") or "").strip()
@@ -14615,7 +14620,8 @@ def api_download(body: AddUrlsBody):
     if arg_text:
         _arg_delta, arg_notes = _ydl_extra_opts(arg_text)
         for _n in arg_notes:
-            log_mgr.log("自定义 yt-dlp 参数：" + _n, "warning")
+            log_mgr.log(f"自定义 yt-dlp 参数：{_n}", "warning",
+                        k="srv.download.ytdlp_args", kv={"note": _n})
     if body.is_live:
         # 录制时长上限只对直播生效：负数当作「不限」，过大的值截到上限，与每房间设置同一口径
         try:
@@ -14695,7 +14701,7 @@ def api_tasks_reorder(body: ReorderBody):
 @app.post("/api/stop")
 def api_stop():
     queue.stop_all()
-    log_mgr.log("已停止全部下载", "warning")
+    log_mgr.log("已停止全部下载", "warning", k="srv.queue.stop_all")
     return {"ok": True}
 
 
@@ -14705,7 +14711,7 @@ def api_live_end(body: IdsBody = None):
     ids = (body.ids if body else None) or []
     n = queue.end_live_tasks(ids if ids else None)
     if n:
-        log_mgr.log(f"已结束 {n} 个直播录制任务")
+        log_mgr.log(f"已结束 {n} 个直播录制任务", k="srv.live.end_tasks", kv={"n": n})
     # 额外再扫一遍下载目录，防止漏网 .part
     try:
         out_dir = str(cfg.data.get("download_dir") or DEFAULT_DOWNLOAD_DIR)
@@ -14731,7 +14737,7 @@ def api_plugins_list():
 @app.post("/api/plugins/reload")
 def api_plugins_reload():
     mods = load_url_plugins(force=True)
-    log_mgr.log(f"插件热加载: {len(mods)} 个")
+    log_mgr.log(f"插件热加载: {len(mods)} 个", k="srv.plugin.reload", kv={"n": len(mods)})
     return {"ok": True, "count": len(mods), "plugins": list_url_plugins()}
 
 
@@ -14778,7 +14784,8 @@ def api_tasks_edit(body: dict):
             t.status = TaskStatus.STOPPED.value
         queue.retry_one(tid, extra_opts=opts)
         applied = "restarted"
-    log_mgr.log(f"[{tid[:8]}] 任务参数已更新 ({applied})")
+    log_mgr.log(f"[{tid[:8]}] 任务参数已更新 ({applied})",
+                k="srv.tasks.params_updated", kv={"tid": tid[:8], "what": applied})
     return {"ok": True, "applied": applied, "opts_keys": list(opts.keys())}
 
 
@@ -15170,7 +15177,9 @@ def api_analyze(body: AnalyzeBody):
     info = engine.get_info(url, cfg.data)
     if not info:
         raise HTTPException(400, "解析失败：无法获取视频信息（可检查网络、Cookie 或更新 yt-dlp）")
-    log_mgr.log(f"解析完成 {url[:60]} 耗时 {(_time.time()-t0):.1f}s")
+    elapsed = f"{_time.time() - t0:.1f}"
+    log_mgr.log(f"解析完成 {url[:60]} 耗时 {elapsed}s",
+                k="srv.analyze.done", kv={"url": url[:60], "sec": elapsed})
     # 播放列表/合集
     if info.get("_type") == "playlist" or "entries" in info:
         entries = []
