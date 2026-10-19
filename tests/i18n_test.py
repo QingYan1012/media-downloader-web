@@ -157,9 +157,10 @@ covered = set(literal) | set(js_keys)
 # 这里把 HTML 里所有像键名的单引号串都算作「有人在用」，代价是键名若被无缘无故抄在 HTML 里就查不出死键
 covered |= set(re.findall(r"'([a-z][A-Za-z0-9_.-]*)'", HTML)) & set(DICT["zh"])
 # 日志那条线的键不是在模板里出现的：ui.* 由 logAction('ui.lang_' + pref) 拼前缀，
-# log.* 由后端 k="log.xxx" 带进条目 —— 这两处引用也算「有人在用」，否则 B10 会把它们报成死键
+# log.* 与 srv.* 由后端 k="log.xxx" / k="srv.xxx.yyy" 带进条目 —— 这两处引用也算「有人在用」，
+# 否则 B10 会把它们报成死键（K 段那套闸门才是真逐条比句子的人）
 ui_prefixes = re.findall(r"logAction\(\s*'([a-z][\w.]*)'\s*\+", HTML)
-srv_keys = set(re.findall(r'\bk=["\']((?:log|ui)\.[\w.]+)["\']', SERVER_SRC))
+srv_keys = set(re.findall(r'\bk=["\']((?:log|ui|srv)\.[\w.]+)["\']', SERVER_SRC))
 dead = sorted(k for k in DICT["zh"]
               if k not in covered and k not in srv_keys
               and not (ui_prefixes and any(k.startswith(p) for p in ui_prefixes))
@@ -484,6 +485,115 @@ ck("H21 片段键自成一批前缀（list./col./sort./favtab./theme./dir.），
 ck("H22 落盘基线本身够分量（改前那句中文逐条在册，G39 才有得比；基线空了等于这条闸门没跑）",
    len(MAIDIAN_BASE) >= 210 and len({k for k, _, _ in MAIDIAN_BASE}) >= 200,
    f"{len(MAIDIAN_BASE)} 条 / {len({k for k, _, _ in MAIDIAN_BASE})} 个键")
+
+# ---------------------------------------------------------------- K. 后端运行日志的键
+# server.py 自己记的那类运行日志（不是界面动作埋点）交出一个 k 时，词表 zh 的那句必须
+# 与后端 f-string 拼出来的 message 一字不差 —— 不然中文界面显示的是后端原话、英文界面显示
+# 的是词表里另一套话，两边各说各的，谁都不会当场发现。所以这套闸门从 AST 里把调用点抠出来
+# 逐条比，而不是抽样。
+print("== K. 后端运行日志带键的调用（srv.*）：词表 zh 与后端 message 必须是同一句 ==")
+
+
+def _msg_template(node):
+    """f-string / 字符串常量 → (片段表, 洞数)；片段表里 None 代表一个洞。
+    拼不出整句字面（消息是变量、或是 a + b 那种）返回 None —— 那种调用点加键钉不住，宁可判红。"""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return [str(node.value)], 0
+    if isinstance(node, ast.JoinedStr):
+        parts, holes = [], 0
+        for v in node.values:
+            if isinstance(v, ast.Constant):
+                parts.append(str(v.value))
+            elif isinstance(v, ast.FormattedValue):
+                parts.append(None)
+                holes += 1
+            else:
+                return None
+        return parts, holes
+    return None
+
+
+class _SrvLogScan(ast.NodeVisitor):
+    """收 log_mgr.log(...) 与 self.log(...)（TaskQueue 把 LogManager 存在 self.log 上）里带 k 的调用点。"""
+
+    def __init__(self):
+        self.rows = []
+
+    def visit_Call(self, node):
+        f = node.func
+        if isinstance(f, ast.Attribute) and f.attr == "log":
+            v = f.value
+            owner = (isinstance(v, ast.Name) and v.id == "log_mgr") or \
+                    (isinstance(v, ast.Attribute) and v.attr == "log"
+                     and isinstance(v.value, ast.Name) and v.value.id == "self")
+            if owner and node.args:
+                tpl = _msg_template(node.args[0])
+                kk = next((kw for kw in node.keywords if kw.arg == "k"), None)
+                kname = kk.value.value if isinstance(kk, ast.keyword) and isinstance(
+                    kk.value, ast.Constant) and isinstance(kk.value.value, str) else ""
+                if kname.startswith("srv."):
+                    if tpl is None:
+                        self.rows.append((node.lineno, kname, None, None))
+                    else:
+                        parts, holes = tpl
+                        kv = next((kw for kw in node.keywords if kw.arg == "kv"), None)
+                        names = []
+                        if kv is not None:
+                            if isinstance(kv.value, ast.Dict):
+                                names = [k.value for k in kv.value.keys
+                                         if isinstance(k, ast.Constant) and isinstance(k.value, str)]
+                            else:
+                                names = None      # kv 不是字面 dict → 洞与参数对不上，下面按缺参数判红
+                        self.rows.append((node.lineno, kname, parts, names if names is not None else []))
+        self.generic_visit(node)
+
+
+_scan = _SrvLogScan()
+_scan.visit(ast.parse(SERVER_SRC))
+_srv = _scan.rows
+ck("K1 后端带 srv. 键的调用点抠得出（一条不多一条不少，抠不到就是写法变了）",
+   len(_srv) >= 8, f"{len(_srv)} 个调用点")
+_badtpl = [f"{ln}:{k}" for ln, k, parts, names in _srv if parts is None]
+ck("K2 每个带键调用点的 message 都是整句字面（变量拼的那类加键钉不住，只能先把句子收成一条 f-string）",
+   not _badtpl, str(_badtpl[:6]))
+_drift = []
+for _ln, _k, _parts, _names in _srv:
+    if _parts is None:
+        continue
+    _i = 0
+    _built = []
+    for _p in _parts:
+        if _p is None:
+            _built.append("{" + _names[_i] + "}")
+            _i += 1
+        else:
+            _built.append(_p)
+    _want = "".join(_built)
+    if len(_names) != len([p for p in _parts if p is None]):
+        _drift.append(f"{_ln}:{_k} 洞 {len([p for p in _parts if p is None])} 个 / kv {len(_names)} 个")
+    elif DICT["zh"].get(_k) != _want:
+        _drift.append(f"{_ln}:{_k} 后端「{_want[:40]}」≠ 词表「{str(DICT['zh'].get(_k))[:40]}」")
+ck("K3 词表 zh 与后端拼出来的那句逐字相同，且洞数与 kv 参数个数一致"
+   "（漂了中文界面看后端原话、英文界面看另一套话）",
+   not _drift, str(_drift[:6]))
+_srv_keys = sorted({k for _, k, _, _ in _srv})
+_k_badre = [k for k in _srv_keys if not S._LOG_KEY_RE.fullmatch(k)]
+ck("K4 每个 srv. 键都过后端那把尺 _LOG_KEY_RE（键形错了等于白加）",
+   not _k_badre, str(_k_badre[:6]))
+_k_miss = [k for k in _srv_keys if k not in DICT["zh"] or k not in DICT["en"]]
+ck("K5 每个 srv. 键两份词表都在（少 en 那条英文界面退回中文原话，少 zh 那条连洞都对不上）",
+   not _k_miss, str(_k_miss[:6]))
+_orphan = sorted(k for k in DICT["zh"] if k.startswith("srv.") and k not in _srv_keys)
+ck("K6 词表里的 srv. 键都有真调用点（没调用点的等于凭空多一条没人用的句子）",
+   not _orphan, str(_orphan[:6]))
+_dup = {k for k in _srv_keys if len([1 for _, kk, _, _ in _srv if kk == k]) > 1}
+ck("K7 srv. 键与调用点一比一（同一个键在两个地方拼出不同句子，K3 会只红一半）",
+   len(_srv_keys) == len(_srv) and not _dup, f"键 {len(_srv_keys)} 个 / 调用点 {len(_srv)} 处，重键 {sorted(_dup)[:4]}")
+_srv_pre = [k for k in _srv_keys
+            if DICT["zh"][k].startswith("[界面] ") or DICT["en"][k].startswith("[UI] ")
+            or "[界面]" in DICT["en"][k]]
+ck("K8 srv.* 是后端自记的记录，不带「[界面] 」也不带「[UI] 」（那两枚前缀各有归属：log.* 与 ui./act.）",
+   not _srv_pre, str(_srv_pre[:6]))
 
 # ---------------------------------------------------------------- I. 逐页正文闸门
 print("== I. 逐页推进：翻完的那几页，块里除注释以外不许再有中文 ==")

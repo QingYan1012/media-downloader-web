@@ -2803,6 +2803,17 @@
       'ui.open_log_dir': '打开日志文件夹',
       'ui.rt_start': '开始准实时转写',
       'ui.rt_stop': '停止准实时转写',
+      /* srv.* 是后端自己记的那类运行日志（不是界面动作）：message 就是这句中文，
+         不带「[界面] 」（那是 log.* 与 ui.* 那条分工），英文那份也就不带「[UI] 」。
+         zh 的值必须与 server.py 里拼出来的 message 一字不差，闸门 K3 逐条比对。 */
+      'srv.outbox.started': '通知 outbox 已启动（失败的通知会落盘重试，重启不丢）',
+      'srv.outbox.loaded': '通知 outbox：读回 {n} 条上次没送出去的，按 {r} 的节奏继续重试',
+      'srv.outbox.save_failed': '通知 outbox 写入失败: {e}',
+      'srv.outbox.load_failed': '通知 outbox 读取失败，本次从空表开始: {e}',
+      'srv.outbox.drop_old': '通知 outbox：{d} 天前的 {n} 条不再补发',
+      'srv.outbox.retry_sent': '通知补发成功（第 {n} 次尝试）：{ch} · {t}',
+      'srv.outbox.retry_dropped': '通知试了 {n} 次仍没送出去，丢弃：{t}（{e}）',
+      'srv.outbox.loop_error': '通知 outbox 轮询异常: {e}',
     },
     en: {
       'live.monTitle': 'Live room monitor (auto-detect streams starting)',
@@ -5534,6 +5545,14 @@
       'ui.open_log_dir': '[UI] Opened the log folder',
       'ui.rt_start': '[UI] Started near-live transcription',
       'ui.rt_stop': '[UI] Stopped near-live transcription',
+      'srv.outbox.started': 'Notification outbox started (failed notifications are kept on disk and survive a restart)',
+      'srv.outbox.loaded': 'Notification outbox: read back {n} entries that never went out, retrying on a {r} cadence',
+      'srv.outbox.save_failed': 'Failed to write the notification outbox: {e}',
+      'srv.outbox.load_failed': 'Failed to read the notification outbox, starting from an empty list this time: {e}',
+      'srv.outbox.drop_old': 'Notification outbox: {n} entries older than {d} days are no longer retried',
+      'srv.outbox.retry_sent': 'Notification delivered on retry (attempt {n}): {ch} · {t}',
+      'srv.outbox.retry_dropped': 'Notification still undelivered after {n} attempts, dropped: {t} ({e})',
+      'srv.outbox.loop_error': 'Notification outbox poll error: {e}',
     },
   };
 

@@ -7541,7 +7541,7 @@ def _outbox_save():
         tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(tmp, NOTIFY_OUTBOX_FILE)
     except Exception as e:
-        log_mgr.log(f"通知 outbox 写入失败: {e}", "warning")
+        log_mgr.log(f"通知 outbox 写入失败: {e}", "warning", k="srv.outbox.save_failed", kv={"e": str(e)})
 
 
 def _outbox_load() -> int:
@@ -7552,7 +7552,8 @@ def _outbox_load() -> int:
     except FileNotFoundError:
         return 0
     except Exception as e:
-        log_mgr.log(f"通知 outbox 读取失败，本次从空表开始: {e}", "warning")
+        log_mgr.log(f"通知 outbox 读取失败，本次从空表开始: {e}", "warning",
+                    k="srv.outbox.load_failed", kv={"e": str(e)})
         return 0
     records, too_old = [], 0
     for r in (raw.get("records") or []):
@@ -7575,7 +7576,8 @@ def _outbox_load() -> int:
         _outbox_state["seq"] = int(raw.get("seq") or 0)
         _outbox_state["records"] = records
     if too_old:
-        log_mgr.log(f"通知 outbox：{_OUTBOX_MAX_AGE // 86400} 天前的 {too_old} 条不再补发", "warning")
+        log_mgr.log(f"通知 outbox：{_OUTBOX_MAX_AGE // 86400} 天前的 {too_old} 条不再补发", "warning",
+                    k="srv.outbox.drop_old", kv={"d": _OUTBOX_MAX_AGE // 86400, "n": too_old})
     return sum(1 for r in records if r.get("status") == "pending")
 
 
@@ -7665,13 +7667,16 @@ def _outbox_attempt(rec: dict) -> None:
         rec["status"], rec["done_at"], rec["last_error"] = "sent", now, ""
         if rec["attempts"] > 1:
             names = "、".join(NOTIFY_CHANNEL_LABELS.get(c, c) for c in sent) or "通道"
-            log_mgr.log(f"通知补发成功（第 {rec['attempts']} 次尝试）：{names} · {rec['title']}")
+            log_mgr.log(f"通知补发成功（第 {rec['attempts']} 次尝试）：{names} · {rec['title']}",
+                        k="srv.outbox.retry_sent",
+                        kv={"n": rec["attempts"], "ch": names, "t": rec["title"]})
         return
     rec["last_error"] = "；".join(errs)[:300]
     if rec["attempts"] > len(NOTIFY_RETRY_DELAYS):
         rec["status"], rec["done_at"] = "dropped", now
         log_mgr.log(f"通知试了 {rec['attempts']} 次仍没送出去，丢弃：{rec['title']}（{rec['last_error']}）",
-                    "warning")
+                    "warning", k="srv.outbox.retry_dropped",
+                    kv={"n": rec["attempts"], "t": rec["title"], "e": rec["last_error"]})
         return
     delay = NOTIFY_RETRY_DELAYS[min(rec["attempts"] - 1, len(NOTIFY_RETRY_DELAYS) - 1)]
     rec["next_try"] = now + delay
@@ -7750,21 +7755,24 @@ def start_notify_outbox():
         return
     pending = _outbox_load()
     if pending:
-        log_mgr.log(f"通知 outbox：读回 {pending} 条上次没送出去的，按 {' → '.join(str(d) + 's' for d in NOTIFY_RETRY_DELAYS)} 的节奏继续重试")
+        cadence = " → ".join(f"{d}s" for d in NOTIFY_RETRY_DELAYS)
+        log_mgr.log(f"通知 outbox：读回 {pending} 条上次没送出去的，按 {cadence} 的节奏继续重试",
+                    k="srv.outbox.loaded", kv={"n": pending, "r": cadence})
 
     def loop():
         while not _notify_outbox_stop.is_set():
             try:
                 _outbox_tick()
             except Exception as e:
-                log_mgr.log(f"通知 outbox 轮询异常: {e}", "warning")
+                log_mgr.log(f"通知 outbox 轮询异常: {e}", "warning",
+                            k="srv.outbox.loop_error", kv={"e": str(e)})
             _notify_outbox_kick.wait(_NOTIFY_OUTBOX_TICK)
             _notify_outbox_kick.clear()
 
     _notify_outbox_stop.clear()
     _notify_outbox_thread = threading.Thread(target=loop, daemon=True, name="notify-outbox")
     _notify_outbox_thread.start()
-    log_mgr.log("通知 outbox 已启动（失败的通知会落盘重试，重启不丢）")
+    log_mgr.log("通知 outbox 已启动（失败的通知会落盘重试，重启不丢）", k="srv.outbox.started")
 
 
 # -------------------- 剪贴板监听（#206④）--------------------
