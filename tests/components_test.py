@@ -234,7 +234,7 @@ LOGS: list[tuple] = []
 
 
 class FakeLogMgr:
-    def log(self, msg, level="info"):
+    def log(self, msg, level="info", k="", kv=None):   # k/kv 是 #55 后端运行日志的键，桩不收
         LOGS.append((level, msg))
 
 

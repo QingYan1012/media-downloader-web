@@ -62,7 +62,9 @@ def cfg(**kw):
 
 @contextlib.contextmanager
 def quiet_log():
-    S.log_mgr.log = lambda m, level="info": LOGS.append((level, m))
+    # 真签名带 k/kv（#55 后端运行日志的键），桩不收这两个参数就会在带键的那句上抛 TypeError，
+    # 整批 outbox 自检从第一批加键起就是红的 —— 只宽签名，LOGS 仍记 (level, message)
+    S.log_mgr.log = lambda m, level="info", k="", kv=None: LOGS.append((level, m))
     try:
         yield
     finally:

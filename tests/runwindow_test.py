@@ -322,7 +322,10 @@ ck("G13 界面：SSE 与轮询两条路都喂 queueWindow",
    and "if (data.window) queueWindow.value = data.window;" in idx)
 ck("G14 界面：新状态都在 setup 的 return 里", "windowHeld, queueRows, runWinStat, checkRunWindows" in idx)
 ck("G15 界面：保存后拉一次活体状态", "await refreshRunWindow();" in idx)
-ck("G16 界面：体检路由有中文名（进度提示用）", "'/api/config/run_window/check': '检查队列定时窗格式'" in idx)
+ck("G16 界面：体检路由认到一个动作键，词表 zh 那句仍是「检查队列定时窗格式」",
+   "'/api/config/run_window/check': 'act.config.run_window.check'" in idx
+   and ZH.get("act.config.run_window.check") == "检查队列定时窗格式",
+   str(ZH.get("act.config.run_window.check")))
 
 print("=== H. 收尾 ===")
 timers = [t for t in threading.enumerate() if isinstance(t, threading.Timer)]

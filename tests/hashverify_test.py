@@ -188,7 +188,7 @@ class FakeLog:
     def __init__(self):
         self.rows = []
 
-    def log(self, msg, level="info"):
+    def log(self, msg, level="info", k="", kv=None):   # k/kv 是 #55 后端运行日志的键，桩不收
         self.rows.append((level, str(msg)))
 
 
