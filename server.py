@@ -11353,7 +11353,8 @@ def _auth_state_load():
                 _auth_state = {"fails": dict(raw.get("fails") or {}),
                                "locked": dict(raw.get("locked") or {})}
     except Exception as e:
-        log_mgr.log(f"读取登录锁定状态失败（按无锁定处理）: {e}", "warning")
+        log_mgr.log(f"读取登录锁定状态失败（按无锁定处理）: {e}", "warning",
+                    k="srv.auth.state_load_failed", kv={"e": str(e)})
 
 
 def _auth_state_save():
@@ -11366,7 +11367,8 @@ def _auth_state_save():
         tmp.write_text(snap, encoding="utf-8")
         os.replace(tmp, AUTH_STATE_FILE)
     except Exception as e:
-        log_mgr.log(f"保存登录锁定状态失败: {e}", "warning")
+        log_mgr.log(f"保存登录锁定状态失败: {e}", "warning",
+                    k="srv.auth.state_save_failed", kv={"e": str(e)})
 
 
 def _auth_locked_seconds(ip: str, now: Optional[float] = None) -> int:
@@ -11429,7 +11431,8 @@ def _auth_notify(text: str):
     try:
         _notify_enqueue("fail", "登录保护", text)
     except Exception as e:
-        log_mgr.log(f"登录保护事件进通知队列失败: {e}", "warning")
+        log_mgr.log(f"登录保护事件进通知队列失败: {e}", "warning",
+                    k="srv.auth.notify_enqueue_failed", kv={"e": str(e)})
 
 
 _auth_state_load()
@@ -11500,7 +11503,8 @@ def api_auth_login(body: LoginBody, request: Request):
     ip = _auth_client_ip(request)
     left = _auth_locked_seconds(ip)
     if left:
-        log_mgr.log(f"登录被拒（这台设备正在锁定期内）：{ip}，还锁 {left} 秒", "warning")
+        log_mgr.log(f"登录被拒（这台设备正在锁定期内）：{ip}，还锁 {left} 秒", "warning",
+                    k="srv.auth.login_locked_out", kv={"ip": ip, "n": left})
         raise HTTPException(423, f"连续错太多次，已锁到 {left} 秒之后")
     if not _auth_password_set():
         raise HTTPException(400, "还没设访问口令：先在「设置 → 访问保护」里设一个")
@@ -11508,10 +11512,14 @@ def api_auth_login(body: LoginBody, request: Request):
     if not pw or not _auth_verify_password(pw, str(cfg.data.get("web_auth_password_hash"))):
         r = _auth_note_fail(ip)
         if r["just_locked"]:
-            log_mgr.log(f"口令连续错 {r['limit']} 次，锁定 {ip} 共 {r['lock_seconds'] // 60} 分钟", "error")
+            lock_minutes = r["lock_seconds"] // 60
+            log_mgr.log(f"口令连续错 {r['limit']} 次，锁定 {ip} 共 {lock_minutes} 分钟", "error",
+                        k="srv.auth.locked_after_fails",
+                        kv={"n": r["limit"], "ip": ip, "m": lock_minutes})
             _auth_notify(f"⛔ 口令连续错满 {r['limit']} 次，{r['lock_seconds'] // 60} 分钟内不能再试\n来源：{ip}")
             raise HTTPException(423, f"口令连续错满 {r['limit']} 次，已锁 {r['lock_seconds'] // 60} 分钟")
-        log_mgr.log(f"登录失败：口令不对（{ip}，第 {r['fails']} 次）", "warning")
+        log_mgr.log(f"登录失败：口令不对（{ip}，第 {r['fails']} 次）", "warning",
+                    k="srv.auth.login_wrong_password", kv={"ip": ip, "n": r["fails"]})
         raise HTTPException(401, f"口令不对，还能试 {max(0, r['limit'] - r['fails'])} 次")
     value, max_age = _auth_new_cookie(bool(body.remember))
     had_fails = bool(_auth_state["fails"].get(ip))
@@ -11520,7 +11528,11 @@ def api_auth_login(body: LoginBody, request: Request):
                                  "expires_in": max_age,
                                  "detail": "登录成功"})
     resp.set_cookie(AUTH_COOKIE, value, max_age=max_age, httponly=True, samesite="lax", path="/")
-    log_mgr.log(f"登录成功（{ip}{'，已记住这台设备' if body.remember else ''}）")
+    if body.remember:
+        log_mgr.log(f"登录成功（{ip}，已记住这台设备）",
+                    k="srv.auth.login_ok_remembered", kv={"ip": ip})
+    else:
+        log_mgr.log(f"登录成功（{ip}）", k="srv.auth.login_ok", kv={"ip": ip})
     if had_fails:
         _auth_notify(f"口令试错之后终于登进来了\n来源：{ip}")
     return resp
@@ -11549,7 +11561,7 @@ def api_auth_password(body: PasswordBody, request: Request):
     cfg.data["web_auth_password_hash"] = _auth_hash_password(pw)
     cfg.save()
     _auth_secret_key(rotate=True)
-    log_mgr.log("访问口令已更新（这台服务上的旧登录状态全部作废）")
+    log_mgr.log("访问口令已更新（这台服务上的旧登录状态全部作废）", k="srv.auth.password_updated")
     return {"ok": True, "password_set": True}
 
 
@@ -11566,7 +11578,8 @@ def api_auth_machine_token_rotate(request: Request):
     if not _auth_authorized(request):
         raise HTTPException(401, AUTH_DENIED_TEXT["empty"])
     tok = _auth_machine_token(rotate=True)
-    log_mgr.log("机器令牌已重置（旧的立即失效，MCP 桥那边要换新的）")
+    log_mgr.log("机器令牌已重置（旧的立即失效，MCP 桥那边要换新的）",
+                k="srv.auth.machine_token_rotated")
     return {"ok": True, "machine_token": tok, "header": AUTH_TOKEN_HEADER}
 
 
@@ -11575,14 +11588,15 @@ def api_auth_unlock(body: UnlockBody):
     ip = str(body.ip or "").strip()
     if ip:
         _auth_clear_fails(ip)
-        log_mgr.log(f"已解锁登录锁定：{ip}")
+        log_mgr.log(f"已解锁登录锁定：{ip}", k="srv.auth.unlocked", kv={"ip": ip})
     else:
         with _auth_lock:
             n = len(_auth_state["locked"])
             _auth_state["locked"].clear()
             _auth_state["fails"].clear()
         _auth_state_save()
-        log_mgr.log(f"已清空全部登录锁定与失败计数（原来有 {n} 个在锁）")
+        log_mgr.log(f"已清空全部登录锁定与失败计数（原来有 {n} 个在锁）",
+                    k="srv.auth.locks_cleared", kv={"n": n})
     return {"ok": True, "locks": _auth_locks_payload()}
 
 
@@ -14134,9 +14148,12 @@ def _apply_config(data: dict, request: Request = None) -> dict:
         if not _auth_password_set():
             raise HTTPException(400, "先在「访问保护」里设好访问口令，再打开这个开关")
         # 改这几项不该静默生效：把当下的会话时长/锁定口径记一行，出问题时日志里能看到是哪一轮改的
-        log_mgr.log(f"访问保护已开启：非本机连接要登录，会话空闲 {data.get('web_auth_session_hours', cfg.data.get('web_auth_session_hours'))} 小时"
-                    f"，连错 {data.get('web_auth_max_fails', cfg.data.get('web_auth_max_fails'))} 次锁 "
-                    f"{data.get('web_auth_lock_minutes', cfg.data.get('web_auth_lock_minutes'))} 分钟")
+        sess_hours = data.get('web_auth_session_hours', cfg.data.get('web_auth_session_hours'))
+        max_fails = data.get('web_auth_max_fails', cfg.data.get('web_auth_max_fails'))
+        lock_minutes = data.get('web_auth_lock_minutes', cfg.data.get('web_auth_lock_minutes'))
+        log_mgr.log(f"访问保护已开启：非本机连接要登录，会话空闲 {sess_hours} 小时"
+                    f"，连错 {max_fails} 次锁 {lock_minutes} 分钟",
+                    k="srv.auth.enabled", kv={"h": sess_hours, "n": max_fails, "m": lock_minutes})
     if "torrent_seed_ratio" in data:
         # 做种参数直接决定 aria2 什么时候停上传：负值会让任务一建好就被判「已达标」而立刻停种
         data["torrent_seed_ratio"] = max(0.0, min(20.0, float(data["torrent_seed_ratio"])))
