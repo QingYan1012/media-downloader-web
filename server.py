@@ -12031,11 +12031,13 @@ def api_ai_batch(body: dict):
 
     def job():
         total = len(targets)
-        log_mgr.log(f"批量字幕开始: mode={mode} 共 {total} 个")
+        log_mgr.log(f"批量字幕开始: mode={mode} 共 {total} 个",
+                    k="srv.ai.batch_start", kv={"mode": mode, "total": total})
         ok_n, fail_n = 0, 0
         for i, p in enumerate(targets, 1):
             try:
-                log_mgr.log(f"批量 [{i}/{total}] {p.name}")
+                log_mgr.log(f"批量 [{i}/{total}] {p.name}",
+                            k="srv.ai.batch_item", kv={"i": i, "total": total, "name": p.name})
                 low = p.suffix.lower()
                 if mode in ("transcribe", "both") and low in _MEDIA_EXTS:
                     run_local_ai_on_file(
@@ -12069,8 +12071,10 @@ def api_ai_batch(body: dict):
                 ok_n += 1
             except Exception as e:
                 fail_n += 1
-                log_mgr.log(f"批量失败 {p.name}: {e}", "error")
-        log_mgr.log(f"批量字幕结束: 成功 {ok_n}，失败 {fail_n}，共 {total}")
+                log_mgr.log(f"批量失败 {p.name}: {e}", "error",
+                            k="srv.ai.batch_item_failed", kv={"name": p.name, "e": str(e)})
+        log_mgr.log(f"批量字幕结束: 成功 {ok_n}，失败 {fail_n}，共 {total}",
+                    k="srv.ai.batch_done", kv={"ok": ok_n, "fail": fail_n, "total": total})
 
     threading.Thread(target=job, daemon=True).start()
     return {
@@ -12546,11 +12550,13 @@ def api_ai_vocal_separate(body: dict):
                 # 「选了 GPU、实际在 CPU 上跑」必须自己说破，不然设置里那格就成了谎话
                 log_mgr.log(f"分离完成，但没跑在 GPU 上（实际用的是 {got or '未知'}）", "warning")
             for p in outs:
-                log_mgr.log(f"分离成品: {p}")
+                log_mgr.log(f"分离成品: {p}", k="srv.ai.separate_file", kv={"file": p})
             if not outs:
-                log_mgr.log("分离结束但一个成品都没有，按失败记", "error")
+                log_mgr.log("分离结束但一个成品都没有，按失败记", "error",
+                            k="srv.ai.separate_empty")
         except Exception as e:
-            log_mgr.log(f"人声分离失败: {e}", "error")
+            log_mgr.log(f"人声分离失败: {e}", "error",
+                        k="srv.ai.separate_failed", kv={"e": str(e)})
 
     threading.Thread(target=job, daemon=True).start()
     return {"ok": True, "message": f"人声分离中: {media.name}（{engine} / {device}）"}
@@ -12584,7 +12590,8 @@ def api_ai_tts(body: dict):
             else:
                 raise ValueError("需要 path 或 text")
         except Exception as e:
-            log_mgr.log(f"Edge-TTS 失败: {e}", "error")
+            log_mgr.log(f"Edge-TTS 失败: {e}", "error",
+                        k="srv.ai.tts_failed", kv={"e": str(e)})
 
     threading.Thread(target=job, daemon=True).start()
     return {"ok": True, "message": "Edge-TTS 合成中"}
@@ -12625,11 +12632,13 @@ def api_separator_setup(body: dict = None):
         from voice_tools import setup_separator
         r = setup_separator(log_mgr.log, step=step, mirror=str(cfg.data.get("pip_mirror") or ""))
         if r == "busy":
-            log_mgr.log("已经有一个搭建任务在跑了，这一次先不叠加", "warning")
+            log_mgr.log("已经有一个搭建任务在跑了，这一次先不叠加", "warning",
+                        k="srv.ai.setup_busy")
         elif r == "ok":
-            log_mgr.log("分离环境就绪")
+            log_mgr.log("分离环境就绪", k="srv.ai.setup_ready")
         else:
-            log_mgr.log(f"分离环境搭建未完成: {r}", "error")
+            log_mgr.log(f"分离环境搭建未完成: {r}", "error",
+                        k="srv.ai.setup_failed", kv={"r": r})
 
     threading.Thread(target=job, daemon=True).start()
     return {"ok": True, "message": "分离环境搭建中，进度看运行日志"}
@@ -13398,7 +13407,10 @@ def api_ai_hardsub(body: dict):
                             last_log = time.time()
                             h, mi, s = (int(x or 0) for x in elapsed.split(":"))
                             done = h * 3600 + mi * 60 + s
-                            log_mgr.log(f"烧字幕中 {media.name}: {done}/{int(total)}s（{done * 100 // max(1, int(total))}%）")
+                            log_mgr.log(f"烧字幕中 {media.name}: {done}/{int(total)}s（{done * 100 // max(1, int(total))}%）",
+                                        k="srv.ai.hardsub_progress",
+                                        kv={"name": media.name, "done": done, "total": int(total),
+                                            "pct": done * 100 // max(1, int(total))})
                     elif ln and len(ln) < 300 and not re.match(r"^\w+=", ln):
                         tail.append(ln)
                         del tail[:-30]
@@ -13416,7 +13428,8 @@ def api_ai_hardsub(body: dict):
                     out.unlink(missing_ok=True)
                     with HARDSUB_LOCK:
                         rec.update(status="stopped", message="已停止，半成品已删除")
-                    log_mgr.log(f"已停止烧字幕: {media.name}，半成品已删", "warning")
+                    log_mgr.log(f"已停止烧字幕: {media.name}，半成品已删", "warning",
+                                k="srv.ai.hardsub_stopped", kv={"name": media.name})
                     return
                 if code == 0 and out.is_file():
                     used = enc
@@ -13440,7 +13453,8 @@ def api_ai_hardsub(body: dict):
             with HARDSUB_LOCK:
                 if key in HARDSUB_JOBS:
                     HARDSUB_JOBS[key].update(status="failed", message=str(e)[:260])
-            log_mgr.log(f"烧字幕失败: {e}", "error")
+            log_mgr.log(f"烧字幕失败: {e}", "error",
+                        k="srv.ai.hardsub_failed", kv={"e": str(e)})
         finally:
             tmp.unlink(missing_ok=True)
 
