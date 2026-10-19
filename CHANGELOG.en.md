@@ -412,6 +412,45 @@ describe #65 / #63 / #66, #78, #87, the eight interface items and the second lan
 Chinese-only" statements are gone. **No self-test or live measurement was re-run for this commit** — every reading
 above was recorded when its own round finished, and this file only carries it over.
 
+### #52 — the `v1.4.0` tag and the published bytes: the decision is to leave the tag alone and write the difference down
+
+Several entries above end with "the `v1.4.0` tag still points at `7ac0ff6`, package and release asset untouched". That
+only said the tag trails; it never said **which tree the published archive was actually built from**, and it is not
+`7ac0ff6`. This entry lines the two sides up to a comparable degree, then follows the agreed decision: **the tag stays
+put** — no tag move, no rebuild, no asset swap, documentation only.
+
+- **The archive corresponds to the `caeb4f6` tree**, and that is a fresh measurement, not carried over. Two application
+  files were read out of `dist/MediaDownloader-1.4.0-portable.zip` itself (not out of the already-extracted
+  `dist/MediaDownloader-1.4.0-portable/` directory), their CRLFs folded back to LF, and hashed with git's blob
+  algorithm:
+  - `static/index.html` → 773,906 B, `28b090bc4ac12e1a195c8cac938807871cbbcc57`, identical to
+    `caeb4f6:static/index.html`;
+  - `CHANGELOG.md` → 476,725 B, `15da28dc587b3c9b022321a2be5489fa05a590c5`, identical to `caeb4f6:CHANGELOG.md`.
+  At the same paths `7ac0ff6` holds 773,890 B / `fd5f19626b3532447919016eaf45f56250577e16` and 466,999 B — neither of
+  them the numbers above. **The newline folding is not optional**: the `index.html` entry in the archive is 787,201 B
+  and contains 13,295 CR bytes, and 773,906 + 13,295 = 787,201 exactly — the build ran on this Windows box, where
+  `core.autocrlf=true` had already rewritten LF to CRLF at checkout. This is the same hazard that cost #87 its
+  sha256 pin, seen from the other side.
+- **The two trees differ by exactly two commits** (`7ac0ff6..caeb4f6`): `c7226b1` replaces six PNGs under
+  `docs/screenshots/` and nothing else; `caeb4f6` changes 4 lines of `static/index.html` (the music result table's
+  artist and album columns move from `width` to `min-width` so the slack spreads out), one assertion in
+  `tests/matchgate_test.py` (the G9 check was pinned to `:title` after it turned out to be a false green), one
+  changelog section and `music-search.png`. **So the gap is not documentation-only**: checking out `v1.4.0` and
+  rebuilding reproduces the table *before* that width change — four real style lines away from what people actually
+  downloaded.
+- **The decision and why** (recorded here so it is not reopened as a bug next time): the `v1.4.0` label is already
+  published and already downloaded, so moving the tag or swapping the asset now would make one label stand for yet
+  another set of bytes and make reconciliation harder, not easier. The tag stays at `7ac0ff6` and the fact that
+  "package = `caeb4f6`" is written into the docs instead.
+- **Which route gets you which artifact**: the source tree matching the published bytes is `git checkout caeb4f6`
+  (`git archive` if you want it as a bundle); the file users actually downloaded is the
+  `MediaDownloader-1.4.0-portable.zip` on the release, 229,823,103 B, verifiable in `dist/` with `sha256sum -c`
+  against the sidecar of the same name (which currently reads `4ea6a8ec…`, and that line is what this round read).
+  **The digest still does not go into this packaged file** — same convention as the "Release artifacts" sections
+  above: no archive can carry its own checksum.
+- This entry touches `CHANGELOG.md` and `CHANGELOG.en.md` only: `appVersion` unchanged, no rebuild, release untouched,
+  tag unmoved, and no live run. The blob comparison above is the only new measurement in it.
+
 ---
 
 ## Earlier releases (summary)

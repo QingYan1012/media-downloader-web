@@ -1176,6 +1176,19 @@ v1.4.0 发出去之后接着三句要求：「跑一下音乐结果表确认排�
 - 平时在用的那台实例已重启到 `ea16c82`（先确认队列 `running=0 / pending=0` 才停）：首页 HTML 与仓库那份逐字节相同（817,010 B、`jsdelivr_hits=0`），六件本地路径全 200，`/api/status` 回 ffmpeg `9.0.1-essentials_build`。
 - 两份公开文档（`docs/详细功能介绍.md` 与 `docs/detailed-features.en.md`）与 `README.md` / `README.en.md` 里「界面只有中文」那类过期说法一并改了；`CHANGELOG.en.md` 新增一节 follow-ups，把这一轮的条目按英文摘要的口径写一遍。**这一笔没有重跑任何活体或自检**：上面每一节里的读数都是各自那一轮跑完时记下的，本文件只搬运、不重新主张。
 
+## #52 · 标签 `v1.4.0` 与已发布字节不一致：口径是标签不动，把差异算清楚写下来
+
+前面好几节都留了一句「标签 `v1.4.0` 仍指 `7ac0ff6`，包与 Release 资产没动」。这句话一直只说到「标签落后」，没说清**落后的是哪一棵树**——已发布那只包压根不是从 `7ac0ff6` 压出来的。这一笔把两边对齐到可比的程度，然后按定下的口径**保持标签不动**：只补文档，移动标签、重打包、换 Release 资产一件都不做。
+
+- **包对应的是 `caeb4f6` 那棵树**，这条是本轮新量的，不是从旧记录里搬的。拿 `dist/MediaDownloader-1.4.0-portable.zip` 里的两份应用文件解出来、把 CRLF 折回 LF，再按 git 的 blob 算法算 sha1：
+  - `static/index.html` → 773,906 B、`28b090bc4ac12e1a195c8cac938807871cbbcc57`，与 `caeb4f6:static/index.html` 逐字符相同；
+  - `CHANGELOG.md` → 476,725 B、`15da28dc587b3c9b022321a2be5489fa05a590c5`，与 `caeb4f6:CHANGELOG.md` 相同。
+  同一位置在 `7ac0ff6` 那一份分别是 773,890 B / `fd5f19626b3532447919016eaf45f56250577e16` 与 466,999 B，全都不是上面这两个数。**折行尾这一步是必须的**：包内 `index.html` 条目 787,201 B、里面 13,295 枚 CR，773,906 + 13,295 正好等于 787,201 —— 打包是在这台 Windows 上做的，检出时 `core.autocrlf=true` 已经把 LF 写成 CRLF。这跟 #87 那节「autocrlf 会毁掉 sha256 钉」是同一件事的另一面。
+- **两棵树之间只差两个提交**（`7ac0ff6..caeb4f6`）：`c7226b1` 只换 `docs/screenshots/` 六张 PNG；`caeb4f6` 动的是 `static/index.html` 4 行（音乐结果表「艺人」「专辑」两列 `width` → `min-width`，把富余摊开）、`tests/matchgate_test.py` 一处（2 加 1 删，G9 那条假绿改钉 `:title`）、本文件一节和 `music-search.png` 一张。所以**这处不一致不只在文档**：按 `v1.4.0` 标签 checkout 复现，拿到的是表格宽度改之前的界面，与用户下载到的那只包差 4 行真实样式代码。
+- **口径与理由**（人定的，这里记下来免得下次又当成待修）：`v1.4.0` 这个号已经发出去、被人下载过了，这时候把标签往前挪或换掉资产，等于让同一个号对应又一种字节，事后更难对齐；所以宁可让标签停在 `7ac0ff6`，把「包 = `caeb4f6`」这条事实写进文档。
+- **要拿回哪种东西，走哪条路**：与已发布字节一致的源码树是 `git checkout caeb4f6`（要归档就 `git archive`）；用户实际下载到的那个文件是 Release 上那只 `MediaDownloader-1.4.0-portable.zip`，229,823,103 B，在 `dist/` 里对同名 `.zip.sha256` 跑 `sha256sum -c` 即可核（sidecar 现在写的是 `4ea6a8ec…`，本轮读的就是这一行）。**校验值仍然不写进这份随包文件**——沿用上面「发布物」那节定的口径，一个包装不下自己的校验值。
+- 这一笔只动 `CHANGELOG.md` 与 `CHANGELOG.en.md` 两份文档：`appVersion` 没动、包没重压、Release 没碰、标签没挪，也没有跑任何活体。上面那条 blob 比对是本轮唯一的新测量，读的是 `dist/` 里那只包的 zip 条目本身，不是 `dist/MediaDownloader-1.4.0-portable/` 那棵已解压的目录树。
+
 ## v1.3.2 · 2026-10-13（已出包）
 
 对着 [joeseesun/qiaomu-download](https://github.com/joeseesun/qiaomu-download) 那份平台清单盘了一遍 ours，盘出两条真的缺口，本轮做掉；第三条（B1 TikTok 归错档）是我看错了，代码一个字没改，判正的读数写在下面。B4（公开优先的 Cookie 策略）与 B5（Spotify 单曲入口 + 匹配置信度）按要求先排着，和 issue #206 那张「有但没做」的清单一起过。**已出包**：`appVersion` 升到 `v1.3.2 · Element Plus`（版本真源只有界面那一处），两份 README 的徽章与包名同处改口，产物见下方「发布物」。
