@@ -291,8 +291,31 @@ ck("E5 本套不发 HTTP、不 spawn 实例（AST 里没有 urlopen / Popen 这�
 print("== F. 边界：这一批没有动后端话术 ==")
 fe_body = block(HTML, "function friendlyError(raw) {", "\n        }\n")
 fe_branches = len(re.findall(r"return (?:withTail|keepTail)\(", fe_body))
-ck("F1 friendlyError 那 22 条分支还在，且没被 tr() 接手（报错翻译排在界面模块批次之后）",
-   fe_branches == 22 and "tr(" not in fe_body, f"抠到 {fe_branches} 条分支，{len(fe_body)} 字")
+# 这一批做完了：22 条分支的句子全部来自 err.*，分支里不该再留中文句子。
+# 「（原始：」那句胶水也走 err.rawTail —— 它是这条线唯一还会拼进界面上的中文。
+fe_keys = re.findall(r"return (?:withTail|keepTail)\(\s*tr\('(err\.[\w.]+)'", fe_body)
+ck("F1 friendlyError 的 22 条分支各带一个 err.* 键，句子里不再留中文原文",
+   fe_branches == 22 and len(fe_keys) == 22 and len(set(fe_keys)) == 22
+   and not [k for k in fe_keys if k not in DICT["zh"] or k not in DICT["en"]]
+   and "'（原始：'" not in fe_body,
+   f"分支 {fe_branches} 条，取到键 {len(fe_keys)} 个，缺词表 {[k for k in fe_keys if k not in DICT['zh'] or k not in DICT['en']]}")
+dict_err = sorted(k for k in DICT["zh"] if k.startswith("err."))
+ck("F1b err.* 的键正好是 friendlyError 在用的那批（多一条就是抄了两份，少一条就是印键名）",
+   set(dict_err) == set(fe_keys) | {"err.rawTail", "err.fallback"}, f"词表 {len(dict_err)} 条：{sorted(set(dict_err) - set(fe_keys) - {'err.rawTail', 'err.fallback'})}")
+# 路径不写在句子里，是 uiPath('nav.settings', 'settings.netTitle') 现拼的：这些键没走 tr()，
+# B3/B4 那两条抓不到，漏一个键就是把 settings.netTitle 这种原文印到报错里。
+fe_paths = sorted({k for args in re.findall(r"uiPath\(([^)]*)\)", fe_body)
+                   for k in re.findall(r"'([^']+)'", args)})
+ck("F1c uiPath 里点到的界面路径两份词表都有，且都不是空串",
+   fe_paths and not [k for k in fe_paths if k not in DICT["zh"] or k not in DICT["en"]]
+   and not [k for k in fe_paths if not DICT["zh"][k].strip() or not DICT["en"][k].strip()],
+   f"{len(fe_paths)} 个：{fe_paths}")
+# 改前有四处指路在界面上查无此名（「设置 → Cookie」/「粘贴分享链接 → 直接下载」/「指定格式」/
+# 「抖音/TikTok」少空格），这一批的口径是改指当下真存在的名字，所以把它们钉成「不许再出现」。
+STALE_POINTERS = ["设置 → Cookie", "粘贴分享链接", "「指定格式」", "抖音/TikTok"]
+ck("F1d 那四处失效指路已经不在报错里（改指界面上真存在的卡片名）",
+   not [p for p in STALE_POINTERS if p in fe_body],
+   [p for p in STALE_POINTERS if p in fe_body])
 ck("F2 后端原话「原因：…（依据 …）」仍然原样上屏",
    "if (s.includes('原因：') || s.includes('（依据 ')) return s;" in HTML)
 ck("F3 界面埋点仍先落一句中文原话（键是附带的，不是替掉原文）",

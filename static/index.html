@@ -7444,63 +7444,85 @@
 
         let pollTimer = null;
 
+        /* 报错文案里「去哪儿点」的那几句，路径不写死在句子里：现按当前语言把导航与卡片标题拼出来，
+           中英文指的是同一张卡。句子里写死的名字会过期（改前有四条指到了界面上已经不存在的地方）。 */
+        const uiPath = (...keys) => keys.map((k) => tr(k)).join(' → ');
+
         function friendlyError(raw) {
           const s = String(raw || '');
           // 后端已经点名「原因：…；该做什么」，或带上了命中的判定标记（依据 …）：原样上屏。
           // 改写会把站点返回码、原话和命中的标记弄丢，只剩下界面模板那句套话。
           if (s.includes('原因：') || s.includes('（依据 ')) return s;
           const tail = s.length > 120 ? s.slice(0, 120) + '…' : s;
-          const withTail = (msg) => (/^[\[(']/.test(s) ? msg + '（原始：' + tail + '）' : msg);
+          const rawTail = (x) => tr('err.rawTail', { s: x });
+          const withTail = (msg) => (/^[\[(']/.test(s) ? msg + rawTail(tail) : msg);
           // 分类说法不能替掉站点原文：下面几条一律把原话附在后面
-          const keepTail = (msg) => (msg + (s && !msg.includes(s.slice(0, 24)) ? '（原始：' + tail + '）' : ''));
+          const keepTail = (msg) => (msg + (s && !msg.includes(s.slice(0, 24)) ? rawTail(tail) : ''));
           if (/10054|ConnectionResetError|Connection aborted|connection was reset|ECONNRESET/i.test(s))
-            return withTail('连接被远端强制中断：通常为网络被重置、站点屏蔽或需要代理。可在「设置 → 网络与并发」填写代理地址，或将镜像前缀留空/更换后重试');
+            return withTail(tr('err.connReset', { net: uiPath('nav.settings', 'settings.netTitle') }));
           if (/timed?\s*out|TimeoutError|read timeout/i.test(s))
-            return withTail('请求超时：远端无响应或网速过慢，请稍后重试；必要时使用代理');
+            return withTail(tr('err.timeout'));
           if (/getaddrinfo failed|NameResolution|Name or service not known|nodename nor servname|ERR_NAME_NOT_RESOLVED/i.test(s))
-            return withTail('域名解析失败：请检查本机网络或 DNS，境外站点需要在设置中配置代理');
+            return withTail(tr('err.dnsFail'));
           if (/status_code['"= ]{0,3}2483|请先登录|fresh cookies?.*(needed|are needed)/i.test(s))
-            return keepTail('站点要求先登录才回答（见到返回码 2483、「请先登录」或 yt-dlp 的「Fresh cookies are needed」）：'
-                            + '请在「设置 → 多平台 Cookie」里的「抖音/TikTok」导入已登录浏览器的 Cookie，或改用「粘贴分享链接 → 直接下载」');
+            return keepTail(tr('err.loginNeeded', {
+              multi: uiPath('nav.settings', 'settings.multiCookieTitle'),
+              dy: tr('settings.platformDouyin'),
+              global: uiPath('nav.settings', 'settings.globalCookieTitle'),
+              browser: tr('settings.cookieSrcBrowser'),
+            }));
           if (/__ac_nonce|byted_acrawler|_\$jsvmprt|__ac_signature/i.test(s))
-            return keepTail('站点把这个请求当成脚本访问了，回的是需要执行 JS 的校验页（见到 '
-                            + (s.match(/__ac_nonce|byted_acrawler|_\$jsvmprt|__ac_signature/i)[0])
-                            + '）：这条路径拿不到内容，请在「设置 → 多平台 Cookie」里的「抖音/TikTok」导入已登录浏览器的 Cookie');
+            return keepTail(tr('err.jsChallenge', {
+              marker: s.match(/__ac_nonce|byted_acrawler|_\$jsvmprt|__ac_signature/i)[0],
+              multi: uiPath('nav.settings', 'settings.multiCookieTitle'),
+              dy: tr('settings.platformDouyin'),
+            }));
           if (/sign in to confirm (you'?re not a bot|your age)|not a bot|captcha/i.test(s))
-            return withTail('站点判定为机器人访问：在「设置 → Cookie」从已登录的浏览器导入 Cookie，或开启「HTTP TLS 指纹模拟」并降低并发后重试');
+            return withTail(tr('err.botCheck', {
+              global: uiPath('nav.settings', 'settings.globalCookieTitle'),
+              browser: tr('settings.cookieSrcBrowser'),
+              tls: tr('settings.httpImpersonateLabel'),
+            }));
           if (/age[_ ]restricted|confirm your age|年龄限制/i.test(s))
-            return withTail('年龄限制内容：需登录具备权限的账号 Cookie（在设置 → Cookie 中导入）');
+            return withTail(tr('err.ageRestrict', {
+              multi: uiPath('nav.settings', 'settings.multiCookieTitle'),
+              yt: tr('settings.platformYoutube'),
+            }));
           if (/members.only|this video is private|private video|仅会员|会员专属/i.test(s))
-            return withTail('私有或会员专属内容：需使用有权限的账号 Cookie 才能下载');
+            return withTail(tr('err.membersOnly'));
           if (/login required|log in|account required|授权|需要登录/i.test(s))
-            return withTail('该站点要求登录：在「设置 → Cookie」导入已登录浏览器的 Cookie 后重试');
+            return withTail(tr('err.loginRequired', { multi: uiPath('nav.settings', 'settings.multiCookieTitle') }));
           if (/\bdrm\b|widevine|内容.*加密.*无法解密/i.test(s))
-            return withTail('内容为 DRM 加密，本工具无法解密，不支持此类下载');
+            return withTail(tr('err.drm'));
           if (/available in your country|not available in your (country|region)|blocked in your|地区限制|按地区/i.test(s))
-            return withTail('该内容按地区/版权限制：需更换出口网络（在设置 → 网络与并发填写代理），或导入对应地区的 Cookie');
+            return withTail(tr('err.geoBlock', { net: uiPath('nav.settings', 'settings.netTitle') }));
           if (/http error 401|Unauthorized/i.test(s))
-            return withTail('身份验证失败（401）：Cookie 可能已过期，请重新导入');
+            return withTail(tr('err.http401'));
           if (/http error 403|forbidden|access denied/i.test(s))
-            return withTail('站点拒绝访问（403）：通常需要登录 Cookie 或代理，也可能是链接已过期，请重新复制链接');
+            return withTail(tr('err.http403'));
           if (/http error 404|video unavailable|no video available|unable to find a video|视频不存在|已删除/i.test(s))
-            return withTail('视频不存在、已删除或地址有误：请确认链接可在浏览器中正常打开');
+            return withTail(tr('err.http404'));
           if (/\b429\b|too many requests|rate ?limit/i.test(s))
-            return withTail('命中站点限流（429）：自动退避后仍未成功。请在「设置 → 网络与并发」调低并发数和每站点并发，或稍后重试');
+            return withTail(tr('err.http429', { net: uiPath('nav.settings', 'settings.netTitle') }));
           if (/no video formats|no formats|requested format is not available|unavailable formats/i.test(s))
-            return withTail('没有可下载的画质：可能仅提供会员专享格式。请改用「最佳」或降低分辨率后重试，避免使用「指定格式」');
+            return withTail(tr('err.noFormats', { best: tr('info.tierBest'), fmtId: tr('home.forceFmtId') }));
           if (/unsupported url|no extractor|extractor not found/i.test(s))
-            return withTail('该网址暂无法解析：可安装或更新 yt-dlp（设置 → 组件与依赖），或用浏览器扩展嗅探真实媒体地址');
+            return withTail(tr('err.unsupportedUrl', { comp: uiPath('nav.settings', 'settings.compTitle') }));
           if (/ffmpeg|ffprobe/i.test(s) && /not (found|installed)|is not recognized|no such file|未安装|缺失/i.test(s))
-            return withTail('缺少 FFmpeg：请在「设置 → 组件与依赖」点击 FFmpeg 的更新/安装按钮');
+            return withTail(tr('err.ffmpegMissing', { comp: uiPath('nav.settings', 'settings.compTitle') }));
           if (/直播.*(未开始|已结束)|livestream.*(not started|ended)|is not live/i.test(s))
-            return withTail('直播未开始或已结束：请开播后再点击录制');
+            return withTail(tr('err.liveNotStarted'));
           if (/SSL|TLS|certificate verify failed|CERTIFICATE_VERIFY/i.test(s))
-            return withTail('HTTPS 证书校验失败：可在「设置 → 网络与并发」开启「跳过 SSL 证书校验」，或关闭「HTTP TLS 指纹模拟」再试');
+            return withTail(tr('err.sslFail', {
+              net: uiPath('nav.settings', 'settings.netTitle'),
+              nocheck: tr('settings.nocheckcertificateLabel'),
+              tls: tr('settings.httpImpersonateLabel'),
+            }));
           if (/Proxy|SOCKS|Cannot connect to proxy/i.test(s))
-            return withTail('代理不可用：请检查设置中的代理地址与端口是否在运行');
+            return withTail(tr('err.proxyDown'));
           if (/No module named/i.test(s))
-            return withTail('缺少依赖：请在「设置 → 组件与依赖」点击对应项的安装按钮补齐');
-          return s || '请求失败';
+            return withTail(tr('err.missingModule', { comp: uiPath('nav.settings', 'settings.compTitle') }));
+          return s || tr('err.fallback');
         }
 
         /* ---- 操作留痕：用户在界面上点了什么，日志页要能看到一条人话记录 ---- */

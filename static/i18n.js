@@ -2566,6 +2566,32 @@
       'logs.emptyZip': '诊断包是空的，请查看运行日志中的原因',
       'logs.exported': '已导出 {p}（密钥与 Cookie 内容不在包里）',
       'logs.exportFail': '导出诊断包失败',
+      // friendlyError 的 22 条分支 + 兜底 + 那句「（原始：…）」。句子里的界面路径一律走占位符，
+      // 由 index.html 的 uiPath() 按当前语言现拼卡片标题，所以中文这句不再抄写「设置 → 网络与并发」那串字。
+      'err.rawTail': '（原始：{s}）',
+      'err.fallback': '请求失败',
+      'err.connReset': '连接被远端强制中断：通常为网络被重置、站点屏蔽或需要代理。可在「{net}」填写代理地址，或将镜像前缀留空/更换后重试',
+      'err.timeout': '请求超时：远端无响应或网速过慢，请稍后重试；必要时使用代理',
+      'err.dnsFail': '域名解析失败：请检查本机网络或 DNS，境外站点需要在设置中配置代理',
+      'err.loginNeeded': '站点要求先登录才回答（见到返回码 2483、「请先登录」或 yt-dlp 的「Fresh cookies are needed」）：请在「{multi}」里的「{dy}」导入已登录浏览器的 Cookie，或到「{global}」把来源选成「{browser}」',
+      'err.jsChallenge': '站点把这个请求当成脚本访问了，回的是需要执行 JS 的校验页（见到 {marker}）：这条路径拿不到内容，请在「{multi}」里的「{dy}」导入已登录浏览器的 Cookie',
+      'err.botCheck': '站点判定为机器人访问：到「{global}」把来源选成「{browser}」，从已登录的浏览器取 Cookie，或开启「{tls}」并降低并发后重试',
+      'err.ageRestrict': '年龄限制内容：需登录具备权限的账号 Cookie（在{multi} 的 {yt} 中导入）',
+      'err.membersOnly': '私有或会员专属内容：需使用有权限的账号 Cookie 才能下载',
+      'err.loginRequired': '该站点要求登录：在「{multi}」导入已登录浏览器的 Cookie 后重试',
+      'err.drm': '内容为 DRM 加密，本工具无法解密，不支持此类下载',
+      'err.geoBlock': '该内容按地区/版权限制：需更换出口网络（在{net}填写代理），或导入对应地区的 Cookie',
+      'err.http401': '身份验证失败（401）：Cookie 可能已过期，请重新导入',
+      'err.http403': '站点拒绝访问（403）：通常需要登录 Cookie 或代理，也可能是链接已过期，请重新复制链接',
+      'err.http404': '视频不存在、已删除或地址有误：请确认链接可在浏览器中正常打开',
+      'err.http429': '命中站点限流（429）：自动退避后仍未成功。请在「{net}」调低并发数和每站点并发，或稍后重试',
+      'err.noFormats': '没有可下载的画质：可能仅提供会员专享格式。请改用「{best}」或降低分辨率后重试，避免使用「{fmtId}」',
+      'err.unsupportedUrl': '该网址暂无法解析：可安装或更新 yt-dlp（{comp}），或用浏览器扩展嗅探真实媒体地址',
+      'err.ffmpegMissing': '缺少 FFmpeg：请在「{comp}」点击 FFmpeg 的更新/安装按钮',
+      'err.liveNotStarted': '直播未开始或已结束：请开播后再点击录制',
+      'err.sslFail': 'HTTPS 证书校验失败：可在「{net}」开启「{nocheck}」，或关闭「{tls}」再试',
+      'err.proxyDown': '代理不可用：请检查设置中的代理地址与端口是否在运行',
+      'err.missingModule': '缺少依赖：请在「{comp}」点击对应项的安装按钮补齐',
     },
     en: {
       'live.monTitle': 'Live room monitor (auto-detect streams starting)',
@@ -5063,12 +5089,37 @@
       'logs.emptyZip': 'The diagnostics zip came out empty - check the running log for the reason',
       'logs.exported': 'Exported {p} (secrets and cookie values are not inside)',
       'logs.exportFail': 'Diagnostics export failed',
+      'err.rawTail': ' (raw: {s})',
+      'err.fallback': 'The request failed',
+      'err.connReset': 'The remote end reset the connection: usually a network reset, the site blocking this machine, or a proxy being required. Enter a proxy address under {net}, or leave the mirror prefix empty or switch it and retry',
+      'err.timeout': 'The request timed out: the remote end is not responding or the link is too slow. Retry later, and use a proxy if you need one',
+      'err.dnsFail': 'DNS resolution failed: check the network or the DNS server on this machine; overseas sites need a proxy configured in Settings',
+      'err.loginNeeded': 'The site only answers to a logged-in session (return code 2483, a "please log in first" line, or yt-dlp saying Fresh cookies are needed): import cookies from a logged-in browser in the {dy} row under {multi}, or set the source to {browser} under {global}',
+      'err.jsChallenge': 'The site treated this request as a script and answered with a JS challenge page instead (it mentions {marker}): nothing comes back on this path, so import cookies from a logged-in browser in the {dy} row under {multi}',
+      'err.botCheck': 'The site decided this is bot traffic: set the source to {browser} under {global} so cookies come from a logged-in browser, or turn on {tls} and retry with lower concurrency',
+      'err.ageRestrict': 'Age-restricted content: it needs the cookies of a signed-in account with permission (import them in the {yt} row under {multi})',
+      'err.membersOnly': 'Private or members-only content: it can only be downloaded with the cookies of an account that has access',
+      'err.loginRequired': 'This site requires signing in: import cookies from a logged-in browser under {multi} and retry',
+      'err.drm': 'The content is DRM-encrypted; this tool cannot decrypt it, so this kind of download is not supported',
+      'err.geoBlock': 'This content is restricted by region or licence: change the egress network (enter a proxy under {net}), or import cookies from the matching region',
+      'err.http401': 'Authentication failed (401): the cookies have probably expired, import them again',
+      'err.http403': 'The site refused the request (403): it usually wants logged-in cookies or a proxy; the link may also have expired, so copy it again',
+      'err.http404': 'The video does not exist, was deleted, or the address is wrong: check that the link opens normally in a browser',
+      'err.http429': 'The site rate-limited us (429) and the automatic backoff did not clear it. Lower the concurrency and the per-site concurrency under {net}, or retry later',
+      'err.noFormats': 'There is no downloadable picture quality: the site may offer formats only for members. Switch to {best} or lower the resolution and retry, and avoid {fmtId}',
+      'err.unsupportedUrl': 'This URL cannot be parsed yet: install or update yt-dlp ({comp}), or sniff the real media address with the browser extension',
+      'err.ffmpegMissing': 'FFmpeg is missing: use the update or install button for FFmpeg under {comp}',
+      'err.liveNotStarted': 'The livestream has not started or has already ended: press record after it goes live',
+      'err.sslFail': 'The HTTPS certificate failed verification: turn on {nocheck} under {net}, or turn off {tls} and retry',
+      'err.proxyDown': 'The proxy is not reachable: check that the proxy address and port in Settings are actually running',
+      'err.missingModule': 'A dependency is missing: press the install button for that row under {comp}',
     },
   };
 
-  // friendlyError 那 22 条报错分支的英文对照排在这一批之后：那些话术里点名着
-  // 「设置 → 网络与并发」这类界面路径，路径本身还没翻，先翻错误只会让英文用户照着一句
-  // 对不上按钮名的话去找设置项。届时每条分支带一个 code，en 查不到就退回中文原话。
+  // friendlyError 的 22 条分支现在全走 err.*（上面那一段）。界面路径不在句子里写死：
+  // index.html 里的 uiPath() 按当前语言把「设置 → 卡片标题」现拼，所以中英指的一定是同一张卡。
+  // 改前有四条指到了界面上查无此名的地方（「设置 → Cookie」、「粘贴分享链接 → 直接下载」、
+  // 「指定格式」、「抖音/TikTok」的写法），这批一并改到当下真存在的名字。
 
   const UI_LANGS = [
     { key: 'auto', label: 'AUTO', name: { zh: '自动（跟随浏览器）', en: 'Auto (follow browser)' } },
