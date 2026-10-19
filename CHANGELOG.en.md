@@ -199,11 +199,218 @@ Caught as false reds, not product bugs:
   moved on since the archive was compressed, and re-compressing a 219 MB package for a docs-only delta has
   deliberately been left for a decision rather than done silently. One genuine open item, also left by decision:
   the `v1.4.0` tag still points at an earlier commit than the release's content.
-- Interface language is being rolled out in batches. In the working tree — not yet in the published archive — only
-  the chrome follows the language setting so far: brand, sidebar group names and items, page titles, the header
-  counters and tooltips, and Element Plus's own strings. Page bodies, backend error text, runtime log lines and
-  subscription rule summaries are still Chinese, because the latter three are written records and the target of the
-  assertions above.
+- Interface language is rolled out in batches. In the working tree — not yet in the published archive — the first
+  batch covered the chrome (brand, sidebar group names and items, page titles, header counters and tooltips, Element
+  Plus's own strings); **the second batch covered every page body, all 17 of them** (see *After v1.4.0* below). Still
+  Chinese by design: backend error text (`friendlyError`'s 22 branches, its own batch), runtime log lines written by
+  the backend, and the `ACTION_NAMES` action-name table — all of them written records and targets of the assertions
+  above.
+
+---
+
+## After v1.4.0 — 37 commits in the repository, none of them in the published package
+
+Everything below landed after the archive was compressed. It is pushed (`3f9cafc..ea16c82` on `main`, one
+fast-forward, screened first: 38 files, no binaries, no state files — the only credential-shaped string in the range
+is the `http://user:pass@` placeholder inside `tests/cookiecloud_test.py`). **The `v1.4.0` tag still points at
+`7ac0ff6` and no package was rebuilt**, so the published asset trails all of this. The readings quoted here are the
+ones recorded in each round's own commit — this entry consolidates them, it does not re-measure them.
+
+### Interface language, second batch: all 17 page bodies
+
+The scope moved from "frontend only, log lines untouched" to **frontend in full plus the runtime log following the
+UI language**, one commit per page. The log was not rewritten: every entry keeps its Chinese `message` (it is a
+written record, an archived file, the target of thousands of assertions) and carries an optional `k` / `kv` pair; an
+English UI renders a sentence from the key at display time, anything without a key falls back to the message.
+**The backend never reads `ui_language`** — same file, two languages, bytes unchanged.
+
+- The dictionary went from 52 keys (chrome) to **2481 per language**, key sets identical; `tr(` appears 2640 times in
+  `static/index.html`, and no template block retains Chinese outside comments. Per-namespace: `settings` 823,
+  `music` 234, `files` 169, `subs` 168, `bt` 151, `tg` 118, `home` 115, `live` 73, `sniff` 59, `queue` 59, `voice` 58,
+  `info` 56, `search` 36, `library` 36, `favs` 33, `logs` 19, `history` 15, plus shared `common` 48 / `nav` 17 /
+  `page` 17 / `header` 16.
+- Data tables had to store **keys, not literals** (`tgTypeOptions` → `labelKey`, `QA_TAGS`, `SUB_KIND_META` →
+  `labelKey`/`hintKey`, the three music option tables, `dateShortcuts` converted to a computed) — language switches at
+  runtime, so anything baked in at module init cannot follow. `formatCount` got two breakpoint sets: Chinese keeps its
+  original literals (16.0亿 / 1.2万), English switches to K/M/B.
+- `tests/i18n_test.py` grew 75 → **491 assertions**, plus a new `tests/pagemount_test.py` with 40. The per-page gates
+  that matter: **I7** a handler called from a template must be in `setup`'s return list (in-DOM templates don't lose a
+  row, they lose the whole page — `taskHeadline` was missed and only showed up as 0 language buttons);
+  **I8 / `MAIDIAN_EXPECT`** pins the number of `logAction` / `uiName` / `logSort` lines per page so a finished page
+  cannot quietly swallow the `ACTION_NAMES` batch; **I10** no second copy of a label; **I11** a separator belongs
+  either to the value or to the template, never both (`· 最近一次` printed `· ·`); **I12** the live page's task filter
+  matches the Chinese word in a backend title, so translating that row empties the page.
+- Two product bugs came out of the same pass: `ElMessageBox` is imperative and never goes through
+  `el-config-provider`, so confirmation dialogs kept Chinese buttons after the body switched (wrapped
+  confirm/prompt/alert — a caller's literal words are never overridden); and joining two `tr()` values on one line
+  drops the space English needs (`thelatest`, `butqueues`, `byte for bytedownloads`) — now gated by C21/C22.
+- Re-pinning nine suites for moved literals **exposed three false greens**: `cookiefirst` I8 matched a clipboard hint
+  instead of the Cookie switch's "off by default" sentence that #22 said must be on screen (the sentence was restored
+  to `settings.publicHintP1`); `cleanup` M5 and `outbox` J14 were matching strings in the `ACTION_NAMES` table, never
+  the UI; `runwindow` G11 didn't fail red, it raised `ValueError` and stopped the suite mid-run. Batch went from
+  54 OK / 7 FAIL to **61 exit codes of 0**.
+- Verification was a live A/B per page: self-spawned sandbox instance (own `MEDIADOWNLOADER_STATE_DIR`, a port from
+  `bind(0)`, neutral `download_dir`), HEAD checked out into its own worktree as the control arm, both fed the same
+  fake data and the same click sequence, comparing rendered text nodes. Chinese arm row-for-row identical; English
+  arm 0 rows of frontend Chinese, 0 bare keys, 0 page errors, `library_cache.json` byte-restored. On the settings
+  page: 769 rows before, 768 after, the only real difference being that restored sentence.
+
+### Mount only the current page (the "everything is slow" fix)
+
+Seventeen page blocks were `v-show`, so they all stayed in the DOM; the library was scanned at boot and every row
+carried an `el-select` (with its teleported option list). With 60 finished files, one keystroke on the download page
+cost **24.5 ms** (6653 nodes, 91 `el-select`s) — past the 16.7 ms frame. Switching to `v-if` page blocks, lazy
+library cache reads and native `select`s in rows brought the same probe to **2.0 ms** (564 nodes). The cost is
+honest: entering the Files or Settings page now remounts, measured 0.52 s / 0.33 s (was 0.10 / 0.09 because they were
+already mounted). `tests/pagemount_test.py` pins it; the audio player is paused before a block is destroyed.
+
+### Cover embedding: a real switch, then a real removal
+
+The checkbox used to be ignored in three places (it only reached the config when "save strategy" was pressed; the
+queue fallback hard-coded `embed_thumb=True`; the write happened through an ffmpeg re-mux that never reported
+success). All four music download paths now send the current value every time, writing goes through mutagen tags
+only, and each track is read back (`audio_embedded_cover`) to say "embedded" or "not embedded (why)". Two read/write
+bugs surfaced: m4a/mp4 covers live in `covr` and the readback never looked there; a webp pasted with a JPEG magic
+header read back as bytes and was reported as embedded while no player could decode it.
+
+Then the honest half of "not embedded" turned out to be a lie: musicdl's `auto_supplement_song` default writes the
+cover before tagging, so an unchecked box still produced files with art. `strip_embedded_cover()`
+(`music_search.py:4937`) now removes it — `ID3.delall("APIC")` / `clear_pictures()` / `tags["covr"]` — which is a tag
+operation, not a re-encode (mp3 needs `padding=lambda _t: 256`; the bare integer raises `TypeError`). Live reading,
+same file both arms: unchecked → 0 picture blocks, audio frames **153,430,544 bytes in both arms**, the sibling
+`.jpg` and the text tags intact; checked → 1 block of 157,712 bytes. One measured asymmetry kept rather than
+smoothed over: **flac does not shrink** — mutagen replaces the picture with all-zero PADDING — while mp3's tag area
+does contract. Both shapes are pinned by self-tests.
+
+### Collections land in one folder; a batch that changed container is matched back to its file
+
+`playlist_subdir` (default `False`) adds one directory level named after the collection, **below** wherever that run
+would have written (download directory, auto-classify target, or a manually picked folder) — never instead of it. The
+name comes from the container title, or from `playlist_folder` handed over by the parse page when the episodes are
+queued as N independent tasks; if neither is available the batch stays flat and the log says so instead of inventing a
+folder name. Single downloads and live recording still land flat, and nothing already on disk is moved. The settings
+note that used to suggest `%(uploader)s/%(title)s` in the filename template was false — `/` and `\` are replaced
+before rendering. New: `tests/playlistdir_test.py`, 39 items.
+
+With a remuxer attached (target container mp4/mkv/webm) or audio extraction on, yt-dlp writes back the **pre-remux**
+`filepath`, so a whole playlist was judged missing episode by episode: "1 item in the list, 0 files written into the
+download directory", then `.NA` in the title, then "downloaded but the file is unusable" — while the `.mkv` was on
+disk. Single-item downloads already had a find-it-by-base-name loop; the playlist branch didn't. Now
+`resolve_written_file(pth, prefer)` (`server.py:9546`) keeps the reported name when it exists and otherwise looks for
+the same base name under another extension, **the container this run asked for first** (an older `.mp4` can sit beside
+the new `.mkv`); when nothing matches, the original name is returned and the failure is stated plainly.
+`REMUX_FALLBACK_EXTS` is defined once and shared. New: `tests/remuxcount_test.py`, 18 items, plus a three-arm live
+run before/after (before: both batch arms printed both false messages; after: all three `finished`, false strings 0).
+History rows already written keep their old wording — this fixed the shape, not the record.
+
+### Startup no longer looks hung
+
+A healthy start prints only the four banner lines (uvicorn's "running on" is INFO and `log_level="warning"` suppresses
+it), so a server ready in 2.1 s looked identical to a hang; a busy port printed only `Errno 10048`. The port is now
+trial-bound before anything starts: if something answers `/api/health` it is another instance of this app (use that
+one, address given), otherwise another program owns it — either way one runtime-log line and exit code 1, so a `.bat`
+window keeps the message. Only `EADDRINUSE`-class errors are interpreted; everything else is left to uvicorn. The
+"ready" line is printed by a background thread that polls `/api/health` — deliberately not `/api/status`, which runs
+`ffmpeg --version` and walks the Whisper directory. New: `tests/startup_test.py`, including three real instances each
+with its own `STATE_DIR`.
+
+### Voice separation: its own venv, two RoFormer families, three device modes
+
+The engine lives in `tools/separator/venv`, separate from the app interpreter (the bundled torch is a `+cpu` build, so
+a separation package installed inside it could never use the GPU); **neither the venv nor the weights are shipped**.
+`ROFORMER_MODELS` lists four weights with per-file sha256 (`bs_1297` / `bs_1296` / `mel_1143` / `mel_inst_v2`, ids used
+as dictionary keys so the backend never builds Chinese strings); `DEMUCS_MODELS` lists the three verified on this
+machine; the other 84 names in the upstream `models.json` are a recognition catalogue with no reachable source, so they
+are not offered. `SEP_ENGINE_PINS` freezes `audio-separator==0.47.0` + `demucs==4.1.0`; `_fetch_weight()` resumes and
+verifies each digest, discarding a mismatch instead of calling it done. Forcing CPU means patching
+`torch.cuda.is_available` to `False` **before** `import audio_separator` — the package has no device parameter, and on
+this machine `CUDA_VISIBLE_DEVICES` neither hides the GPU (still `True`) nor is safe to set to `-1`/`void` (exit
+3221225477). `POST /api/ai/vocal_separate` replaces `/api/ai/demucs`; `POST /api/ai/separator_setup` builds it;
+`GET /api/ai/voice_status` reports **which layer is missing** — venv / runner / import / weights / no CUDA are five
+different sentences with five different remedies, not one boolean. Five settings keys: `vocal_engine`, `roformer_model`,
+`demucs_model`, `ai_device`, `vocal_native_fp16`. The live run caught a write-only class of defect: dropdowns bound to
+`settings` that `loadConfig` never repopulated, so a stored `cuda` displayed "auto" while the engine really ran on the
+GPU — display was the only liar. Five keys were fixed with #78 and the other six (`ai_polish`, `ai_summarize`,
+`components_auto_check`, `edge_tts_voice`, `subtitle_first`, `translate_auto_fallback`) in the follow-up commit, which
+also emptied the exemption list in `settingsave_test.py` I27 and turned I28 into "this list must stay empty".
+New: `tests/separator_test.py`, 44 items. Measured: torch `2.14.1+cu130`, RTX 4060 Laptop, 4/4 weights,
+`actual_device=cpu` and `actual_device=cuda` for the same source, outputs under `separated/` and
+`demucs/htdemucs/<track>/`.
+
+### Eight interface items from the reference mockup
+
+- **Collapsible sidebar**: the width was already `var(--sidebar-w)`, so `.sidebar.is-collapsed` redeclares that one
+  variable to 64 px — no second source of truth (gate P10 fails anyone who hard-codes 212/64). Group headers are
+  replaced by divider lines (4 between 5 groups, none above the first), every item gains a `:title`, badges move to the
+  corner. The state lives in `localStorage.md_nav_collapsed` — a read-only view preference, never in config. Measured
+  212→64 px, main area 1228→1376 px, no horizontal overflow, keystroke cost 2.68 → 1.85 ms. The first badge test was
+  a false test: it asserted the badge stayed inside the cell while the badge was empty, because the home page never
+  calls `/api/tasks`. Later the toggle moved into the logo row as a 30×30 button (P36/P37).
+- **`Ctrl+K` palette** — jump to a page or run one of five actions, deliberately **not** a content search (each list
+  page already has its own filter; cross-page search would mean flattening five lists and then locating a row).
+  Matching consumes the current-language page names, the other language's names, and an alias table that is never
+  displayed. The panel hangs off `.layout`, outside `.main`: a `position: fixed` ancestor with `transform` or
+  `backdrop-filter` becomes its containing block (gates P13–P16). 22 rows on open (17 pages + 5 actions).
+- **Persistent top banner** for the three things that are true right now but only visible inside some page (component
+  updates, unsent notifications, a domain throttled down), each with its inline remedy; dismissal is per-reason in
+  `sessionStorage`. The automatic-update popup became a banner — a manual "check now" still gets a dialog, because a
+  button someone pressed owes them a receipt. Sticky is not `top: 0`: `.content` has its own 22 px padding and scrolls,
+  so the padding became `--content-pad-y` and the banner offsets by its negative. Two readings had to be taken twice —
+  `gotoCard` needed per-frame re-alignment (data filling in pushed the target 1358 px away), and the "banner costs
+  1.15 ms per keystroke" number was an artifact of an SSE stub reconnecting every 800 ms. Gates P17–P26.
+- **Row context menu** that lists exactly the buttons that row really has (no second action list, so tracking,
+  confirmations and toasts stay single-sourced), recognises three row shapes, and yields to the browser's native menu
+  on inputs/selects/checkboxes/selections/rows with no actions. Danger-red follows the button's `el-button--danger`
+  class, never the word "delete" — a Chinese literal test breaks the moment the dictionary switches. Gates P27–P34.
+- **Inline labels centred against their controls**: 31 rows across 17 pages were ≥1.5 px low, all from one cause —
+  `.hint { margin-top: 6px }` inside a flex container centres the margin box, not the content. Dropped for
+  same-row hints (`:not(.hint--block)` keeps the multi-line hints intact).
+- **File browser defaults to modification time**, same rule as the library: three places in one move (`:default-sort`,
+  `fileSort`, `fileSortDir`), directories still pinned first; the backend `/api/files` ordering was left alone because
+  sorting there would do the same job twice. Gate P35.
+
+### The six framework assets moved to `static/vendor/`
+
+The report was "the machine stayed on, and next morning the external browser is slow while the built-in one isn't".
+Three arms on one page and one server, only the browser side changing: warm cache DOMContentLoaded **214 ms** (all six
+CDN assets served from cache, 0 ms), cold profile **2282 ms**, and a "connects but never delivers" jsdelivr
+**168,084 ms** — the six blocking tags wait 28 s each, serially, `window.Vue` never appears, 1332 bare braces stay on
+screen and not one `/api` call is made. That is not slow rendering, it is a template that never mounted; the render
+layer was ruled out with the same probe (582 nodes, 0 long tasks, p50 32 ms per keystroke). Vue 3.5.12, Element Plus
+2.8.8 (css, `index.full.min.js`, both locales) and lucide 0.468.0 now sit in `static/vendor/` at their original
+versions, 1.8 MB, order unchanged because EP's UMD needs `window.Vue` first; digests were fetched twice over two
+network paths and compared, and the CSS turned out to reference only inline data URIs (no fonts to chase). After the
+change, the stalled-CDN arm mounts in 0.5 s with 0 CDN requests. Gates **P38–P40** (no external root-level
+script/link, the six files present with matching sha256, the tags point at the local paths), with the pre-change HTML
+fed through as a negative control, plus `static/vendor` named in `pack_release.check_present` — a vendor directory
+swallowed by the exclusion list leaves `static` non-empty, so the old gate would have shipped a package that is a white
+screen. `.gitattributes` marks `static/vendor/** -text`: this machine runs `core.autocrlf=true`, which rewrites LF to
+CRLF at checkout, so a digest-pinned gate passes in the working tree and fails for anyone cloning fresh; the suite was
+re-run in a clean `git worktree` to prove it. Two collateral reds, both from suites grepping literals out of
+`index.html`: C4 was anchored on a CDN path, and C8's template slice ended at `HTML.find("/vue@3")` — once that literal
+disappeared `find` returned -1, the slice silently widened to the whole file and counted an extra occurrence from a
+comment. Boundaries now anchor on the next `<script`, which depends on no filename. Left measured but untouched, for a
+separate decision: `/api/status` costs 1.0–1.3 s per call (it runs `ffmpeg --version`, imports `yt_dlp`, walks the
+Whisper directory), `/` is `no-store` so 817 KB of HTML is re-transmitted and re-parsed every visit, and an idle tab
+issues 25 requests per 20 s of which 15 are the 2 s clipboard poll.
+
+### Closing this round: pushing, restarting, and this documentation sync
+
+37 commits (`3f9cafc..ea16c82`, a single fast-forward) are now on `origin/main`: the 17 translated pages of the second
+language batch, the performance fix, cover embedding, the collection folder, the container-recovery bug, the startup
+message, the eight reference-mockup items, separation and the vendor localization. The diff was read before pushing —
+38 files, 12,259 added lines, no binaries, no state files (`config.json` / `history.json` / `app.log` / `cookies/` are
+all absent), and the only credential-shaped string is the `http://user:pass@` placeholder inside
+`tests/cookiecloud_test.py`. **The `v1.4.0` tag still sits at `7ac0ff6` and neither the portable package nor the
+published release asset moved**, so the published build lags the repository by everything from `3f9cafc` onwards. This
+commit is documentation only: `appVersion` stays `v1.4.0 · Element Plus` and no package was rebuilt (by convention the
+docs are snapshotted at zip time). The instance in daily use was restarted onto `ea16c82` after confirming the queue
+was empty; its served HTML is byte-identical to the repository copy (817,010 B, 0 jsdelivr hits).
+
+What this commit changed: `docs/详细功能介绍.md`, `docs/detailed-features.en.md`, both READMEs and this digest now
+describe #65 / #63 / #66, #78, #87, the eight interface items and the second language batch; the stale "the UI is
+Chinese-only" statements are gone. **No self-test or live measurement was re-run for this commit** — every reading
+above was recorded when its own round finished, and this file only carries it over.
 
 ---
 
