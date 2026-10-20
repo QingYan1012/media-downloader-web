@@ -4267,8 +4267,9 @@ class HistoryManager:
 
 # -------------------- FFmpeg --------------------
 class FFmpegManager:
-    def __init__(self, log: Callable = print):
-        self.log = log
+    def __init__(self, log: Callable = None):
+        # k/kv 是「这句在词表里叫什么」，落盘的永远是那句中文；直连 print 的那份收下但不参与翻译
+        self.log = log or (lambda m, level="info", k="", kv=None: print(m))
         self.manual_path = ""
         self.local_bin = TOOLS_DIR / ("ffmpeg.exe" if sys.platform == "win32" else "ffmpeg")
 
@@ -5836,7 +5837,7 @@ def drop_all_cookie_prefs():
 
 class DownloaderEngine:
     def __init__(self, log_cb=None, ffmpeg_mgr: FFmpegManager = None):
-        self.log = log_cb or (lambda m, level="info": print(m))
+        self.log = log_cb or (lambda m, level="info", k="", kv=None: print(m))
         self.ffmpeg = ffmpeg_mgr or FFmpegManager()
         self._stop_flags: Dict[str, bool] = {}
         # 直播这一场真正落盘的文件名主干：结束录制时要靠它点名找回 yt-dlp 派出去的拉流子进程
@@ -7911,7 +7912,7 @@ def start_clipboard_watch() -> None:
 class TelegramNotifier:
     def __init__(self, cfg: ConfigManager, log: Callable = None):
         self.cfg = cfg
-        self.log = log or (lambda m, level="info": None)
+        self.log = log or (lambda m, level="info", k="", kv=None: None)
 
     def enabled(self) -> bool:
         d = self.cfg.data
@@ -11132,11 +11133,14 @@ class TaskQueue:
 cfg = ConfigManager()
 log_mgr = LogManager()
 history_mgr = HistoryManager()
-ffmpeg_mgr = FFmpegManager(log=lambda m: log_mgr.log(m))
+# 适配口统一带 k/kv：类里 self.log(...) 想挂键时得一路走到 LogManager，
+# 不然 TypeError 只是推迟到下一批文案提交里才炸。
+ffmpeg_mgr = FFmpegManager(log=lambda m, level="info", k="", kv=None: log_mgr.log(m, level, k=k, kv=kv))
 ffmpeg_mgr.manual_path = (cfg.data.get("ffmpeg_path") or "").strip()
-engine = DownloaderEngine(log_cb=lambda m, level="info": log_mgr.log(m, level), ffmpeg_mgr=ffmpeg_mgr)
+engine = DownloaderEngine(log_cb=lambda m, level="info", k="", kv=None: log_mgr.log(m, level, k=k, kv=kv),
+                          ffmpeg_mgr=ffmpeg_mgr)
 queue = TaskQueue(engine, cfg, log_mgr, history_mgr)
-tg_notifier = TelegramNotifier(cfg, log=lambda m, level="info": log_mgr.log(m, level))
+tg_notifier = TelegramNotifier(cfg, log=lambda m, level="info", k="", kv=None: log_mgr.log(m, level, k=k, kv=kv))
 # Telegram 用户会话（私有/需登录频道）：客户端要跨请求存活，所以是模块级单例
 from telegram_mt import TelegramSession  # noqa: E402
 
@@ -11147,7 +11151,8 @@ tg_session = TelegramSession(
     index_path=APP_DIR / "tg_media_index.json",
 )
 sub_mgr = SubscriptionManager(
-    engine, cfg, queue, tg_notifier, log=lambda m, level="info": log_mgr.log(m, level)
+    engine, cfg, queue, tg_notifier,
+    log=lambda m, level="info", k="", kv=None: log_mgr.log(m, level, k=k, kv=kv)
 )
 sub_mgr.start_scheduler()
 

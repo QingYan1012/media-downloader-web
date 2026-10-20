@@ -29,6 +29,7 @@ node 的读数写到 %TEMP% 再读回（控制台是 GBK）。
 from __future__ import annotations
 
 import ast
+import inspect
 import json
 import re
 import subprocess
@@ -523,12 +524,16 @@ def _msg_template(node):
 
 
 class _SrvLogScan(ast.NodeVisitor):
-    """收 log_mgr.log(...) 与 self.log(...)（TaskQueue 把 LogManager 存在 self.log 上）里带 k 的调用点。"""
+    """收 log_mgr.log(...)、self.log.log(...)（TaskQueue 存的是 LogManager 本身）
+    与 self.log(...)（各类 __init__ 里那份适配口，加宽后也带 k/kv）里带 k 的调用点。"""
 
     def __init__(self):
         self.rows = []
+        self.instance_receivers = []   # 裸 self.log(...) 的调用点（各类的适配口），以前这一式扫不到
         self.nonliteral = []   # 带 k= 但键是表达式（if/查表拼出来的）—— 这种调用点扫不出键名，等于漏网
+        self.forwards = []     # 自己带 k 参数的 lambda 里那句 k=k：原样下传，字面键在真正的调用点上
         self.fn = []           # 当前所在的函数链，用来认出「就是那处转发口」
+        self.lam_k = 0         # 是否正处在一个自己带 k 参数的 lambda 里（适配口）
 
     def visit_FunctionDef(self, node):
         self.fn.append(node.name)
@@ -537,24 +542,39 @@ class _SrvLogScan(ast.NodeVisitor):
 
     visit_AsyncFunctionDef = visit_FunctionDef
 
+    def visit_Lambda(self, node):
+        # 适配口那类 lambda：自己声明了 k 参数、原样往下传，键的字面在真正的调用点上
+        inside = any(a.arg == "k" for a in node.args.args)
+        self.lam_k += 1 if inside else 0
+        self.generic_visit(node)
+        self.lam_k -= 1 if inside else 0
+
     def visit_Call(self, node):
         f = node.func
         if isinstance(f, ast.Attribute) and f.attr == "log":
             v = f.value
             owner = (isinstance(v, ast.Name) and v.id == "log_mgr") or \
                     (isinstance(v, ast.Attribute) and v.attr == "log"
-                     and isinstance(v.value, ast.Name) and v.value.id == "self")
+                     and isinstance(v.value, ast.Name) and v.value.id == "self") or \
+                    (isinstance(v, ast.Name) and v.id == "self")
             if owner and node.args:
+                if isinstance(v, ast.Name) and v.id == "self":
+                    self.instance_receivers.append(node.lineno)
                 tpl = _msg_template(node.args[0])
                 kk = next((kw for kw in node.keywords if kw.arg == "k"), None)
                 kname = kk.value.value if isinstance(kk, ast.keyword) and isinstance(
                     kk.value, ast.Constant) and isinstance(kk.value.value, str) else ""
                 if kk is not None and not kname:
+                    _passthrough = (self.lam_k and isinstance(kk.value, ast.Name)
+                                    and kk.value.id == "k")
                     try:
                         shown = ast.unparse(kk.value)
                     except Exception:
                         shown = "?"
-                    self.nonliteral.append(("/".join(self.fn), node.lineno, shown[:48]))
+                    if _passthrough:
+                        self.forwards.append((node.lineno, shown[:48]))
+                    else:
+                        self.nonliteral.append(("/".join(self.fn), node.lineno, shown[:48]))
                 if kname.startswith("srv."):
                     if tpl is None:
                         self.rows.append((node.lineno, kname, None, None))
@@ -640,8 +660,40 @@ ck("K8 srv.* 是后端自记的记录，不带「[界面] 」也不带「[UI] �
 _fwd_ok = [x for x in _scan.nonliteral if x[0].endswith("api_ui_event")]
 _fwd_bad = [(x[0], x[1], x[2]) for x in _scan.nonliteral if not x[0].endswith("api_ui_event")]
 ck("K9 带 k= 的调用点，键必须写成字面串：键由 if 或查表挑出来的话这一段扫描根本看不见它，"
-   "词表对不对、洞对不对全成盲区（唯一的例外是 api_ui_event 那处转发，键本来就从前端的 k 字段来）",
-   not _fwd_bad, f"转发口 {len(_fwd_ok)} 处 / 键是表达式的越界点 {len(_fwd_bad)} 处：{str(_fwd_bad[:3])}")
+   "词表对不对、洞对不对全成盲区（只认两类转发口：api_ui_event 那处从前端的 k 字段来，"
+   "以及自己声明 k 参数、原样 k=k 下传的适配 lambda）",
+   not _fwd_bad, f"转发口 {len(_fwd_ok) + len(_scan.forwards)} 处"
+   f"（api_ui_event {len(_fwd_ok)} + 适配 lambda {len(_scan.forwards)}）/ "
+   f"键是表达式的越界点 {len(_fwd_bad)} 处：{str(_fwd_bad[:3])}")
+
+# K10：self.log(...) 是各类在 __init__ 里存的适配口，以前扫描认不出这一式，
+# DownloaderEngine 那 69 行下载话术（日志里最常被看的）就永远算「不在词表管辖内」。
+# 这一条同时钉两头：扫描抠得到这些调用点，运行期这四个口真能把 k/kv 送到 LogManager。
+_seen_selflog = len(_scan.instance_receivers)
+_fwd = []
+_fwd_failed = []
+_prev_log = S.log_mgr.log
+S.log_mgr.log = lambda m, level="info", k="", kv=None: _fwd.append((m, level, k, kv))
+try:
+    for _obj in (S.ffmpeg_mgr, S.engine, S.tg_notifier, S.sub_mgr):
+        try:
+            _obj.log("自检：这一句只走内存", "info", k="srv.selftest.k10", kv={"n": 1})
+        except TypeError as _te:   # 某个口还是旧的窄签名：记一行红，别把后面 500 条闸门一起带走
+            _fwd_failed.append(f"{type(_obj).__name__}: {_te}")
+finally:
+    S.log_mgr.log = _prev_log
+_default_shape = {}
+for _cls, _args in ((S.FFmpegManager, ()), (S.DownloaderEngine, ()), (S.TelegramNotifier, (S.cfg,))):
+    _p = inspect.signature(_cls(*_args).log).parameters
+    if not {"k", "kv"} <= set(_p):
+        _default_shape[_cls.__name__] = list(_p)
+ck("K10 self.log(...) 这一式扫描抠得到，且四个适配口与三份默认桩都收 k/kv"
+   "（否则给下载那一批挂键只会在运行期 TypeError，而闸门一路绿）",
+   _seen_selflog >= 100 and len(_fwd) == 4 and not _fwd_failed
+   and all(x[2] == "srv.selftest.k10" and x[3] == {"n": 1} for x in _fwd)
+   and not _default_shape,
+   f"裸 self.log 调用点 {_seen_selflog} 处 / 送到 {len(_fwd)} 份 / 送不到 {_fwd_failed} / "
+   f"默认桩缺参 {_default_shape}")
 
 # ---------------------------------------------------------------- I. 逐页正文闸门
 print("== I. 逐页推进：翻完的那几页，块里除注释以外不许再有中文 ==")
