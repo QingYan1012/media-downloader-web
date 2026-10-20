@@ -272,7 +272,8 @@ old_file.write_text(__import__("json").dumps([
 ], ensure_ascii=False), encoding="utf-8")
 orig_rss_file, orig_mgr_global, orig_log = S.RSS_FILE, S.sub_mgr, S.log_mgr
 S.RSS_FILE = old_file
-S.log_mgr = type("SilentLog", (), {"log": staticmethod(lambda m, lv="info": LOGS.append(m))})()
+S.log_mgr = type("SilentLog", (), {"log": staticmethod(
+    lambda m, lv="info", k="", kv=None: LOGS.append(m))})()
 S.sub_mgr, _q = new_mgr()
 try:
     moved = S.migrate_rss_to_subs()

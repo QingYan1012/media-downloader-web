@@ -23166,9 +23166,12 @@ def migrate_rss_to_subs() -> int:
     try:
         RSS_FILE.rename(RSS_FILE.with_name(RSS_FILE.name + ".migrated"))
     except Exception as e:
-        log_mgr.log(f"RSS 旧文件改名失败（订阅已并入 {moved} 源，可手动删 {RSS_FILE.name}）：{e}", "warning")
+        log_mgr.log(f"RSS 旧文件改名失败（订阅已并入 {moved} 源，可手动删 {RSS_FILE.name}）：{e}", "warning",
+                    k="srv.rss.migrate_rename_failed",
+                    kv={"moved": moved, "file": RSS_FILE.name, "e": str(e)})
     if moved:
-        log_mgr.log(f"RSS 订阅搬家：{moved} 个源已并入「订阅」页统一管理，已见记录一并带过去不会重复下载")
+        log_mgr.log(f"RSS 订阅搬家：{moved} 个源已并入「订阅」页统一管理，已见记录一并带过去不会重复下载",
+                    k="srv.rss.migrate_done", kv={"moved": moved})
     return moved
 
 
