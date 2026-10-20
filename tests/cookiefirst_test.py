@@ -212,7 +212,8 @@ def install(script):
         return item
 
     S.DownloaderEngine._get_info_once = fake
-    E.log = lambda m, level="info": LOGS.append(str(m))
+    # k/kv 是「这句在词表里叫什么」：get_info 那几条自记的话术带键下来说，桩不收就是 TypeError
+    E.log = lambda m, level="info", k="", kv=None: LOGS.append(str(m))
     E._info_cache.pop(YT, None)
     E.drop_cookie_pref()
 

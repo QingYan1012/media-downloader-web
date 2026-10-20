@@ -5888,7 +5888,7 @@ class DownloaderEngine:
                 return "not found"
 
     def update_ytdlp(self) -> str:
-        self.log(f"yt-dlp 更新 → {TOOLS_DIR}")
+        self.log(f"yt-dlp 更新 → {TOOLS_DIR}", k="srv.engine.ytdlp_update", kv={"dir": str(TOOLS_DIR)})
         gh = ""
         idx = ""
         try:
@@ -5927,10 +5927,11 @@ class DownloaderEngine:
             tmp_zip.unlink(missing_ok=True)
             _prefer_local_ytdlp()
             ver = self.check_ytdlp()
-            self.log(f"yt-dlp 已就绪: {ver}")
+            self.log(f"yt-dlp 已就绪: {ver}", k="srv.engine.ytdlp_ready", kv={"ver": ver})
             return "updated"
         except Exception as e:
-            self.log(f"yt-dlp 直连/镜像下载都失败: {e}，改用 pip 更新", "warning")
+            self.log(f"yt-dlp 直连/镜像下载都失败: {e}，改用 pip 更新", "warning",
+                     k="srv.engine.ytdlp_all_failed", kv={"e": str(e)})
             ok, res = pkg_update.pip_install(["yt-dlp"], log=self.log, mirror=idx)
             if ok:
                 _prefer_local_ytdlp(force_clear=True)
@@ -6176,11 +6177,15 @@ class DownloaderEngine:
         if extra_args:
             _delta, _notes = _ydl_extra_opts(extra_args)
             for _n in _notes + _ydl_merge_extra(opts, _delta):
-                self.log(f"自定义 yt-dlp 参数：{_n}", "warning")
+                self.log(f"自定义 yt-dlp 参数：{_n}", "warning",
+                         k="srv.download.ytdlp_args", kv={"note": _n})
             if _delta:
                 _ks = sorted(_delta)
-                self.log("自定义 yt-dlp 参数：已并入 " + str(len(_ks)) + " 项（"
-                         + "、".join(_ks[:6]) + ("…" if len(_ks) > 6 else "") + "）")
+                # 省略号折进名单本身：句子里只留两个洞，模板才钉得住（三个洞配两个 kv，K3 红）
+                _shown = '、'.join(_ks[:6]) + ('…' if len(_ks) > 6 else '')
+                self.log(f"自定义 yt-dlp 参数：已并入 {len(_ks)} 项（{_shown}）",
+                         k="srv.engine.ytdlp_args_merged",
+                         kv={"n": len(_ks), "list": _shown})
         return opts
 
     @staticmethod
@@ -6360,15 +6365,23 @@ class DownloaderEngine:
         anon, anon_err = self._get_info_once(url, cfg_without_cookie(cfg), cache_key, now)
         if anon is not None and not _anon_list_clipped(anon, url):
             _note(False)
-            self.log(f"公开优先：这条没带 Cookie 就解析开了（{len(anon.get('formats') or [])} 条流）")
+            self.log(f"公开优先：这条没带 Cookie 就解析开了（{len(anon.get('formats') or [])} 条流）",
+                     k="srv.engine.public_first_anon_ok",
+                     kv={"n": len(anon.get("formats") or [])})
             return anon
         if anon is None and not cookie_might_help(anon_err, url):
             # 限流、网络错、内容不存在：带 Cookie 再打一次不改变任何东西
-            self.log("公开优先：匿名那一次失败的原因不是登录墙那类，不为此带 Cookie 重跑", "warning")
+            self.log("公开优先：匿名那一次失败的原因不是登录墙那类，不为此带 Cookie 重跑", "warning",
+                     k="srv.engine.public_first_not_login_wall")
             return None
-        why = "匿名那份清单被裁了（只有影音同条）" if anon is not None else "匿名那一次被挡"
         _note(True)
-        self.log(f"公开优先：{why}，带 Cookie 再解析一次", "warning")
+        # 条件式句子拆成两处调用：拼在句中间的中文片段键化不了，落盘的中文原话必须逐字不变
+        if anon is not None:
+            self.log("公开优先：匿名那份清单被裁了（只有影音同条），带 Cookie 再解析一次", "warning",
+                     k="srv.engine.public_first_clipped")
+        else:
+            self.log("公开优先：匿名那一次被挡，带 Cookie 再解析一次", "warning",
+                     k="srv.engine.public_first_blocked")
         got, got_err = self._get_info_once(url, cfg, cache_key, now)
         if got is None:
             if anon is not None:
@@ -6376,11 +6389,13 @@ class DownloaderEngine:
                 # 判定仍记「得带 Cookie」—— 能走到这里说明匿名那份是被裁的那份，把它钉成「匿名就够了」
                 # 等于接下来 15 分钟都照着 1080p 的清单下，那正是这个开关要防的静默降质。
                 self.log(f"带 Cookie 那次没解析开（{str(got_err)[:80]}），先用匿名那份；"
-                         f"这条下次解析还带 Cookie", "warning")
+                         f"这条下次解析还带 Cookie", "warning",
+                         k="srv.engine.cookie_failed_use_anon", kv={"e": str(got_err)[:80]})
                 return anon
             return None
         if anon is not None and _yt_max_h(anon.get("formats") or []) > _yt_max_h(got.get("formats") or []):
-            self.log("带 Cookie 那份反而更低，用匿名那份", "warning")
+            self.log("带 Cookie 那份反而更低，用匿名那份", "warning",
+                     k="srv.engine.cookie_rower_than_anon")
             _note(False)
             # 缓存位上此时是带 Cookie 那次写进去的较低那份，跟着结论一起改回来
             self._info_cache[cache_key] = (now, anon)
@@ -6478,7 +6493,8 @@ class DownloaderEngine:
                         fmts = info.get("formats") or []
                         if is_youtube and not fmts:
                             last_err = "No video formats found"
-                            self.log(f"客户端 {clients} 无格式，尝试下一个", "warning")
+                            self.log(f"客户端 {clients} 无格式，尝试下一个", "warning",
+                                     k="srv.engine.client_no_formats", kv={"clients": clients})
                             continue
                         # YouTube：评估最高可用高度（兼容 height 缺失、仅有 resolution 的情况）
                         if is_youtube and fmts:
@@ -6510,6 +6526,8 @@ class DownloaderEngine:
                                         f"客户端 {clients} 只给影音同条（最高 {any_h}p），"
                                         f"带票的 {YT_WIDE_CLIENTS[0]} 还没试，重解一遍取优",
                                         "warning",
+                                        k="srv.engine.client_progressive_only",
+                                        kv={"clients": clients, "h": any_h, "wide": YT_WIDE_CLIENTS[0]},
                                     )
                                     _keep_best(info)
                                     continue
@@ -6519,6 +6537,8 @@ class DownloaderEngine:
                             self.log(
                                 f"客户端 {clients} 最高约 {any_h}p，尝试下一个",
                                 "warning",
+                                k="srv.engine.client_max_progressive",
+                                kv={"clients": clients, "h": any_h},
                             )
                             info["_md_clients"] = clients
                             _keep_best(info)
@@ -6544,7 +6564,8 @@ class DownloaderEngine:
 
         # 回退：丢弃可能损坏的 tools/yt_dlp，改用系统/pip 安装的版本
         if last_err and ("no suitable extractor" in last_err.lower() or "unsupported url" in last_err.lower()):
-            self.log("本地 yt-dlp 可能损坏，回退到系统/pip 版本重试", "warning")
+            self.log("本地 yt-dlp 可能损坏，回退到系统/pip 版本重试", "warning",
+                     k="srv.engine.local_ytdlp_broken")
             try:
                 _prefer_local_ytdlp(force_clear=True)
                 used_fallback_pip = True
@@ -6557,13 +6578,19 @@ class DownloaderEngine:
         # 所有客户端都只有低清时，退回最好的一份（仍可下 1080p，总比失败强）
         if fb_box[0]:
             fb = fb_box[0]
-            self.log("试过的客户端都没给出独立视频轨，用其中最高的一份", "warning")
+            self.log("试过的客户端都没给出独立视频轨，用其中最高的一份", "warning",
+                     k="srv.engine.all_clients_no_dash")
             self._info_cache[cache_key] = (now, fb)
             return fb, last_err
 
         if last_err:
-            tip = " | 请点「更新 yt-dlp」或 pip install -U yt-dlp" if used_fallback_pip or "extractor" in last_err.lower() else ""
-            self.log(f"提取失败: {last_err[:160]}{tip}", "warning")
+            # 「要不要劝一句更新」是句子后半段的分歧，拆成两处调用：拼在句中间的中文键化不了
+            if used_fallback_pip or "extractor" in last_err.lower():
+                self.log(f"提取失败: {last_err[:160]} | 请点「更新 yt-dlp」或 pip install -U yt-dlp", "warning",
+                         k="srv.engine.extract_failed_update_hint", kv={"err": last_err[:160]})
+            else:
+                self.log(f"提取失败: {last_err[:160]}", "warning",
+                         k="srv.engine.extract_failed", kv={"err": last_err[:160]})
         return None, last_err
 
     def download(
