@@ -901,42 +901,156 @@
       font-weight: 600;
       letter-spacing: 0.2px;
     }
-    .settings-wrap {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(300px, 380px);
-      gap: 16px;
-      align-items: start;
-    }
-    .settings-side {
-      display: flex;
-      flex-direction: column;
-      gap: 14px;
-      min-width: 0;
-    }
-    .settings-side > .card { margin: 0; }
-    .settings-main {
-      display: flex;
-      flex-direction: column;
-      gap: 14px;
-      min-width: 0;
-    }
-    .settings-main > .card { margin: 0; }
-    /* 不常用设置整组折叠：收起时连卡片一起不显示，展开状态记在本地 */
-    .settings-fold { display: flex; flex-direction: column; gap: 14px; }
-    .settings-fold.is-closed { display: none; }
-    .fold-hd {
+    /* 设置页按主题分页签：26 张卡纵排要滚十几屏，分组后每个页签基本一屏看完。
+       页签条吸在可视顶上，保存按钮跟着它走，滚到哪儿都能存。 */
+    .settings-wrap { min-width: 0; }
+    .settings-tabs {
+      position: sticky;
+      top: calc(var(--content-pad-y) * -1);
+      z-index: 6;
       display: flex;
       align-items: center;
-      gap: 8px;
-      padding: 10px 14px;
-      border: 1px dashed var(--line);
-      border-radius: 12px;
-      cursor: pointer;
-      user-select: none;
+      gap: 2px;
+      flex-wrap: wrap;
+      margin: 0 0 14px;
+      padding: 6px 10px;
+      background: var(--header-bg);
+      backdrop-filter: blur(10px);
+      border: 1px solid var(--line);
+      border-radius: var(--r-md);
     }
-    .fold-hd .hint { margin: 0; }
-    .fold-hd b { font-size: 14px; }
-    .fold-arrow { font-size: 12px; color: var(--muted); }
+    .settings-tab {
+      appearance: none;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      font: inherit;
+      font-size: 13px;
+      padding: 6px 12px;
+      border-radius: var(--r-sm);
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .settings-tab:hover { color: var(--ink); background: var(--surface-2); }
+    .settings-tab.active { color: var(--accent); background: var(--surface); font-weight: 600; }
+    .settings-tabs__actions { margin-left: auto; display: flex; gap: 8px; padding-left: 8px; }
+    .settings-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      align-items: stretch;
+    }
+    /* 左右两栏壳子只留给旧版分栏；contents 让卡片直接落进页签网格 */
+    .settings-main, .settings-side { display: contents; }
+    .settings-grid .card { margin-bottom: 0; min-width: 0; }
+    .settings-grid .card--wide { grid-column: 1 / -1; }
+    .settings-grid .card--span2 { grid-column: span 2; }
+    /* 卡内表单的默认行距在 1/3 列里会把每张卡拉到上千像素；设置页统一收紧 */
+    .settings-grid .card .el-form-item { margin-bottom: 8px; }
+    .settings-grid .card .el-form--label-top .el-form-item__label {
+      line-height: 18px;
+      padding-bottom: 4px;
+    }
+    /* 宽卡里的表单按约 300px 自动分栏：18 项的网络设置不必再排成一长列 */
+    .settings-grid .card--wide .el-form,
+    .settings-grid .card--span2 .el-form {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      column-gap: 24px;
+      align-items: start;
+    }
+    .settings-grid .card--wide .el-form > .el-form-item,
+    .settings-grid .card--span2 .el-form > .el-form-item { min-width: 0; }
+    /* Cookie 平台格、组件清单：宽卡里并排铺开，不再一列堆两屏 */
+    .settings-grid .cookie-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 10px;
+    }
+    .settings-grid .comp-list {
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    }
+    /* 分离引擎那格要多列两行版本，单格宽度会把 0.47.0 拆到下一行；跨两列正好补上末行空格 */
+    .settings-grid .comp-item--wide { grid-column: span 2; }
+    .settings-grid .enc-list {
+      grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    }
+    .settings-grid .env-grid {
+      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    }
+    /* 队列定时窗：五个队列各一行，在窄格子里每行都要折行；给这条表单两格宽，队列再分两栏 */
+    .settings-grid .queue-item { grid-column: span 2; }
+    .settings-grid .queue-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+      gap: 4px 12px;
+      width: 100%;
+    }
+    .settings-grid .queue-grid > .row { margin-top: 0; width: 100%; }
+    /* 风控卡九项多是数字框，1/3 列里一列排下来要 650px；两栏排，宽项占满 */
+    .settings-grid .risk-form {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      column-gap: 14px;
+      align-items: start;
+    }
+    .settings-grid .risk-form > .el-form-item { min-width: 0; }
+    .settings-grid .risk-form > .el-form-item.span2 { grid-column: 1 / -1; }
+    /* 鸣谢三组共 38 条：每条一行地叠就是两屏，改成组内多栏 */
+    .settings-grid .credit-list {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      column-gap: 24px;
+    }
+    .settings-grid .credit { border-bottom: 0; padding: 4px 0; }
+    /* 环境卡原先竖排 6 个按钮，宽卡里改成三列；按钮文字在格子内折行，不许伸出卡片 */
+    .settings-grid .env-btns {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .settings-grid .env-btns > .el-button {
+      width: 100%;
+      max-width: 100%;
+      margin: 0;
+      height: auto;
+      min-height: 28px;
+      padding: 5px 10px;
+      white-space: normal;
+      line-height: 1.35;
+    }
+    /* 「恢复默认」清单在宽卡里两栏铺开，长条目不再把一列拉到几屏 */
+    .settings-grid .def-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px; }
+    /* 订阅/直播的十来项在 1/3 宽卡里并成两组，省下一段空白 */
+    .settings-grid .sub-live-card {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      column-gap: 14px;
+      align-items: start;
+    }
+    .settings-grid .sub-live-card > .section-title { grid-column: 1 / -1; }
+    /* 编码器偏好三项并成两列；编码器清单的失败原因只留一行，完整文本进 title */
+    .settings-grid .codec-card > .el-form {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      column-gap: 14px;
+      align-items: start;
+    }
+    .settings-grid .codec-card > .el-form > .el-form-item { min-width: 0; }
+    .settings-grid .enc-list .comp-ver {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    /* 维护页：数据同步叠在 NAS 上方，按龄清理占右侧两格，三张卡同高且不留空格 */
+    .settings-grid .settings-col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+    .settings-grid .settings-col > .card { margin-bottom: 0; }
+    /* 代理表随卡片一起长高，避免右栏比左栏高时表下留出一块空白 */
+    .settings-grid .proxy-card { display: flex; flex-direction: column; }
+    .settings-grid .proxy-card .proxy-table-wrap { flex: 1 1 280px; max-height: none; }
+    /* 平台代理是一张 26 行的表：塞进 1/3 列会把「当前代理」挤成一字一行，
+       所以独占整行，并给表本身一个上限高度，别让它把页签又撑成几屏 */
+    .proxy-table-wrap { max-height: 280px; overflow: auto; border: 1px solid var(--line); border-radius: var(--r-sm); }
     /* 剪贴板监听发现的那条链接：一整串 URL 要能换行看全，不许把卡片撑破 */
     .clip-link {
       font-size: 12px;
@@ -947,17 +1061,23 @@
       border-radius: 10px;
       background: var(--bg-soft, rgba(125, 125, 125, .06));
     }
-    .settings-wrap > .card {
-      min-width: 0;
-    }
     .settings-main .el-button {
       max-width: 100%;
       white-space: normal;
       height: auto;
     }
-    @media (max-width: 960px) {
-      .settings-wrap { grid-template-columns: 1fr; }
-      .settings-side { width: 100%; }
+    @media (max-width: 1320px) {
+      .settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 900px) {
+      .settings-grid { grid-template-columns: 1fr; }
+      .settings-grid .card--span2 { grid-column: auto; }
+      .settings-grid .def-list { grid-template-columns: minmax(0, 1fr); }
+      .settings-grid .comp-item--wide { grid-column: auto; }
+    }
+    @media (max-width: 700px) {
+      .settings-grid .queue-item { grid-column: auto; }
+      .settings-grid .env-btns { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
     .choice-grid {
       display: grid;
@@ -1574,6 +1694,39 @@
     .link-start__side { flex: 0 1 250px; min-width: 200px; }
     /* 竖排相邻按钮会带上 Element 的 12px 左边距，撑满列宽时右边缘就错位了 */
     .link-start__side > .stack > .el-button { margin: 0 !important; width: 100%; }
+    /* 首页选项板：四列分组横排，替代一串纵向选项卡 */
+    .home-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0 26px; }
+    .home-col { position: relative; min-width: 0; display: flex; flex-direction: column; }
+    .home-col + .home-col::before { content: ""; position: absolute; left: -13px; top: 0; bottom: 0; width: 1px; background: var(--line); }
+    .home-group { min-width: 0; margin-bottom: 14px; }
+    .home-group:last-child { margin-bottom: 0; }
+    .home-group > .tile-label { margin-bottom: 6px; }
+    .home-checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 8px; }
+    .home-checks--1 { grid-template-columns: minmax(0, 1fr); }
+    .home-checks .el-checkbox { margin-right: 0; height: 28px; }
+    .stat-list.stat-list--2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 16px; }
+    .stat-list--2 .stat-row > b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* 运行状态从选项板第四列挪出来，单独一条横排，不再占一列的高度 */
+    .runtime-strip { display: flex; flex-wrap: nowrap; align-items: center; gap: 4px 22px; padding: 12px 20px; overflow: hidden; }
+    .runtime-item { display: flex; align-items: baseline; gap: 6px; flex: 0 0 auto; font-size: var(--fs-ui-sm); }
+    .runtime-item--fit { flex: 0 1 auto; min-width: 0; }
+    .runtime-item > em { font-style: normal; color: var(--muted); white-space: nowrap; }
+    .runtime-item > b { font-weight: 500; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px; }
+    .runtime-item--lead { padding-right: 16px; border-right: 1px solid var(--line); }
+    @media (max-width: 1320px) {
+      .home-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 18px; }
+      .home-col:nth-child(odd)::before { display: none; }
+      .runtime-strip { flex-wrap: wrap; }
+    }
+    @media (max-width: 900px) {
+      .home-grid { grid-template-columns: minmax(0, 1fr); }
+      .home-col::before { display: none; }
+    }
+    /* 比特页配置卡：窄卡里两列摆短项，文本域占满整行 */
+    .bt-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 12px; align-items: start; }
+    .bt-form > .el-form-item { min-width: 0; margin-bottom: 8px; }
+    .bt-form > .el-form-item.span2 { grid-column: 1 / -1; }
+    .bt-form .el-form-item__label { line-height: 18px; padding-bottom: 2px; }
     /* 卡内小格：玻璃上的第二层，只用来分组选项 */
     /* 嵌套层级越深圆角越小：卡片 --r-lg > 分区 --r-md > 子格/控件 --r-sm */
     .tile {
@@ -1600,12 +1753,6 @@
     .tile-grid > .span-all { grid-column: 1 / -1; }
     @media (max-width: 1100px) {
       .tile-grid { grid-template-columns: minmax(0, 1fr); }
-    }
-    .chip-col {
-      display: flex;
-      flex-direction: column;
-      align-items: stretch;
-      gap: 8px;
     }
     .source-row {
       display: flex;
@@ -2122,7 +2269,6 @@
                       <span class="hint hint--block" v-if="urlPasteStat.count">
                         {{ tr('home.pasteCount', { n: urlPasteStat.count }) }}<span v-if="urlPasteStat.dup">{{ tr('home.pasteDup', { n: urlPasteStat.dup }) }}</span>
                       </span>
-                      <span class="hint hint--block" v-else>{{ tr('home.urlHint') }}</span>
                     </div>
                   </div>
                   <div class="tile link-start__side">
@@ -2154,35 +2300,34 @@
               </div>
             </div>
 
-            <div class="bento">
-              <div class="card span-4">
-                <div class="card-title">{{ tr('home.outPrefs') }}</div>
-                <div class="tile-grid">
-                  <div class="tile">
+            <div class="card">
+              <div class="home-grid">
+                <div class="home-col">
+                  <div class="home-group">
                     <div class="tile-label">{{ tr('home.videoQ') }}</div>
                     <div class="chip-row">
                       <div v-for="q in videoQualities" :key="q" class="chip" :class="{ active: opts.video_quality === q }" @click="opts.video_quality = q">{{ q }}</div>
                     </div>
                   </div>
-                  <div class="tile">
+                  <div class="home-group">
                     <div class="tile-label">{{ tr('home.audioQ') }}</div>
                     <div class="chip-row">
                       <div v-for="q in audioQualities" :key="q" class="chip" :class="{ active: opts.audio_quality === q }" @click="opts.audio_quality = q">{{ q }}</div>
                     </div>
                   </div>
-                  <div class="tile">
+                  <div class="home-group">
                     <div class="tile-label">{{ tr('home.format') }}</div>
                     <div class="chip-row">
                       <div v-for="f in formats" :key="f" class="chip" :class="{ active: opts.format === f }" @click="opts.format = f">{{ f }}</div>
                     </div>
                   </div>
-                  <div class="tile">
+                  <div class="home-group">
                     <div class="tile-label">{{ tr('home.codec') }}</div>
                     <div class="chip-row">
                       <div v-for="c in codecOptions" :key="c.value" class="chip" :class="{ active: opts.prefer_codec === c.value }" @click="opts.prefer_codec = c.value">{{ c.label }}</div>
                     </div>
                   </div>
-                  <div class="tile span-all">
+                  <div class="home-group">
                     <div class="tile-label">{{ tr('home.saveDir') }}</div>
                     <div class="path-row">
                       <el-input size="small" v-model="opts.download_dir" :placeholder="tr('home.dirPh')"></el-input>
@@ -2190,27 +2335,10 @@
                     </div>
                   </div>
                 </div>
-              </div>
-              <div class="card span-2">
-                <div class="card-title">{{ tr('home.presets') }}</div>
-                <div class="chip-col">
-                  <div class="chip" @click="applyPreset('best')">{{ tr('home.presetBest') }}</div>
-                  <div class="chip" @click="applyPreset('1080')">{{ tr('home.preset1080') }}</div>
-                  <div class="chip" @click="applyPreset('small')">{{ tr('home.presetSmall') }}</div>
-                  <div class="chip" @click="applyPreset('audio')">{{ tr('home.presetAudio') }}</div>
-                  <div class="chip" @click="applyPreset('archive')">{{ tr('home.presetArchive') }}</div>
-                </div>
-                <div class="hint">{{ tr('home.presetHint') }}</div>
-              </div>
-            </div>
-
-            <div class="bento">
-              <div class="card span-4">
-                <div class="card-title">{{ tr('home.extra') }}</div>
-                <div class="tile-grid">
-                  <div class="tile">
+                <div class="home-col">
+                  <div class="home-group">
                     <div class="tile-label">{{ tr('home.subAndText') }}</div>
-                    <div class="stack">
+                    <div class="home-checks">
                       <el-checkbox v-model="opts.embed_sub">{{ tr('home.embedSub') }}</el-checkbox>
                       <el-checkbox v-model="opts.write_sub_files">{{ tr('home.writeSubFiles') }}</el-checkbox>
                       <el-checkbox v-model="opts.local_ai_transcribe">{{ tr('home.aiTranscribe') }}</el-checkbox>
@@ -2218,64 +2346,81 @@
                     </div>
                     <div class="hint">{{ tr('home.whisperHint') }}</div>
                   </div>
-                  <div class="tile">
+                  <div class="home-group">
                     <div class="tile-label">{{ tr('home.embedMedia') }}</div>
-                    <div class="stack">
+                    <div class="home-checks">
                       <el-checkbox v-model="opts.embed_thumb">{{ tr('home.embedThumb') }}</el-checkbox>
                       <el-checkbox v-model="opts.embed_meta">{{ tr('home.embedMeta') }}</el-checkbox>
                       <el-checkbox v-model="opts.embed_chapters">{{ tr('home.embedChapters') }}</el-checkbox>
                       <el-checkbox v-model="opts.download_danmaku">{{ tr('home.danmaku') }}</el-checkbox>
                     </div>
                   </div>
-                  <div class="tile">
+                  <div class="home-group">
                     <div class="tile-label">{{ tr('home.dlBehavior') }}</div>
-                    <div class="stack">
+                    <div class="home-checks">
                       <el-checkbox v-model="opts.audio_only">{{ tr('home.audioOnly') }}</el-checkbox>
                       <el-checkbox v-model="opts.skip_downloaded">{{ tr('home.skipDownloaded') }}</el-checkbox>
                       <el-checkbox v-model="opts.verify_download">{{ tr('home.verifyDownload') }}</el-checkbox>
                     </div>
-                    <div class="hint">{{ tr('home.verifyHint') }}</div>
                   </div>
-                  <div class="tile">
+                  <div class="home-group">
                     <div class="tile-label">{{ tr('home.playlistEngine') }}</div>
-                    <div class="stack">
-                      <div>
-                        <el-checkbox v-model="opts.allow_playlist">{{ tr('home.allowPlaylist') }}</el-checkbox>
-                        <span v-show="opts.allow_playlist" class="row row--tight" style="margin-top:4px">
-                          <span class="hint" style="margin:0">{{ tr('home.from') }}</span>
-                          <el-input-number v-model="opts.playlist_start" :min="0" :max="9999" size="small" controls-position="right" style="width:90px"></el-input-number>
-                          <span class="hint" style="margin:0">{{ tr('home.to') }}</span>
-                          <el-input-number v-model="opts.playlist_end" :min="0" :max="9999" size="small" controls-position="right" style="width:90px"></el-input-number>
-                          <el-input v-model="opts.playlist_items" :placeholder="tr('home.itemsPh')" size="small" style="width:200px" clearable></el-input>
-                        </span>
-                      </div>
-                      <el-checkbox v-model="opts.playlist_subdir">{{ tr('home.playlistSubdir') }}</el-checkbox>
+                    <div class="home-checks home-checks--1">
+                      <el-checkbox v-model="opts.allow_playlist">{{ tr('home.allowPlaylist') }}</el-checkbox>
+                      <el-checkbox v-model="opts.playlist_subdir" :title="tr('home.playlistSubdirHint')">{{ tr('home.playlistSubdir') }}</el-checkbox>
                       <el-checkbox v-model="opts.is_live">{{ tr('home.isLive') }}</el-checkbox>
                       <el-checkbox v-model="opts.use_hls_engine">{{ tr('home.hlsEngine') }}</el-checkbox>
                     </div>
-                    <div class="hint">{{ tr('home.playlistSubdirHint') }}</div>
+                    <div v-show="opts.allow_playlist" class="row row--tight" style="margin-top:6px">
+                      <span class="hint" style="margin:0">{{ tr('home.from') }}</span>
+                      <el-input-number v-model="opts.playlist_start" :min="0" :max="9999" size="small" controls-position="right" style="width:84px"></el-input-number>
+                      <span class="hint" style="margin:0">{{ tr('home.to') }}</span>
+                      <el-input-number v-model="opts.playlist_end" :min="0" :max="9999" size="small" controls-position="right" style="width:84px"></el-input-number>
+                      <el-input v-model="opts.playlist_items" :placeholder="tr('home.itemsPh')" size="small" style="width:140px" clearable></el-input>
+                    </div>
                   </div>
                 </div>
-              </div>
-              <div class="card span-2">
-                <div class="card-title">{{ tr('home.fineControl') }}</div>
-                <div class="stack">
-                  <div class="tile">
+                <div class="home-col">
+                  <div v-show="opts.embed_sub || opts.write_sub_files" class="home-group">
+                    <div class="tile-label">{{ tr('home.subLangs') }}</div>
+                    <el-select v-model="subLangList" multiple collapse-tags collapse-tags-tooltip size="small"
+                               style="width:100%" :placeholder="tr('home.subLangHint')">
+                      <el-option v-for="item in subLangOptions" :key="item.value" :label="item.label" :value="item.value"></el-option>
+                    </el-select>
+                    <div class="row row--tight" style="margin-top:8px">
+                      <el-button size="small" @click="selectAllSubLangs">{{ tr('home.selectAll') }}</el-button>
+                      <el-button size="small" @click="clearSubLangs">{{ tr('home.clear') }}</el-button>
+                      <span class="hint" style="margin:0">{{ tr('home.subLangHint') }}</span>
+                    </div>
+                  </div>
+                  <div class="home-group">
                     <div class="tile-label">{{ tr('home.section') }}</div>
                     <el-input size="small" v-model="opts.download_section" :placeholder="tr('home.sectionPh')" clearable></el-input>
                     <div class="hint">{{ tr('home.sectionHint') }}</div>
                   </div>
-                  <div class="tile">
+                  <div class="home-group">
                     <div class="tile-label">{{ tr('home.forceFmtId') }}</div>
                     <el-input size="small" v-model="opts.force_format" :placeholder="tr('home.fmtPh')" clearable></el-input>
                     <div class="hint">{{ tr('home.forceFmtHint') }}</div>
                   </div>
-                  <div class="tile">
+                  <div class="home-group">
                     <div class="tile-label">{{ tr('home.ydlArgs') }}</div>
                     <el-input size="small" v-model="opts.ytdlp_extra_args" :placeholder="tr('home.ydlPh')" clearable></el-input>
                     <div class="hint">{{ tr('home.ydlArgsHint') }}</div>
                   </div>
-                  <div class="tile">
+                </div>
+                <div class="home-col">
+                  <div class="home-group">
+                    <div class="tile-label">{{ tr('home.presets') }}</div>
+                    <div class="chip-row">
+                      <div class="chip" @click="applyPreset('best')">{{ tr('home.presetBest') }}</div>
+                      <div class="chip" @click="applyPreset('1080')">{{ tr('home.preset1080') }}</div>
+                      <div class="chip" @click="applyPreset('small')">{{ tr('home.presetSmall') }}</div>
+                      <div class="chip" @click="applyPreset('audio')">{{ tr('home.presetAudio') }}</div>
+                      <div class="chip" @click="applyPreset('archive')">{{ tr('home.presetArchive') }}</div>
+                    </div>
+                  </div>
+                  <div class="home-group">
                     <div class="tile-label">{{ tr('home.sponsorblock') }}</div>
                     <div class="chip-row">
                       <div class="chip" :class="{ active: opts.sponsorblock === 'off' }" @click="opts.sponsorblock = 'off'">{{ tr('home.sbOff') }}</div>
@@ -2283,7 +2428,7 @@
                       <div class="chip" :class="{ active: opts.sponsorblock === 'mark' }" @click="opts.sponsorblock = 'mark'">{{ tr('home.sbMark') }}</div>
                     </div>
                   </div>
-                  <div class="tile">
+                  <div class="home-group">
                     <div class="tile-label">{{ tr('home.expectHash') }}</div>
                     <el-input size="small" v-model="opts.expect_hash"
                              :placeholder="tr('home.hashPh')" clearable></el-input>
@@ -2293,42 +2438,21 @@
                       <div class="chip" :class="{ active: opts.hash_algo === 'sha1' }" @click="opts.hash_algo = 'sha1'">SHA-1</div>
                       <div class="chip" :class="{ active: opts.hash_algo === 'sha256' }" @click="opts.hash_algo = 'sha256'">SHA-256</div>
                     </div>
-                    <div class="hint">{{ tr('home.hashHintA') }}<b>{{ tr('home.hashHintBold') }}</b>{{ tr('home.hashHintB') }}</div>
+                    <div class="hint">{{ tr('home.hashHintA') }}</div>
                   </div>
                 </div>
               </div>
             </div>
 
-            <div class="bento">
-              <div v-show="opts.embed_sub || opts.write_sub_files" class="card span-4">
-                <div class="card-title">{{ tr('home.subLangs') }}</div>
-                <div class="chip-row">
-                  <div
-                    v-for="item in subLangOptions"
-                    :key="item.value"
-                    class="chip"
-                    :class="{ active: subLangList.includes(item.value) }"
-                    @click="toggleSubLang(item.value)"
-                  >{{ item.label }}</div>
-                </div>
-                <div class="row row--mt row--tight">
-                  <el-button size="small" @click="selectAllSubLangs">{{ tr('home.selectAll') }}</el-button>
-                  <el-button size="small" @click="clearSubLangs">{{ tr('home.clear') }}</el-button>
-                  <span class="hint hint--block">{{ tr('home.subLangHint') }}</span>
-                </div>
-              </div>
-              <div class="card" :class="opts.embed_sub || opts.write_sub_files ? 'span-2' : 'span-6'">
-                <div class="card-title">{{ tr('home.runtime') }}</div>
-                <div class="stat-list">
-                  <div class="stat-row"><span>FFmpeg</span><b>{{ status.ffmpeg }}</b></div>
-                  <div class="stat-row"><span>yt-dlp</span><b>{{ status.ytdlp }}</b></div>
-                  <div class="stat-row"><span>N_m3u8DL</span><b>{{ status.n_m3u8dl || tr('home.notInstalled') }}</b></div>
-                  <div class="stat-row"><span>Whisper</span><b>{{ status.whisper || tr('home.notInstalled') }}</b></div>
-                  <div class="stat-row"><span>{{ tr('home.runningLabel') }}</span><b>{{ status.running }}</b></div>
-                  <div v-if="status.disk_free_gb >= 0" class="stat-row"><span>{{ tr('home.diskFree') }}</span><b>{{ status.disk_free_gb }} GB</b></div>
-                  <div v-if="status.cookie_source && status.cookie_source !== 'none'" class="stat-row"><span>Cookie</span><b>{{ status.cookie_source }}</b></div>
-                </div>
-              </div>
+            <div class="card runtime-strip">
+              <span class="runtime-item runtime-item--lead"><em>{{ tr('home.runtime') }}</em></span>
+              <span class="runtime-item runtime-item--fit"><em>FFmpeg</em><b :title="status.ffmpeg">{{ status.ffmpeg }}</b></span>
+              <span class="runtime-item runtime-item--fit"><em>yt-dlp</em><b :title="status.ytdlp">{{ status.ytdlp }}</b></span>
+              <span class="runtime-item runtime-item--fit"><em>N_m3u8DL</em><b :title="status.n_m3u8dl || ''">{{ status.n_m3u8dl || tr('home.notInstalled') }}</b></span>
+              <span class="runtime-item runtime-item--fit"><em>Whisper</em><b :title="status.whisper || ''">{{ status.whisper || tr('home.notInstalled') }}</b></span>
+              <span class="runtime-item"><em>{{ tr('home.runningLabel') }}</em><b>{{ status.running }}</b></span>
+              <span v-if="status.disk_free_gb >= 0" class="runtime-item"><em>{{ tr('home.diskFree') }}</em><b>{{ status.disk_free_gb }} GB</b></span>
+              <span v-if="status.cookie_source && status.cookie_source !== 'none'" class="runtime-item"><em>Cookie</em><b>{{ status.cookie_source }}</b></span>
             </div>
           </div>
 
@@ -2437,36 +2561,130 @@
 
           <!-- 磁力 / 种子 -->
           <div v-if="page === 'bt'">
-            <div class="card row--mb">
-              <div class="section-title">{{ tr('bt.addTitle') }}</div>
-              <div class="link-start">
-                <div class="link-start__main">
-                  <el-input
-                    v-model="btText"
-                    type="textarea"
-                    size="large"
-                    :autosize="{ minRows: 3, maxRows: 10 }"
-                    :placeholder="tr('bt.addPh')"></el-input>
-                  <div class="tool-bar">
-                    <el-button size="small" @click="pasteBt">{{ tr('common.paste') }}</el-button>
-                    <el-button size="small" :loading="torrentUploading" @click="pickTorrentFile">{{ tr('bt.btnUpload') }}</el-button>
-                    <input ref="torrentFileInput" type="file" accept=".torrent" style="display:none" @change="onTorrentFile" />
-                    <el-button size="small" @click="btText = ''">{{ tr('common.clear') }}</el-button>
-                    <span class="hint hint--block">
-                      {{ tr('bt.parsed', { n: btLinkCount }) }}<span v-if="btIgnoredCount">{{ tr('bt.parsedIgnored', { n: btIgnoredCount }) }}</span>
-                      <span v-if="!btLinkCount && !btIgnoredCount">{{ tr('bt.parsedNone') }}</span>
+            <div class="bento">
+              <div class="card span-3">
+                <div class="section-title">{{ tr('bt.addTitle') }}</div>
+                <div class="link-start">
+                  <div class="link-start__main">
+                    <el-input
+                      v-model="btText"
+                      type="textarea"
+                      size="large"
+                      :autosize="{ minRows: 2, maxRows: 10 }"
+                      :placeholder="tr('bt.addPh')"></el-input>
+                    <div class="tool-bar">
+                      <el-button size="small" @click="pasteBt">{{ tr('common.paste') }}</el-button>
+                      <el-button size="small" :loading="torrentUploading" @click="pickTorrentFile">{{ tr('bt.btnUpload') }}</el-button>
+                      <input ref="torrentFileInput" type="file" accept=".torrent" style="display:none" @change="onTorrentFile" />
+                      <el-button size="small" @click="btText = ''">{{ tr('common.clear') }}</el-button>
+                      <span class="hint hint--block">
+                        {{ tr('bt.parsed', { n: btLinkCount }) }}<span v-if="btIgnoredCount">{{ tr('bt.parsedIgnored', { n: btIgnoredCount }) }}</span>
+                        <span v-if="!btLinkCount && !btIgnoredCount">{{ tr('bt.parsedNone') }}</span>
+                      </span>
+                    </div>
+                  </div>
+                  <div class="tile link-start__side">
+                    <div class="stack stack--tight">
+                      <el-button type="primary" size="large" :loading="btStarting" @click="startBtDownload"><svg class="btn-ico"><use href="#i-download"></use></svg>{{ tr('common.startDl') }}</el-button>
+                      <el-checkbox v-model="btSeedOnly" size="small" :title="tr('bt.seedOnlyBlockedHint')">{{ tr('bt.seedOnly') }}</el-checkbox>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card span-3">
+                <div class="section-title">{{ tr('bt.tasksTitle') }}</div>
+                <div class="row row--mb row--tight">
+                  <el-checkbox v-model="selectAll" @change="toggleSelectAll">{{ tr('common.selectAll') }}</el-checkbox>
+                  <el-button size="small" type="danger" plain @click="deleteSelected" :disabled="!selectedIds.length">{{ tr('common.delSelected') }}</el-button>
+                  <el-button size="small" @click="retrySelected" :disabled="!selectedIds.length">{{ tr('common.retrySelected') }}</el-button>
+                  <el-select v-model="taskSort" size="small" style="width:110px" @change="loadTasks">
+                    <el-option :label="tr('queue.sortQueue')" value="queue"></el-option>
+                    <el-option :label="tr('queue.sortCreated')" value="created"></el-option>
+                    <el-option :label="tr('queue.sortStatus')" value="status"></el-option>
+                    <el-option :label="tr('queue.sortTitle')" value="title"></el-option>
+                  </el-select>
+                  <el-button size="small" plain @click="loadTasks">{{ tr('common.refresh') }}</el-button>
+                  <el-tag :type="sseOn ? 'success' : 'info'" effect="plain" size="small"
+                          :title="sseOn ? tr('queue.sseOnTip') : tr('queue.sseOffTip')">
+                    {{ sseOn ? tr('queue.sseOn') : tr('queue.sseOff') }}
+                  </el-tag>
+                </div>
+                <div v-if="!btTasks.length" class="empty-tip">{{ tr('bt.empty') }}</div>
+                <div v-for="t in pagers.btTasks.paged" :key="t.id" :id="'task-' + t.id"
+                     class="task-card" :class="{ selected: selectedIds.includes(t.id), flash: flashTaskId === String(t.id) }">
+                  <div class="task-url row row--tight">
+                    <el-checkbox :model-value="selectedIds.includes(t.id)" @change="(v) => toggleSelect(t.id, v)"></el-checkbox>
+                    <el-tag v-if="t.pinned" size="small" type="danger" effect="dark">{{ tr('task.pinnedTag') }}</el-tag>
+                    <el-tag size="small" :type="statusType(t.status)">{{ statusLabel(t.status) }}</el-tag>
+                    <el-tag size="small" effect="plain">{{ btSourceLabel(t) }}</el-tag>
+                    <el-tag v-if="t.category" size="small" effect="plain"
+                            :title="tr('bt.catTip', { c: t.category })">{{ tr('bt.catTag', { c: t.category }) }}</el-tag>
+                    <el-tag v-if="t.seeding" size="small" type="success" effect="plain">{{ tr('bt.seedTag') }}</el-tag>
+                    <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+                      {{ taskHeadline(t) }}
                     </span>
+                    <el-button v-if="(t.files || []).length > 1" size="small" plain
+                               @click="toggleBtFiles(t)">{{ tr('bt.filesBtn', { n: btPicked(t), m: t.files.length }) }}</el-button>
+                    <el-button v-if="t.seeding || ['downloading', 'queued', 'paused', 'stopped', 'later'].includes(t.status)"
+                               size="small" plain @click="toggleBtLimit(t)">{{ tr('bt.btnLimit') }}</el-button>
+                    <el-button v-if="t.seeding" size="small" plain type="danger" @click="stopSeed({ id: t.id })">{{ tr('bt.btnStopSeed') }}</el-button>
+                  </div>
+                  <el-progress
+                    :percentage="Math.min(100, Math.round(t.progress || 0))"
+                    :status="t.status === 'finished' ? 'success' : (t.status === 'failed' ? 'exception' : undefined)"
+                    :stroke-width="8"></el-progress>
+                  <div v-if="t.status === 'failed' && t.error_msg"
+                       style="color:var(--bad);font-size:13px;margin-top:6px;word-break:break-all;line-height:1.5">
+                    {{ friendlyError(t.error_msg) }}
+                  </div>
+                  <!-- 成品回读：「成功」只说明文件能播；是不是用户点的那一档、是不是期望的那一份，都要回读成品才知道 -->
+                  <div v-if="t.verify_note"
+                       style="color:var(--warn);font-size:12px;margin-top:6px;line-height:1.5">
+                    {{ tr('task.verifyPrefix') }} · {{ t.verify_note }}
+                  </div>
+                  <div class="task-meta">
+                    <span>
+                      {{ t.speed || '' }} {{ t.eta ? 'ETA ' + t.eta : '' }}
+                      <span v-if="taskSpec(t)" class="task-spec" :title="taskSpecTitle(t)">{{ taskSpec(t) }}</span>
+                      <el-tag v-if="t.retry_count" size="small" type="warning" style="margin-left:6px">{{ tr('task.retryTag', { n: t.retry_count, max: t.max_retries || 3 }) }}</el-tag>
+                      <el-tag v-if="t.resume_hint" size="small" type="info" style="margin-left:4px">{{ t.resume_hint }}</el-tag>
+                    </span>
+                    <span style="max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ t.filepath || t.url }}</span>
+                  </div>
+                  <div v-if="btFilesTask === t.id" class="stack stack--tight"
+                       style="margin-top:8px;padding-top:8px;border-top:1px solid var(--line)">
+                    <div class="row row--tight">
+                      <el-button size="small" plain @click="btPickAll(true)">{{ tr('common.selectAll') }}</el-button>
+                      <el-button size="small" plain @click="btPickAll(false)">{{ tr('bt.pickNone') }}</el-button>
+                      <span class="hint">{{ tr('bt.pickSummary', { n: btPickCount, m: btFileRows.length, size: formatSize(btPickSize) }) }}</span>
+                      <el-button size="small" type="primary" :loading="btSelecting" @click="applyBtSelect(t)">{{ tr('bt.btnApplySelect') }}</el-button>
+                    </div>
+                    <div style="max-height:260px;overflow:auto">
+                      <div v-for="f in btFileRows" :key="f.index" class="row row--tight">
+                        <el-checkbox v-model="f.selected" style="flex:1;min-width:0;overflow:hidden">
+                          <span :title="f.path">{{ f.name }}</span>
+                        </el-checkbox>
+                        <span class="hint">{{ formatSize(f.size) }}</span>
+                      </div>
+                    </div>
+                    <span class="hint hint--block">{{ tr('bt.selectApplyHint') }}</span>
+                  </div>
+                  <div v-if="btLimitTask === t.id" class="stack stack--tight"
+                       style="margin-top:8px;padding-top:8px;border-top:1px solid var(--line)">
+                    <div class="row row--tight">
+                      <span class="hint">{{ tr('bt.dlWord') }}</span>
+                      <el-input size="small" v-model="btLimitDl" :placeholder="tr('bt.limitPh')" clearable style="width:190px"></el-input>
+                      <span class="hint">{{ tr('bt.ulWord') }}</span>
+                      <el-input size="small" v-model="btLimitUl" :placeholder="tr('bt.limitPh')" clearable style="width:190px"></el-input>
+                      <el-button size="small" type="primary" :loading="btLimitApplying" @click="applyBtLimit(t)">{{ tr('bt.btnApplyLimit') }}</el-button>
+                    </div>
+                    <span v-if="btLimitResult" class="hint hint--block">{{ btLimitResult }}</span>
                   </div>
                 </div>
-                <div class="tile link-start__side">
-                  <div class="stack stack--tight">
-                    <el-button type="primary" size="large" :loading="btStarting" @click="startBtDownload"><svg class="btn-ico"><use href="#i-download"></use></svg>{{ tr('common.startDl') }}</el-button>
-                    <el-checkbox v-model="btSeedOnly" size="small">{{ tr('bt.seedOnly') }}</el-checkbox>
-                    <span class="hint">{{ tr('bt.seedOnlyBlockedHint') }}</span>
-                    <span class="hint">{{ tr('bt.metaFirstHint') }}</span>
-                    <span class="hint">{{ tr('bt.hintSeedAfter') }}</span>
-                  </div>
-                </div>
+                <el-pagination v-if="pagers.btTasks.show" v-model:current-page="pagers.btTasks.page"
+                               :page-size="pagers.btTasks.pageSize" :total="pagers.btTasks.total"
+                               layout="total, prev, pager, next, jumper" size="small" background class="pager"></el-pagination>
               </div>
             </div>
 
@@ -2492,232 +2710,123 @@
               <div v-if="seedingNote" class="hint hint--block">{{ seedingNote }}</div>
             </div>
 
-            <div class="card row--mb">
-              <div class="section-title">{{ tr('bt.tasksTitle') }}</div>
-              <div class="row row--mb row--tight">
-                <el-checkbox v-model="selectAll" @change="toggleSelectAll">{{ tr('common.selectAll') }}</el-checkbox>
-                <el-button size="small" type="danger" plain @click="deleteSelected" :disabled="!selectedIds.length">{{ tr('common.delSelected') }}</el-button>
-                <el-button size="small" @click="retrySelected" :disabled="!selectedIds.length">{{ tr('common.retrySelected') }}</el-button>
-                <el-select v-model="taskSort" size="small" style="width:110px" @change="loadTasks">
-                  <el-option :label="tr('queue.sortQueue')" value="queue"></el-option>
-                  <el-option :label="tr('queue.sortCreated')" value="created"></el-option>
-                  <el-option :label="tr('queue.sortStatus')" value="status"></el-option>
-                  <el-option :label="tr('queue.sortTitle')" value="title"></el-option>
-                </el-select>
-                <el-button size="small" plain @click="loadTasks">{{ tr('common.refresh') }}</el-button>
-                <el-tag :type="sseOn ? 'success' : 'info'" effect="plain" size="small"
-                        :title="sseOn ? tr('queue.sseOnTip') : tr('queue.sseOffTip')">
-                  {{ sseOn ? tr('queue.sseOn') : tr('queue.sseOff') }}
-                </el-tag>
+            <div class="bento">
+              <div class="card span-2">
+                <div class="row row--tight" style="margin-bottom:6px">
+                  <div class="section-title" style="margin:0;flex:1">{{ tr('bt.trackerTitle') }}</div>
+                  <el-button size="small" plain :loading="btTrackerLoading" @click="loadBtTrackers">{{ tr('bt.btnReadTrackers') }}</el-button>
+                  <el-button size="small" plain :loading="btTrackerRefreshing" @click="refreshBtTrackers">{{ tr('bt.btnRefreshTrackers') }}</el-button>
+                </div>
+                <div class="hint" style="margin-bottom:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="btTrackerText">{{ btTrackerText }}</div>
+                <div v-if="btTrackerNote" class="hint hint--block" style="margin-bottom:8px">{{ btTrackerNote }}</div>
+                <el-form label-position="top" class="bt-form" @submit.prevent>
+                  <el-form-item class="span2" :label="tr('bt.lblSources')">
+                    <el-input size="small" v-model="settings.bt_tracker_sources" type="textarea"
+                              :autosize="{ minRows: 2, maxRows: 6 }"
+                              :placeholder="tr('bt.phSources')"></el-input>
+                  </el-form-item>
+                  <el-form-item class="span2" :label="tr('bt.lblManual')">
+                    <el-input size="small" v-model="settings.bt_trackers" type="textarea"
+                              :autosize="{ minRows: 1, maxRows: 6 }"
+                              :placeholder="tr('bt.phManual')" :title="tr('bt.hintManual')"></el-input>
+                  </el-form-item>
+                  <el-form-item :label="tr('bt.lblAuto')">
+                    <el-switch v-model="settings.bt_tracker_auto_update" :title="tr('bt.hintAuto')"></el-switch>
+                  </el-form-item>
+                  <el-form-item :label="tr('bt.lblInjectMax')">
+                    <el-input-number size="small" v-model="settings.bt_tracker_max" :min="0" :max="200" :step="5" :title="tr('bt.hintInjectMax')"></el-input-number>
+                  </el-form-item>
+                  <el-form-item :label="tr('bt.lblDlLimit')">
+                    <el-input size="small" v-model="settings.bt_dl_limit" :placeholder="tr('bt.phLimitNew')" clearable></el-input>
+                  </el-form-item>
+                  <el-form-item :label="tr('bt.lblUlLimit')">
+                    <el-input size="small" v-model="settings.bt_ul_limit" :placeholder="tr('bt.phLimitNew')" clearable :title="tr('bt.hintNewLimit')"></el-input>
+                  </el-form-item>
+                  <el-form-item :label="tr('bt.lblPieceFirst')">
+                    <el-switch v-model="settings.bt_prioritize_piece" :title="tr('bt.hintPieceFirst')"></el-switch>
+                  </el-form-item>
+                  <el-form-item>
+                    <el-button size="small" type="primary" @click="saveSettings()">{{ tr('common.save') }}</el-button>
+                  </el-form-item>
+                </el-form>
               </div>
-              <div v-if="!btTasks.length" class="empty-tip">{{ tr('bt.empty') }}</div>
-              <div v-for="t in pagers.btTasks.paged" :key="t.id" :id="'task-' + t.id"
-                   class="task-card" :class="{ selected: selectedIds.includes(t.id), flash: flashTaskId === String(t.id) }">
-                <div class="task-url row row--tight">
-                  <el-checkbox :model-value="selectedIds.includes(t.id)" @change="(v) => toggleSelect(t.id, v)"></el-checkbox>
-                  <el-tag v-if="t.pinned" size="small" type="danger" effect="dark">{{ tr('task.pinnedTag') }}</el-tag>
-                  <el-tag size="small" :type="statusType(t.status)">{{ statusLabel(t.status) }}</el-tag>
-                  <el-tag size="small" effect="plain">{{ btSourceLabel(t) }}</el-tag>
-                  <el-tag v-if="t.category" size="small" effect="plain"
-                          :title="tr('bt.catTip', { c: t.category })">{{ tr('bt.catTag', { c: t.category }) }}</el-tag>
-                  <el-tag v-if="t.seeding" size="small" type="success" effect="plain">{{ tr('bt.seedTag') }}</el-tag>
-                  <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-                    {{ taskHeadline(t) }}
-                  </span>
-                  <el-button v-if="(t.files || []).length > 1" size="small" plain
-                             @click="toggleBtFiles(t)">{{ tr('bt.filesBtn', { n: btPicked(t), m: t.files.length }) }}</el-button>
-                  <el-button v-if="t.seeding || ['downloading', 'queued', 'paused', 'stopped', 'later'].includes(t.status)"
-                             size="small" plain @click="toggleBtLimit(t)">{{ tr('bt.btnLimit') }}</el-button>
-                  <el-button v-if="t.seeding" size="small" plain type="danger" @click="stopSeed({ id: t.id })">{{ tr('bt.btnStopSeed') }}</el-button>
-                </div>
-                <el-progress
-                  :percentage="Math.min(100, Math.round(t.progress || 0))"
-                  :status="t.status === 'finished' ? 'success' : (t.status === 'failed' ? 'exception' : undefined)"
-                  :stroke-width="8"></el-progress>
-                <div v-if="t.status === 'failed' && t.error_msg"
-                     style="color:var(--bad);font-size:13px;margin-top:6px;word-break:break-all;line-height:1.5">
-                  {{ friendlyError(t.error_msg) }}
-                </div>
-                <!-- 成品回读：「成功」只说明文件能播；是不是用户点的那一档、是不是期望的那一份，都要回读成品才知道 -->
-                <div v-if="t.verify_note"
-                     style="color:var(--warn);font-size:12px;margin-top:6px;line-height:1.5">
-                  {{ tr('task.verifyPrefix') }} · {{ t.verify_note }}
-                </div>
-                <div class="task-meta">
-                  <span>
-                    {{ t.speed || '' }} {{ t.eta ? 'ETA ' + t.eta : '' }}
-                    <span v-if="taskSpec(t)" class="task-spec" :title="taskSpecTitle(t)">{{ taskSpec(t) }}</span>
-                    <el-tag v-if="t.retry_count" size="small" type="warning" style="margin-left:6px">{{ tr('task.retryTag', { n: t.retry_count, max: t.max_retries || 3 }) }}</el-tag>
-                    <el-tag v-if="t.resume_hint" size="small" type="info" style="margin-left:4px">{{ t.resume_hint }}</el-tag>
-                  </span>
-                  <span style="max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ t.filepath || t.url }}</span>
-                </div>
-                <div v-if="btFilesTask === t.id" class="stack stack--tight"
-                     style="margin-top:8px;padding-top:8px;border-top:1px solid var(--line)">
-                  <div class="row row--tight">
-                    <el-button size="small" plain @click="btPickAll(true)">{{ tr('common.selectAll') }}</el-button>
-                    <el-button size="small" plain @click="btPickAll(false)">{{ tr('bt.pickNone') }}</el-button>
-                    <span class="hint">{{ tr('bt.pickSummary', { n: btPickCount, m: btFileRows.length, size: formatSize(btPickSize) }) }}</span>
-                    <el-button size="small" type="primary" :loading="btSelecting" @click="applyBtSelect(t)">{{ tr('bt.btnApplySelect') }}</el-button>
-                  </div>
-                  <div style="max-height:260px;overflow:auto">
-                    <div v-for="f in btFileRows" :key="f.index" class="row row--tight">
-                      <el-checkbox v-model="f.selected" style="flex:1;min-width:0;overflow:hidden">
-                        <span :title="f.path">{{ f.name }}</span>
-                      </el-checkbox>
-                      <span class="hint">{{ formatSize(f.size) }}</span>
-                    </div>
-                  </div>
-                  <span class="hint hint--block">{{ tr('bt.selectApplyHint') }}</span>
-                </div>
-                <div v-if="btLimitTask === t.id" class="stack stack--tight"
-                     style="margin-top:8px;padding-top:8px;border-top:1px solid var(--line)">
-                  <div class="row row--tight">
-                    <span class="hint">{{ tr('bt.dlWord') }}</span>
-                    <el-input size="small" v-model="btLimitDl" :placeholder="tr('bt.limitPh')" clearable style="width:190px"></el-input>
-                    <span class="hint">{{ tr('bt.ulWord') }}</span>
-                    <el-input size="small" v-model="btLimitUl" :placeholder="tr('bt.limitPh')" clearable style="width:190px"></el-input>
-                    <el-button size="small" type="primary" :loading="btLimitApplying" @click="applyBtLimit(t)">{{ tr('bt.btnApplyLimit') }}</el-button>
-                  </div>
-                  <span class="hint hint--block">{{ tr('bt.limitHint') }}</span>
-                  <span v-if="btLimitResult" class="hint hint--block">{{ btLimitResult }}</span>
-                </div>
-              </div>
-              <el-pagination v-if="pagers.btTasks.show" v-model:current-page="pagers.btTasks.page"
-                             :page-size="pagers.btTasks.pageSize" :total="pagers.btTasks.total"
-                             layout="total, prev, pager, next, jumper" size="small" background class="pager"></el-pagination>
-            </div>
 
-            <div class="card row--mb">
-              <div class="section-title">{{ tr('bt.trackerTitle') }}</div>
-              <div class="row row--tight row--mb">
-                <el-button size="small" plain :loading="btTrackerLoading" @click="loadBtTrackers">{{ tr('bt.btnReadTrackers') }}</el-button>
-                <el-button size="small" plain :loading="btTrackerRefreshing" @click="refreshBtTrackers">{{ tr('bt.btnRefreshTrackers') }}</el-button>
-                <span class="hint" style="flex:1">{{ btTrackerText }}</span>
+              <div class="card span-2">
+                <div class="section-title">{{ tr('bt.aria2Title') }}</div>
+                <el-form label-position="top" class="bt-form" @submit.prevent>
+                  <el-form-item label="aria2 RPC">
+                    <el-input size="small" v-model="settings.aria2_rpc" :placeholder="tr('bt.phRpc')" clearable :title="tr('bt.hintRpc')"></el-input>
+                  </el-form-item>
+                  <el-form-item label="aria2 Secret">
+                    <el-input size="small" v-model="settings.aria2_secret" clearable show-password :title="tr('bt.hintSecret')"></el-input>
+                  </el-form-item>
+                  <el-form-item :label="tr('bt.lblBin')">
+                    <el-input size="small" v-model="settings.aria2_bin" :placeholder="tr('bt.phBin')" clearable></el-input>
+                  </el-form-item>
+                  <el-form-item :label="tr('bt.lblAutostart')">
+                    <el-switch v-model="settings.aria2_autostart" :title="tr('bt.hintAutostart')"></el-switch>
+                  </el-form-item>
+                  <el-form-item :label="tr('bt.lblSeedRatio')">
+                    <el-input-number size="small" v-model="settings.torrent_seed_ratio" :min="0" :max="20" :step="0.1" :precision="2" :title="tr('bt.hintSeedRatio') + ' · ' + tr('bt.seedZeroHint')"></el-input-number>
+                  </el-form-item>
+                  <el-form-item :label="tr('bt.lblSeedTime')">
+                    <el-input-number size="small" v-model="settings.torrent_seed_time" :min="0" :max="604800" :step="600" :title="tr('bt.hintSeedTime') + ' · ' + tr('bt.seedZeroHint')"></el-input-number>
+                  </el-form-item>
+                  <el-form-item :label="tr('bt.lblMetaTimeout')">
+                    <el-input-number size="small" v-model="settings.torrent_meta_timeout" :min="30" :max="1800" :step="30" :title="tr('bt.hintMetaTimeout')"></el-input-number>
+                  </el-form-item>
+                  <el-form-item>
+                    <el-button size="small" type="primary" @click="saveSettings()">{{ tr('common.save') }}</el-button>
+                  </el-form-item>
+                </el-form>
+                <div class="row row--tight">
+                  <el-button size="small" plain :loading="aria2Checking" @click="checkAria2">{{ tr('bt.btnCheckAria2') }}</el-button>
+                  <el-button size="small" type="primary" plain :loading="aria2Installing" @click="installAria2">{{ tr('bt.btnInstall') }}</el-button>
+                </div>
+                <div class="hint hint--block" style="margin-top:6px">{{ aria2Info || tr('bt.aria2Probe') }}</div>
               </div>
-              <div v-if="btTrackerNote" class="hint hint--block" style="margin-bottom:8px">{{ btTrackerNote }}</div>
-              <el-form label-position="top" @submit.prevent>
-                <el-form-item :label="tr('bt.lblSources')">
-                  <el-input size="small" v-model="settings.bt_tracker_sources" type="textarea"
-                            :autosize="{ minRows: 2, maxRows: 6 }"
-                            :placeholder="tr('bt.phSources')"></el-input>
-                  <span class="hint">{{ tr('bt.hintSources') }}</span>
-                </el-form-item>
-                <el-form-item :label="tr('bt.lblManual')">
-                  <el-input size="small" v-model="settings.bt_trackers" type="textarea"
-                            :autosize="{ minRows: 2, maxRows: 6 }"
-                            :placeholder="tr('bt.phManual')"></el-input>
-                  <span class="hint">{{ tr('bt.hintManual') }}</span>
-                </el-form-item>
-                <el-form-item :label="tr('bt.lblAuto')">
-                  <el-switch v-model="settings.bt_tracker_auto_update"></el-switch>
-                  <span class="hint">{{ tr('bt.hintAuto') }}</span>
-                </el-form-item>
-                <el-form-item :label="tr('bt.lblInjectMax')">
-                  <el-input-number size="small" v-model="settings.bt_tracker_max" :min="0" :max="200" :step="5"></el-input-number>
-                  <span class="hint">{{ tr('bt.hintInjectMax') }}</span>
-                </el-form-item>
-                <el-form-item :label="tr('bt.lblDlLimit')">
-                  <el-input size="small" v-model="settings.bt_dl_limit" :placeholder="tr('bt.phLimitNew')" clearable style="max-width:240px"></el-input>
-                </el-form-item>
-                <el-form-item :label="tr('bt.lblUlLimit')">
-                  <el-input size="small" v-model="settings.bt_ul_limit" :placeholder="tr('bt.phLimitNew')" clearable style="max-width:240px"></el-input>
-                  <span class="hint">{{ tr('bt.hintNewLimit') }}</span>
-                </el-form-item>
-                <el-form-item :label="tr('bt.lblPieceFirst')">
-                  <el-switch v-model="settings.bt_prioritize_piece"></el-switch>
-                  <span class="hint">{{ tr('bt.hintPieceFirst') }}</span>
-                </el-form-item>
-              </el-form>
-              <div class="row row--tight">
-                <el-button size="small" type="primary" @click="saveSettings()">{{ tr('common.save') }}</el-button>
-              </div>
-              <div class="hint hint--block" style="margin-top:6px">{{ tr('bt.trackerApplyHint') }}</div>
-            </div>
 
-            <div class="card row--mb">
-              <div class="section-title">{{ tr('bt.classifyTitle') }}</div>
-              <div class="row row--tight row--mb">
-                <el-button size="small" plain @click="addBtRule">{{ tr('bt.btnRuleAdd') }}</el-button>
-                <span class="hint" :title="tr('bt.ruleTip')">{{ tr('bt.ruleHead') }}</span>
+              <div class="card span-2">
+                <div class="section-title">{{ tr('bt.classifyTitle') }}</div>
+                <div class="row row--tight row--mb">
+                  <el-button size="small" plain @click="addBtRule">{{ tr('bt.btnRuleAdd') }}</el-button>
+                  <span class="hint" :title="tr('bt.ruleTip')">{{ tr('bt.ruleHead') }}</span>
+                </div>
+                <div v-if="!settings.bt_auto_rules.length" class="empty-tip">{{ tr('bt.ruleEmpty') }}</div>
+                <div v-for="(r, i) in settings.bt_auto_rules" :key="i" class="row row--tight" style="margin-bottom:8px">
+                  <el-switch v-model="r.enabled" size="small" :title="tr('bt.ruleEnabledTip')"></el-switch>
+                  <el-input size="small" v-model="r.name" :placeholder="tr('bt.phRuleName')" style="width:110px"></el-input>
+                  <el-select size="small" v-model="r.scope" style="width:104px" :title="tr('bt.ruleScopeTip')">
+                    <el-option :label="tr('bt.scopeName')" value="name"></el-option>
+                    <el-option :label="tr('bt.scopeUrl')" value="url"></el-option>
+                  </el-select>
+                  <el-select size="small" v-model="r.mode" style="width:120px">
+                    <el-option :label="r.scope === 'url' ? tr('bt.modeContainsUrl') : tr('bt.modeContainsName')" value="contains"></el-option>
+                    <el-option :label="tr('bt.modeRegex')" value="regex"></el-option>
+                  </el-select>
+                  <el-input size="small" v-model="r.pattern" :placeholder="r.scope === 'url' ? tr('bt.phPatternUrl') : tr('bt.phPatternName')" style="flex:1;min-width:130px"></el-input>
+                  <el-input size="small" v-model="r.subdir" :placeholder="tr('bt.phSubdir')" style="flex:1;min-width:130px"></el-input>
+                  <el-button size="small" plain :disabled="i === 0" @click="moveBtRule(i, -1)">{{ tr('common.moveUp') }}</el-button>
+                  <el-button size="small" plain :disabled="i === settings.bt_auto_rules.length - 1" @click="moveBtRule(i, 1)">{{ tr('common.moveDown') }}</el-button>
+                  <el-button size="small" plain type="danger" @click="delBtRule(i)">{{ tr('common.del') }}</el-button>
+                </div>
+                <div class="row row--tight row--mb">
+                  <span>{{ tr('bt.fallbackLabel') }}</span>
+                  <el-input size="small" v-model="settings.bt_auto_fallback" :placeholder="tr('bt.phFallback')" clearable style="flex:1;min-width:0"></el-input>
+                </div>
+                <div class="row row--tight">
+                  <el-input size="small" v-model="btRuleTestName" :placeholder="tr('bt.phRuleTest')" style="flex:1;min-width:0" @paste="onPaste($event, 'text')"></el-input>
+                  <el-button size="small" plain :loading="btRuleTesting" @click="testBtRule">{{ tr('bt.btnRuleTest') }}</el-button>
+                  <el-button size="small" type="primary" @click="saveSettings()">{{ tr('common.save') }}</el-button>
+                </div>
+                <div v-if="btRuleTested" class="hint hint--block" style="margin-top:6px">{{ btRuleTested }}</div>
               </div>
-              <div v-if="!settings.bt_auto_rules.length" class="empty-tip">{{ tr('bt.ruleEmpty') }}</div>
-              <div v-for="(r, i) in settings.bt_auto_rules" :key="i" class="row row--tight" style="margin-bottom:8px">
-                <el-switch v-model="r.enabled" size="small" :title="tr('bt.ruleEnabledTip')"></el-switch>
-                <el-input size="small" v-model="r.name" :placeholder="tr('bt.phRuleName')" style="width:130px"></el-input>
-                <el-select size="small" v-model="r.scope" style="width:120px" :title="tr('bt.ruleScopeTip')">
-                  <el-option :label="tr('bt.scopeName')" value="name"></el-option>
-                  <el-option :label="tr('bt.scopeUrl')" value="url"></el-option>
-                </el-select>
-                <el-select size="small" v-model="r.mode" style="width:150px">
-                  <el-option :label="r.scope === 'url' ? tr('bt.modeContainsUrl') : tr('bt.modeContainsName')" value="contains"></el-option>
-                  <el-option :label="tr('bt.modeRegex')" value="regex"></el-option>
-                </el-select>
-                <el-input size="small" v-model="r.pattern" :placeholder="r.scope === 'url' ? tr('bt.phPatternUrl') : tr('bt.phPatternName')" style="flex:1;min-width:150px"></el-input>
-                <el-input size="small" v-model="r.subdir" :placeholder="tr('bt.phSubdir')" style="flex:1;min-width:150px"></el-input>
-                <el-button size="small" plain :disabled="i === 0" @click="moveBtRule(i, -1)">{{ tr('common.moveUp') }}</el-button>
-                <el-button size="small" plain :disabled="i === settings.bt_auto_rules.length - 1" @click="moveBtRule(i, 1)">{{ tr('common.moveDown') }}</el-button>
-                <el-button size="small" plain type="danger" @click="delBtRule(i)">{{ tr('common.del') }}</el-button>
-              </div>
-              <div class="row row--tight row--mt">
-                <span>{{ tr('bt.fallbackLabel') }}</span>
-                <el-input size="small" v-model="settings.bt_auto_fallback" :placeholder="tr('bt.phFallback')" clearable style="width:220px"></el-input>
-                <span class="hint">{{ tr('bt.fallbackHint') }}</span>
-              </div>
-              <div class="row row--tight row--mt">
-                <el-input size="small" v-model="btRuleTestName" :placeholder="tr('bt.phRuleTest')" style="flex:1;min-width:220px" @paste="onPaste($event, 'text')"></el-input>
-                <el-button size="small" plain :loading="btRuleTesting" @click="testBtRule">{{ tr('bt.btnRuleTest') }}</el-button>
-                <el-button size="small" type="primary" @click="saveSettings()">{{ tr('common.save') }}</el-button>
-              </div>
-              <div v-if="btRuleTested" class="hint hint--block" style="margin-top:6px">{{ btRuleTested }}</div>
-              <div class="hint hint--block" style="margin-top:6px">{{ tr('bt.ruleFootHint') }}</div>
-            </div>
-
-            <div class="card row--mb">
-              <div class="section-title">{{ tr('bt.aria2Title') }}</div>
-              <el-form label-position="top" @submit.prevent>
-                <el-form-item label="aria2 RPC">
-                  <el-input size="small" v-model="settings.aria2_rpc" :placeholder="tr('bt.phRpc')" clearable style="max-width:420px"></el-input>
-                  <span class="hint">{{ tr('bt.hintRpc') }}</span>
-                </el-form-item>
-                <el-form-item label="aria2 Secret">
-                  <el-input size="small" v-model="settings.aria2_secret" clearable show-password style="max-width:420px"></el-input>
-                  <span class="hint">{{ tr('bt.hintSecret') }}</span>
-                </el-form-item>
-                <el-form-item :label="tr('bt.lblBin')">
-                  <el-input size="small" v-model="settings.aria2_bin" :placeholder="tr('bt.phBin')" clearable style="max-width:420px"></el-input>
-                </el-form-item>
-                <el-form-item :label="tr('bt.lblAutostart')">
-                  <el-switch v-model="settings.aria2_autostart"></el-switch>
-                  <span class="hint">{{ tr('bt.hintAutostart') }}</span>
-                </el-form-item>
-                <el-form-item :label="tr('bt.lblSeedRatio')">
-                  <el-input-number size="small" v-model="settings.torrent_seed_ratio" :min="0" :max="20" :step="0.1" :precision="2"></el-input-number>
-                  <span class="hint">{{ tr('bt.hintSeedRatio') }}</span>
-                </el-form-item>
-                <el-form-item :label="tr('bt.lblSeedTime')">
-                  <el-input-number size="small" v-model="settings.torrent_seed_time" :min="0" :max="604800" :step="600"></el-input-number>
-                  <span class="hint">{{ tr('bt.hintSeedTime') }}</span>
-                </el-form-item>
-                <el-form-item :label="tr('bt.lblMetaTimeout')">
-                  <el-input-number size="small" v-model="settings.torrent_meta_timeout" :min="30" :max="1800" :step="30"></el-input-number>
-                  <span class="hint">{{ tr('bt.hintMetaTimeout') }}</span>
-                </el-form-item>
-              </el-form>
-              <div class="row row--tight">
-                <el-button size="small" plain :loading="aria2Checking" @click="checkAria2">{{ tr('bt.btnCheckAria2') }}</el-button>
-                <el-button size="small" type="primary" plain :loading="aria2Installing" @click="installAria2">{{ tr('bt.btnInstall') }}</el-button>
-                <el-button size="small" type="primary" @click="saveSettings()">{{ tr('common.save') }}</el-button>
-              </div>
-              <div class="hint hint--block" style="margin-top:6px">{{ aria2Info || tr('bt.aria2Probe') }}</div>
-              <div class="hint hint--block">{{ tr('bt.seedZeroHint') }}</div>
             </div>
           </div>
 
           <!-- 信息 -->
           <div v-if="page === 'info'">
             <div class="card">
-              <div class="section-title">{{ tr('info.title') }}</div>
               <div class="row">
                 <el-input
                   v-model="analyzeUrl"
@@ -2923,9 +3032,6 @@
                     <el-button size="small" :disabled="srtEdit.sel < 0" @click="srtShiftSel(0.5)">{{ tr('files.btnShiftFwd') }}</el-button>
                     <el-button size="small" type="primary" :disabled="!srtEdit.dirty" :loading="srtEdit.busy" @click="srtSave">{{ tr('files.btnSrtSave') }}</el-button>
                     <el-button size="small" :disabled="!srtEdit.dirty" @click="srtDiscard">{{ tr('files.btnSrtDiscard') }}</el-button>
-                  </div>
-                  <div class="hint hint--block" style="margin-bottom:6px">
-                    {{ tr('files.proofHintA') }} <code>{{ tr('files.bakCode') }}</code> {{ tr('files.proofHintB') }}
                   </div>
                   <div class="row row--flush" style="margin-bottom:6px">
                     <el-button size="small" :loading="srtQc.busy" @click="runSrtQc">{{ tr('files.btnQc') }}</el-button>
@@ -3287,31 +3393,9 @@
           
           <!-- 语音工具 -->
           <div v-if="page === 'voice'">
-            <div class="card">
-              <div class="section-title">{{ tr('voice.title') }}</div>
-              <div class="hint" style="margin-bottom:10px">{{ tr('voice.intro') }}</div>
-              <div class="row row--tight row--mb">
-                <el-button size="small" type="primary" plain :loading="installingVoice" @click="installVoicePkgs">{{ tr('voice.btnInstall') }}</el-button>
-                <span class="hint">{{ voiceStatusText }}</span>
-              </div>
-              <el-form label-position="top" size="small">
-                <el-form-item :label="tr('settings.cfg.edge_tts_voice')">
-                  <!-- 空串在这一格有含义：后端拿它按字幕目标语言挑预设音色（voice_tools.EDGE_VOICE_PRESETS）。
-                       el-select 把空值当「没选」，所以不做成选项，改用 placeholder 说清它的效果、clearable 让人清得回去。 -->
-                  <el-select size="small" v-model="settings.edge_tts_voice" filterable clearable
-                             :placeholder="tr('voice.ttsPh')" style="width:280px">
-                    <el-option :label="tr('voice.vXiaoxiao')" value="zh-CN-XiaoxiaoNeural"></el-option>
-                    <el-option :label="tr('voice.vYunxi')" value="zh-CN-YunxiNeural"></el-option>
-                    <el-option :label="tr('voice.vJenny')" value="en-US-JennyNeural"></el-option>
-                    <el-option :label="tr('voice.vNanami')" value="ja-JP-NanamiNeural"></el-option>
-                    <el-option :label="tr('voice.vHiumaan')" value="zh-HK-HiuMaanNeural"></el-option>
-                  </el-select>
-                </el-form-item>
-              </el-form>
-            </div>
-            <div class="card">
+            <div class="bento">
+              <div class="card span-4">
               <div class="section-title">{{ tr('voice.sepTitle') }}</div>
-              <div class="hint" style="margin-bottom:10px">{{ tr('voice.sepIntro') }}</div>
               <div class="row row--tight row--mb">
                 <el-button size="small" type="primary" plain :loading="sepBusy" @click="setupSeparatorEnv">{{ tr('voice.btnSetupEnv') }}</el-button>
                 <el-button size="small" plain :loading="sepBusy" @click="setupSeparatorWeights">{{ tr('voice.btnWeights') }}</el-button>
@@ -3330,7 +3414,6 @@
                   <el-select size="small" v-model="settings.roformer_model" style="width:320px">
                     <el-option v-for="m in sepModels" :key="m.id" :label="sepModelLabel(m)" :value="m.id" :disabled="!m.present"></el-option>
                   </el-select>
-                  <span class="hint">{{ tr('voice.rFormerHint') }}</span>
                 </el-form-item>
                 <el-form-item v-else :label="tr('settings.cfg.demucs_model')">
                   <el-select size="small" v-model="settings.demucs_model" style="width:220px">
@@ -3338,7 +3421,6 @@
                     <el-option label="htdemucs_ft" value="htdemucs_ft"></el-option>
                     <el-option label="mdx_extra" value="mdx_extra"></el-option>
                   </el-select>
-                  <span class="hint">{{ tr('voice.demucsHint') }}</span>
                 </el-form-item>
                 <el-form-item :label="tr('voice.deviceLabel')">
                   <el-select size="small" v-model="settings.ai_device" style="width:220px">
@@ -3353,11 +3435,30 @@
                   <span class="hint">{{ tr('voice.fp16Hint') }}</span>
                 </el-form-item>
               </el-form>
-              <div class="hint">{{ tr('voice.usage') }}</div>
+              </div>
+              <div class="card span-2">
+                <div class="row row--tight row--mb">
+                  <el-button size="small" type="primary" plain :loading="installingVoice" @click="installVoicePkgs">{{ tr('voice.btnInstall') }}</el-button>
+                  <span class="hint">{{ voiceStatusText }}</span>
+                </div>
+                <el-form label-position="top" size="small">
+                  <el-form-item :label="tr('settings.cfg.edge_tts_voice')">
+                    <!-- 空串在这一格有含义：后端拿它按字幕目标语言挑预设音色（voice_tools.EDGE_VOICE_PRESETS）。
+                         el-select 把空值当「没选」，所以不做成选项，改用 placeholder 说清它的效果、clearable 让人清得回去。 -->
+                    <el-select size="small" v-model="settings.edge_tts_voice" filterable clearable
+                               :placeholder="tr('voice.ttsPh')" style="width:100%">
+                      <el-option :label="tr('voice.vXiaoxiao')" value="zh-CN-XiaoxiaoNeural"></el-option>
+                      <el-option :label="tr('voice.vYunxi')" value="zh-CN-YunxiNeural"></el-option>
+                      <el-option :label="tr('voice.vJenny')" value="en-US-JennyNeural"></el-option>
+                      <el-option :label="tr('voice.vNanami')" value="ja-JP-NanamiNeural"></el-option>
+                      <el-option :label="tr('voice.vHiumaan')" value="zh-HK-HiuMaanNeural"></el-option>
+                    </el-select>
+                  </el-form-item>
+                </el-form>
+              </div>
             </div>
             <div class="card">
               <div class="section-title">{{ tr('voice.rtTitle') }}</div>
-              <div class="hint" style="margin-bottom:8px">{{ tr('voice.rtIntro') }}</div>
               <div class="row row--tight row--mb">
                 <el-button size="small" :type="rtRecording ? 'danger' : 'primary'" @click="toggleRealtime">{{ rtRecording ? tr('common.stop') : tr('voice.rtStart') }}</el-button>
                 <el-checkbox v-model="rtTranslate">{{ tr('voice.rtTranslate') }}</el-checkbox>
@@ -3374,10 +3475,6 @@
           <!-- 音乐搜索 -->
           <div v-if="page === 'music'">
             <div class="card">
-              <div class="section-title">{{ tr('music.title') }}</div>
-              <div class="hint" style="margin-bottom:10px">
-                {{ tr('music.intro') }}
-              </div>
               <div class="row row--top row--mb">
                 <el-select v-model="musicSearchType" style="width:120px" size="large">
                   <el-option :label="tr('music.typeSong')" value="song"></el-option>
@@ -3640,22 +3737,11 @@
           <!-- Telegram 频道批量 -->
           <div v-if="page === 'tg'">
             <div class="card">
-              <div class="section-title">{{ tr('tg.pageTitle') }}</div>
               <div class="row row--mb">
                 <el-radio-group v-model="tgMode" size="small">
                   <el-radio-button label="anon">{{ tr('tg.modeAnon') }}</el-radio-button>
                   <el-radio-button label="mt">{{ tr('tg.modeMt') }}</el-radio-button>
                 </el-radio-group>
-                <span class="hint">
-                  <template v-if="tgMode === 'anon'">
-                    {{ tr('tg.anonHint1') }}
-                    {{ tr('tg.anonHint2a') }}<b>{{ tr('tg.typeVideo') }}</b>{{ tr('tg.anonHint2b') }}<b>{{ tr('tg.boldFilesAudio') }}</b>{{ tr('tg.anonHint2c') }}
-                  </template>
-                  <template v-else>
-                    {{ tr('tg.mtHint1a') }}<b>{{ tr('tg.boldPrivate') }}</b>{{ tr('tg.mtHint1b') }}<b>{{ tr('tg.boldFilesAudio') }}</b>{{ tr('tg.mtHint1c') }}
-                    {{ tr('tg.mtHint2') }}
-                  </template>
-                </span>
               </div>
               <div v-if="tgMode === 'mt'" style="margin-bottom:10px">
                 <div class="row row--tight row--mb">
@@ -3677,10 +3763,6 @@
                     <el-input v-model="tgMtForm.proxy" size="small" style="width:180px" :placeholder="tr('tg.proxyPh')"></el-input>
                     <el-input v-model="tgMtForm.session_name" size="small" style="width:150px" :placeholder="tr('tg.sessionPh')"></el-input>
                     <el-button size="small" type="primary" :loading="tgMtBusy" @click="saveTgMtConfig"><svg class="btn-ico"><use href="#i-save"></use></svg>{{ tr('tg.saveCred') }}</el-button>
-                    <span class="hint">
-                      {{ tr('tg.credHint1') }} <code>my.telegram.org</code> {{ tr('tg.credHint2') }}
-                      {{ tr('tg.credHint3') }}
-                    </span>
                   </div>
                   <div class="row row--tight">
                     <el-input v-model="tgMtPhone" size="small" style="width:170px" placeholder="+8613800000000"></el-input>
@@ -3689,7 +3771,6 @@
                     <el-input v-model="tgMtPwd" size="small" style="width:150px" type="password" show-password :placeholder="tr('tg.pwdPh')"></el-input>
                     <el-button size="small" type="primary" :loading="tgMtBusy" @click="tgMtSignIn"><svg class="btn-ico"><use href="#i-login"></use></svg>{{ tr('tg.signIn') }}</el-button>
                     <el-button size="small" plain :loading="tgMtBusy" @click="tgMtLogout">{{ tr('tg.logout') }}</el-button>
-                    <span class="hint">{{ tr('tg.codeHint') }}</span>
                   </div>
                 </div>
               </div>
@@ -3774,7 +3855,6 @@
           <!-- 聚合搜索 -->
           <div v-if="page === 'search'">
             <div class="card">
-              <div class="section-title">{{ tr('page.search') }}</div>
               <div class="row">
                 <el-input v-model="searchQuery" :placeholder="tr('search.kwPh')" size="large" clearable style="flex:1;min-width:240px" @paste="onPaste($event, 'text')" @keyup.enter="doSearch"></el-input>
                 <el-button size="large" type="primary" :loading="searching" @click="doSearch">
@@ -3841,7 +3921,6 @@
           <!-- 收藏 / 关注 / 稍后再看 -->
           <div v-if="page === 'favs'">
             <div class="card">
-              <div class="section-title">{{ tr('favs.title') }}</div>
               <div class="row row--mb">
                 <el-radio-group v-model="favTab" size="small" @change="loadFavTab">
                   <el-radio-button label="folders">{{ tr('favs.tabFolders') }}</el-radio-button>
@@ -3909,7 +3988,6 @@
                     <el-option :label="tr('subs.modeAuto')" value=""></el-option>
                     <el-option :label="tr('subs.modeMt')" value="mt"></el-option>
                   </el-select>
-                  <span class="hint">{{ tr('subs.tgModeHint') }}</span>
                 </div>
                 <div class="row row--mt">
                   <el-button size="large" type="primary" :loading="subAdding" @click="addSub">
@@ -3931,10 +4009,6 @@
                     <span v-if="subNewTotal" class="hstat hstat--live" :title="tr('subs.newTotalTip')">{{ tr('subs.newTotal', { n: subNewTotal }) }}</span>
                     <span v-if="subs.filter(s => s.last_error).length" class="hstat" style="color:var(--bad);border-color:var(--bad)">{{ tr('subs.readFailCount', { n: subs.filter(s => s.last_error).length }) }}</span>
                   </div>
-                  <p class="hint hint--block">
-                    {{ tr('subs.addHintA') }}<strong>{{ tr('subs.addHintStrong') }}</strong>{{ tr('subs.addHintB') }}
-                    {{ tr('subs.backfillPointer') }}
-                  </p>
                 </div>
               </div>
             </div>
@@ -4032,7 +4106,6 @@
               <el-form label-width="128px" size="small" style="max-width:900px">
                 <el-form-item :label="tr('subs.formAuto')">
                   <el-switch v-model="ruleForm.auto_download"></el-switch>
-                  <span class="hint" style="margin-left:10px">{{ tr('subs.autoOffHint') }}</span>
                 </el-form-item>
                 <el-form-item v-if="!ruleSubIsMusic" :label="tr('subs.formTypes')">
                   <el-checkbox-group v-model="ruleForm.types">
@@ -4100,10 +4173,6 @@
                   <el-input size="small" v-model="ruleForm.filename_template" :placeholder="tr('subs.tplPh')" clearable style="width:520px"></el-input>
                 </el-form-item>
                 <el-form-item v-if="ruleSubIsMusic" label=" ">
-                  <span class="hint" style="margin:0">
-                    {{ tr('subs.musicRuleHintA') }}
-                    {{ tr('subs.musicRuleHintB') }}
-                  </span>
                 </el-form-item>
                 <el-form-item :label="tr('subs.formMax')">
                   <el-input-number size="small" v-model="ruleForm.max_per_scan" :min="0" :max="50" :step="5"></el-input-number>
@@ -4115,10 +4184,6 @@
                 <el-button size="small" type="primary" :loading="ruleSaving" @click="saveSubRules"><svg class="btn-ico"><use href="#i-save"></use></svg>{{ tr('subs.btnSave') }}</el-button>
                 <el-button size="small" @click="closeSubRules">{{ tr('common.cancel') }}</el-button>
               </div>
-              <p class="hint hint--block">
-                {{ tr('subs.ruleHintA') }}
-                {{ tr('subs.ruleHintB') }}
-              </p>
             </div>
 
             <div v-if="backfillSub" class="card">
@@ -4134,16 +4199,6 @@
                 <el-button size="small" type="primary" :loading="backfilling" @click="runSubBackfill"><svg class="btn-ico"><use href="#i-list"></use></svg>{{ tr('subs.btnBackfill') }}</el-button>
                 <span class="hint" style="margin:0">{{ tr('subs.curRule', { r: backfillSub.rules_text || tr('subs.defaultRule') }) }}</span>
               </div>
-              <p class="hint hint--block">
-                <template v-if="backfillSub.kind === 'music'">
-                  {{ tr('subs.bfHintMusic') }}
-                </template>
-                <template v-else>
-                  {{ tr('subs.bfHintOther') }}
-                  <span v-if="backfillSub.kind === 'tg'">{{ tr('subs.bfHintTg') }}</span>
-                </template>
-                {{ tr('subs.bfHintTrunc') }}
-              </p>
             </div>
 
             <div v-if="subPlanSub" id="sub-plan-card" class="card">
@@ -4156,9 +4211,6 @@
                 <el-button size="small" type="primary" :loading="subBusy === subPlanSub.id" @click="runSubPlanNow"><svg class="btn-ico"><use href="#i-play"></use></svg>{{ tr('subs.btnPlanNow') }}</el-button>
                 <span class="hint" style="margin:0">{{ tr('subs.planRule', { r: (subPlan && subPlan.rules_text) || subPlanSub.rules_text || tr('subs.defaultRule') }) }}</span>
               </div>
-              <p class="hint hint--block">
-                {{ tr('subs.planHintA') }}<strong>{{ tr('subs.planHintStrong') }}</strong>{{ tr('subs.planHintB') }}
-              </p>
               <div v-if="subPlan && subPlan.error" class="hint hint--block" style="color:var(--bad)">{{ tr('subs.planError', { e: subPlan.error }) }}</div>
               <template v-else-if="subPlanLoading && !subPlan">
                 <div class="empty-tip">{{ tr('subs.planLoading') }}</div>
@@ -4244,7 +4296,6 @@
           <!-- 直播录制 -->
           <div v-if="page === 'live'">
             <div class="card">
-              <div class="section-title">{{ tr('live.title') }}</div>
               <el-input size="large" v-model="liveUrl" type="textarea" :autosize="{ minRows: 3, maxRows: 12 }" :placeholder="tr('live.urlPh')"></el-input>
               <div class="row row--mt">
                 <el-button size="large" type="primary" :loading="submitting" @click="startLiveRecord">
@@ -4260,9 +4311,6 @@
                   <span class="hint">{{ tr('auth.minutesWord') }}</span>
                 </span>
               </div>
-              <p class="hint hint--block">
-                {{ tr('live.hintA') }}<strong>{{ tr('live.hintLive') }}</strong>{{ tr('live.hintB') }}
-              </p>
             </div>
 
             <div class="card">
@@ -4341,7 +4389,6 @@
                     <el-input v-model="liveRoomCfg.win_end" size="small" :placeholder="tr('live.cfgWinEndPh')"></el-input>
                   </div>
                 </div>
-                <div class="hint" style="margin-top:6px">{{ tr('live.cfgWinHint') }}</div>
                 <template #footer>
                   <div class="row row--tight" style="justify-content:flex-end">
                     <el-button size="small" @click="liveRoomCfg.visible = false">{{ tr('common.cancel') }}</el-button>
@@ -4401,9 +4448,6 @@
           <div v-if="page === 'sniff'">
             <div class="card">
               <div class="section-title">{{ tr('sniff.titleBrowser') }}</div>
-              <p class="hint hint--block">
-                {{ tr('sniff.browserHint') }}
-              </p>
               <div class="row row--tight row--mb">
                 <el-input size="small" v-model="sniffUrl" clearable :placeholder="tr('sniff.urlPh')" style="flex:1;min-width:220px"></el-input>
                 <el-input-number v-model="browserSniffPort" :min="9222" :max="65535" size="small"></el-input-number>
@@ -4419,17 +4463,9 @@
                 <span v-if="browserSniff.tabs && browserSniff.tabs.length"> {{ tr('sniff.stateTabs', { t: browserSniff.tabs.length }) }}</span>
                 <span v-if="browserSniff.error" style="color:var(--bad)"> · {{ browserSniff.error }}</span>
               </div>
-              <div class="hint" style="margin-bottom:14px;padding:10px;background:var(--accent-soft);border-radius:10px;line-height:1.6">
-                <b>{{ tr('sniff.usageHead') }}</b><br/>
-                {{ tr('sniff.usageStep1a') }}<code>chrome --remote-debugging-port=9222</code>{{ tr('sniff.usageStep1b') }}<br/>
-                {{ tr('sniff.usageStep2') }}<br/>
-                {{ tr('sniff.usageStep3') }}<br/>
-                {{ tr('sniff.usageStep4') }}
-              </div>
             </div>
             <div class="card">
               <div class="section-title">{{ tr('sniff.titleStatic') }}</div>
-              <p class="hint hint--block">{{ tr('sniff.staticHint') }}</p>
               <div class="path-row">
                 <el-input size="small" v-model="sniffUrl" clearable placeholder="https://example.com/watch/..." @keyup.enter="runSniff"></el-input>
                 <el-button size="small" type="primary" :loading="sniffLoading" @click="runSniff"><svg class="btn-ico"><use href="#i-search"></use></svg>{{ tr('sniff.btnRun') }}</el-button>
@@ -4474,9 +4510,6 @@
             </div>
             <div class="card">
               <div class="section-title">{{ tr('sniff.titleCatcatch') }}</div>
-              <p class="hint hint--block">
-                {{ tr('sniff.ccHint') }}
-              </p>
               <div class="row row--tight row--mb">
                 <span class="hint" style="margin:0;min-width:92px">{{ tr('sniff.ccLblSend') }}</span>
                 <el-input size="small" :model-value="catcatch.endpoint" readonly style="flex:1;min-width:260px"></el-input>
@@ -4491,18 +4524,12 @@
                 {{ tr('sniff.ccStatA', { got: catcatch.stat.received || 0, dropped: catcatch.stat.dropped || 0 }) }}
                 {{ tr('sniff.ccStatB', { waiting: catcatch.keys_waiting || 0 }) }}<span v-if="catcatch.stat.last"> · {{ tr('sniff.ccLast', { at: catcatch.stat.last }) }}</span>
               </div>
-              <div class="hint" style="margin-bottom:14px;padding:10px;background:var(--accent-soft);border-radius:10px;line-height:1.7">
-                <b>{{ tr('sniff.ccNotesTitle') }}</b><br/>
-                {{ tr('sniff.ccNote1') }}<br/>
-                {{ tr('sniff.ccNote2') }}
-              </div>
               <div class="row row--tight">
                 <el-button size="small" @click="triggerCatcatchImport">{{ tr('sniff.btnImportCfg') }}</el-button>
                 <input ref="catcatchFileInput" type="file" accept=".txt,.json,text/plain" style="display:none" @change="onCatcatchConfig" />
                 <el-button size="small" plain :disabled="!catcatch.rules.length" @click="clearCatcatchRules">{{ tr('sniff.btnClearRules') }}</el-button>
                 <el-button size="small" plain @click="loadCatcatch">{{ tr('common.refresh') }}</el-button>
               </div>
-              <div class="hint" style="margin-top:8px">{{ tr('sniff.importCfgHint') }}</div>
               <table v-if="catcatch.rules.length" class="fmt-table" style="margin-top:14px">
                 <thead>
                   <tr>
@@ -4532,8 +4559,7 @@
           <!-- 资源库 -->
           <div v-if="page === 'library'">
             <div class="card">
-              <div class="row row--spread row--tight">
-                <div class="section-title" style="margin:0">{{ tr('library.title') }}</div>
+              <div class="row row--tight">
                 <div class="row row--tight">
                   <el-select v-model="libraryFilter" style="width:120px" size="small">
                     <el-option :label="tr('library.filterAll')" value="all"></el-option>
@@ -4546,7 +4572,6 @@
                              @click="checkLibraryQuality()">{{ tr('library.qaBtn') }}</el-button>
                 </div>
               </div>
-              <p class="hint hint--block">{{ tr('library.scanHint') }}</p>
               <p v-if="libQaDone" class="hint hint--block">{{ tr('library.qaLead', { n: libQaDone, spec: libQaSpec || tr('library.qaUnset') }) }} {{ tr('library.qaMid', { low: libQaLow, unknown: libQaUnknown }) }}<span v-if="libQaMissing">{{ tr('library.qaMissingPart', { n: libQaMissing }) }}</span><span v-if="libQaRefLow">{{ tr('library.qaRefPart', { n: libQaRefLow }) }}</span>{{ tr('library.qaTail') }}</p>
               <div v-if="!libraryFiltered.length" class="empty-tip">{{ tr('library.empty') }}</div>
               <div v-else class="table-scroll" style="margin-top:10px">
@@ -4598,8 +4623,18 @@
 
           <div v-if="page === 'settings'">
             <div class="settings-wrap">
+              <div class="settings-tabs">
+                <button v-for="tab in SETTINGS_TABS" :key="tab.key" type="button"
+                        class="settings-tab" :class="{ active: stab === tab.key }"
+                        @click="stab = tab.key">{{ tr(tab.label) }}</button>
+                <div class="settings-tabs__actions">
+                  <el-button size="small" type="primary" @click="saveSettings()"><svg class="btn-ico"><use href="#i-save"></use></svg>{{ tr('common.save') }}</el-button>
+                  <el-button v-if="stab === 'cookie'" size="small" @click="testCookie">{{ tr('settings.checkCookieBtn') }}</el-button>
+                </div>
+              </div>
+              <div class="settings-grid">
               <div class="settings-main">
-                <div class="card">
+                <div v-show="stab === 'net'" class="card card--wide">
                   <div class="section-title">{{ tr('settings.netTitle') }}</div>
                   <el-form label-position="top" @submit.prevent>
                     <el-form-item :label="tr('settings.proxyModeLabel')">
@@ -4621,11 +4656,6 @@
                                      :loading="netBusy" @click="resetNetwork">{{ tr('settings.resetNetworkBtn') }}</el-button>
                         </template>
                       </el-popconfirm>
-                      <div class="hint">
-                        <template v-if="settings.proxy_mode === 'auto'">{{ tr('settings.proxyModeHintAuto') }}</template>
-                        <template v-else-if="settings.proxy_mode === 'always'">{{ tr('settings.proxyModeHintAlways') }}</template>
-                        <template v-else>{{ tr('settings.proxyModeHintNone') }}</template>
-                      </div>
                     </el-form-item>
                     <el-form-item :label="tr('settings.proxyLabel')">
                       <el-input size="small" v-model="settings.proxy" placeholder="http://127.0.0.1:7890" clearable></el-input>
@@ -4635,36 +4665,6 @@
                         <span v-else style="color:var(--bad)">{{ tr('settings.notDetected') }}</span>
                         <span v-if="netInfo.system_proxy_source">（{{ netInfo.system_proxy_source }}）</span>
                         —— {{ tr('settings.proxyAddrHint') }}
-                      </div>
-                    </el-form-item>
-                    <el-form-item :label="tr('settings.proxyByPlatformLabel')" v-if="settings.proxy_mode === 'auto'">
-                      <table class="fmt-table fmt-table--wrap">
-                        <thead>
-                          <tr><th style="width:118px">{{ tr('settings.colPlatform') }}</th><th style="width:96px">{{ tr('settings.colVerdict') }}</th><th style="width:146px">{{ tr('settings.colOverride') }}</th><th>{{ tr('settings.colCurrentProxy') }}</th></tr>
-                        </thead>
-                        <tbody>
-                          <tr v-for="row in netInfo.platforms" :key="row.key">
-                            <td>{{ row.label }}</td>
-                            <td>
-                              <span :style="{
-                                color: row.verdict === 'proxy' ? 'var(--ok)' : row.verdict === 'direct' ? 'var(--bad)' : 'var(--muted)',
-                                fontWeight: 700
-                              }">{{ netVerdictText(row.verdict) }}</span>
-                            </td>
-                            <td>
-                              <el-select :model-value="netOverrideValue(row)" size="small" style="width:118px"
-                                         @change="v => setProxyOverride(row, v)">
-                                <el-option :label="tr('opt.auto')" value="auto"></el-option>
-                                <el-option :label="tr('settings.optProxy')" value="proxy"></el-option>
-                                <el-option :label="tr('settings.optDirect')" value="direct"></el-option>
-                              </el-select>
-                            </td>
-                            <td style="word-break:break-all">{{ row.proxy || '—' }}</td>
-                          </tr>
-                        </tbody>
-                      </table>
-                      <div class="hint">
-                        {{ tr('settings.proxyByPlatformHint') }}
                       </div>
                     </el-form-item>
                     <el-form-item :label="tr('settings.nocheckcertificateLabel')">
@@ -4687,11 +4687,6 @@
                         :rows="3"
                         :placeholder="tr('settings.speedWindowsPh')"
                       ></el-input>
-                      <div class="hint hint--block">
-                        {{ tr('settings.speedWindowsHint1') }}<br>
-                        {{ tr('settings.speedWindowsHint2') }}<br>
-                        {{ tr('settings.speedWindowsHint3') }}
-                      </div>
                       <div class="row row--tight" style="margin-top:6px">
                         <el-button size="small" plain @click="checkSpeedWindows()">{{ tr('settings.checkFormatBtn') }}</el-button>
                         <span v-if="speedWinStat" class="hint">
@@ -4703,26 +4698,23 @@
                         </span>
                       </div>
                     </el-form-item>
-                    <el-form-item :label="tr('settings.runWindowLabel')">
+                    <el-form-item :label="tr('settings.runWindowLabel')" class="queue-item">
                       <el-input size="small"
                         v-model="settings.run_window"
                         type="textarea"
                         :rows="3"
                         :placeholder="tr('settings.runWindowPh')"
                       ></el-input>
-                      <div class="hint hint--block">
-                        {{ tr('settings.runWindowHint1a') }}<b>{{ tr('settings.runWindowHint1b') }}</b>{{ tr('settings.runWindowHint1c') }}<br>
-                        {{ tr('settings.runWindowHint2') }}<br>
-                        {{ tr('settings.runWindowHint3') }}
-                      </div>
-                      <div v-for="q in queueRows" :key="'rw-' + q.name" class="row row--tight" style="margin-top:4px;width:100%">
-                        <span style="width:104px;font-size:12px">{{ q.name }}</span>
-                        <el-input size="small" style="max-width:240px"
-                          v-model="settings.queue_windows[q.name]"
-                          :placeholder="tr('settings.queueWindowPh')"
-                          @change="checkRunWindows(true)"></el-input>
-                        <span v-if="q.windows && !q.open" class="hint">{{ tr('settings.queueClosed', { n: q.held, at: q.resume_at }) }}</span>
-                        <span v-else-if="q.windows" class="hint">{{ tr('settings.queueOpen') }}</span>
+                      <div class="queue-grid">
+                        <div v-for="q in queueRows" :key="'rw-' + q.name" class="row row--tight">
+                          <span style="width:88px;font-size:12px">{{ q.name }}</span>
+                          <el-input size="small" style="max-width:200px"
+                            v-model="settings.queue_windows[q.name]"
+                            :placeholder="tr('settings.queueWindowPh')"
+                            @change="checkRunWindows(true)"></el-input>
+                          <span v-if="q.windows && !q.open" class="hint">{{ tr('settings.queueClosed', { n: q.held, at: q.resume_at }) }}</span>
+                          <span v-else-if="q.windows" class="hint">{{ tr('settings.queueOpen') }}</span>
+                        </div>
                       </div>
                       <div class="row row--tight" style="margin-top:6px">
                         <el-button size="small" plain @click="checkRunWindows()">{{ tr('settings.checkFormatBtn') }}</el-button>
@@ -4736,7 +4728,6 @@
                     </el-form-item>
                     <el-form-item :label="tr('settings.ytdlpExtraArgsLabel')">
                       <el-input size="small" v-model="settings.ytdlp_extra_args" :placeholder="tr('settings.ytdlpExtraArgsPh')" clearable></el-input>
-                      <div class="hint hint--block">{{ tr('settings.ytdlpExtraArgsHint') }}</div>
                     </el-form-item>
                     <el-form-item :label="tr('settings.maxPerHostLabel')">
                       <el-input-number size="small" v-model="settings.max_per_host" :min="1" :max="8"></el-input-number>
@@ -4760,7 +4751,6 @@
                       <el-input-number size="small" v-model="settings.aria2_for_large_mb" :min="0" :max="2000"></el-input-number>
                       <span class="hint" style="margin-left:8px">{{ tr('settings.aria2ForLargeMbHint') }}</span>
                     </el-form-item>
-                    <div class="hint hint--block" style="margin-bottom:14px">{{ tr('settings.aria2MovedHint') }}</div>
                     <el-form-item :label="tr('settings.httpImpersonateLabel')">
                       <el-switch v-model="settings.http_impersonate"></el-switch>
                       <span class="hint" style="margin-left:8px">{{ tr('settings.httpImpersonateHint') }}</span>
@@ -4776,7 +4766,6 @@
                         <el-button size="small" plain :loading="mirrorProbing === 'github'" @click="probeMirrors('github')">{{ tr('settings.probeMirrorBtn') }}</el-button>
                         <span class="hint">{{ mirrorHint('github') }}</span>
                       </div>
-                      <div class="hint">{{ tr('settings.githubMirrorHint') }}</div>
                     </el-form-item>
                     <el-form-item :label="tr('settings.pipMirrorLabel')">
                       <el-select size="small" v-model="settings.pip_mirror" filterable allow-create
@@ -4789,9 +4778,6 @@
                         <el-button size="small" plain :loading="mirrorProbing === 'pypi'" @click="probeMirrors('pypi')">{{ tr('settings.probeMirrorBtn') }}</el-button>
                         <span class="hint">{{ mirrorHint('pypi') }}</span>
                       </div>
-                      <div class="hint">
-                        {{ tr('settings.pipMirrorHint') }}
-                      </div>
                     </el-form-item>
                     <el-form-item :label="tr('settings.subFirstDownloadNLabel')">
                       <el-input-number size="small" v-model="settings.sub_first_download_n" :min="0" :max="50"></el-input-number>
@@ -4799,8 +4785,39 @@
                     </el-form-item>
                   </el-form>
                 </div>
+
+                <div v-show="stab === 'net' && settings.proxy_mode === 'auto'" class="card card--span2 proxy-card">
+                  <div class="section-title" style="margin-bottom:12px">{{ tr('settings.proxyByPlatformLabel') }}</div>
+                  <div class="proxy-table-wrap">
+                    <table class="fmt-table fmt-table--wrap" style="min-width:640px">
+                      <thead>
+                        <tr><th style="width:140px">{{ tr('settings.colPlatform') }}</th><th style="width:96px">{{ tr('settings.colVerdict') }}</th><th style="width:146px">{{ tr('settings.colOverride') }}</th><th>{{ tr('settings.colCurrentProxy') }}</th></tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="row in netInfo.platforms" :key="row.key">
+                          <td>{{ row.label }}</td>
+                          <td>
+                            <span :style="{
+                              color: row.verdict === 'proxy' ? 'var(--ok)' : row.verdict === 'direct' ? 'var(--bad)' : 'var(--muted)',
+                              fontWeight: 700
+                            }">{{ netVerdictText(row.verdict) }}</span>
+                          </td>
+                          <td>
+                            <el-select :model-value="netOverrideValue(row)" size="small" style="width:118px"
+                                       @change="v => setProxyOverride(row, v)">
+                              <el-option :label="tr('opt.auto')" value="auto"></el-option>
+                              <el-option :label="tr('settings.optProxy')" value="proxy"></el-option>
+                              <el-option :label="tr('settings.optDirect')" value="direct"></el-option>
+                            </el-select>
+                          </td>
+                          <td style="word-break:break-all">{{ row.proxy || '—' }}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
                 
-                <div class="card">
+                <div v-show="stab === 'dl'" class="card">
                   <div class="section-title">{{ tr('settings.savePathTitle') }}</div>
                   <div class="path-row">
                     <el-input size="small" v-model="settings.download_dir" clearable :placeholder="tr('settings.downloadDirPh')"></el-input>
@@ -4811,16 +4828,23 @@
                   <div style="margin-top:12px">
                     <div class="section-title">{{ tr('settings.filenameTitle') }}</div>
                     <el-input size="small" v-model="settings.filename_template" placeholder="%(title).80B [%(id)s].%(ext)s" clearable></el-input>
-                    <div class="hint">{{ tr('settings.filenameHint') }}</div>
+                    <div class="hint" style="margin-top:6px">{{ tr('settings.filenameHint') }}</div>
                   </div>
                   <div style="margin-top:12px">
                     <div class="section-title">{{ tr('settings.playlistFolderTitle') }}</div>
                     <el-checkbox v-model="settings.playlist_subdir">{{ tr('settings.playlistSubdirLabel') }}</el-checkbox>
-                    <div class="hint">{{ tr('settings.playlistSubdirHint') }}</div>
+                  </div>
+                  <div style="margin-top:12px">
+                    <div class="section-title">{{ tr('settings.extraOutTitle') }}</div>
+                    <div class="chip-row">
+                      <div class="chip" :class="{ active: settings.write_description }" @click="settings.write_description = !settings.write_description">{{ tr('settings.writeDescChip') }}</div>
+                      <div class="chip" :class="{ active: settings.write_info_json }" @click="settings.write_info_json = !settings.write_info_json">{{ tr('settings.writeInfoChip') }}</div>
+                      <div class="chip" :class="{ active: settings.write_sub_files }" @click="settings.write_sub_files = !settings.write_sub_files">{{ tr('settings.writeSubChip') }}</div>
+                    </div>
                   </div>
                 </div>
                 
-                <div class="card">
+                <div v-show="stab === 'ui'" class="card">
                   <div class="section-title">{{ tr('settings.appearanceTitle') }}</div>
                   <div class="row row--mb">
                     <span class="row-label">{{ tr('header.themeGroup') }}</span>
@@ -4833,10 +4857,9 @@
                     <span class="row-label">{{ tr('settings.darkModeLabel') }}</span>
                     <el-switch :model-value="settings.dark_mode" @change="toggleDark"></el-switch>
                   </div>
-                  <div class="hint hint--block">{{ tr('settings.appearanceHint') }}</div>
                 </div>
                 
-                <div class="card">
+                <div v-show="stab === 'dl'" class="card sub-live-card">
                   <div class="section-title">{{ tr('settings.subLiveTitle') }}</div>
                   <el-form label-position="top" @submit.prevent>
                     <el-form-item :label="tr('settings.subIntervalMinLabel')">
@@ -4856,37 +4879,36 @@
                       <el-switch v-model="settings.live_stream_fallback"></el-switch>
                     </el-form-item>
                   </el-form>
-                  <div class="hint" style="margin:10px 0 6px">{{ tr('settings.liveStreamPrefIntro') }}</div>
                   <el-form label-position="top" @submit.prevent>
                     <el-form-item :label="tr('settings.platformBilibili')">
-                      <el-select size="small" v-model="settings.live_stream_pref_bilibili" style="width:240px">
+                      <el-select size="small" v-model="settings.live_stream_pref_bilibili" style="width:100%">
                         <el-option :label="tr('settings.optFlvLowLatency')" value="flv"></el-option>
                         <el-option :label="tr('settings.optHlsStable')" value="hls"></el-option>
                         <el-option :label="tr('settings.optAutoBest')" value="auto"></el-option>
                       </el-select>
                     </el-form-item>
                     <el-form-item :label="tr('settings.platformYoutube')">
-                      <el-select size="small" v-model="settings.live_stream_pref_youtube" style="width:240px">
+                      <el-select size="small" v-model="settings.live_stream_pref_youtube" style="width:100%">
                         <el-option :label="tr('settings.optDashQuality')" value="dash"></el-option>
                         <el-option :label="tr('settings.optHls')" value="hls"></el-option>
                         <el-option :label="tr('settings.optAutoBest')" value="auto"></el-option>
                       </el-select>
                     </el-form-item>
                     <el-form-item :label="tr('settings.platformDouyin')">
-                      <el-select size="small" v-model="settings.live_stream_pref_douyin" style="width:240px">
+                      <el-select size="small" v-model="settings.live_stream_pref_douyin" style="width:100%">
                         <el-option :label="tr('settings.optHlsRecommended')" value="hls"></el-option>
                         <el-option :label="tr('settings.optFlv')" value="flv"></el-option>
                         <el-option :label="tr('settings.optAutoBest')" value="auto"></el-option>
                       </el-select>
                     </el-form-item>
                     <el-form-item :label="tr('settings.platformTwitch')">
-                      <el-select size="small" v-model="settings.live_stream_pref_twitch" style="width:240px">
+                      <el-select size="small" v-model="settings.live_stream_pref_twitch" style="width:100%">
                         <el-option :label="tr('settings.optHlsRecommended')" value="hls"></el-option>
                         <el-option :label="tr('settings.optAutoBest')" value="auto"></el-option>
                       </el-select>
                     </el-form-item>
                     <el-form-item :label="tr('settings.platformOther')">
-                      <el-select size="small" v-model="settings.live_stream_pref_default" style="width:240px">
+                      <el-select size="small" v-model="settings.live_stream_pref_default" style="width:100%">
                         <el-option :label="tr('settings.optAutoBest')" value="auto"></el-option>
                         <el-option :label="tr('settings.optHls')" value="hls"></el-option>
                         <el-option :label="tr('settings.optFlv')" value="flv"></el-option>
@@ -4896,28 +4918,19 @@
                   </el-form>
                 </div>
 
-                <div class="card">
+                <div v-show="stab === 'notify'" class="card">
                   <div class="section-title">{{ tr('settings.clipboardTitle') }}</div>
                   <div class="row row--tight">
                     <el-switch v-model="settings.clipboard_watch" :title="tr('settings.clipboardWatchTip')"></el-switch>
                     <span>{{ tr('settings.clipboardWatchLabel') }}</span>
                   </div>
-                  <div class="hint hint--block" style="margin-top:6px">
-                    {{ tr('settings.clipboardHint1') }}
-                    <b>{{ tr('settings.clipboardHintBold') }}</b>{{ tr('settings.clipboardHint3') }}
-                  </div>
-                  <div class="hint hint--block">
-                    {{ tr('settings.clipboardHint4') }}
-                  </div>
                   <div v-if="clipNote" class="hint hint--block" style="margin-top:6px">{{ clipNote }}</div>
                 </div>
                 
-                <div class="card">
+                <div v-show="stab === 'cookie'" class="card card--wide">
                   <div class="section-title">{{ tr('settings.cookieLoginTitle') }}</div>
-                  <div class="hint hint--block" style="margin-bottom:10px">
-                    {{ tr('settings.cookieLoginHint') }}
-                  </div>
-                  <div class="tile" style="margin-bottom:10px">
+                  <div class="cookie-grid">
+                  <div class="tile">
                     <div class="row row--spread row--mb"><b>{{ tr('settings.platformBilibili') }}</b></div>
                     <div class="row">
                       <el-button size="small" type="primary" @click="startBiliQr" :loading="biliQrLoading"><svg class="btn-ico"><use href="#i-search"></use></svg>{{ tr('settings.getQrBtn') }}</el-button>
@@ -4932,7 +4945,7 @@
                       </div>
                     </div>
                   </div>
-                  <div v-for="p in musicCookieItems" :key="p.platform" class="tile" style="margin-bottom:10px">
+                  <div v-for="p in musicCookieItems" :key="p.platform" class="tile">
                     <div class="row row--spread row--mb">
                       <b>{{ p.label }}</b>
                       <el-tag size="small" :type="p.configured && !p.missing.length ? 'success' : (p.configured ? 'warning' : 'info')">
@@ -4963,15 +4976,16 @@
                       <el-button size="small" v-if="p.configured" @click="clearMusicCookie(p)">{{ tr('settings.cookieClearBtn') }}</el-button>
                     </div>
                   </div>
+                  </div>
                 </div>
                 
-                <div class="card">
+                <div v-show="stab === 'cookie'" class="card card--wide">
                   <div class="section-title">{{ tr('settings.multiCookieTitle') }}</div>
-                  <div class="hint" style="margin-bottom:10px">{{ tr('settings.multiCookieHint') }}</div>
                   <div v-if="cookieIssueCount" class="hint hint--block" style="margin-bottom:10px;color:var(--warn)">
                     {{ tr('settings.cookieIssueBanner', { n: cookieIssueCount }) }}
                   </div>
-                  <div v-for="p in platformCookies" :key="p.platform" class="tile" style="margin-bottom:10px">
+                  <div class="cookie-grid">
+                  <div v-for="p in platformCookies" :key="p.platform" class="tile">
                     <div class="row row--spread row--mb">
                       <b>{{ p.label }}</b>
                       <el-tag v-if="p.login_issue" size="small" type="danger" effect="plain"
@@ -5004,9 +5018,10 @@
                       <el-button v-if="p.login_issue" size="small" @click="clearCookieFlag(p)">{{ tr('settings.clearMarkBtn') }}</el-button>
                     </div>
                   </div>
+                  </div>
                 </div>
                 
-                <div class="card">
+                <div v-show="stab === 'notify'" class="card">
                   <div class="section-title">{{ tr('tg.cardTitle') }}</div>
                   <el-tabs>
                     <el-tab-pane :label="tr('notify.tabGeneral')" name="general">
@@ -5092,7 +5107,7 @@
                   </div>
                 </div>
                 
-                <div class="card">
+                <div v-show="stab === 'notify'" class="card">
                   <div class="section-title">{{ tr('wecom.cardTitle') }}</div>
                   <el-tabs>
                     <el-tab-pane :label="tr('notify.tabGeneral')" name="general">
@@ -5185,7 +5200,7 @@
                   </div>
                 </div>
                 
-                <div class="card">
+                <div v-show="stab === 'auth'" class="card card--wide">
                   <div class="section-title">{{ tr('auth.cardTitle') }}</div>
                   <div class="hint hint--block" style="margin-bottom:10px">
                     {{ tr('auth.barePrefix') }}<b>{{ tr('auth.boldRemoteOnly') }}</b>{{ tr('auth.bareSuffix') }}
@@ -5252,14 +5267,14 @@
                   </div>
                 </div>
                 
-                <div class="card">
+                <div v-show="stab === 'net'" class="card">
                   <div class="section-title">{{ tr('settings.riskTitle') }}</div>
                   <div class="row row--tight row--mb">
                     <el-button v-for="(p,k) in riskPresets" :key="k" size="small"
                       :type="settings.risk_preset===k ? 'primary' : 'default'"
                       @click="applyRiskPreset(k)">{{ p.label || k }}</el-button>
                   </div>
-                  <el-form label-position="top" @submit.prevent>
+                  <el-form label-position="top" @submit.prevent class="risk-form">
                     <el-form-item :label="tr('settings.riskConcurrentLabel')">
                       <el-input-number size="small" v-model="settings.concurrent" :min="1" :max="10"></el-input-number>
                     </el-form-item>
@@ -5275,11 +5290,10 @@
                     <el-form-item :label="tr('settings.cooldown429Label')">
                       <el-input-number size="small" v-model="settings.risk_cooldown_429" :min="10" :max="600"></el-input-number>
                     </el-form-item>
-                    <el-form-item :label="tr('settings.ytClientsLabel')">
+                    <el-form-item :label="tr('settings.ytClientsLabel')" class="span2">
                       <el-input size="small" v-model="settings.yt_player_clients" placeholder="default,web_safari,tv,android,ios" clearable style="width:300px"></el-input>
-                      <span class="hint" style="margin-left:8px">{{ tr('settings.ytClientsHint') }}</span>
                     </el-form-item>
-                    <el-form-item :label="tr('settings.poGateLabel')">
+                    <el-form-item :label="tr('settings.poGateLabel')" class="span2">
                       <el-switch v-model="settings.po_provider_enabled"></el-switch>
                       <el-input size="small" v-model="settings.po_provider_url" placeholder="http://127.0.0.1:4416" clearable style="width:210px;margin-left:8px"></el-input>
                       <el-button size="small" style="margin-left:8px" :loading="poChecking" @click="checkPoToken">{{ tr('settings.detectBtn') }}</el-button>
@@ -5289,31 +5303,21 @@
                       <el-input size="small" v-model="settings.risk_user_agent" :placeholder="tr('settings.leaveEmptyPh')" clearable></el-input>
                     </el-form-item>
                   </el-form>
-                  <div class="hint">{{ tr('settings.riskSuggestHint') }}</div>
                 </div>
                 
-                <div class="fold-hd" @click="foldRare = !foldRare">
-                  <span class="fold-arrow">{{ foldRare ? '▾' : '▸' }}</span>
-                  <b>{{ tr('settings.rareFoldTitle') }}</b>
-                  <span class="hint">{{ tr('settings.rareFoldHint') }}</span>
-                </div>
-                <div class="settings-fold" :class="{ 'is-closed': !foldRare }">
-                <div class="card row--mb">
+                <div v-show="stab === 'ui'" class="card card--span2">
                   <div class="section-title">{{ tr('settings.saveStyleTitle') }}</div>
-                  <div class="hint hint--block">
-                    {{ tr('settings.autoSaveLead') }}<b>{{ tr('settings.autoSaveBold') }}</b>{{ tr('settings.autoSaveMid') }}
-                    <b>{{ tr('settings.noAutoSaveBold') }}</b>{{ tr('settings.noAutoSaveList') }}
-                  </div>
                   <div class="row row--tight" style="margin-top:8px">
                     <span class="hint" style="margin:0">{{ autoSaveNote || tr('settings.noPendingChange') }}</span>
                     <el-button size="small" plain @click="loadConfigDefaults()">{{ tr('settings.reloadDefaultsBtn') }}</el-button>
                     <el-button size="small" type="danger" plain :loading="defBusy === 'all'"
                                :disabled="!defRows.length" @click="resetAllDefaults()">{{ tr('settings.resetAllBtn') }}</el-button>
                   </div>
+                  <div class="hint hint--block" style="margin-top:6px"><b>{{ tr('settings.noAutoSaveBold') }}</b>{{ tr('settings.noAutoSaveList') }}</div>
                   <div class="hint hint--block" style="margin-top:6px">
                     {{ tr('settings.defCountA', { n: cfgDefs.count }) }} <b>{{ defRows.length }}</b> {{ tr('settings.defCountB') }}<b>{{ tr('settings.defSecretBold') }}</b>{{ tr('settings.defRestoreHint') }} <code>config.json.bak-&lt;{{ tr('settings.timeWord') }}&gt;</code>{{ tr('settings.defRollbackTail') }}
                   </div>
-                  <div v-if="defRows.length" class="env-list" style="margin-top:8px">
+                  <div v-if="defRows.length" class="env-list def-list" style="margin-top:8px">
                     <div class="comp-item" v-for="it in defRows" :key="it.key">
                       <div class="comp-main">
                         <div style="font-weight:600">{{ cfgLabel(it.key) }}</div>
@@ -5325,7 +5329,7 @@
                   </div>
                 </div>
                   
-                <div class="card" id="outbox-card">
+                <div v-show="stab === 'notify'" class="card card--wide" id="outbox-card">
                   <div class="section-title">{{ tr('notify.outboxTitle') }}</div>
                   <div class="hint" style="margin-bottom:10px">
                     {{ tr('notify.outboxLead') }} <code>notify_outbox.json</code> {{ tr('notify.outboxBy') }}
@@ -5367,19 +5371,18 @@
                   </div>
                 </div>
                   
-                <div class="card">
-                  <div class="section-title">{{ tr('settings.syncTitle') }}</div>
-                  <div class="row">
-                    <el-button size="small" @click="exportSync">{{ tr('settings.exportBtn') }}</el-button>
-                    <el-button size="small" @click="triggerImportSync">{{ tr('settings.importJsonBtn') }}</el-button>
-                    <input ref="syncFileInput" type="file" accept=".json,application/json" style="display:none" @change="onImportSync" />
+                <div v-show="stab === 'maint'" class="settings-col">
+                  <div class="card">
+                    <div class="section-title">{{ tr('settings.syncTitle') }}</div>
+                    <div class="row">
+                      <el-button size="small" @click="exportSync">{{ tr('settings.exportBtn') }}</el-button>
+                      <el-button size="small" @click="triggerImportSync">{{ tr('settings.importJsonBtn') }}</el-button>
+                      <input ref="syncFileInput" type="file" accept=".json,application/json" style="display:none" @change="onImportSync" />
+                    </div>
                   </div>
-                  <div class="hint" style="margin-top:8px">{{ tr('settings.syncHint') }}</div>
-                </div>
-                  
-                <div class="card">
-                  <div class="section-title">{{ tr('settings.storageTitle') }}</div>
-                  <div class="hint" style="margin-bottom:10px">{{ tr('settings.storageHint') }}</div>
+
+                  <div class="card">
+                    <div class="section-title">{{ tr('settings.storageTitle') }}</div>
                   <el-form label-position="top" @submit.prevent>
                     <el-form-item :label="tr('settings.postActionLabel')">
                       <el-select size="small" v-model="settings.storage_post_action" style="width:200px">
@@ -5401,18 +5404,10 @@
                     <el-form-item :label="tr('settings.remoteDirLabel')"><el-input size="small" v-model="settings.storage_webdav_path" placeholder="/MediaDownloader" clearable></el-input></el-form-item>
                     <el-button size="small" @click="testStorage" :loading="storageTesting">{{ tr('settings.testConnBtn') }}</el-button>
                   </el-form>
-                </div>
-                  
-                <div class="card">
-                  <div class="section-title">{{ tr('settings.extraOutTitle') }}</div>
-                  <div class="chip-row">
-                    <div class="chip" :class="{ active: settings.write_description }" @click="settings.write_description = !settings.write_description">{{ tr('settings.writeDescChip') }}</div>
-                    <div class="chip" :class="{ active: settings.write_info_json }" @click="settings.write_info_json = !settings.write_info_json">{{ tr('settings.writeInfoChip') }}</div>
-                    <div class="chip" :class="{ active: settings.write_sub_files }" @click="settings.write_sub_files = !settings.write_sub_files">{{ tr('settings.writeSubChip') }}</div>
                   </div>
                 </div>
                   
-                <div class="card">
+                <div v-show="stab === 'cookie'" class="card">
                   <div class="section-title">{{ tr('settings.globalCookieTitle') }}</div>
                   <div class="choice-grid" style="grid-template-columns: repeat(3, minmax(0, 1fr)); margin-bottom: 12px">
                     <div class="choice-card" :class="{ active: settings.cookie_source === 'none' }" @click="settings.cookie_source = 'none'">{{ tr('settings.cookieSrcNone') }}</div>
@@ -5451,7 +5446,7 @@
                   </div>
                 </div>
                   
-                <div class="card">
+                <div v-show="stab === 'cookie'" class="card card--span2">
                   <div class="section-title">{{ tr('settings.ccTitle') }}</div>
                   <div class="row row--tight" style="align-items:center;margin-bottom:10px">
                     <el-switch v-model="cc.enabled"></el-switch>
@@ -5538,7 +5533,7 @@
                   </div>
                 </div>
                   
-                <div class="card">
+                <div v-show="stab === 'maint'" class="card card--span2">
                   <div class="section-title">{{ tr('settings.cleanupTitle') }}</div>
                   <div class="row row--tight" style="align-items:center;margin-bottom:10px">
                     <el-switch v-model="cl.enabled"></el-switch>
@@ -5647,20 +5642,11 @@
                   </div>
                 </div>
                   
-                <div class="card">
-                  <div class="section-title">{{ tr('settings.ffmpegTitle') }}</div>
-                  <div class="path-row">
-                    <el-input size="small" v-model="settings.ffmpeg_path" :placeholder="tr('settings.ffmpegPathPh')" clearable></el-input>
-                    <el-button size="small" @click="browsePath('file', 'settings.ffmpeg_path')">{{ tr('settings.selectFileBtn') }}</el-button>
-                  </div>
-                  <div class="hint">{{ tr('settings.ffmpegInstallHint') }}</div>
-                </div>
-                  
-                <div class="card">
+                <div v-show="stab === 'dl'" class="card codec-card">
                   <div class="section-title">{{ tr('settings.videoCodecTitle') }}</div>
                   <el-form label-position="top" @submit.prevent>
                     <el-form-item :label="tr('settings.encoderPrefLabel')">
-                      <el-select size="small" v-model="settings.video_encoder" style="width:260px">
+                      <el-select size="small" v-model="settings.video_encoder" style="width:100%">
                         <el-option :label="tr('settings.encOptCpu')" value="cpu"></el-option>
                         <el-option :label="tr('settings.encOptAuto')" value="auto"></el-option>
                         <el-option :label="tr('settings.encOptNvidia')" value="nvidia"></el-option>
@@ -5669,13 +5655,13 @@
                       </el-select>
                     </el-form-item>
                     <el-form-item :label="tr('settings.cpuCodecLabel')">
-                      <el-select size="small" v-model="settings.video_cpu_codec" style="width:260px">
+                      <el-select size="small" v-model="settings.video_cpu_codec" style="width:100%">
                         <el-option :label="tr('settings.codecOptX264')" value="x264"></el-option>
                         <el-option :label="tr('settings.codecOptX265')" value="x265"></el-option>
                       </el-select>
                     </el-form-item>
                     <el-form-item :label="tr('settings.cpuPresetLabel')">
-                      <el-select size="small" v-model="settings.video_cpu_preset" style="width:160px">
+                      <el-select size="small" v-model="settings.video_cpu_preset" style="width:100%">
                         <el-option label="veryfast" value="veryfast"></el-option>
                         <el-option label="fast" value="fast"></el-option>
                         <el-option :label="tr('settings.presetOptMedium')" value="medium"></el-option>
@@ -5687,12 +5673,12 @@
                     <el-button size="small" :loading="encProbeBusy" @click="loadEncoders(true)">{{ tr('settings.probeEncBtn') }}</el-button>
                     <span class="hint" style="margin:0">{{ encProbeText }}</span>
                   </div>
-                  <div class="env-list">
+                  <div class="env-list enc-list">
                     <div class="comp-item" v-for="it in encoders.items" :key="it.encoder">
                       <span :style="{ color: it.available ? 'var(--ok)' : 'var(--bad)', fontSize: '14px' }">●</span>
                       <div class="comp-main">
                         <div :style="{ fontWeight: 600, color: it.available ? 'var(--ink)' : 'var(--bad)' }">{{ it.label }}</div>
-                        <div class="comp-ver">{{ it.available ? tr('settings.encAvailable') : tr('settings.encUnavailable') }}<span v-if="it.reason"> · {{ it.reason }}</span></div>
+                        <div class="comp-ver" :title="it.reason || ''">{{ it.available ? tr('settings.encAvailable') : tr('settings.encUnavailable') }}<span v-if="it.reason"> · {{ it.reason }}</span></div>
                       </div>
                     </div>
                   </div>
@@ -5702,22 +5688,11 @@
                     <span v-if="(encoders.chain || []).length > 1">{{ tr('settings.chainMultiHint') }}</span>
                     <span v-else>{{ tr('settings.chainSingleHint') }}</span>
                   </div>
-                  <div class="hint" style="margin-top:6px;line-height:1.5">
-                    {{ tr('settings.encNoteSame') }}
-                    {{ tr('settings.encNoteGpu') }}<b>{{ tr('settings.encNoteSkip') }}</b>{{ tr('settings.encNoteExpire') }}
-                  </div>
-                </div>
-                  
-                </div>
-
-                <div class="row">
-                  <el-button type="primary" size="large" style="min-width:140px" @click="saveSettings()"><svg class="btn-ico"><use href="#i-save"></use></svg>{{ tr('common.save') }}</el-button>
-                  <el-button size="large" @click="testCookie">{{ tr('settings.checkCookieBtn') }}</el-button>
                 </div>
               </div>
 
               <div class="settings-side">
-              <div class="card">
+              <div v-show="stab === 'ai'" class="card card--span2">
                 <div class="section-title" style="margin-bottom:14px">{{ tr('settings.whisperTitle') }}</div>
                 <el-form label-position="top" @submit.prevent>
                   <el-form-item :label="tr('settings.transcribeAutoLabel')">
@@ -5786,7 +5761,6 @@
                         <el-option :label="tr('lang.fa')" value="fa"></el-option>
                       </el-option-group>
                     </el-select>
-                    <div class="hint">{{ tr('settings.recognizeLangHint') }}</div>
                   </el-form-item>
                   <el-form-item :label="tr('settings.mtEngineLabel')">
                     <el-select size="small" v-model="settings.subtitle_translate_provider" style="width:280px">
@@ -5799,7 +5773,6 @@
                       <el-option :label="tr('settings.mtOptAzure')" value="azure"></el-option>
                       <el-option :label="tr('settings.mtOptOff')" value="none"></el-option>
                     </el-select>
-                    <div class="hint">{{ tr('settings.mtEngineHint') }}</div>
                   </el-form-item>
                   <el-form-item :label="tr('settings.targetLangLabel')">
                     <el-select size="small" v-model="settings.subtitle_target_lang" style="width:200px">
@@ -5817,11 +5790,6 @@
                         :rows="4"
                         :placeholder="tr('settings.glossaryPh')"
                       ></el-input>
-                      <div class="hint">
-                        {{ tr('settings.glossaryHint1') }}<br>
-                        {{ tr('settings.glossaryHint2') }}
-                        {{ tr('settings.glossaryHint3') }}
-                      </div>
                       <div class="row row--tight" style="margin-top:6px">
                         <el-button size="small" plain @click="checkGlossary()">{{ tr('settings.checkFormatBtn') }}</el-button>
                         <span v-if="glossaryStat" class="hint">
@@ -5849,21 +5817,11 @@
                       <el-switch v-model="settings.subtitle_qc"></el-switch>
                       <span class="hint">{{ tr('settings.qcOnHint') }}</span>
                     </div>
-                    <div class="hint">
-                      {{ tr('settings.qcHint1') }}
-                      {{ tr('settings.qcHint2') }}<br>
-                      {{ tr('settings.qcHint3') }}
-                    </div>
                   </el-form-item>
                   <el-form-item :label="tr('settings.reflectLabel')">
                     <div class="row">
                       <el-switch v-model="settings.subtitle_qc_reflect" :disabled="!settings.subtitle_qc"></el-switch>
                       <span class="hint">{{ tr('settings.reflectOnHint') }}</span>
-                    </div>
-                    <div class="hint">
-                      {{ tr('settings.reflectHint1') }}
-                      {{ tr('settings.reflectHint2') }}<br>
-                      {{ tr('settings.reflectHint3') }}
                     </div>
                   </el-form-item>
                   <el-form-item :label="tr('settings.exportSetLabel')">
@@ -5872,7 +5830,6 @@
                       <el-option :label="tr('settings.exportOptBilingual')" value="bilingual"></el-option>
                       <el-option :label="tr('settings.exportOptAll')" value="all"></el-option>
                     </el-select>
-                    <div class="hint">{{ tr('settings.exportSetHint') }}</div>
                   </el-form-item>
                   <el-form-item label="DeepL API Key" v-if="settings.subtitle_translate_provider==='deepl'">
                     <el-input size="small" v-model="settings.deepl_api_key" :placeholder="tr('settings.deeplKeyPh')" clearable show-password></el-input>
@@ -5946,10 +5903,6 @@
                                      :disabled="!settings.diarization_enabled"></el-input-number>
                     <span class="hint" style="margin-left:6px">{{ tr('settings.diarMaxHint') }}</span>
                   </el-form-item>
-                  <div class="hint" style="margin-bottom:8px;line-height:1.6">
-                    {{ tr('settings.diarHint1') }}
-                    {{ tr('settings.diarHint2') }}
-                  </div>
                   <el-form-item :label="tr('settings.hfTokenLabel')">
                     <el-input size="small" v-model="settings.hf_token" :placeholder="tr('settings.hfTokenPh')" clearable show-password></el-input>
                   </el-form-item>
@@ -5957,26 +5910,20 @@
                     <el-button size="small" type="primary" plain :loading="updatingWhisper" @click="updateWhisper" style="width:100%;margin:0">{{ tr('settings.updateWhisperBtn') }}</el-button>
                     <el-button size="small" type="primary" plain :loading="installingVoice" @click="installVoicePkgs" style="width:100%;margin:0">{{ tr('settings.installVoicePkgsBtn') }}</el-button>
                   </div>
-                  <div class="hint" style="margin-top:8px">{{ tr('settings.voicePkgsHint') }}</div>
                   <span class="hint" style="margin-left:8px">{{ status.whisper || tr('settings.notInstalled') }}</span>
-                  <div class="hint" style="margin-top:8px">{{ tr('settings.whisperCacheHint') }}</div>
                 </el-form>
               </div>
-              <div id="comp-card" class="card">
+              <div v-show="stab === 'comp'" id="comp-card" class="card card--wide">
                 <div class="section-title">{{ tr('settings.compTitle') }}</div>
-                <div class="hint" style="margin-bottom:10px;line-height:1.5">
-                  {{ tr('settings.compHint1') }}
-                  {{ tr('settings.compHint2') }}
-                </div>
                 <div class="row row--tight" style="margin-bottom:10px">
                   <el-switch size="small" v-model="settings.components_auto_check"></el-switch>
-                  <span class="hint" style="margin:0">{{ tr('settings.compAutoCheckHint') }}</span>
+                  <span style="font-size:14px">{{ tr('settings.compAutoCheckLabel') }}</span>
                 </div>
                 <div class="row row--tight" style="margin-bottom:10px">
                   <el-button size="small" :loading="compCheckBusy" @click="startCompCheck(true)">{{ tr('settings.compCheckNowBtn') }}</el-button>
                   <span class="hint" style="margin:0">{{ compCheckText }}</span>
                 </div>
-                <div class="env-list">
+                <div class="env-list comp-list">
                   <div class="comp-item" v-for="it in components" :key="it.key" :title="it.label">
                     <span :style="{ color: it.ok ? 'var(--ok)' : 'var(--bad)', fontSize: '14px' }">●</span>
                     <div class="comp-main">
@@ -5998,10 +5945,23 @@
                     </el-button>
                     <span v-else class="hint" style="margin:0;white-space:nowrap">{{ tr('settings.compReadyWord') }}</span>
                   </div>
+                  <div class="comp-item comp-item--wide" :title="tr('settings.sepModelsLabel')">
+                    <span :style="{ color: sepModelsReady ? 'var(--ok)' : 'var(--warn)', fontSize: '14px' }">●</span>
+                    <div class="comp-main">
+                      <div style="font-weight:600">{{ tr('settings.sepModelsLabel') }}</div>
+                      <template v-if="sepInfo">
+                        <div class="comp-ver">RoFormer · audio-separator {{ sepRoformerVer }}</div>
+                        <div class="comp-ver">Demucs · demucs {{ sepDemucsVer }}</div>
+                        <div class="comp-ver">torch {{ sepTorchVer }} · {{ sepModelsState }}</div>
+                      </template>
+                      <div v-else class="comp-ver">{{ sepModelsState }}</div>
+                      <div v-if="sepModelsMissing" class="comp-ver" style="color:var(--warn)">{{ sepModelsMissing }}</div>
+                    </div>
+                    <el-button size="small" :loading="sepBusy" @click="setupSeparatorAll">{{ tr('settings.sepModelsBtn') }}</el-button>
+                  </div>
                 </div>
                 <div class="row row--tight" style="margin:6px 0 10px">
                   <el-button size="small" text @click="compDetail = !compDetail">{{ compDetail ? tr('settings.compDetailHideBtn') : tr('settings.compDetailShowBtn') }}</el-button>
-                  <span class="hint" style="margin:0">{{ tr('settings.compLatestHint') }}</span>
                 </div>
                 <div class="btn-grid">
                   <el-button size="small" type="primary" plain :loading="compAll.running || compAllBusy" @click="updateAllComponents()">{{ tr('settings.compAllBtn') }}</el-button>
@@ -6023,9 +5983,6 @@
                   {{ tr('settings.compPortableTail') }}
                 </div>
                 <div style="margin-top:12px;padding-top:10px;border-top:1px dashed var(--line)">
-                  <div class="hint" style="margin-bottom:6px">
-                    {{ tr('settings.compPathHint') }}
-                  </div>
                   <div class="row row--tight">
                     <span :style="{
                       fontSize: '13px',
@@ -6052,9 +6009,9 @@
                   {{ tr('settings.compRestartHint') }}
                 </div>
               </div>
-              <div class="card">
+              <div v-show="stab === 'comp'" class="card card--span2">
                 <div class="section-title" style="margin-bottom:14px">{{ tr('settings.envTitle') }}</div>
-                <div class="env-list">
+                <div class="env-list env-grid">
                   <div class="env-item"><b>FFmpeg</b>{{ status.ffmpeg }}</div>
                   <div class="env-item"><b>{{ tr('settings.envPathWord') }}</b>{{ status.ffmpeg_path || tr('settings.envNotFound') }}</div>
                   <div class="env-item"><b>yt-dlp</b>{{ status.ytdlp }}</div>
@@ -6074,25 +6031,27 @@
                   <div class="env-item"><b>Whisper</b>{{ status.whisper || tr('settings.notInstalled') }}</div>
                   <div class="env-item"><b>{{ tr('settings.envExtWord') }}</b>{{ status.extension_dir || '-' }}</div>
                 </div>
-                <div style="margin-top:16px;display:flex;flex-direction:column;gap:8px">
-                  <el-button size="small" style="width:100%;margin:0" @click="checkEnv">{{ tr('settings.compRecheckBtn') }}</el-button>
-                  <el-button size="small" style="width:100%;margin:0" :loading="updatingYtdlp" @click="updateYtdlp">{{ tr('settings.envUpdYtdlpBtn') }}</el-button>
-                  <el-button size="small" style="width:100%;margin:0" :loading="updatingFfmpeg" @click="updateFfmpeg">{{ tr('settings.envUpdFfmpegBtn') }}</el-button>
-                  <el-button size="small" style="width:100%;margin:0" type="primary" plain :loading="updatingNm3u8" @click="updateNm3u8">{{ tr('settings.envGetNm3u8Btn') }}</el-button>
-                  <el-button size="small" style="width:100%;margin:0" type="primary" plain :loading="updatingWhisper" @click="updateWhisper">{{ tr('settings.envGetWhisperBtn') }}</el-button>
-                  <div class="hint" style="margin-top:6px">{{ tr('settings.envWhisperNote') }}</div>
-                  <el-button size="small" style="width:100%;margin:0" @click="downloadExtension">{{ tr('settings.envExtDlBtn') }}</el-button>
-                </div>
-                <div class="hint" style="margin-top:10px;line-height:1.5">
-                  {{ tr('settings.envExtHowTo') }}
+                <div class="env-btns" style="margin-top:16px">
+                  <el-button size="small" @click="checkEnv">{{ tr('settings.compRecheckBtn') }}</el-button>
+                  <el-button size="small" :loading="updatingYtdlp" @click="updateYtdlp">{{ tr('settings.envUpdYtdlpBtn') }}</el-button>
+                  <el-button size="small" :loading="updatingFfmpeg" @click="updateFfmpeg">{{ tr('settings.envUpdFfmpegBtn') }}</el-button>
+                  <el-button size="small" type="primary" plain :loading="updatingNm3u8" @click="updateNm3u8">{{ tr('settings.envGetNm3u8Btn') }}</el-button>
+                  <el-button size="small" type="primary" plain :loading="updatingWhisper" @click="updateWhisper">{{ tr('settings.envGetWhisperBtn') }}</el-button>
+                  <el-button size="small" @click="downloadExtension">{{ tr('settings.envExtDlBtn') }}</el-button>
                 </div>
               </div>
-              <div class="card">
+              <div v-show="stab === 'comp'" class="card">
+                <div class="section-title">{{ tr('settings.ffmpegTitle') }}</div>
+                <div class="path-row">
+                  <el-input size="small" v-model="settings.ffmpeg_path" :placeholder="tr('settings.ffmpegPathPh')" clearable></el-input>
+                  <el-button size="small" @click="browsePath('file', 'settings.ffmpeg_path')">{{ tr('settings.selectFileBtn') }}</el-button>
+                </div>
+              </div>
+              <div v-show="stab === 'ai'" class="card">
                 <div class="section-title">{{ tr('settings.acoustidTitle') }}</div>
                 <el-form label-position="top" @submit.prevent>
                   <el-form-item :label="tr('settings.acoustidKeyLabel')">
                     <el-input size="small" v-model="settings.acoustid_api_key" :placeholder="tr('settings.acoustidKeyPh')" clearable show-password style="max-width:420px" @change="saveAcoustid" @clear="saveAcoustid"></el-input>
-                    <div class="hint">{{ tr('settings.acoustidKeyHint') }}</div>
                   </el-form-item>
                   <el-form-item :label="tr('settings.acoustidMinLabel')">
                     <el-input-number size="small" v-model="settings.acoustid_min_score" :min="0.1" :max="1" :step="0.05" :precision="2" @change="saveAcoustid"></el-input-number>
@@ -6100,9 +6059,8 @@
                   </el-form-item>
                 </el-form>
               </div>
-              <div class="card">
+              <div v-show="stab === 'credits'" class="card card--wide">
                 <div class="section-title">{{ tr('settings.creditsTitle') }}</div>
-                <p class="hint hint--block">{{ tr('settings.creditsIntro') }}</p>
                 <div class="credit-group" v-for="g in CREDITS" :key="g.titleKey">
                   <div class="credit-group__title">{{ tr(g.titleKey) }}</div>
                   <div class="credit-list">
@@ -6126,6 +6084,7 @@
           </div>
 
 
+        </div>
         </div>
 
         <!-- 底部常驻播放条：跟着 .main，切页不销毁 <audio>；空格键切播放/暂停 -->
@@ -6569,11 +6528,6 @@
         }
         function clearSubLangs() {
           subLangList.value = [];
-        }
-        function toggleSubLang(val) {
-          const i = subLangList.value.indexOf(val);
-          if (i >= 0) subLangList.value.splice(i, 1);
-          else subLangList.value.push(val);
         }
         function syncSubLangsToOpts() {
           opts.value.subtitle_langs = subLangList.value.length
@@ -7050,6 +7004,37 @@
           if (d === 'cpu') return tr('voice.devForceCpu');
           return s.cuda_available ? tr('voice.devAutoYes', { name: s.gpu_name || 'CUDA' }) : tr('voice.devAutoNo');
         });
+        const sepModelsState = computed(() => {
+          const s = sepInfo.value;
+          if (!s) return tr('settings.sepModelsIdle');
+          if (!s.venv) return tr('settings.sepEngineNoVenv');
+          const ms = s.models || [];
+          if (!ms.length) return tr('settings.sepModelsIdle');
+          return tr('settings.sepModelsState', { ready: ms.filter(m => m.present).length, n: ms.length });
+        });
+        const sepModelsMissing = computed(() => {
+          const miss = sepModels.value.filter(m => !m.present).map(m => SEP_MODEL_NAMES[m.id] || m.id);
+          return miss.length ? tr('settings.sepModelsMissing', { list: miss.join(tr('voice.listSep')) }) : '';
+        });
+        const sepModelsReady = computed(() => {
+          const s = sepInfo.value;
+          const ms = sepModels.value;
+          return !!s && !!s.venv && !!s.audio_separator_ok
+            && ms.length > 0 && ms.every(m => m.present);
+        });
+        // 旧进程的 voice_status 还没有这两个包的字段：缺字段只能算「版本未知」，
+        // 不能当成「未安装」——那会把一台装好的机器说成缺依赖
+        const sepPkgVer = (s, okKey, verKey) => {
+          if (!s) return '';
+          if (s[okKey] === true) return s[verKey] || '?';
+          if (s[okKey] === false) return tr('settings.notInstalled');
+          return tr('settings.sepVerUnknown');
+        };
+        const sepRoformerVer = computed(() =>
+          sepPkgVer(sepInfo.value, 'audio_separator_ok', 'audio_separator_version'));
+        const sepDemucsVer = computed(() =>
+          sepPkgVer(sepInfo.value, 'demucs_ok', 'demucs_version'));
+        const sepTorchVer = computed(() => (sepInfo.value && sepInfo.value.torch) || '?');
         const sepEngineReason = computed(() => {
           const s = sepInfo.value;
           if (!s) return '';
@@ -7441,10 +7426,19 @@
         function compUpdatable(it) {
           return !!it && !!it.ok && !!it.latest && verCmp(it.latest, it.active) > 0;
         }
-        // 不常用设置整组的展开状态：记在浏览器本地，不占配置文件
-        const foldRare = ref(false);
-        try { foldRare.value = localStorage.getItem('md_fold_rare') === '1'; } catch (_) {}
-        watch(foldRare, v => { try { localStorage.setItem('md_fold_rare', v ? '1' : '0'); } catch (_) {} });
+        const SETTINGS_TABS = [
+          { key: 'net', label: 'settings.tabNet' },
+          { key: 'dl', label: 'settings.tabDl' },
+          { key: 'ui', label: 'settings.tabUi' },
+          { key: 'notify', label: 'settings.tabNotify' },
+          { key: 'cookie', label: 'settings.tabCookie' },
+          { key: 'auth', label: 'settings.tabAuth' },
+          { key: 'maint', label: 'settings.tabMaint' },
+          { key: 'ai', label: 'settings.tabAi' },
+          { key: 'comp', label: 'settings.tabComp' },
+          { key: 'credits', label: 'settings.tabCredits' },
+        ];
+        const stab = ref('net');
         const compInfo = ref({});
         const updatingComp = ref('');
         const latestBusy = ref(false);
@@ -9852,6 +9846,7 @@
         }
         async function setupSeparatorEnv() { await setupSeparator('venv'); }
         async function setupSeparatorWeights() { await setupSeparator('weights'); }
+        async function setupSeparatorAll() { await setupSeparator('all'); }
         async function setupSeparator(step) {
           try {
             const r = await api('/api/ai/separator_setup', { method: 'POST', body: JSON.stringify({ step }) });
@@ -13915,7 +13910,7 @@ const CFG_KEYS = {
             text: tr('banner.outbox', { n: pending }),
             actions: [
               { label: tr('banner.retryNow'), run: retryFromBanner },
-              { label: tr('banner.goOutbox'), run: () => { foldRare.value = true; gotoCard('settings', 'outbox-card', 'ui.goto_outbox'); } },
+              { label: tr('banner.goOutbox'), run: () => { stab.value = 'notify'; gotoCard('settings', 'outbox-card', 'ui.goto_outbox'); } },
             ],
           });
           const th = status.value.throttle || [];
@@ -14105,7 +14100,7 @@ const CFG_KEYS = {
           if (p === 'music') loadMusicFavs();
           // 分离那三个下拉全靠这份读数：不进语音页就不知道 venv 在不在、权重齐了几条
           if (p === 'voice') loadVoiceStatus();
-          if (p === 'settings') { loadPlatformCookies(); loadCookieCloud(); loadMusicCookies(); loadRiskPresets(); loadComponents(); loadNetInfo(); loadCleanup(); loadConfigDefaults(); }
+          if (p === 'settings') { loadPlatformCookies(); loadCookieCloud(); loadMusicCookies(); loadRiskPresets(); loadComponents(); loadNetInfo(); loadCleanup(); loadConfigDefaults(); loadVoiceStatus(); }
           if (p === 'tg') loadTgMtStatus(false);
         });
         // 换页单独一条：行是 v-if 现挂的，菜单还指着上一行的按钮，收掉比留着对不上好。
@@ -14243,7 +14238,7 @@ const CFG_KEYS = {
         return {
           page, navCollapsed, navs, navGroups, CREDITS, appVersion, tr, uiLang, UI_LANGS, epLocale, setLang, palette, paletteInput, paletteRows, paletteGroups, kbdMod, openPalette, closePalette, runPalette, banners, dismissBanner, ctxMenu, runCtxItem, queueStat, subNewTotal, navBadge, navDot, pageTitle, urlText, urlPasteStat, extractUrls, friendlyError, glossaryStat, checkGlossary, speedWinStat, checkSpeedWindows, queueWindow, windowHeld, queueRows, runWinStat, checkRunWindows, exportBilingual, exportBilingualSelected, pipelineRow, pipelineView, showPipeline, closePipeline, refreshPipeline, rerunStage, pipeStatusLabel, pipeStatusType, opts, videoQualities, audioQualities, formats, codecOptions,
           pagers, favSort, onFavSortChange, musicSort, onMusicSortChange, tgSort, onTgSortChange,
-          subLangOptions, subLangList, selectAllSubLangs, clearSubLangs, toggleSubLang,
+          subLangOptions, subLangList, selectAllSubLangs, clearSubLangs,
           selectedIds, selectAll, queuePaused, taskSort, sseOn, toggleSelect, toggleSelectAll,
           pauseSelected, resumeSelected, deleteSelected, pinSelected, unpinSelected, moveTopSelected, laterSelected, startLaterSelected, pauseAll, resumeAll, resetThrottle, poStat, poChecking, checkPoToken, browsePath, loadTasks,
           status, tasks, mediaInfo, fileItems, filesPath, filesRoot,
@@ -14274,11 +14269,11 @@ const CFG_KEYS = {
           srtEditBox, srtQc, runSrtQc, runSrtRewrap, qcJumpTo, qcDropNoise,
           searchQuery, searchPlatform, searchContentType, searchSort, setSearchSort,
           searchTotal, searchTruncated, searchNotes, SEARCH_PLAT_NAMES, searchResults, searching, platformCookies, cookieIssueCount, syncFileInput,
-          musicKeyword, musicResults, musicSearching, musicSourceErrors, musicNeedsMatch, musicScoreLine, musicHasScore, musicdlVersion, musicdlReady, musicPreset, musicStrategy, saveMusicStrategy, musicSearchType, musicIncludeLocal, musicFilenameTemplate, musicEmbedMeta, musicSkipExisting, musicHideUnavailable, musicBlockReupload, musicIncludeReference, musicQualitySpec, musicQualityOptions, musicQualitySummary, refHint, matchHint, openRefLink, player, playerEl, playerPlaying, playerTime, playerDur, playerVol, playerMuted, playerSeeking, playerSeekVal, playerStep, playerToggle, playerClose, playerSeek, onPlayerTick, onPlayerMeta, onPlayerEnded, musicLrcLines, musicLrcActive, previewMusicRow, probeMusicRow, switchMusicSource, musicSwitching, scanLocalMusic, musicSources, musicSourceOptions, musicMatchSourceOptions, musicPresetOptions, musicSourceOrdered, musicPlaylistUrl, musicPlaylistMode, saveMusicPlaylistMode, musicCookies, musicSelected, aiPipeline, analyzeAudioFile, aiVocalSeparate, aiTts, installVoicePkgs, loadVoiceStatus, refreshSepStatus, setupSeparatorEnv, setupSeparatorWeights, sepModelLabel, sepBusy, sepInfo, sepModels, sepHasGpu, sepStatusText, sepDeviceText, sepEngineReason, toggleRealtime, installingVoice, voiceStatusText, rtRecording, rtTranslate, rtTargetLang, rtLog, searchMusic, batchSearchDownload, applyMusicPreset, parseMusicPlaylist, onMusicSelection, downloadMusicSelected, downloadMusicRow, showAlreadyHave, musicFavItems, musicFavMissing, musicFavSelected, musicFavReadySel, musicFavSwitching, musicFavDownloading, onMusicFavSelection, addMusicFav, removeMusicFav, clearMusicFav, previewMusicFav, switchMusicFav, downloadMusicFav, loadMusicFavs, installMusicdl,
+          musicKeyword, musicResults, musicSearching, musicSourceErrors, musicNeedsMatch, musicScoreLine, musicHasScore, musicdlVersion, musicdlReady, musicPreset, musicStrategy, saveMusicStrategy, musicSearchType, musicIncludeLocal, musicFilenameTemplate, musicEmbedMeta, musicSkipExisting, musicHideUnavailable, musicBlockReupload, musicIncludeReference, musicQualitySpec, musicQualityOptions, musicQualitySummary, refHint, matchHint, openRefLink, player, playerEl, playerPlaying, playerTime, playerDur, playerVol, playerMuted, playerSeeking, playerSeekVal, playerStep, playerToggle, playerClose, playerSeek, onPlayerTick, onPlayerMeta, onPlayerEnded, musicLrcLines, musicLrcActive, previewMusicRow, probeMusicRow, switchMusicSource, musicSwitching, scanLocalMusic, musicSources, musicSourceOptions, musicMatchSourceOptions, musicPresetOptions, musicSourceOrdered, musicPlaylistUrl, musicPlaylistMode, saveMusicPlaylistMode, musicCookies, musicSelected, aiPipeline, analyzeAudioFile, aiVocalSeparate, aiTts, installVoicePkgs, loadVoiceStatus, refreshSepStatus, setupSeparatorEnv, setupSeparatorWeights, setupSeparatorAll, sepModelLabel, sepBusy, sepInfo, sepModels, sepHasGpu, sepStatusText, sepDeviceText, sepEngineReason, sepModelsState, sepModelsMissing, sepModelsReady, sepRoformerVer, sepDemucsVer, sepTorchVer, toggleRealtime, installingVoice, voiceStatusText, rtRecording, rtTranslate, rtTargetLang, rtLog, searchMusic, batchSearchDownload, applyMusicPreset, parseMusicPlaylist, onMusicSelection, downloadMusicSelected, downloadMusicRow, showAlreadyHave, musicFavItems, musicFavMissing, musicFavSelected, musicFavReadySel, musicFavSwitching, musicFavDownloading, onMusicFavSelection, addMusicFav, removeMusicFav, clearMusicFav, previewMusicFav, switchMusicFav, downloadMusicFav, loadMusicFavs, installMusicdl,
           loadSubs, addSub, removeSub, toggleSub, scanOneSub, scanAllSubs, startLiveRecord, pauseLiveTask, resumeLiveTask, endLiveTask, endAllLive, cancelLiveTask, addLiveMonitor, removeLiveMonitor, pauseLiveMonitor, resumeLiveMonitor, scanLiveMonitors, loadLiveMonitors, liveRoomCfg, liveRoomFmts, liveRoomQualities, openLiveMonitorCfg, saveLiveMonitorCfg, liveMonitorCfgText, testTelegram,
           testWecom, applyRiskPreset, loadRiskPresets, loadFavTab, loadFavFolderItems, loadYtPlaylist, onFavSelChange,
           downloadFavSelected, downloadFavOne, subscribeFavSelected, subscribeFavOne, startBiliQr, pollBiliQr,
-          isPlayable, isAudioFile, isMediaFile, isVideoFile, openPicard, mbTagFile, mbEnrichFile, fingerprintFile, guessTagsFile, isSrtFile, aiVocalSeparate, aiTts, installVoicePkgs, loadVoiceStatus, refreshSepStatus, setupSeparatorEnv, setupSeparatorWeights, sepModelLabel, sepBusy, sepInfo, sepModels, sepHasGpu, sepStatusText, sepDeviceText, sepEngineReason, toggleRealtime, installingVoice, voiceStatusText, rtRecording, rtTranslate, rtTargetLang, rtLog, aiTranscribe, aiTranslateSrt, aiCalibrateSrt, onFileSelectionChange, runBatchAi, runSrtCalibrateSelected,
+          isPlayable, isAudioFile, isMediaFile, isVideoFile, openPicard, mbTagFile, mbEnrichFile, fingerprintFile, guessTagsFile, isSrtFile, aiVocalSeparate, aiTts, installVoicePkgs, loadVoiceStatus, refreshSepStatus, setupSeparatorEnv, setupSeparatorWeights, setupSeparatorAll, sepModelLabel, sepBusy, sepInfo, sepModels, sepHasGpu, sepStatusText, sepDeviceText, sepEngineReason, toggleRealtime, installingVoice, voiceStatusText, rtRecording, rtTranslate, rtTargetLang, rtLog, aiTranscribe, aiTranslateSrt, aiCalibrateSrt, onFileSelectionChange, runBatchAi, runSrtCalibrateSelected,
           burnDlg, burnJob, burnStarting, burnSubChoices, burnOutName, burnRunning, burnPercent, burnStatusText, openBurn, closeBurn, startBurn, stopBurn,
           batchMode, batchScope, batchRunning, selectedFiles, syncOffsetSec, syncScale, syncInplace, playFile, zipPath, zipCurrentFolder,
           doSearch, downloadSearchItem, analyzeSearchItem, subscribeSearchItem, normalizeSearchUrl, loadPlatformCookies, savePlatformCookie, savePlatformCookieText, clearCookieFlag, browsePlatformCookie, exportSync, triggerImportSync, onImportSync,
@@ -14303,7 +14298,7 @@ const CFG_KEYS = {
           fileSearch, fileSort, filteredFiles, runFileAction, openDownloadFolder, testCookie, redownload, toggleDark,
           UI_THEMES, setTheme,
           loadStatus, checkEnv, updateYtdlp, updateFfmpeg,
-          components, compInfo, compDetail, compUpdatable, foldRare, updatingComp, latestBusy, verCmp, loadComponents, updateComponent, pathBusy, setEnvPath,
+          components, compInfo, compDetail, compUpdatable, stab, SETTINGS_TABS, updatingComp, latestBusy, verCmp, loadComponents, updateComponent, pathBusy, setEnvPath,
           compAll, compAllBusy, compTargets, compAllSummary, updateAllComponents,
           compUpdates, compCheckBusy, compCheckText, startCompCheck,
           encoders, encProbeBusy, encProbeText, loadEncoders,

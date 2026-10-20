@@ -148,8 +148,11 @@ _anchors = set(re.findall(r"gotoCard\(\s*'[\w']+',\s*'([^']+)'", HTML))
 ck("P21 每个跳转锚点在模板里都真有一个同 id 的元素",
    bool(_anchors) and all('id="%s"' % a in HTML for a in _anchors),
    str([a for a in _anchors if 'id="%s"' % a not in HTML]))
-ck("P22 补发队列那张卡片在「不常用项」折叠组里，跳转前必须先展开，否则滚不动它",
-   "foldRare.value = true; gotoCard('settings', 'outbox-card'" in HTML)
+# 补发队列卡片已从「不常用项」折叠组移到通知页常驻可见，跳转不再需要先展开；
+# 卡片必须仍带锚点 id 且由通知页签控制显隐，横幅点击只切页 + gotoCard
+ck("P22 补发队列卡片在通知页直接可见、跳转只切页（不再依赖折叠组展开）",
+   'v-show="stab === \'notify\'" class="card card--wide" id="outbox-card"' in HTML
+   and "stab.value = 'notify'; gotoCard('settings', 'outbox-card'" in HTML)
 _b_computed = HTML[HTML.find("const banners = computed("):]
 _b_computed = _b_computed[:_b_computed.find("\n        });")]
 ck("P23 通知条的文案全走词表（事由行里除了注释不许有硬编码中文）",

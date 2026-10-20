@@ -44,6 +44,16 @@ def probe() -> int:
             d[mod + "_import"] = "ok"
         except Exception as e:  # noqa: BLE001
             d[mod + "_import"] = "%s: %s" % (type(e).__name__, str(e)[:120])
+    try:
+        from importlib import metadata
+        for dist, key in (("audio-separator", "audio_separator_version"),
+                          ("demucs", "demucs_version")):
+            try:
+                d[key] = metadata.version(dist)
+            except Exception:  # noqa: BLE001 包没装就没有版本，由 import 状态说明缺哪层
+                pass
+    except Exception:  # noqa: BLE001
+        pass
     print("@@@" + json.dumps(d, ensure_ascii=False))
     return 0
 

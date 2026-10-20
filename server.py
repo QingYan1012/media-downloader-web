@@ -11463,6 +11463,10 @@ async def web_auth_middleware(request: Request, call_next):
     if why:
         return _auth_denied(request, why)
     response = await call_next(request)
+    # 词表每次启动都可能换一批键；静态文件默认走浏览器启发式缓存，页面重开还在用旧词表，
+    # 新模板里的键就会原样印成 settings.xxx。要求每次回源校验，没变时仍是 304。
+    if request.url.path == "/static/i18n.js":
+        response.headers["Cache-Control"] = "no-cache"
     # 会话滑动续期：还活跃就不该在半路被踢，但也不必每个请求都重设 cookie
     if _auth_enforcing() and request.url.path not in AUTH_PUBLIC_PATHS \
             and not request.url.path.startswith("/api/auth/"):
@@ -12290,6 +12294,10 @@ def api_voice_status(refresh: int = 0):
                 "venv": venv,
                 "runner": runner,
                 "torch": probe.get("torch", ""),
+                "audio_separator_version": probe.get("audio_separator_version", ""),
+                "demucs_version": probe.get("demucs_version", ""),
+                "audio_separator_ok": as_ok,
+                "demucs_ok": dm_ok,
                 "cuda_available": bool(probe.get("cuda_available")),
                 "gpu_name": probe.get("gpu_name", ""),
                 "vram_gib": probe.get("vram_gib"),

@@ -92,6 +92,7 @@ try:
         V.separation_probe = lambda refresh=False: {
             "python_present": venv, "runner_present": runner,
             "audio_separator_import": as_ok, "demucs_import": "ok",
+            "audio_separator_version": "0.47.0", "demucs_version": "4.1.0",
             "torch": "2.14.1+cu130", "cuda_available": gpu, "gpu_name": "X" if gpu else "",
             "vram_gib": 8.0 if gpu else None}
         V.roformer_model_states = lambda: [
@@ -134,6 +135,11 @@ try:
     ck("C5 齐了：reason 是空、default_model 取第一条就绪的、GPU 读数照搬探测结果",
        st["engines"][0]["reason"] == "" and st["default_model"] == "m0"
        and st["cuda_available"] is True, str(st["default_model"]))
+    ck("C7 回包带两个引擎包的版本与可用标记（设置页要列出用的是什么）",
+       st["audio_separator_version"] == "0.47.0" and st["demucs_version"] == "4.1.0"
+       and st["audio_separator_ok"] is True and st["demucs_ok"] is True,
+       str({k: st[k] for k in ("audio_separator_version", "demucs_version",
+                               "audio_separator_ok", "demucs_ok")}))
     ck("C6 回包不再给那个笼统的 demucs 布尔（一个 bool 说不清缺哪一层）",
        "demucs" not in S.api_voice_status())
 finally:
@@ -223,6 +229,12 @@ ck("F15 五个分离设置在 loadConfig 里真回填（只写不读 = 界面显
        ("vocal_engine", "roformer_model", "demucs_model", "ai_device", "vocal_native_fp16")),
    str([k for k in ("vocal_engine", "roformer_model", "demucs_model", "ai_device",
                     "vocal_native_fp16") if not re.search(r"settings\.value\.%s\s*=" % k, _lc)]))
+ck("F16 组件页把两个引擎包与版本列出来，不只一句权重就绪数",
+   "RoFormer · audio-separator {{ sepRoformerVer }}" in HTML
+   and "Demucs · demucs {{ sepDemucsVer }}" in HTML
+   and "torch {{ sepTorchVer }}" in HTML)
+ck("F17 回包缺两个包的字段时界面说「版本未知」，不冒充「未安装」",
+   "settings.sepVerUnknown" in HTML and "sepPkgVer(sepInfo.value" in HTML)
 
 # ------------------------------------------------------------ G. 打包
 ck("G1 入口脚本进包（voice_tools 只拼路径调它，漏了就是「能选引擎」成空话）",
