@@ -16452,7 +16452,8 @@ def api_subs_toggle(body: SubIdBody):
 @app.post("/api/subs/scan")
 def api_subs_scan():
     res = sub_mgr.scan_all()
-    log_mgr.log(f"手动订阅扫描: 检查 {res['checked']}，新增 {res['new']}")
+    log_mgr.log(f"手动订阅扫描: 检查 {res['checked']}，新增 {res['new']}",
+                k="srv.subs.manual_scan_done", kv={"checked": res["checked"], "new": res["new"]})
     return {"ok": True, **res}
 
 
@@ -17183,7 +17184,9 @@ def _cc_do_test() -> dict:
         msg += f"；按填的 {len(got['want'])} 条域名过滤后本机要收 {len(got['kept'])} 条"
     _cc_state_save({"scheme_seen": got["scheme"]})
     log_mgr.log(f"[CookieCloud] 测试连接通过：云端 {len(got['rows'])} 条 / {cloud_domains} 个域，"
-                f"加密 {got['scheme']}（这一趟没写盘）")
+                f"加密 {got['scheme']}（这一趟没写盘）",
+                k="srv.cookiecloud.test_passed",
+                kv={"rows": len(got['rows']), "domains": cloud_domains, "scheme": got['scheme']})
     return {"ok": True, "message": msg, "notes": got["notes"][:4], "cloud_rows": len(got["rows"]),
             "keep_rows": len(got["kept"]), "cloud_domains": cloud_domains, "domains": len(got["domains"]),
             "update_time": got["update_time"], "scheme": got["scheme"]}
@@ -17232,7 +17235,9 @@ def _cc_do_pull() -> dict:
                 + ("、".join(f"{w['file']}({w['count']} 条)" for w in changed) if changed else "内容一样，没动"))
     for w in changed:
         if w["backup"]:
-            log_mgr.log(f"[CookieCloud] {w['file']} 覆盖前的原样备份为 {w['backup']}")
+            log_mgr.log(f"[CookieCloud] {w['file']} 覆盖前的原样备份为 {w['backup']}",
+                        k="srv.cookiecloud.backup_written",
+                        kv={"file": w['file'], "backup": w['backup']})
     for n in got["notes"][:3]:
         log_mgr.log(f"[CookieCloud] {n}", "warning")
     return {"ok": True, "message": f"{now} 拉下 {len(rows)} 条 / {len(got['domains'])} 个域，"
@@ -20257,7 +20262,8 @@ def _submit_live_transcode(mid: str, src: str, preset_id: str):
     def work():
         ok, out, err = _run_transcode(src, preset_id, False)
         if ok:
-            log_mgr.log(f"直播录完自动转码完成: {Path(out).name}")
+            log_mgr.log(f"直播录完自动转码完成: {Path(out).name}",
+                        k="srv.transcode.live_done", kv={"name": Path(out).name})
             _patch_live_monitor(mid, rec_transcode="已完成", rec_out=out)
         else:
             log_mgr.log(f"直播录完自动转码失败: {err}", "warning")
@@ -21261,7 +21267,9 @@ def risk_note_for_failure(raw: str, url: str = "", task_id: str = "") -> str:
         if th:
             note += f"（该域名 {th['host']} 已自动降速：同时只跑 1 个，冷却 {th['cooldown']:.0f}s）"
             if task_id:
-                log_mgr.log(f"[{task_id[:8]}] 按失败原因降速：{th['host']} 第 {th['strikes']} 次命中", "warning")
+                log_mgr.log(f"[{task_id[:8]}] 按失败原因降速：{th['host']} 第 {th['strikes']} 次命中", "warning",
+                            k="srv.net.degraded_by_failure",
+                            kv={"tid": task_id[:8], "host": th["host"], "n": th["strikes"]})
     return note
 
 
@@ -21982,7 +21990,8 @@ def _download_url_to_file(url: str, dest: Path, proxy: str = "", referer: str = 
                 except Exception:
                     pass
             if dest.stat().st_size > 0:
-                log_mgr.log(f"直链下载 TLS 指纹={fp}")
+                log_mgr.log(f"直链下载 TLS 指纹={fp}",
+                            k="srv.engine.tls_fingerprint", kv={"fp": fp})
                 return
         except Exception:
             pass  # 回退 requests
@@ -23391,7 +23400,9 @@ def migrate_rss_to_subs() -> int:
         try:
             item = sub_mgr.add(url, str(f.get("title") or url), "", "rss")
         except Exception as e:
-            log_mgr.log(f"RSS 源「{f.get('title') or url}」并入订阅失败：{e}", "warning")
+            log_mgr.log(f"RSS 源「{f.get('title') or url}」并入订阅失败：{e}", "warning",
+                        k="srv.rss.migrate_failed",
+                        kv={"title": f.get("title") or url, "e": str(e)})
             continue
         with sub_mgr._lock:
             s = next((x for x in sub_mgr.subs if x.get("id") == item.get("id")), None)
@@ -24474,7 +24485,7 @@ def main():
         try:
             import ssl as _ssl
             _ssl._create_default_https_context = _ssl._create_unverified_context
-            log_mgr.log("已关闭全局 SSL 证书校验（nocheckcertificate）")
+            log_mgr.log("已关闭全局 SSL 证书校验（nocheckcertificate）", k="srv.boot.ssl_disabled")
         except Exception:
             pass
 
@@ -24486,7 +24497,8 @@ def main():
     try:
         migrate_rss_to_subs()
     except Exception as e:
-        log_mgr.log(f"RSS 源并入订阅失败: {e}", "warning")
+        log_mgr.log(f"RSS 源并入订阅失败: {e}", "warning",
+                    k="srv.boot.rss_migrate_failed", kv={"e": str(e)})
     # 启动时加载监控；若仍在直播且无进行中任务，自动开录
     def _boot_live_monitors():
         try:
@@ -24512,7 +24524,8 @@ def main():
                 return
             _comp_check_start()
         except Exception as e:
-            log_mgr.log(f"启动时自动检测组件更新失败: {e}", "warning")
+            log_mgr.log(f"启动时自动检测组件更新失败: {e}", "warning",
+                        k="srv.boot.component_check_failed", kv={"e": str(e)})
 
     threading.Thread(target=_boot_component_check, daemon=True).start()
 
@@ -24525,10 +24538,13 @@ def main():
                 return
             po_token_health(force=True)
         except Exception as e:
-            log_mgr.log(f"启动时拉起 PO Token 服务端失败: {e}", "warning")
+            log_mgr.log(f"启动时拉起 PO Token 服务端失败: {e}", "warning",
+                        k="srv.boot.pot_server_failed", kv={"e": str(e)})
 
     threading.Thread(target=_boot_pot_server, daemon=True).start()
-    log_mgr.log(f"Web 服务启动 | FFmpeg={ffmpeg_mgr.version()} | yt-dlp={engine.check_ytdlp()}")
+    log_mgr.log(f"Web 服务启动 | FFmpeg={ffmpeg_mgr.version()} | yt-dlp={engine.check_ytdlp()}",
+                k="srv.boot.web_started",
+                kv={"ffmpeg": ffmpeg_mgr.version(), "ytdlp": engine.check_ytdlp()})
     print("=" * 50)
     print("  多媒体下载器 Web 版 (Element Plus)")
     print(f"  打开浏览器访问: http://{host}:{port}")
