@@ -13583,7 +13583,11 @@ def api_ai_hardsub(body: dict):
                 why = " / ".join(tail[-3:])[-260:] or f"ffmpeg 退出码 {code}"
                 rest = chain[idx + 1:]
                 if rest:
-                    log_mgr.log(f"烧字幕用 {enc['label']} 没成（{why[:140]}），换 {rest[0]['label']} 重来", "warning")
+                    log_mgr.log(f"烧字幕用 {enc['label']} 没成（{why[:140]}），换 {rest[0]['label']} 重来", "warning",
+                                k="srv.hardsub.enc_fallback",
+                                kv={"enc": _frag_id("enc", enc["encoder"], enc["label"]),
+                                    "why": why[:140],
+                                    "next": _frag_id("enc", rest[0]["encoder"], rest[0]["label"])})
                 else:
                     raise RuntimeError(why or "ffmpeg 失败")
             size_mb = out.stat().st_size / 1048576.0
@@ -13592,7 +13596,10 @@ def api_ai_hardsub(body: dict):
                     HARDSUB_JOBS[key].update(
                         status="done",
                         message=f"已生成 {out.name}（{size_mb:.0f} MB · {used['label']}）")
-            log_mgr.log(f"烧字幕完成: {out.name}（{size_mb:.0f} MB · 用 {used['label']}）")
+            log_mgr.log(f"烧字幕完成: {out.name}（{size_mb:.0f} MB · 用 {used['label']}）",
+                        k="srv.hardsub.done",
+                        kv={"name": out.name, "mb": f"{size_mb:.0f}",
+                            "enc": _frag_id("enc", used["encoder"], used["label"])})
         except Exception as e:
             with HARDSUB_LOCK:
                 if key in HARDSUB_JOBS:
@@ -17156,13 +17163,17 @@ def _cc_run(kind: str, label: str, fn) -> dict:
         reason = _cc_redact(e.detail)
         _cc_state_save({f"last_{kind}_at": _cc_now(), f"last_{kind}_ok": False,
                         f"last_{kind}_error": reason[:180]})
-        log_mgr.log(f"[CookieCloud] {label}没成：{reason[:160]}", "warning")
+        log_mgr.log(f"[CookieCloud] {label}没成：{reason[:160]}", "warning",
+                    k="srv.cookiecloud.op_failed",
+                    kv={"op": _frag_text(label), "why": reason[:160]})
         raise
     except Exception as e:  # noqa: BLE001
         reason = _cc_redact(f"{type(e).__name__}: {e}")
         _cc_state_save({f"last_{kind}_at": _cc_now(), f"last_{kind}_ok": False,
                         f"last_{kind}_error": reason[:180]})
-        log_mgr.log(f"[CookieCloud] {label}出错了：{reason[:140]}", "error")
+        log_mgr.log(f"[CookieCloud] {label}出错了：{reason[:140]}", "error",
+                    k="srv.cookiecloud.op_error",
+                    kv={"op": _frag_text(label), "why": reason[:140]})
         raise
     _cc_state_save({f"last_{kind}_at": _cc_now(), f"last_{kind}_ok": True,
                     f"last_{kind}_error": ""})   # 成功了要把上一次的错话擦掉，不然界面显示「通过：连不上…」
@@ -22080,13 +22091,19 @@ def _run_sniff_merge_task(
                 if not u:
                     continue
                 try:
-                    log_mgr.log(f"[{task_id[:8]}] {label}: {_cdn_host_score(u)} {u[:80]}…")
+                    score = _cdn_host_score(u)
+                    log_mgr.log(f"[{task_id[:8]}] {label}: {score} {u[:80]}…",
+                                k="srv.sniff.candidate_try",
+                                kv={"tid": task_id[:8], "track": _frag_text(label),
+                                    "score": score, "url": u[:80]})
                     _download_url_to_file(u, dest, proxy=proxy, referer="https://www.bilibili.com")
                     if dest.exists() and dest.stat().st_size > 1024:
                         return True
                 except Exception as e:
                     last = e
-                    log_mgr.log(f"[{task_id[:8]}] {label} 失败: {e}", "warning")
+                    log_mgr.log(f"[{task_id[:8]}] {label} 失败: {e}", "warning",
+                                k="srv.sniff.candidate_failed",
+                                kv={"tid": task_id[:8], "track": _frag_text(label), "e": str(e)})
             if last:
                 raise last
             return False
@@ -23537,6 +23554,42 @@ TRANSCODE_PRESETS = {
     },
 }
 
+# 日志句子中「洞里的值本身就是我们自己的中文」那批原子（编码器名、转码档位名、轨道名、
+# CookieCloud 的三个动作名）：挂键时 kv 传的是这张表里的键名，前端 t() 认得出键就按当前语言
+# 取词，认不出就照原样印 —— 落盘的 message 一个字没动，中文界面永远是后端那句原话。
+# 闸门 K11 钉住这张表与 ENCODER_LABELS / TRANSCODE_PRESETS 逐字一致，且两份词表都有对应键。
+LOG_FRAG_KEYS = {
+    "enc.libx264": "H.264（CPU · libx264）",
+    "enc.libx265": "H.265/HEVC（CPU · libx265）",
+    "enc.hevc_nvenc": "H.265/HEVC（NVIDIA 硬件）",
+    "enc.hevc_qsv": "H.265/HEVC（Intel 核显 QSV）",
+    "enc.hevc_amf": "H.265/HEVC（AMD 硬件 AMF）",
+    "tpreset.mp4": "转 MP4（重编码 + AAC，编码器见设置）",
+    "tpreset.mp4_1080": "转 MP4 并限制 1080p",
+    "tpreset.audio_mp3": "抽取音频 MP3",
+    "tpreset.audio_m4a": "抽取音频 M4A",
+    "tpreset.mkv_copy": "封装为 MKV (无重编码)",
+    "tpreset.flv_to_mp4": "FLV/TS -> MP4 (优先 copy)",
+    "track.video": "视频轨",
+    "track.audio": "音频轨",
+    "ccop.test": "测试连接",
+    "ccop.pull": "拉取",
+    "ccop.push": "推送",
+}
+LOG_FRAG_BY_TEXT = {v: k for k, v in LOG_FRAG_KEYS.items()}
+
+
+def _frag_id(prefix: str, ident, fallback: str) -> str:
+    """按 id 找片段键（enc.xxx / tpreset.xxx）；表里没有就把中文原话照旧交给前端。"""
+    key = f"{prefix}.{ident}"
+    return key if key in LOG_FRAG_KEYS else fallback
+
+
+def _frag_text(text) -> str:
+    """按中文原话找片段键（轨道名、动作名）；表里没有就原样返回。"""
+    raw = str(text or "")
+    return LOG_FRAG_BY_TEXT.get(raw, raw)
+
 
 @app.get("/api/transcode/presets")
 def api_transcode_presets():
@@ -23602,19 +23655,30 @@ def _run_transcode(src_path: str, preset_id: str, delete_source: bool = False):
     try:
         if _preset_needs_encoder(base):
             chain = _video_encode_chain(23)
-            log_mgr.log(f"开始转码: {src.name}（{preset['label']} · 用 {chain[0]['label']}）")
+            log_mgr.log(f"开始转码: {src.name}（{preset['label']} · 用 {chain[0]['label']}）",
+                        k="srv.transcode.started",
+                        kv={"name": src.name,
+                            "preset": _frag_id("tpreset", preset_id, preset["label"]),
+                            "enc": _frag_id("enc", chain[0]["encoder"], chain[0]["label"])})
             err, done = "", False
             for idx, enc in enumerate(chain):
                 ok, err = _attempt(_swap_encoder(base, enc["args"]), enc["timeout_mult"])
                 if ok:
                     done = True
                     if idx:
-                        log_mgr.log(f"转码改用了 {enc['label']}: {out.name}")
+                        log_mgr.log(f"转码改用了 {enc['label']}: {out.name}",
+                                    k="srv.transcode.fell_back",
+                                    kv={"enc": _frag_id("enc", enc["encoder"], enc["label"]),
+                                        "name": out.name})
                     break
                 rest = chain[idx + 1:]
                 if rest:
                     why1 = " ".join((err or "").split())[-140:]
-                    log_mgr.log(f"转码用 {enc['label']} 没成（{why1}），换 {rest[0]['label']} 重来", "warning")
+                    log_mgr.log(f"转码用 {enc['label']} 没成（{why1}），换 {rest[0]['label']} 重来", "warning",
+                                k="srv.transcode.enc_fallback",
+                                kv={"enc": _frag_id("enc", enc["encoder"], enc["label"]),
+                                    "why": why1,
+                                    "next": _frag_id("enc", rest[0]["encoder"], rest[0]["label"])})
             if not done:
                 return False, "", "转码失败: " + (err or "")[-300:]
         else:

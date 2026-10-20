@@ -162,6 +162,10 @@ covered |= set(re.findall(r"'([a-z][A-Za-z0-9_.-]*)'", HTML)) & set(DICT["zh"])
 # 否则 B10 会把它们报成死键（K 段那套闸门才是真逐条比句子的人）
 ui_prefixes = re.findall(r"logAction\(\s*'([a-z][\w.]*)'\s*\+", HTML)
 srv_keys = set(re.findall(r'\bk=["\']((?:log|ui|srv)\.[\w.]+)["\']', SERVER_SRC))
+# #93a 的片段键谁都不写在模板里：后端只把键名塞进 kv，前端 fill() 认出它是词表键才取词。
+# 「有人在用」的证据是 server.py 那张登记表，K11 逐条比它与两张后端表、比它和词表；
+# 不把它算进 covered，B10 会把这一批 16 条全报成死键。
+covered |= set(S.LOG_FRAG_KEYS)
 dead = sorted(k for k in DICT["zh"]
               if k not in covered and k not in srv_keys
               and not (ui_prefixes and any(k.startswith(p) for p in ui_prefixes))
@@ -364,7 +368,11 @@ F6_OK = {"bt.binFound", "music.favFailLine", "music.statsWrap", "music.switchFai
          # 一键更新那行的外壳同理：组件名（后端给的失败原因）——括号里那句是人家的话，不是界面文案
          "settings.compAllReason",
          # 排序那一批的列名片段里，ID 这一列两边就叫 ID（界面原文如此，编成「标识」是我新写的话）
-         "col.id"}
+         "col.id",
+         # 编码器档位片段同一式：后端原话就是「H.264（CPU · libx264）」，全角括号里还是同一个 id
+         "enc.libx264", "enc.libx265",
+         # 嗅探试源那行：外壳只有方括号、冒号和三个占位符，中文全在 {track} 洞里由片段键现取
+         "srv.sniff.candidate_try"}
 zh_plain = [k for k, v in DICT["zh"].items()
             if not CJK.search(str(v)) and latin.search(str(v)) and k not in F6_OK]
 ck("F6 zh 那份每条要么含中文、要么只是不含字母的标点（词表里的分隔符）——不许混进其实是英文的条目",
@@ -487,10 +495,13 @@ ck("H20 ACTION_NAMES 只剩「路径 → 键」：138 条一个不多一个不�
    f"{len(_pairs_an)} 条")
 # 片段键（拼进整句里的列名/排序方向/页签名/主题名/目录名）不占 ui.*：H10 认定 ui.* 的 en 自带「[UI] 」，
 # 片段带了会拼到句子中间。它们只当 kv 的值发，永远不当 k。
-FRAG = [k for k in DICT["zh"] if k.startswith(("list.", "col.", "sort.", "favtab.", "theme.", "dir."))]
-ck("H21 片段键自成一批前缀（list./col./sort./favtab./theme./dir.），两份都有、en 不带「[UI] 」、也不当 k 用",
-   len(FRAG) >= 40 and not [k for k in FRAG if k not in DICT["en"]
-                             or DICT["en"][k].startswith("[UI] ") or k in kb],
+FRAG = [k for k in DICT["zh"] if k.startswith(("list.", "col.", "sort.", "favtab.", "theme.", "dir.",
+                                               # #93a：日志句子洞里的「我们自己的中文」也走这一式，K11 管对表
+                                               "enc.", "tpreset.", "track.", "ccop."))]
+ck("H21 片段键自成一批前缀（list./col./sort./favtab./theme./dir./enc./tpreset./track./ccop.），"
+   "两份都有、en 不带「[UI] 」、也不当 k 用",
+   len(FRAG) >= 50 and not [k for k in FRAG if k not in DICT["en"]
+                            or DICT["en"][k].startswith("[UI] ") or k in kb],
    f"{len(FRAG)} 个片段键")
 ck("H22 落盘基线本身够分量（改前那句中文逐条在册，G39 才有得比；基线空了等于这条闸门没跑）",
    len(MAIDIAN_BASE) >= 210 and len({k for k, _, _ in MAIDIAN_BASE}) >= 200,
@@ -694,6 +705,48 @@ ck("K10 self.log(...) 这一式扫描抠得到，且四个适配口与三份默�
    and not _default_shape,
    f"裸 self.log 调用点 {_seen_selflog} 处 / 送到 {len(_fwd)} 份 / 送不到 {_fwd_failed} / "
    f"默认桩缺参 {_default_shape}")
+
+# ---- K11. 片段键登记表（#93a 口径：洞里的值本身是我们自己的中文，改成随 kv 下发键名）
+# 前端 fill() 认得出 kv 值本身是个词表键就按当前语言取词，认不出照原样印。所以登记表一旦
+# 和 ENCODER_LABELS / TRANSCODE_PRESETS / 调用点的字面量漂开，闸门不会红，只有英文界面
+# 会静悄悄印出中文 —— 这一节五头钉住。
+_frag_enc = {("enc." + k, v) for k, v in S.ENCODER_LABELS.items()}
+_frag_tp = {("tpreset." + k, v["label"]) for k, v in S.TRANSCODE_PRESETS.items()}
+_fr_reg = [f"{k} 表里是 {S.LOG_FRAG_KEYS.get(k)!r}，原话是 {v!r}"
+           for k, v in sorted(_frag_enc | _frag_tp) if S.LOG_FRAG_KEYS.get(k) != v]
+ck("K11a 每个编码器档位、每条转码预设都在登记表里且中文逐字相同（漂了英文界面只会印中文）",
+   not _fr_reg, str(_fr_reg[:3]))
+_fr_dict = [f"{k} 词表 zh={DICT['zh'].get(k)!r} en={'有' if k in DICT['en'] else '缺'}"
+            for k, v in sorted(S.LOG_FRAG_KEYS.items())
+            if DICT["zh"].get(k) != v or k not in DICT["en"]]
+ck("K11b 登记表每个键两份词表都在，zh 那半逐字等于表里的原话（少 en 那条英文界面退回中文原话）",
+   not _fr_dict, str(_fr_dict[:3]))
+_fr_dup = sorted({v for v in S.LOG_FRAG_KEYS.values()
+                  if list(S.LOG_FRAG_KEYS.values()).count(v) > 1})
+ck("K11c 登记表没有两句原话撞名（撞了 LOG_FRAG_BY_TEXT 会静默少一项，_frag_text 反查不到）",
+   len(S.LOG_FRAG_BY_TEXT) == len(S.LOG_FRAG_KEYS) and not _fr_dup, str(_fr_dup))
+# 轨道名、CookieCloud 动作名是写在调用点上的字面量：光看登记表自己永远发现不了漂移，
+# 所以直接从 AST 抠那两处调用的字符串实参，两头比 —— 实参都得在表里，表里每项都得有人用。
+_fr_calls = {c.args[2].value for c in ast.walk(ast.parse(SERVER_SRC))
+             if isinstance(c, ast.Call) and getattr(c.func, "id", "") == "try_download"
+             and len(c.args) > 2 and isinstance(c.args[2], ast.Constant)
+             and isinstance(c.args[2].value, str)}
+_fr_calls |= {c.args[1].value for c in ast.walk(ast.parse(SERVER_SRC))
+              if isinstance(c, ast.Call) and getattr(c.func, "id", "") == "_cc_run"
+              and len(c.args) > 1 and isinstance(c.args[1], ast.Constant)
+              and isinstance(c.args[1].value, str)}
+_fr_vals = {v for k, v in S.LOG_FRAG_KEYS.items() if k.split(".")[0] in ("track", "ccop")}
+_fr_unreg = sorted(_fr_calls - _fr_vals)
+_fr_dead = sorted(_fr_vals - _fr_calls)
+ck("K11d 轨道名与 CookieCloud 动作名两头对得上：调用点每个字面量都登记了，登记的每项都还在被调用"
+   "（新增一个动作没进表，英文界面那句就漏一个中文片段；表里留了没人用的，等于凭空多一条死键）",
+   _fr_calls and not _fr_unreg and not _fr_dead,
+   f"调用点 {len(_fr_calls)} 个：{sorted(_fr_calls)} / 没登记 {_fr_unreg} / 没人用 {_fr_dead}")
+_fr_orphan = sorted(k for k in DICT["zh"]
+                    if k.split(".")[0] in ("enc", "tpreset", "track", "ccop")
+                    and k not in S.LOG_FRAG_KEYS)
+ck("K11e 词表里这四个前缀的键全在登记表里（后端发不出来的键等于凭空多一条没人用的句子）",
+   not _fr_orphan, str(_fr_orphan[:4]))
 
 # ---------------------------------------------------------------- I. 逐页正文闸门
 print("== I. 逐页推进：翻完的那几页，块里除注释以外不许再有中文 ==")
