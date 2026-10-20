@@ -576,6 +576,12 @@ _built_rows = []          # (行号, 键, 由源码重建出的整句)
 for _ln, _k, _parts, _names in _srv:
     if _parts is None:
         continue
+    _holes = len([p for p in _parts if p is None])
+    if len(_names) != _holes:
+        # 先对数再拼句子：句中间藏了条件式（{'成功' if ok else '失败'}）也算一个洞，
+        # 硬拿去拼会在 _names[_i] 上 IndexError，整套自检当场崩掉、后面的闸门一条都不判。
+        _drift.append(f"{_ln}:{_k} 洞 {_holes} 个 / kv {len(_names)} 个")
+        continue
     _i = 0
     _built = []
     for _p in _parts:
@@ -586,9 +592,7 @@ for _ln, _k, _parts, _names in _srv:
             _built.append(_p)
     _want = "".join(_built)
     _built_rows.append((_ln, _k, _want))
-    if len(_names) != len([p for p in _parts if p is None]):
-        _drift.append(f"{_ln}:{_k} 洞 {len([p for p in _parts if p is None])} 个 / kv {len(_names)} 个")
-    elif DICT["zh"].get(_k) != _want:
+    if DICT["zh"].get(_k) != _want:
         _drift.append(f"{_ln}:{_k} 后端「{_want[:40]}」≠ 词表「{str(DICT['zh'].get(_k))[:40]}」")
 ck("K3 词表 zh 与后端拼出来的那句逐字相同，且洞数与 kv 参数个数一致"
    "（漂了中文界面看后端原话、英文界面看另一套话）",
@@ -619,8 +623,9 @@ ck("K7b 调用点与键的账对得上：抠出的调用点数不少于键数，
        len([1 for _, kk, _, _ in _srv if kk == k]) >= 1 for k in _srv_keys),
    f"键 {len(_srv_keys)} 个 / 调用点 {len(_srv)} 处")
 _srv_pre = [k for k in _srv_keys
-            if DICT["zh"][k].startswith("[界面] ") or DICT["en"][k].startswith("[UI] ")
-            or "[界面]" in DICT["en"][k]]
+            if (DICT["zh"].get(k) or "").startswith("[界面] ")
+            or (DICT["en"].get(k) or "").startswith("[UI] ")
+            or "[界面]" in (DICT["en"].get(k) or "")]
 ck("K8 srv.* 是后端自记的记录，不带「[界面] 」也不带「[UI] 」（那两枚前缀各有归属：log.* 与 ui./act.）",
    not _srv_pre, str(_srv_pre[:6]))
 _fwd_ok = [x for x in _scan.nonliteral if x[0].endswith("api_ui_event")]

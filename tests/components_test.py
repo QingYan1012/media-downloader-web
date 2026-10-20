@@ -328,7 +328,8 @@ BUSY_LOG: list[tuple] = []
 
 
 class BusyLog:
-    def log(self, msg, level="info"):
+    def log(self, msg, level="info", k="", kv=None):
+        # 签名跟着 LogManager.log 走（#55 加了可选的 k/kv），收下来不动断言
         BUSY_LOG.append((level, msg))
 
 
@@ -466,7 +467,7 @@ try:
 
         # 外层自己坏了（日志都写不进）也要清 running
         class BoomLog:
-            def log(self, msg, level="info"):
+            def log(self, msg, level="info", k="", kv=None):
                 if "开始 FFmpeg" in msg:
                     raise OSError("日志写不下去了")
 

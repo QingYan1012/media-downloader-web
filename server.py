@@ -13945,15 +13945,21 @@ def _comp_check_worker() -> None:
                 status="done",
                 finished=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 available=available, error="")
-        log_mgr.log(f"[组件] 检测上游版本：{len(available)} 个组件有可更新版本"
-                    if available else "[组件] 检测上游版本：已在用组件都是最新")
+        if available:
+            log_mgr.log(f"[组件] 检测上游版本：{len(available)} 个组件有可更新版本",
+                        k="srv.comp.check_available", kv={"n": len(available)})
+        else:
+            log_mgr.log("[组件] 检测上游版本：已在用组件都是最新",
+                        k="srv.comp.check_all_latest")
     except Exception as e:
         with _COMP_CHECK_LOCK:
             _COMP_CHECK.update(
                 status="error",
                 finished=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 error=f"{type(e).__name__}: {str(e)[:160]}")
-        log_mgr.log(f"[组件] 检测上游版本失败：{type(e).__name__}: {str(e)[:160]}", "warning")
+        log_mgr.log(f"[组件] 检测上游版本失败：{type(e).__name__}: {str(e)[:160]}", "warning",
+                    k="srv.comp.check_failed",
+                    kv={"cls": type(e).__name__, "detail": str(e)[:160]})
 
 
 def _comp_check_start(force: bool = False) -> dict:
@@ -14030,18 +14036,32 @@ def _comp_update_all(keys: List[str], mirror: str) -> None:
             with _COMP_ALL_LOCK:
                 _COMP_ALL["done"] = i - 1
                 _COMP_ALL["current"] = labels.get(key, key)
-            log_mgr.log(f"一键更新（{i}/{len(keys)}）：开始 {labels.get(key, key)}")
+            log_mgr.log(f"一键更新（{i}/{len(keys)}）：开始 {labels.get(key, key)}",
+                        k="srv.comp.update_start",
+                        kv={"i": i, "total": len(keys), "label": labels.get(key, key)})
             try:
                 ok, msg = _comp_update_one(key, mirror, log_mgr.log)
             except Exception as e:
                 ok, msg = False, f"{type(e).__name__}: {str(e)[:200]}"
-            log_mgr.log(f"一键更新（{i}/{len(keys)}）：{labels.get(key, key)} "
-                        f"{'成功' if ok else '失败'} —— {msg}", "info" if ok else "error")
+            if ok:
+                log_mgr.log(f"一键更新（{i}/{len(keys)}）：{labels.get(key, key)} 成功 —— {msg}",
+                            "info",
+                            k="srv.comp.update_ok",
+                            kv={"i": i, "total": len(keys), "label": labels.get(key, key),
+                                "msg": msg})
+            else:
+                log_mgr.log(f"一键更新（{i}/{len(keys)}）：{labels.get(key, key)} 失败 —— {msg}",
+                            "error",
+                            k="srv.comp.update_failed",
+                            kv={"i": i, "total": len(keys), "label": labels.get(key, key),
+                                "msg": msg})
             with _COMP_ALL_LOCK:
                 _COMP_ALL["results"].append({"key": key, "label": labels.get(key, key),
                                              "ok": bool(ok), "msg": msg[:300]})
     except Exception as e:   # 单项里的异常上面已经吞掉了，走到这里说明是这轮自己坏了
-        log_mgr.log(f"一键更新中断：{type(e).__name__}: {str(e)[:200]}", "error")
+        log_mgr.log(f"一键更新中断：{type(e).__name__}: {str(e)[:200]}", "error",
+                    k="srv.comp.update_aborted",
+                    kv={"cls": type(e).__name__, "detail": str(e)[:200]})
     finally:
         # 无论怎么收尾都要把 running 清掉，否则界面永远发不起下一批
         with _COMP_ALL_LOCK:
