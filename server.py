@@ -22642,7 +22642,9 @@ def api_catcatch_import_config(body: dict = None):
         added += 1
     _save_catcatch_rules(rules)
     log_mgr.log(
-        f"导入猫抓配置：正则规则 {len(found)} 条 → 新增 {added}、重复跳过 {dup}、正则非法 {len(bad)}"
+        f"导入猫抓配置：正则规则 {len(found)} 条 → 新增 {added}、重复跳过 {dup}、正则非法 {len(bad)}",
+        k="srv.catcatch.rules_imported",
+        kv={"found": len(found), "added": added, "dup": dup, "bad": len(bad)},
     )
     return {"ok": True, "found": len(found), "added": added, "duplicated": dup,
             "invalid": bad, "total": len(rules)}
@@ -22659,7 +22661,9 @@ def _catcatch_rule_update(body: dict, action: str) -> dict:
         raise HTTPException(400, f"规则编号 {idx} 已失效，请刷新页面")
     if action == "delete":
         gone = rules.pop(idx)
-        log_mgr.log(f"删除猫抓规则「{str(gone.get('name') or gone.get('regex'))[:60]}」")
+        log_mgr.log(f"删除猫抓规则「{str(gone.get('name') or gone.get('regex'))[:60]}」",
+                    k="srv.catcatch.rule_deleted",
+                    kv={"rule": str(gone.get("name") or gone.get("regex"))[:60]})
     else:
         rules[idx]["enabled"] = not rules[idx].get("enabled", True)
     _save_catcatch_rules(rules)
@@ -22680,7 +22684,8 @@ def api_catcatch_rules_delete(body: dict = None):
 def api_catcatch_rules_clear():
     n = len(_load_catcatch_rules())
     _save_catcatch_rules([])
-    log_mgr.log(f"清空猫抓规则（原有 {n} 条）")
+    log_mgr.log(f"清空猫抓规则（原有 {n} 条）",
+                k="srv.catcatch.rules_cleared", kv={"n": n})
     return {"ok": True, "rules": []}
 
 
