@@ -18597,7 +18597,8 @@ def api_music_preview(id: str = "", url: str = ""):
             except Exception:
                 pass
         except Exception as e:
-            log_mgr.log(f"试听直链不可用: {e}", "warning")
+            log_mgr.log(f"试听直链不可用: {e}", "warning",
+                        k="srv.music.preview_link_failed", kv={"e": str(e)})
 
     if id and song is not None:
         try:
@@ -18641,7 +18642,8 @@ def api_music_preview(id: str = "", url: str = ""):
                     ".mp3": "audio/mpeg", ".flac": "audio/flac", ".m4a": "audio/mp4",
                     ".ogg": "audio/ogg", ".wav": "audio/wav", ".aac": "audio/aac",
                 }.get(dest.suffix.lower(), "audio/mpeg")
-                log_mgr.log(f"试听临时文件: {dest.name}")
+                log_mgr.log(f"试听临时文件: {dest.name}",
+                            k="srv.music.preview_temp", kv={"name": dest.name})
                 try:
                     from music_search import cleanup_musicdl_pkl
                     cleanup_musicdl_pkl(str(tmp_dir), log=log_mgr.log)
@@ -18649,7 +18651,8 @@ def api_music_preview(id: str = "", url: str = ""):
                     pass
                 return FileResponse(dest, media_type=mt, filename=dest.name)
         except Exception as e:
-            log_mgr.log(f"试听临时下载失败: {e}", "error")
+            log_mgr.log(f"试听临时下载失败: {e}", "error",
+                        k="srv.music.preview_dl_failed", kv={"e": str(e)})
 
     raise HTTPException(404, "无可试听地址（可直接下载；部分源需 Cookie）")
 
@@ -18806,7 +18809,9 @@ def api_music_download(body: dict):
                     pp = Path(path)
                     if not pp.is_file():
                         log_mgr.log(f"第 {i + 1} 首没有成品文件可收尾（{path}）——"
-                                    f"没有重命名、也没有入库", "warning")
+                                    f"没有重命名、也没有入库", "warning",
+                                    k="srv.music.finish_no_file",
+                                    kv={"n": i + 1, "path": path})
                         return
                     _MUSIC_JOB["ok"] = int(_MUSIC_JOB.get("ok") or 0) + 1
                     meta = {}
@@ -18835,7 +18840,8 @@ def api_music_download(body: dict):
                                 from music_search import song_archive_meta
                                 archive = song_archive_meta(song)
                             except Exception as ae:
-                                log_mgr.log(f"归档字段读取失败（按空处理）: {ae}", "warning")
+                                log_mgr.log(f"归档字段读取失败（按空处理）: {ae}", "warning",
+                                            k="srv.music.archive_meta_failed", kv={"ae": str(ae)})
                                 archive = {}
                     try:
                         pos = orig_pos.get(ids[i] if i < len(ids) else "", 0)
@@ -18866,7 +18872,8 @@ def api_music_download(body: dict):
                                     s.replace(dest.parent / (dest.stem + s.suffix.lower()))
                                 except Exception:
                                     pass
-                            log_mgr.log(f"重命名: {pp.name}")
+                            log_mgr.log(f"重命名: {pp.name}",
+                                        k="srv.music.renamed", kv={"name": pp.name})
                         lr = save_lyrics_and_cover(
                             str(pp),
                             lyrics_text=meta.get("lyric") or "",
@@ -18888,9 +18895,11 @@ def api_music_download(body: dict):
                             note_music_cover(_MUSIC_JOB, cover_verdict(str(pp), embed, cover_file),
                                              pp.name, meta.get("title") or pp.name, log_mgr.log)
                         except Exception as te:
-                            log_mgr.log(f"自动标签: {te}", "warning")
+                            log_mgr.log(f"自动标签: {te}", "warning",
+                                        k="srv.music.autotag_failed", kv={"te": str(te)})
                     except Exception as re:
-                        log_mgr.log(f"模板/歌词处理: {re}", "warning")
+                        log_mgr.log(f"模板/歌词处理: {re}", "warning",
+                                    k="srv.music.path_lyrics_failed", kv={"re": str(re)})
                     _MUSIC_JOB["last"] = pp.name
 
                 download_songs(ids, work_dir=out_dir, cookies=cookies,
@@ -18904,11 +18913,13 @@ def api_music_download(body: dict):
                     cleanup_musicdl_pkl(out_dir, log=log_mgr.log)
                     n_empty = cleanup_empty_dirs(cache_dir, log=log_mgr.log)
                     if n_empty:
-                        log_mgr.log(f"已清理空缓存目录 × {n_empty}")
+                        log_mgr.log(f"已清理空缓存目录 × {n_empty}",
+                                    k="srv.music.empty_cache_dirs", kv={"n": n_empty})
                 except Exception:
                     pass
             except Exception as e:
-                log_mgr.log(f"musicdl 批量下载失败: {e}", "error")
+                log_mgr.log(f"musicdl 批量下载失败: {e}", "error",
+                            k="srv.music.batch_failed", kv={"e": str(e)})
             finally:
                 _MUSIC_JOB["running"] = False
                 _MUSIC_JOB["finished"] = True
