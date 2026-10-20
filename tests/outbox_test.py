@@ -64,11 +64,14 @@ def cfg(**kw):
 def quiet_log():
     # 真签名带 k/kv（#55 后端运行日志的键），桩不收这两个参数就会在带键的那句上抛 TypeError，
     # 整批 outbox 自检从第一批加键起就是红的 —— 只宽签名，LOGS 仍记 (level, message)
+    # 还原时交回「进来时那一个」而不是 orig_log：嵌套用（H 段外层已经套着一层）时，
+    # 内层退出若直接还原成 orig_log，外层等于白套，后面的启动行就写进项目根 app.log 了。
+    prev = S.log_mgr.log
     S.log_mgr.log = lambda m, level="info", k="", kv=None: LOGS.append((level, m))
     try:
         yield
     finally:
-        S.log_mgr.log = orig_log
+        S.log_mgr.log = prev
 
 
 def reset(*, tg=False, token="", chat="", sc="", wecom=False):

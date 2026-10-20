@@ -283,8 +283,10 @@ class FakeTask:
         self.gid, self.resume_hint = gid, "aria2 G-1"
 
 
-_REAL_CFG, _REAL_CLIENT, _TASKS = S.cfg, S._bt_client, S.queue.tasks
+_REAL_CFG, _REAL_CLIENT, _TASKS, _REAL_LOG = S.cfg, S._bt_client, S.queue.tasks, S.log_mgr
 S.cfg = FakeCfg({})
+# api_bt_limit 改成功后要 log 一句「任务 xxx 限速改为…」，这一段不套桩就会写进项目根的 app.log
+S.log_mgr = FakeLog()
 try:
     ac = FakeAC(ok=True, back={"max-download-limit": "1048576", "max-upload-limit": "0"})
     S._bt_client = lambda c: ac
@@ -366,7 +368,7 @@ try:
     except HTTPException as e:
         ck("G9 两路限速都不给时报「要改哪一路」", e.status_code == 400 and "哪一路" in str(e.detail))
 finally:
-    S.cfg, S._bt_client, S.queue.tasks = _REAL_CFG, _REAL_CLIENT, _TASKS
+    S.cfg, S._bt_client, S.queue.tasks, S.log_mgr = _REAL_CFG, _REAL_CLIENT, _TASKS, _REAL_LOG
 
 # ---------- H aria2 客户端新方法（RPC 层） ----------
 import aria2_client as AC  # noqa: E402
