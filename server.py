@@ -19166,11 +19166,14 @@ def api_music_fingerprint(body: dict):
         else:
             msg = ("未找到 fpcalc（Chromaprint），指纹识别未启动：随包的 chromaprint/fpcalc 缺失，"
                    "请自行安装 Chromaprint 后把它加入 PATH（Debian/Ubuntu：apt install libchromaprint-tools）")
-        log_mgr.log(f"指纹识别未启动（{Path(path).name}）：{msg}", "warning")
+        log_mgr.log(f"指纹识别未启动（{Path(path).name}）：{msg}", "warning",
+                    k="srv.music.fp_not_started",
+                    kv={"name": Path(path).name, "reason": msg})
         return {"ok": False, "message": msg}
     if not api_key:
         msg = "缺少 AcoustID API Key，指纹识别未启动：请在「设置 → 声学指纹 / AcoustID」填写 AcoustID API Key（免费申请：https://acoustid.org/api-key）"
-        log_mgr.log(f"指纹识别未启动（{Path(path).name}）：未配置 AcoustID API Key", "warning")
+        log_mgr.log(f"指纹识别未启动（{Path(path).name}）：未配置 AcoustID API Key", "warning",
+                    k="srv.music.fp_no_api_key", kv={"name": Path(path).name})
         return {"ok": False, "message": msg}
     try:
         from audio_analyze import preflight
@@ -19178,12 +19181,16 @@ def api_music_fingerprint(body: dict):
     except Exception as e:
         err = f"探测音轨失败: {e}"
     if err:
-        log_mgr.log(f"指纹识别未启动（{Path(path).name}）：{err}", "warning")
+        log_mgr.log(f"指纹识别未启动（{Path(path).name}）：{err}", "warning",
+                    k="srv.music.fp_not_started",
+                    kv={"name": Path(path).name, "reason": err})
         return {"ok": False, "message": err}
     from music_search import acoustid_key_check
     err = acoustid_key_check(api_key, log=log_mgr.log)
     if err:
-        log_mgr.log(f"指纹识别未启动（{Path(path).name}）：{err}", "warning")
+        log_mgr.log(f"指纹识别未启动（{Path(path).name}）：{err}", "warning",
+                    k="srv.music.fp_not_started",
+                    kv={"name": Path(path).name, "reason": err})
         return {"ok": False, "message": err}
 
     def job():
@@ -19192,12 +19199,14 @@ def api_music_fingerprint(body: dict):
             if not apply_tags:
                 fp = fpcalc_fingerprint(path, log=log_mgr.log)
                 if not fp.get("fingerprint"):
-                    log_mgr.log("指纹计算失败", "error")
+                    log_mgr.log("指纹计算失败", "error", k="srv.music.fp_calc_failed")
                     return
                 matches = acoustid_lookup(
                     fp["fingerprint"], fp.get("duration") or 0, api_key=api_key, log=log_mgr.log,
                 ) if api_key else []
-                log_mgr.log(f"指纹 duration={fp.get('duration')} 候选={len(matches)}")
+                log_mgr.log(f"指纹 duration={fp.get('duration')} 候选={len(matches)}",
+                            k="srv.music.fp_candidates",
+                            kv={"d": fp.get("duration"), "n": len(matches)})
                 for m in matches[:3]:
                     log_mgr.log(f"  score={m.get('score'):.2f} {m.get('title')} — {m.get('artists')}")
                 return
@@ -19206,7 +19215,8 @@ def api_music_fingerprint(body: dict):
             )
             log_mgr.log(r.get("message") or ("完成" if r.get("ok") else "未写入"))
         except Exception as e:
-            log_mgr.log(f"指纹识别失败: {e}", "error")
+            log_mgr.log(f"指纹识别失败: {e}", "error",
+                        k="srv.music.lookup_failed", kv={"e": str(e)})
 
     threading.Thread(target=job, daemon=True).start()
     return {"ok": True, "message": f"正在指纹识别: {Path(path).name}"}
@@ -19360,7 +19370,9 @@ def api_search(body: SearchBody):
                         "description": (e.get("description") or "")[:120],
                     })
             except Exception as ex:
-                log_mgr.log(f"搜索 youtube/{kind} 失败: {ex}", "warning")
+                log_mgr.log(f"搜索 youtube/{kind} 失败: {ex}", "warning",
+                            k="srv.search.yt_failed",
+                            kv={"kind": kind, "ex": str(ex)})
 
     # ---- Bilibili official API (video / bilibili_user / media_bangumi etc.) ----
     if plat in ("bilibili", "all"):
@@ -19388,7 +19400,9 @@ def api_search(body: SearchBody):
                     )
                     j = requests.get(api, **kw).json() or {}
                     if j.get("code") not in (0, None):
-                        log_mgr.log(f"B站搜索 {search_type} API code={j.get('code')} msg={j.get('message')}", "warning")
+                        log_mgr.log(f"B站搜索 {search_type} API code={j.get('code')} msg={j.get('message')}", "warning",
+                                    k="srv.search.bili_api_code",
+                                    kv={"t": search_type, "c": j.get("code"), "m": j.get("message")})
                         break
                     batch = ((j.get("data") or {}).get("result")) or []
                     batch_all.extend(batch)
@@ -19473,7 +19487,9 @@ def api_search(body: SearchBody):
                             "description": re.sub(r"<[^>]+>", "", it.get("desc") or it.get("description") or "")[:120],
                         })
             except Exception as ex:
-                log_mgr.log(f"B站搜索 {search_type} 失败: {ex}", "warning")
+                log_mgr.log(f"B站搜索 {search_type} 失败: {ex}", "warning",
+                            k="srv.search.bili_failed",
+                            kv={"t": search_type, "ex": str(ex)})
 
         # bilisearch 仅在官方结果不足时补充；412 且已有结果时不刷 WARNING
         if ctype in ("all", "video"):
@@ -19518,10 +19534,12 @@ def api_search(body: SearchBody):
                 except Exception as ex:
                     msg = str(ex)
                     if bili_cnt == 0:
-                        log_mgr.log(f"bilisearch 失败: {ex}", "warning")
+                        log_mgr.log(f"bilisearch 失败: {ex}", "warning",
+                                    k="srv.search.bilisearch_failed", kv={"ex": str(ex)})
                     else:
                         # 官方已有结果，412 等失败只记 info，避免日志弹窗干扰
-                        log_mgr.log(f"bilisearch 跳过（已有 {bili_cnt} 条官方结果）", "info")
+                        log_mgr.log(f"bilisearch 跳过（已有 {bili_cnt} 条官方结果）", "info",
+                                    k="srv.search.bilisearch_skipped", kv={"n": bili_cnt})
 
     # ---- Douyin: 仅真实抖音结果（禁止 YouTube 结果冒充 DOUYIN）----
     if plat in ("douyin", "all") and ctype in ("all", "video"):
@@ -19553,7 +19571,8 @@ def api_search(body: SearchBody):
             notes.append({"platform": "douyin", "kind": r["kind"], "text": why})
             if r.get("action"):
                 notes[-1]["action"] = r["action"]
-            log_mgr.log(f"抖音搜索失败: {ex}｜{why}", "warning")
+            log_mgr.log(f"抖音搜索失败: {ex}｜{why}", "warning",
+                        k="srv.search.douyin_failed", kv={"ex": str(ex), "why": why})
 
     # 前端 content_type 二次过滤（all 不过滤）
     if ctype in ("video", "channel", "playlist"):

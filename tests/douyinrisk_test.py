@@ -138,7 +138,8 @@ print("== E. 接进 server 的降速与任务报错 ==")
 import server as S  # noqa: E402
 
 LOGS: list = []
-FakeLogMgr = type("L", (), {"log": staticmethod(lambda m, lvl="info": LOGS.append((lvl, m)))})()
+FakeLogMgr = type("L", (), {"log": staticmethod(
+    lambda m, lvl="info", k="", kv=None: LOGS.append((lvl, m)))})()
 
 
 class FakeCfg:
