@@ -1201,6 +1201,16 @@ v1.4.0 发出去之后接着三句要求：「跑一下音乐结果表确认排�
 - **自检**：`tests/separator_test.py` 57 条（新增 H1–H10）、`i18n_test` 509、`components_test`、`runwindow_test`、`pagemount_test` 40、`settingsave_test` 113 全绿；全批 **65 套 rc=0**（185.8 秒）。`runwindow` 的 G11 锚点跟着 `net-span2` 更新了一次。
 - **标签与包**：按 2026-10-20 的明确要求（「修改后再推送动标签打包」），`v1.4.0` 轻量标签从 `7ac0ff6` 前移到本笔提交并 force-push，`pack_release.py --skip-runtime` 重出便携包。这**推翻了上面 #52 那节「标签不动」的处置**——那一条成立的前提是当时没有人要求动标签；现在要求明确，事后以本节为准。公开 Release 的资产替换仍等下一次单独点头。
 
+## 发布之后这一轮（续）· 队列名跟界面语言、组件页只留一个上游入口、分离引擎「更新」常驻、关服不再打 CancelledError
+
+这一笔在上一节出包之后，用户拿两张截图和一段控制台日志继续收口；`appVersion` 仍是 `v1.4.0`，标签、包与 Release 资产都没动。
+
+- **队列名不再露后端标识**：设置页队列定时窗那几行原来直接把 `default / night / subscribe / sniff / music` 印出来。现在由 `queueLabel()` 走 `QUEUE_NAME_KEYS` 词表：中文显示 默认 / 夜间 / 订阅 / 嗅探 / 音乐，英文显示 Default / Night / Subscribe / Sniff / Music；用户自建的队列名不在词表里，照原样显示，`title` 仍保留原始标识。沙箱切到 EN 后五个内置名全是英文，自定义名不动，控制台 0 错误。
+- **组件页只留一个上游入口**：顶部「立即检测」本来就会强制刷新上游版本，底部「查询上游最新版本」只是再发一次 `GET /api/components?latest=1`，功能重复。删掉底部那枚，把填「最新」列并进检测完成后的 `loadComponents('1')`（读服务端缓存，不重复联网）；`latestBusy` 一并移除。沙箱实测点一次「立即检测」后 16 行的「最新」列填出，底栏只剩「一键更新 / 重新检测 / 保存镜像设置」三枚。
+- **分离引擎的「更新」常驻**：原先按钮随 `sepUpdatable` 显隐，引擎升到 0.47.1 / 4.1.0（都已是最新）后按钮整个消失，用户找不到重装 / 强制升级的入口。现在与其它组件行一致，按钮始终在场；有新版时旁边仍显示「最新 x.y.z（可更新）」。沙箱读数：`sep_engine.items` 两包 active 0.47.1 / 4.1.0、`updatable=false`，那一行的按钮是 `["更新", "获取 / 补齐"]`，控制台 0 错误。
+- **关服时不再打 CancelledError**：用户贴的 `ERROR: Cancel 1 running task(s), timeout graceful shutdown exceeded` 与随后的 `Exception in ASGI application ... CancelledError`，触发条件是浏览器留着 `/api/events` 这条 SSE 长连接时按 Ctrl+C —— `timeout_graceful_shutdown=5` 到期后 uvicorn 取消还挂着的流任务，这段堆栈是**关闭阶段的噪声，不是运行期崩溃**，`finally` 里的 BT 守护收尾照常执行。现在 `main()` 自己持有 `uvicorn.Server`，SSE 生成器每轮看一次 `should_exit`，收到退出信号就主动收流；AB 实测（SSE 挂着、同一套配置）：改前 5.14 s 并打出完整 Cancel + CancelledError，改后 0.13 s、stderr 0 行。端到端探针（真 `python server.py`、沙箱端口、SSE 挂着后发 CTRL_BREAK）同样 0.17 s 收流、无 Cancel 行；Ctrl+C 的退出路径与原来一致。
+- **自检**：`separator_test` 57（H8 改钉「按钮不按有无更新切换显隐」）、`platform_test` 45（新增 E1b 钉 SSE 看 `should_exit`）、`startup_test`（B2/B4 跟着 `_UVICORN_SERVER.run()` 改锚点）、`sse_test`、`i18n_test` 509、`pagemount_test` 40、`settingsave_test` 113、`runwindow_test` 全绿；全批 **65 套 rc=0**（189.4 秒）。
+
 ## v1.3.2 · 2026-10-13（已出包）
 
 对着 [joeseesun/qiaomu-download](https://github.com/joeseesun/qiaomu-download) 那份平台清单盘了一遍 ours，盘出两条真的缺口，本轮做掉；第三条（B1 TikTok 归错档）是我看错了，代码一个字没改，判正的读数写在下面。B4（公开优先的 Cookie 策略）与 B5（Spotify 单曲入口 + 匹配置信度）按要求先排着，和 issue #206 那张「有但没做」的清单一起过。**已出包**：`appVersion` 升到 `v1.3.2 · Element Plus`（版本真源只有界面那一处），两份 README 的徽章与包名同处改口，产物见下方「发布物」。

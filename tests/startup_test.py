@@ -103,9 +103,9 @@ i_taken = main_src.index("if port_taken(host, port):")
 i_exit = main_src.index("raise SystemExit(1)")
 i_banner = main_src.index('print("  多媒体下载器 Web 版 (Element Plus)")')
 i_announce = main_src.index("_boot_ready_announcer(host, port)")
-i_run = main_src.index("uvicorn.run(app")
+i_run = main_src.index("_UVICORN_SERVER.run()")
 ck("B1 端口/host 解析在预检之前（预检要知道撞的是哪个端口）", 0 < i_host < i_taken, f"{i_host}<{i_taken}")
-ck("B2 预检在横幅与 uvicorn.run 之前：占着就别半启动（线程、aria2 都还没拉起）",
+ck("B2 预检在横幅与 uvicorn 起服务之前：占着就别半启动（线程、aria2 都还没拉起）",
    i_taken < i_banner < i_run, f"{i_taken}<{i_banner}<{i_run}")
 ck("B3 撞端口那支以退出码 1 结束（.bat 窗口里留着那句，不靠人看控制台）",
    i_taken < i_exit < i_banner, f"{i_taken}<{i_exit}")

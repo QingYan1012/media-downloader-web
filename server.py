@@ -24143,6 +24143,10 @@ def _sse_loop():
 
 _sse_thread: Optional[threading.Thread] = None
 _sse_start_lock = threading.Lock()
+# main() 起服务前把 uvicorn.Server 放这儿：收到退出信号后 should_exit 立刻变 True，
+# SSE 生成器看见就主动收流。拖着不收的话 uvicorn 要等满 timeout_graceful_shutdown
+# 再 cancel，控制台会打出 CancelledError 堆栈 —— 看着像崩溃，其实只是关闭阶段的噪声。
+_UVICORN_SERVER = None
 
 
 def start_sse_broadcaster():
@@ -24167,6 +24171,8 @@ async def api_events(request: Request):
             yield _sse_pack("hello", {"ok": True, "tick_sec": SSE_TICK_SEC, "ts": time.time()})
             yield _sse_pack("state", _sse_state())
             while True:
+                if _UVICORN_SERVER is not None and _UVICORN_SERVER.should_exit:
+                    break
                 if await request.is_disconnected():
                     break
                 sent = 0
@@ -24251,6 +24257,8 @@ def _boot_ready_announcer(host: str, port: int) -> None:
 
 def main():
     import uvicorn
+
+    global _UVICORN_SERVER
 
     host = os.environ.get("MEDIADOWNLOADER_HOST") or "127.0.0.1"
     try:
@@ -24338,13 +24346,20 @@ def main():
     # 横幅之后 uvicorn 那句「Uvicorn running on」是 INFO，被下面的 log_level="warning" 压掉了，
     # 所以健康启动的控制台到这四行就没字了 —— 看着跟卡住一模一样。补一句真答过话的为准
     _boot_ready_announcer(host, port)
+    # 自己持有 uvicorn.Server（而不是 uvicorn.run）是为了把 should_exit 交给 SSE 流看，
+    # shutdown 时生成器主动收流，就不会再走「等满 timeout_graceful_shutdown 再 cancel」那条路。
+    # timeout_graceful_shutdown 本身仍是容器/服务化的必需项：没有它 docker stop 会等满超时被 SIGKILL，
+    # 下面 finally 里的 BT 守护收尾根本轮不到执行。
+    _UVICORN_SERVER = uvicorn.Server(uvicorn.Config(
+        app, host=host, port=port, log_level="warning", timeout_graceful_shutdown=5))
     try:
-        # timeout_graceful_shutdown 是容器/服务化的必需项：SSE 进度流（/api/events）平时一直挂着，
-        # uvicorn 默认会等到所有连接自己断开才退出，docker stop 于是等满超时被 SIGKILL，
-        # 下面 finally 里的 BT 守护收尾根本轮不到执行。
-        uvicorn.run(app, host=host, port=port, log_level="warning", timeout_graceful_shutdown=5)
+        _UVICORN_SERVER.run()
+    except KeyboardInterrupt:
+        pass  # uvicorn.run 原本也吞这一下：capture_signals 收尾会把信号重放出来
     finally:
         _bt_daemon_stop()
+    if not _UVICORN_SERVER.started:  # 与 uvicorn.run 的启动失败退出码保持一致
+        raise SystemExit(3)
 
 
 if __name__ == "__main__":

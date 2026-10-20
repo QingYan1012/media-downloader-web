@@ -6000,7 +6000,7 @@
                       <div v-else class="comp-ver">{{ sepModelsState }}</div>
                       <div v-if="sepModelsMissing" class="comp-ver" style="color:var(--warn)">{{ sepModelsMissing }}</div>
                     </div>
-                    <el-button v-if="sepUpdatable" size="small" type="primary" plain :loading="sepBusy" @click="updateSeparatorEngines">{{ tr('settings.compUpdateBtn') }}</el-button>
+                    <el-button size="small" type="primary" plain :loading="sepBusy" @click="updateSeparatorEngines">{{ tr('settings.compUpdateBtn') }}</el-button>
                     <el-button size="small" :loading="sepBusy" @click="setupSeparatorAll">{{ tr('settings.sepModelsBtn') }}</el-button>
                   </div>
                 </div>

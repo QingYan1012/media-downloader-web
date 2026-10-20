@@ -198,6 +198,10 @@ ck("D4 不设环境变量：STATE_DIR == APP_DIR，本机行为与历史一致",
 print("== E. 服务化接线（静态钉住，改漏就红） ==")
 ck("E1 uvicorn 带 timeout_graceful_shutdown：SSE 挂着也能在 docker stop 里干净退出",
    "timeout_graceful_shutdown=" in SERVER_PY)
+ck("E1b 关服时 SSE 看 should_exit 主动收流（否则等满超时被 cancel，控制台打 CancelledError）",
+   "if _UVICORN_SERVER is not None and _UVICORN_SERVER.should_exit:" in SERVER_PY
+   and "uvicorn.Server(uvicorn.Config(" in SERVER_PY
+   and "_UVICORN_SERVER.run()" in SERVER_PY)
 ck("E2 监听地址读环境变量（容器里 127.0.0.1 等于外面进不来）",
    'os.environ.get("MEDIADOWNLOADER_HOST")' in SERVER_PY
    and 'os.environ.get("MEDIADOWNLOADER_PORT")' in SERVER_PY)

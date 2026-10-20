@@ -492,6 +492,16 @@ environment's `pkg_update.PIP_PACKAGES`.
   package. This **supersedes the "#52 — leave the tag alone" decision** above: that decision assumed nobody had asked
   for a tag move, and now someone has. Replacing the public release asset still waits for a separate approval.
 
+### Same round, follow-up: queue names, one upstream button, a permanent Update, clean shutdown
+
+This landed after the package in the section above; `appVersion` is still `v1.4.0`, and the tag, package and release asset were not touched.
+
+- **Queue names follow the UI language**: the run-window rows used to print the backend identifiers (`default / night / subscribe / sniff / music`). `queueLabel()` now maps the five built-ins through `QUEUE_NAME_KEYS` (默认 / 夜间 / 订阅 / 嗅探 / 音乐, or Default / Night / Subscribe / Sniff / Music in English); a user-created queue is not in the table and keeps its exact name, with the raw identifier still in `title`. Sandbox EN run: all five built-ins in English, custom name unchanged, 0 console errors.
+- **One upstream entry on the components page**: "Check now" already forces a fresh upstream query; the bottom "Query latest upstream versions" button only issued the cached `GET /api/components?latest=1` again. The duplicate is removed, and the Latest column is now refreshed by `loadComponents('1')` when the check finishes (reads the server cache, no second network pass); `latestBusy` is gone. In the sandbox, one check filled the Latest column on 16 rows and the footer kept three buttons (update all / re-check / save mirror).
+- **The separator Update button is permanent**: it used to be gated by `sepUpdatable`, so as soon as the engines reached 0.47.1 / 4.1.0 (both current) the button disappeared and there was no way to force a reinstall. It is now always rendered, like every other component row; "latest x.y.z (updatable)" still appears when a newer version exists. Sandbox reading: both `sep_engine` items active (0.47.1 / 4.1.0) with `updatable=false`, row buttons `["更新", "获取 / 补齐"]`, 0 console errors.
+- **No more CancelledError on shutdown**: the pasted `Cancel 1 running task(s), timeout graceful shutdown exceeded` / `Exception in ASGI application ... CancelledError` is produced when a browser still holds the `/api/events` SSE stream and Ctrl+C is pressed: after `timeout_graceful_shutdown=5`, uvicorn cancels the remaining stream task. It is **shutdown noise, not a runtime crash**, and the BT daemon cleanup in `finally` still runs. `main()` now owns the `uvicorn.Server`, and the SSE generator checks `should_exit` on every tick and closes the stream itself. A/B with one SSE client connected: before 5.14 s plus the full Cancel/CancelledError trace, after 0.13 s and zero stderr lines. An end-to-end probe (real `python server.py`, sandbox port, SSE connected, then CTRL_BREAK) closed in 0.17 s with no Cancel line; the Ctrl+C exit path is unchanged.
+- **Tests**: `separator_test` 57 (H8 now pins that the button is not conditionally rendered), `platform_test` 45 (new E1b pins the `should_exit` check), `startup_test` (B2/B4 re-anchored to `_UVICORN_SERVER.run()`), `sse_test`, `i18n_test` 509, `pagemount_test` 40, `settingsave_test` 113 and `runwindow_test` all green; full sweep **65/65 rc=0** (189.4 s).
+
 ---
 
 ## Earlier releases (summary)
