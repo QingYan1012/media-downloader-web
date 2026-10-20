@@ -7271,6 +7271,7 @@ class DownloaderEngine:
                                 f"[{task_id[:8]}] 跳过：下载记录里已有本视频（此前已成功下载），"
                                 f"要重新下载请关掉「跳过已下载」",
                                 "warning",
+                                k="srv.download.skipped_archive", kv={"tid": task_id[:8]},
                             )
                             self.note_error(
                                 task_id,
@@ -7285,6 +7286,8 @@ class DownloaderEngine:
                                     f"[{task_id[:8]}] 本次未重新下载：{Path(filepath).name} 已在下载记录里，"
                                     f"要重下请关掉「跳过已下载」",
                                     "warning",
+                                    k="srv.download.not_redownloaded",
+                                    kv={"tid": task_id[:8], "name": Path(filepath).name},
                                 )
                         except Exception:
                             pass
@@ -7295,7 +7298,8 @@ class DownloaderEngine:
                                 for f in info2.get("requested_formats") or []:
                                     h = max(h, f.get("height") or 0)
                             if h:
-                                self.log(f"[{task_id[:8]}] 实际下载分辨率约 {h}p")
+                                self.log(f"[{task_id[:8]}] 实际下载分辨率约 {h}p",
+                                         k="srv.download.actual_height", kv={"tid": task_id[:8], "h": h})
                         except Exception:
                             pass
                         # 字幕按语言码精确匹配，站点没有的那几种会被直接跳过 —— 不说清楚
@@ -7314,6 +7318,8 @@ class DownloaderEngine:
                                         f"[{task_id[:8]}] 该视频没有所请求的字幕语言"
                                         f"（{'、'.join(want_langs)}），成品不含字幕轨",
                                         "warning",
+                                        k="srv.download.subtitle_langs_missing",
+                                        kv={"tid": task_id[:8], "langs": '、'.join(want_langs)},
                                     )
                         except Exception:
                             pass
@@ -7327,6 +7333,7 @@ class DownloaderEngine:
                             f"[{task_id[:8]}] 跳过：下载记录里已有本视频（此前已成功下载），"
                             f"要重新下载请关掉「跳过已下载」",
                             "warning",
+                            k="srv.download.skipped_archive", kv={"tid": task_id[:8]},
                         )
                         self.note_error(
                             task_id,
@@ -7360,13 +7367,16 @@ class DownloaderEngine:
                 ):
                     found = _find_recent_media_files(out_dir, hint=url, within_sec=86400)
                     if found:
-                        self.log(f"[{task_id[:8]}] 直播已结束，收尾文件: {Path(found[0]).name}")
+                        self.log(f"[{task_id[:8]}] 直播已结束，收尾文件: {Path(found[0]).name}",
+                                 k="srv.download.live_ended_file",
+                                 kv={"tid": task_id[:8], "name": Path(found[0]).name})
                         return True, found[0]
                     if self._stop_flags.get(task_id):
                         return False, ""
                 if self._stop_flags.get(task_id):
                     return False, ""
-                self.log(f"[{task_id[:8]}] 错误: {clean[:200]}", "warning")
+                self.log(f"[{task_id[:8]}] 错误: {clean[:200]}", "warning",
+                         k="srv.download.error_line", kv={"tid": task_id[:8], "err": clean[:200]})
                 self.note_error(task_id, clean)
 
                 # 仅字幕相关错误才降级；不要把泛化 timeout 当成字幕错误（否则会空转）
