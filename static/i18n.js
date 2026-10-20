@@ -3953,7 +3953,7 @@
       'settings.compAllReason': ' ({m})',
       'settings.compAllWhyInLog': 'see the run log for the reason',
       'settings.compAllBadTail': '; not completed:',
-      'settings.savePendHead': '{n} setting(s) waiting to be saved:',
+      'settings.savePendHead': '{n} setting(s) waiting to be saved: ',
       'settings.encNotProbed': 'Not probed yet',
       'settings.netClearedHead': 'Cleared:',
       'settings.netResetEmpty': 'it was already empty',

@@ -1224,6 +1224,16 @@ v1.4.0 发出去之后接着三句要求：「跑一下音乐结果表确认排�
 - **自检**：`components_test` 新增 C12（每个组件行都有名字键）、C13（悬停说明覆盖到每一行，`sep:engines` 无独立说明除外）、C14（模板走 `compName / compNote / compActive`，不再直出 `cn / note / 未安装`），109 项全绿；`potcomponent_test` 新增 B8/B9 钉四种 `note_state` 与 `no_server` 的 kv，E4 改钉模板按状态取词，30 项 0 失败；`separator_test` H8 改钉「按钮不带 `type="primary plain"`」，57 项 0 失败。`i18n_test` 509、`pagemount_test` 40、`indexsnap_test` 全绿；全批 **65 套 rc=0**（190.3 秒）。
 - **沙箱读数**（独立 `STATE_DIR` + `bind(0)` 端口，不是 8765）：EN 界面 19 行 `CJK_ROWS []`、`CJK_TITLES []`、卡片内 `CARD_CJK []`；18 枚行内 Update 的计算样式只有一种（`el-button el-button--small`、白底 `rgb(255,255,255)`、灰边 `rgb(220,223,230)`、66×24），「Update all」仍是唯一的 `el-button--primary`；卡片 884 px、`SCROLL_H 882` 不出滚动条；控制台 0 错误。截图 `tmp/ui_comp_i18n_en.png`。
 
+## 发布之后这一轮（再续二）· 外观页横排成一条、主题色块不再被挤没
+
+仍在 `appVersion = v1.4.0`；标签、包与 Release 资产都没动。用户先要「红框改成横排一行、拉框在界面外观下方」，看到成果后又指出横排里主题色的五个小色块不见了。
+
+- **布局**：`界面外观` 标题留在框外，标题下是一条通栏卡片（`.appearance-wrap` 横跨 `.settings-grid`）；`主题色` + 五枚 chip 与右端的 `深色模式` 开关同一行，`改动怎么存 · 恢复默认` 整行宽排在下方。第一版把这条塞进 1/3 列时，五等分的 chip 在 1600 / 1400 下只剩 40.7 / 27.3 px，12 px 的 `.theme-dot--inline` 被 flex 压到 0 —— 截图里就是光秃秃的文字。
+- **色块**：`theme-grid` 从五等分改为按内容取宽（chip 79 px = 12 px 圆点 + 6 px 间距 + 三字名称），并给 `.theme-dot--inline` 加 `flex: 0 0 auto`，任何容器都压不没它；五个圆点的实色读数为 `#1d55ee / #c2540a / #c92f6f / #2f7d4f / #a85c3c`。
+- **一处英文空格**：`settings.savePendHead` 的英文值原来以冒号收尾且无空格，暗色实测拼成 `1 setting(s) waiting to be saveddark_mode`，补了尾随空格。
+- **沙箱读数**（独立 `STATE_DIR` + `bind(0)` 端口，不是 8765）：2000 / 1600 / 1200 三档 chip 均 79 px、圆点均 12×12、`gridRows = 1`、`docScrollW == docClientW`，控制台 0 错误；EN 1600 五枚 chip 65–155 px、圆点仍 12 px，EN + 暗色也正常。截图 `tmp/ui_appearance_dots_1600.png`、`tmp/ui_appearance_en_dark_1600.png`。
+- **自检**：全批 **65 套 rc=0**（190.9 秒）。
+
 ## v1.3.2 · 2026-10-13（已出包）
 
 对着 [joeseesun/qiaomu-download](https://github.com/joeseesun/qiaomu-download) 那份平台清单盘了一遍 ours，盘出两条真的缺口，本轮做掉；第三条（B1 TikTok 归错档）是我看错了，代码一个字没改，判正的读数写在下面。B4（公开优先的 Cookie 策略）与 B5（Spotify 单曲入口 + 匹配置信度）按要求先排着，和 issue #206 那张「有但没做」的清单一起过。**已出包**：`appVersion` 升到 `v1.3.2 · Element Plus`（版本真源只有界面那一处），两份 README 的徽章与包名同处改口，产物见下方「发布物」。

@@ -517,6 +517,18 @@ Still `appVersion = v1.4.0`; the tag, package and release asset were not touched
 
 ---
 
+### Same round, follow-up: the appearance bar on one line, theme dots back in the chips
+
+Still `appVersion = v1.4.0`; the tag, package and release asset were not touched. The first request was one horizontal row under the Appearance title; a follow-up screenshot showed that the five theme chips had lost their colour dots.
+
+- **Layout**: the `Appearance` title stays outside the card, and a full-width bar (`.appearance-wrap` across the whole `.settings-grid`) holds `Accent colour` + five chips and the `Dark mode` switch on one row, with the save/restore-defaults card spanning the row below. In the first attempt the bar sat in a third-width column: five equal columns left each chip 40.7 / 27.3 px at 1600 / 1400, and the 12 px `.theme-dot--inline` was flexed down to 0 — the capture showed bare text.
+- **Dots**: `theme-grid` is content-sized instead of five equal columns (a chip is 79 px: 12 px dot + 6 px gap + three characters), and `.theme-dot--inline` gained `flex: 0 0 auto` so no container can crush it. Computed dot colours are `#1d55ee / #c2540a / #c92f6f / #2f7d4f / #a85c3c`.
+- **One English spacing fix**: `settings.savePendHead` ended with a colon and no space, so a dark-mode probe rendered `1 setting(s) waiting to be saveddark_mode`; a trailing space was added.
+- **Sandbox readings** (own `STATE_DIR`, `bind(0)` port, never 8765): all chips 79 px wide at 2000 / 1600 / 1200, dots 12×12, `gridRows = 1`, `docScrollW == docClientW`, 0 console errors; in English at 1600 the five chips measure 65–155 px with 12 px dots, and English plus dark mode is also clean. Screenshots: `tmp/ui_appearance_dots_1600.png`, `tmp/ui_appearance_en_dark_1600.png`.
+- **Tests**: full sweep **65/65 rc=0** (190.9 s).
+
+---
+
 ## Earlier releases (summary)
 
 The full entries are in [CHANGELOG.md](CHANGELOG.md).
