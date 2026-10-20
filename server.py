@@ -8022,11 +8022,12 @@ class TelegramNotifier:
                 timeout=15,
             )
             if r.status_code != 200:
-                self.log(f"Telegram 发送失败: {r.text[:120]}", "warning")
+                self.log(f"Telegram 发送失败: {r.text[:120]}", "warning",
+                         k="srv.notify.tg_send_failed", kv={"resp": r.text[:120]})
                 return False, f"HTTP {r.status_code}：{(r.text or '')[:160]}"
             return True, ""
         except Exception as e:
-            self.log(f"Telegram 异常: {e}", "warning")
+            self.log(f"Telegram 异常: {e}", "warning", k="srv.notify.tg_request_error", kv={"e": str(e)})
             return False, f"请求没发出去：{e}"
 
     def send(self, text: str) -> bool:
@@ -8058,11 +8059,13 @@ class TelegramNotifier:
                 timeout=15,
             )
             if r.status_code != 200:
-                self.log(f"Server酱失败: HTTP {r.status_code} {(r.text or '')[:120]}", "warning")
+                self.log(f"Server酱失败: HTTP {r.status_code} {(r.text or '')[:120]}", "warning",
+                         k="srv.notify.serverchan_http_failed",
+                         kv={"code": r.status_code, "resp": (r.text or "")[:120]})
                 return False, f"HTTP {r.status_code}：{(r.text or '')[:160]}"
             return True, ""
         except Exception as e:
-            self.log(f"Server酱失败: {e}", "warning")
+            self.log(f"Server酱失败: {e}", "warning", k="srv.notify.serverchan_failed", kv={"e": str(e)})
             return False, f"请求没发出去：{e}"
 
     def send_serverchan(self, title: str, desp: str = "") -> bool:
@@ -8208,7 +8211,7 @@ class TelegramNotifier:
                     pass
             return handled
         except Exception as e:
-            self.log(f"Telegram 轮询异常: {e}", "warning")
+            self.log(f"Telegram 轮询异常: {e}", "warning", k="srv.notify.tg_poll_failed", kv={"e": str(e)})
             return 0
 
 
@@ -15928,7 +15931,7 @@ def api_tgmt_send_code(body: TgmtPhoneBody):
     try:
         return tg_session.send_code(body.phone)
     except Exception as e:
-        log_mgr.log(f"Telegram 发验证码失败: {e}", "warning")
+        log_mgr.log(f"Telegram 发验证码失败: {e}", "warning", k="srv.notify.tg_code_failed", kv={"e": str(e)})
         return {"ok": False, "message": str(e)}
 
 
@@ -15939,7 +15942,7 @@ def api_tgmt_sign_in(body: TgmtSignInBody):
     try:
         return tg_session.sign_in(body.code, body.password or "")
     except Exception as e:
-        log_mgr.log(f"Telegram 登录失败: {e}", "warning")
+        log_mgr.log(f"Telegram 登录失败: {e}", "warning", k="srv.notify.tg_signin_failed", kv={"e": str(e)})
         return {"ok": False, "message": str(e)}
 
 
@@ -20378,7 +20381,7 @@ def wecom_get_token() -> str:
             _wecom_token_cache["expires"] = now + int(data.get("expires_in") or 7200)
         return token
     except Exception as e:
-        log_mgr.log(f"企业微信 token 失败: {e}", "warning")
+        log_mgr.log(f"企业微信 token 失败: {e}", "warning", k="srv.notify.wecom_token_failed", kv={"e": str(e)})
         return ""
 
 
@@ -20404,7 +20407,8 @@ def wecom_send_detail(text: str) -> tuple:
         )
         data = r.json() or {}
         if data.get("errcode") != 0:
-            log_mgr.log(f"企业微信发送失败: {data}", "warning")
+            log_mgr.log(f"企业微信发送失败: {data}", "warning",
+                        k="srv.notify.wecom_send_failed", kv={"resp": str(data)})
             # 缓存的 token 过期时（40014/42001/41001）别把它带进下一次重试：
             # 那样 outbox 的每一次重试都会撞上同一个已经作废的票，一直失败到被丢弃。
             if data.get("errcode") in (40014, 42001, 41001):
@@ -20412,7 +20416,7 @@ def wecom_send_detail(text: str) -> tuple:
             return False, f"errcode {data.get('errcode')}：{(data.get('errmsg') or '')[:120]}"
         return True, ""
     except Exception as e:
-        log_mgr.log(f"企业微信异常: {e}", "warning")
+        log_mgr.log(f"企业微信异常: {e}", "warning", k="srv.notify.wecom_error", kv={"e": str(e)})
         return False, f"请求没发出去：{e}"
 
 
@@ -21531,14 +21535,15 @@ def start_telegram_command_poller():
                     tg_notifier.poll_once(queue=queue, sub_mgr=sub_mgr)
             except Exception as e:
                 try:
-                    log_mgr.log(f"TG 命令轮询异常: {e}", "warning")
+                    log_mgr.log(f"TG 命令轮询异常: {e}", "warning",
+                                k="srv.notify.tg_command_failed", kv={"e": str(e)})
                 except Exception:
                     pass
             time.sleep(3)
 
     t = threading.Thread(target=loop, daemon=True)
     t.start()
-    log_mgr.log("Telegram 远程命令轮询已启动")
+    log_mgr.log("Telegram 远程命令轮询已启动", k="srv.notify.tg_command_started")
 
 
 
