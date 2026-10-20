@@ -12503,7 +12503,8 @@ def api_ai_analyze(body: dict):
             if not r.get("ok"):
                 log_mgr.log(r.get("message") or "分析失败", "warning")
         except Exception as e:
-            log_mgr.log(f"音频分析失败: {e}", "error")
+            log_mgr.log(f"音频分析失败: {e}", "error",
+                        k="srv.ai.analyze_failed", kv={"e": str(e)})
 
     threading.Thread(target=job, daemon=True).start()
     return {"ok": True, "message": f"正在分析: {media.name}（结果写运行日志{'与 JSON' if write_json else ''}）"}
@@ -12680,7 +12681,8 @@ async def api_ai_realtime(file: UploadFile = File(...), lang: str = "auto", tran
             text = " ".join(parts).strip()
             detected = getattr(info, "language", lang)
         except Exception as e:
-            log_mgr.log(f"实时转写失败: {e}", "error")
+            log_mgr.log(f"实时转写失败: {e}", "error",
+                        k="srv.ai.realtime_asr_failed", kv={"e": str(e)})
             raise HTTPException(500, f"转写失败: {e}")
 
         translated = ""
@@ -12701,7 +12703,8 @@ async def api_ai_realtime(file: UploadFile = File(...), lang: str = "auto", tran
                                                 target_lang=target_lang, log=log_mgr.log)
                     translated = Path(result).read_text(encoding="utf-8", errors="ignore")
             except Exception as e:
-                log_mgr.log(f"实时翻译失败: {e}", "warning")
+                log_mgr.log(f"实时翻译失败: {e}", "warning",
+                            k="srv.ai.realtime_translate_failed", kv={"e": str(e)})
 
         return {
             "ok": True,
@@ -12739,7 +12742,8 @@ def api_ai_transcribe(body: dict):
                 log=log_mgr.log,
             )
         except Exception as e:
-            log_mgr.log(f"仅转写失败: {e}", "error")
+            log_mgr.log(f"仅转写失败: {e}", "error",
+                        k="srv.ai.transcribe_only_failed", kv={"e": str(e)})
 
     threading.Thread(target=job, daemon=True).start()
     return {"ok": True, "message": f"已开始转写（语言={lang}）→ {media.name}"}
@@ -12927,11 +12931,14 @@ def api_ai_pipeline(body: dict):
             )
             log_mgr.log(f"流水线完成{'' if not only else f'[{PIPELINE_CN.get(only, only)}]'} [{badge}] {r.get('message')}")
             if r.get("summary"):
-                log_mgr.log(f"摘要文件: {r['summary']}")
+                log_mgr.log(f"摘要文件: {r['summary']}",
+                            k="srv.ai.pipeline_summary", kv={"file": r["summary"]})
             if r.get("polished"):
-                log_mgr.log(f"润色文件: {r['polished']}")
+                log_mgr.log(f"润色文件: {r['polished']}",
+                            k="srv.ai.pipeline_polished", kv={"file": r["polished"]})
         except Exception as e:
-            log_mgr.log(f"流水线失败: {e}", "error")
+            log_mgr.log(f"流水线失败: {e}", "error",
+                        k="srv.ai.pipeline_failed", kv={"e": str(e)})
 
     threading.Thread(target=job, daemon=True).start()
     return {
@@ -13163,9 +13170,11 @@ def api_ai_translate_srt(body: dict):
                 source_lang=source if source not in ("auto", "") else "",
                 log=log_mgr.log,
             )
-            log_mgr.log(f"机翻任务完成: {out}")
+            log_mgr.log(f"机翻任务完成: {out}",
+                        k="srv.ai.srt_translate_done", kv={"out": out})
         except Exception as e:
-            log_mgr.log(f"机翻失败: {e}", "error")
+            log_mgr.log(f"机翻失败: {e}", "error",
+                        k="srv.ai.srt_translate_failed", kv={"e": str(e)})
 
     threading.Thread(target=job, daemon=True).start()
     return {"ok": True, "message": f"已开始机翻 → {target}（{provider}）"}
@@ -13224,7 +13233,8 @@ def api_ai_subtitle_export(body: dict):
     for path, content in outs:
         path.write_text(content, encoding="utf-8")
         written.append(str(path))
-        log_mgr.log(f"双语导出: {path.name}")
+        log_mgr.log(f"双语导出: {path.name}",
+                    k="srv.ai.bilingual_export", kv={"name": path.name})
     return {
         "ok": True,
         "files": written,
@@ -23307,7 +23317,8 @@ def api_transcode(body: TranscodeBody):
         if err.startswith("未找到"):
             raise HTTPException(400, err)
         raise HTTPException(500, err)
-    log_mgr.log("转码完成: " + Path(out).name)
+    log_mgr.log(f"转码完成: {Path(out).name}",
+                k="srv.transcode.done", kv={"name": Path(out).name})
     return {"ok": True, "path": out, "name": Path(out).name}
 
 
