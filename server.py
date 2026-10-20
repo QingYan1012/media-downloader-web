@@ -17057,7 +17057,8 @@ def _cc_state_save(patch: dict) -> dict:
         tmp.write_text(json.dumps(st, ensure_ascii=False, indent=1), encoding="utf-8", newline="\n")
         os.replace(tmp, COOKIECLOUD_STATE_FILE)
     except Exception as e:
-        log_mgr.log(f"[CookieCloud] 同步状态没写下去（{type(e).__name__}），界面上的时间戳这次不会更新", "warning")
+        log_mgr.log(f"[CookieCloud] 同步状态没写下去（{type(e).__name__}），界面上的时间戳这次不会更新", "warning",
+                    k="srv.cookiecloud.state_save_failed", kv={"cls": type(e).__name__})
     return st
 
 
@@ -21471,7 +21472,8 @@ def api_douyin_search(q: str, limit: int = 12):
     risk_kind = risk.get("kind") or ""
     if results and risk_kind not in ("", risk_control.EMPTY, risk_control.UNKNOWN):
         # 前面被挡过、后面某个入口通了：结论按实际结果走，但被挡的那次要留痕
-        log_mgr.log(f"抖音搜索部分入口被挡（{risk_kind}），已由其它入口取回 {len(results)} 条", "info")
+        log_mgr.log(f"抖音搜索部分入口被挡（{risk_kind}），已由其它入口取回 {len(results)} 条", "info",
+                    k="srv.search.douyin_partial", kv={"kind": risk_kind, "n": len(results)})
     if not results:
         why = risk.get("describe") or "接口没有返回条目，也没给出可判定的原因"
         note = f"无结果：{why}" + (f"。{risk.get('action')}" if risk.get("action") else "")
