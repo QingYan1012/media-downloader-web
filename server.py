@@ -4337,9 +4337,9 @@ class FFmpegManager:
         return str(Path(path).parent) if path else None
 
     def update(self) -> bool:
-        self.log(f"FFmpeg 更新: 下载至 {TOOLS_DIR}")
+        self.log(f"FFmpeg 更新: 下载至 {TOOLS_DIR}", k="srv.ffmpeg.update_start", kv={"dir": str(TOOLS_DIR)})
         if sys.platform != "win32":
-            self.log("非 Windows 请用系统包管理器安装 ffmpeg")
+            self.log("非 Windows 请用系统包管理器安装 ffmpeg", k="srv.ffmpeg.manual_hint")
             return self.find() is not None
         tmp_zip = TOOLS_DIR / "ffmpeg_dl.zip"
         try:
@@ -4358,14 +4358,15 @@ class FFmpegManager:
             tmp_zip.unlink(missing_ok=True)
             if not self.local_bin.exists():
                 return self._update_btbn()
-            self.log(f"FFmpeg 已就绪: {self.version()}")
+            self.log(f"FFmpeg 已就绪: {self.version()}", k="srv.ffmpeg.ready", kv={"ver": self.version()})
             return True
         except Exception as e:
-            self.log(f"官方源失败: {e}，尝试备用源...")
+            self.log(f"官方源失败: {e}，尝试备用源...",
+                     k="srv.ffmpeg.primary_failed", kv={"e": str(e)})
             try:
                 return self._update_btbn()
             except Exception as e2:
-                self.log(f"备用源失败: {e2}")
+                self.log(f"备用源失败: {e2}", k="srv.ffmpeg.mirror_failed", kv={"err": str(e2)})
                 return False
         finally:
             tmp_zip.unlink(missing_ok=True)
@@ -17474,7 +17475,8 @@ def _cl_manifest_save(entries: List[dict]):
         os.replace(tmp, _cl_manifest_path())
     except Exception as e:
         log_mgr.log(f"[清理] 回收目录的账本没写下去（{type(e).__name__}），"
-                    "界面上这些条目的原位置与到期时间这次会不准", "warning")
+                    "界面上这些条目的原位置与到期时间这次会不准", "warning",
+                    k="srv.clean.manifest_save_failed", kv={"e": type(e).__name__})
 
 
 def _cl_collect(group: str, days: int, now: float, busy: tuple) -> dict:
@@ -17781,7 +17783,8 @@ def _cl_state_save(patch: dict) -> dict:
         tmp.write_text(json.dumps(st, ensure_ascii=False, indent=1), encoding="utf-8", newline="\n")
         os.replace(tmp, CLEANUP_STATE_FILE)
     except Exception as e:
-        log_mgr.log(f"[清理] 清理状态没写下去（{type(e).__name__}），界面上「上次跑」的时间这次不会更新", "warning")
+        log_mgr.log(f"[清理] 清理状态没写下去（{type(e).__name__}），界面上「上次跑」的时间这次不会更新", "warning",
+                    k="srv.clean.state_save_failed", kv={"e": type(e).__name__})
     return st
 
 
@@ -17903,7 +17906,8 @@ def _cl_fire():
     try:
         _cl_auto_pass()
     except Exception as e:
-        log_mgr.log(f"[清理] 自动那一趟没跑成（{type(e).__name__}）：{str(e)[:120]}", "warning")
+        log_mgr.log(f"[清理] 自动那一趟没跑成（{type(e).__name__}）：{str(e)[:120]}", "warning",
+                    k="srv.clean.auto_pass_failed", kv={"e": type(e).__name__, "msg": str(e)[:120]})
     _cl_arm()
 
 
@@ -17931,10 +17935,11 @@ def start_cleanup_scheduler():
     _cl_arm()
     try:
         if _cl_auto_due():
-            log_mgr.log("[清理] 今天那一趟自动清理还没跑，开机补一次")
+            log_mgr.log("[清理] 今天那一趟自动清理还没跑，开机补一次", k="srv.clean.boot_catchup")
             _cl_auto_pass()
     except Exception as e:
-        log_mgr.log(f"[清理] 开机补跑没跑成（{type(e).__name__}）：{str(e)[:120]}", "warning")
+        log_mgr.log(f"[清理] 开机补跑没跑成（{type(e).__name__}）：{str(e)[:120]}", "warning",
+                    k="srv.clean.boot_catchup_failed", kv={"e": type(e).__name__, "msg": str(e)[:120]})
 
 
 def _cl_payload() -> dict:
@@ -18026,7 +18031,13 @@ def api_cleanup_preview():
     log_mgr.log(f"[清理] 看名单：日志 {plan['groups']['logs']['count']} 个 / 备份 "
                 f"{plan['groups']['backups']['count']} 个 / 下载成品 {plan['groups']['downloads']['count']} 个 / "
                 f"回收目录到期 {plan['groups']['trash']['count']} 个，"
-                f"合计 {plan['total_bytes'] / 1048576.0:.1f} MB（一个都没动）")
+                f"合计 {plan['total_bytes'] / 1048576.0:.1f} MB（一个都没动）",
+                k="srv.clean.preview",
+                kv={"logs": plan['groups']['logs']['count'],
+                    "backups": plan['groups']['backups']['count'],
+                    "downloads": plan['groups']['downloads']['count'],
+                    "trash": plan['groups']['trash']['count'],
+                    "mb": f"{plan['total_bytes'] / 1048576.0:.1f}"})
     return plan
 
 
