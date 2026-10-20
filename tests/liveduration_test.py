@@ -69,7 +69,8 @@ class FakeLog:
     def __init__(self):
         self.rows = []
 
-    def log(self, msg, level="info"):
+    def log(self, msg, level="info", k="", kv=None):
+        # 签名跟着 LogManager.log 走（#55 加了可选的 k/kv），收下来不动断言
         self.rows.append((level, str(msg)))
         return True
 

@@ -19972,7 +19972,8 @@ def api_live_monitor_scan():
                 m["last_live"] = True
                 m["paused"] = False
                 started += 1
-                log_mgr.log(f"监控开播自动录制: {url}")
+                log_mgr.log(f"监控开播自动录制: {url}",
+                            k="srv.live.auto_record_started", kv={"url": url})
             elif is_live_now and not already and not paused and cooling:
                 m["status"] = "冷却中(防重复开录)"
                 m["last_live"] = True
@@ -19997,7 +19998,8 @@ def api_live_monitor_scan():
                 m["paused"] = False
         except Exception as e:
             m["status"] = "检测失败"
-            log_mgr.log(f"直播监控检测失败 {url}: {e}", "warning")
+            log_mgr.log(f"直播监控检测失败 {url}: {e}", "warning",
+                        k="srv.live.check_failed", kv={"url": url, "e": str(e)})
     _save_live_monitors(items)
     return {"ok": True, "started": started, "monitors": items}
 
@@ -20045,9 +20047,12 @@ def _live_recording_tick():
             if _live_used_seconds(t) >= mm * 60:
                 try:
                     queue.end_live_tasks([tid], reason=f"已录满 {mm} 分钟，自动结束并保存")
-                    log_mgr.log(f"本房间已录满 {mm} 分钟，自动结束录制并保存成品：{(t.title or t.url)[:60]}")
+                    log_mgr.log(f"本房间已录满 {mm} 分钟，自动结束录制并保存成品：{(t.title or t.url)[:60]}",
+                                k="srv.live.room_full_stop",
+                                kv={"mm": mm, "who": (t.title or t.url)[:60]})
                 except Exception as e:
-                    log_mgr.log(f"录满自动结束失败: {e}", "warning")
+                    log_mgr.log(f"录满自动结束失败: {e}", "warning",
+                                k="srv.live.full_stop_failed", kv={"e": str(e)})
                 # 录满就维持「暂停」：这条直播还没下播时不该立刻又开录下一场，
                 # 否则「最长录制 N 分钟」会变成「每 N 分钟重开一场」。
                 # 扫描到房间下播时会自己解除暂停（见 api_live_monitor_scan 的 else 分支），下一场照常自动录。
@@ -20079,9 +20084,12 @@ def _live_recording_tick():
             continue
         try:
             queue.end_live_tasks([t.id], reason=f"已录满 {mm} 分钟，自动结束并保存")
-            log_mgr.log(f"已录满 {mm} 分钟，自动结束录制并保存成品：{(t.title or t.url)[:60]}")
+            log_mgr.log(f"已录满 {mm} 分钟，自动结束录制并保存成品：{(t.title or t.url)[:60]}",
+                        k="srv.live.full_stop",
+                        kv={"mm": mm, "who": (t.title or t.url)[:60]})
         except Exception as e:
-            log_mgr.log(f"录满自动结束失败: {e}", "warning")
+            log_mgr.log(f"录满自动结束失败: {e}", "warning",
+                        k="srv.live.full_stop_failed", kv={"e": str(e)})
 
 
 # -------------------- 直播监控定时扫描 --------------------
@@ -21271,12 +21279,14 @@ def start_live_monitor_scheduler():
                     _live_recording_tick()
                 except Exception as e:
                     try:
-                        log_mgr.log(f"直播录制收尾检查异常: {e}", "warning")
+                        log_mgr.log(f"直播录制收尾检查异常: {e}", "warning",
+                                    k="srv.live.tick_error", kv={"e": str(e)})
                     except Exception:
                         pass
             except Exception as e:
                 try:
-                    log_mgr.log(f"直播监控定时扫描异常: {e}", "warning")
+                    log_mgr.log(f"直播监控定时扫描异常: {e}", "warning",
+                                k="srv.live.scan_error", kv={"e": str(e)})
                 except Exception:
                     pass
             # 分段 sleep，便于快速停止
@@ -21288,7 +21298,7 @@ def start_live_monitor_scheduler():
     _live_monitor_stop = False
     _live_monitor_thread = threading.Thread(target=loop, daemon=True)
     _live_monitor_thread.start()
-    log_mgr.log("直播监控定时扫描已启动（约每 30 秒）")
+    log_mgr.log("直播监控定时扫描已启动（约每 30 秒）", k="srv.live.scheduler_started")
 
 
 def start_telegram_command_poller():
@@ -24187,12 +24197,15 @@ def main():
         try:
             time.sleep(2)  # 等服务与队列就绪
             items = _load_live_monitors()
-            log_mgr.log(f"已加载直播监控 {len(items)} 个房间，开始检测开播…")
+            log_mgr.log(f"已加载直播监控 {len(items)} 个房间，开始检测开播…",
+                        k="srv.live.boot_loaded", kv={"n": len(items)})
             if items:
                 r = api_live_monitor_scan()
-                log_mgr.log(f"启动扫描完成，新开录制 {r.get('started', 0)} 路")
+                log_mgr.log(f"启动扫描完成，新开录制 {r.get('started', 0)} 路",
+                            k="srv.live.boot_scan_done", kv={"started": r.get("started", 0)})
         except Exception as e:
-            log_mgr.log(f"启动时刷新直播监控失败: {e}", "warning")
+            log_mgr.log(f"启动时刷新直播监控失败: {e}", "warning",
+                        k="srv.live.boot_failed", kv={"e": str(e)})
 
     threading.Thread(target=_boot_live_monitors, daemon=True).start()
 
