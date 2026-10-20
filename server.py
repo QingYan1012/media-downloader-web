@@ -6737,7 +6737,8 @@ class DownloaderEngine:
                                     raise RuntimeError(st.get("errorMessage") or "aria2 error")
                                 time.sleep(1)
                     except Exception as ae:
-                        self.log(f"[{task_id[:8]}] aria2 不可用/失败: {ae}，回退 HTTP", "warning")
+                        self.log(f"[{task_id[:8]}] aria2 不可用/失败: {ae}，回退 HTTP", "warning",
+                                 k="srv.download.aria2_failed", kv={"tid": task_id[:8], "e": str(ae)})
                 if not used_aria:
                     _download_url_to_file(
                         url,
@@ -6755,7 +6756,8 @@ class DownloaderEngine:
                     return True, str(dest)
                 self.log(f"[{task_id[:8]}] CDN 下载文件为空", "warning")
             except Exception as e:
-                self.log(f"[{task_id[:8]}] CDN 直链失败: {e}，尝试其它方式", "warning")
+                self.log(f"[{task_id[:8]}] CDN 直链失败: {e}，尝试其它方式", "warning",
+                         k="srv.download.cdn_failed", kv={"tid": task_id[:8], "e": str(e)})
 
         # 嗅探到的纯 HLS：专用引擎（N_m3u8DL-RE / ffmpeg）解析分片
         if use_hls and is_pure_hls and not is_live:
@@ -6803,9 +6805,11 @@ class DownloaderEngine:
                 self.log(
                     f"[{task_id[:8]}] HLS 引擎失败且不再回退 yt-dlp（请确认 N_m3u8DL-RE/ffmpeg、链接未过期）",
                     "error",
+                    k="srv.download.hls_no_fallback", kv={"tid": task_id[:8]},
                 )
                 return False, ""
-            self.log(f"[{task_id[:8]}] 专用 HLS 引擎未成功，回退 yt-dlp", "warning")
+            self.log(f"[{task_id[:8]}] 专用 HLS 引擎未成功，回退 yt-dlp", "warning",
+                     k="srv.download.hls_fallback", kv={"tid": task_id[:8]})
 
         pc_chain: List[str] = []
         if "youtube.com" in url.lower() or "youtu.be" in url.lower():
@@ -7298,7 +7302,9 @@ class DownloaderEngine:
                         )
                         return False, ""
                     retry_count += 1
-                    self.log(f"[{task_id[:8]}] 下载无返回信息，重试 ({retry_count}/{self.max_retries})", "warning")
+                    self.log(f"[{task_id[:8]}] 下载无返回信息，重试 ({retry_count}/{self.max_retries})", "warning",
+                             k="srv.download.no_info_retry",
+                             kv={"tid": task_id[:8], "n": retry_count, "max": self.max_retries})
                     self.note_error(task_id, "站点没有返回可下载的媒体信息（已重试）")
                     if progress_cb:
                         try:
@@ -7344,7 +7350,9 @@ class DownloaderEngine:
                     skip_subtitles = True
                     self.log(
                         f"[{task_id[:8]}] 字幕失败，跳过字幕并以原画质/音质重新下载 "
-                        f"(video={video_q}, audio={audio_q})"
+                        f"(video={video_q}, audio={audio_q})",
+                        k="srv.download.subtitle_failed_retry",
+                        kv={"tid": task_id[:8], "video": video_q, "audio": audio_q},
                     )
                     time.sleep(2)
                     continue
@@ -7355,7 +7363,8 @@ class DownloaderEngine:
                 ):
                     cfg["_fmt_fallback"] = True
                     fmt = "mp4"
-                    self.log(f"[{task_id[:8]}] 封装/后期处理失败，退回 mp4 重试（画质音质与字幕不变）")
+                    self.log(f"[{task_id[:8]}] 封装/后期处理失败，退回 mp4 重试（画质音质与字幕不变）",
+                             k="srv.download.postprocess_fallback", kv={"tid": task_id[:8]})
                     time.sleep(1)
                     continue
 
@@ -7375,7 +7384,8 @@ class DownloaderEngine:
                         )
                     ):
                         cfg["_live_pref_fallback"] = True
-                        self.log(f"[{task_id[:8]}] 当前流失败，尝试备选协议…")
+                        self.log(f"[{task_id[:8]}] 当前流失败，尝试备选协议…",
+                                 k="srv.download.live_pref_fallback", kv={"tid": task_id[:8]})
                         time.sleep(1)
                         continue
 
@@ -7391,7 +7401,8 @@ class DownloaderEngine:
                             pass
                         if is_live:
                             cfg["_live_ffmpeg_ssl"] = True
-                        self.log(f"[{task_id[:8]}] SSL 证书错误，关闭校验后重试")
+                        self.log(f"[{task_id[:8]}] SSL 证书错误，关闭校验后重试",
+                                 k="srv.download.ssl_retry", kv={"tid": task_id[:8]})
                         time.sleep(1)
                         continue
                     return False, ""
@@ -7405,6 +7416,9 @@ class DownloaderEngine:
                             f"[{task_id[:8]}] 播放器客户端 {pc_chain[nxt - 1]} 被拒，"
                             f"改用 {pc_chain[nxt]} 重试（{nxt + 1}/{len(pc_chain)}）",
                             "warning",
+                            k="srv.download.client_rejected",
+                            kv={"tid": task_id[:8], "from": pc_chain[nxt - 1], "to": pc_chain[nxt],
+                                "i": nxt + 1, "n": len(pc_chain)},
                         )
                         time.sleep(1)
                         continue
@@ -7435,10 +7449,16 @@ class DownloaderEngine:
                                     f"该域同时只跑 1 个，冷却 {th['cooldown']:.0f}s"
                                     f"（第 {th['strikes']} 次命中）",
                                     "warning",
+                                    k="srv.download.host_throttled",
+                                    kv={"tid": task_id[:8], "host": th["host"],
+                                        "cooldown": f"{th['cooldown']:.0f}", "strikes": th["strikes"]},
                                 )
                         self.log(
                             f"[{task_id[:8]}] 命中 HTTP 429，指数退避+抖动 {delay:.1f}s "
-                            f"后重试 ({retry_count}/{self.max_retries})"
+                            f"后重试 ({retry_count}/{self.max_retries})",
+                            k="srv.download.backoff_429",
+                            kv={"tid": task_id[:8], "delay": f"{delay:.1f}",
+                                "n": retry_count, "max": self.max_retries},
                         )
                         if progress_cb:
                             try:
@@ -7458,7 +7478,9 @@ class DownloaderEngine:
                     retry_count += 1
                     if retry_count <= self.max_retries:
                         self.log(
-                            f"[{task_id[:8]}] 无可用格式，改用 bv*/best 重试 ({retry_count}/{self.max_retries})"
+                            f"[{task_id[:8]}] 无可用格式，改用 bv*/best 重试 ({retry_count}/{self.max_retries})",
+                            k="srv.download.no_formats_retry",
+                            kv={"tid": task_id[:8], "n": retry_count, "max": self.max_retries},
                         )
                         # 下次循环前清缓存，避免沿用坏列表
                         try:
