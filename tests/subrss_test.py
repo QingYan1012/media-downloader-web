@@ -65,7 +65,7 @@ class MemSubs(S.SubscriptionManager):
 def new_mgr(**cfgkw):
     q = FakeQueue()
     return MemSubs(BoomEngine(), FakeCfg(**cfgkw), q, FakeTG(),
-                   lambda m, lv="info": LOGS.append(m)), q
+                   lambda m, lv="info", k="", kv=None: LOGS.append(m)), q
 
 
 def feed_entry(pid, link=None, typ="video", pub="Tue, 09 Sep 2025 08:00:00 GMT"):

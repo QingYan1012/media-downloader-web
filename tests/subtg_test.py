@@ -81,7 +81,7 @@ class FakeSession:
 def new_mgr(**cfgkw):
     q = FakeQueue()
     mgr = MemSubs(BoomEngine(), FakeCfg(**cfgkw), q, FakeTG(),
-                  lambda m, lv="info": LOGS.append(m))
+                  lambda m, lv="info", k="", kv=None: LOGS.append(m))
     return mgr, q
 
 

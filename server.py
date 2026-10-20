@@ -8869,7 +8869,8 @@ class SubscriptionManager:
         samples = [str(e.get("title") or "")[:40] for e in entries][:5]
         if not ids and not urls:
             self.log(f"订阅「{sub.get('title')}」这批新歌一条都没法下"
-                     "（歌单里既没有可取的曲目、也没有直链）", "warning")
+                     "（歌单里既没有可取的曲目、也没有直链）", "warning",
+                     k="srv.subs.music_nothing_downloadable", kv={"title": sub.get('title')})
             return 0, samples
         n = 0
         if ids:
@@ -8926,7 +8927,9 @@ class SubscriptionManager:
         sid = str(sub.get("id") or "")
         with self._lock:
             if sid in self._busy:
-                self.log(f"订阅「{sub.get('title') or sub.get('url')}」上一轮还没扫完，这次先跳过", "warning")
+                self.log(f"订阅「{sub.get('title') or sub.get('url')}」上一轮还没扫完，这次先跳过", "warning",
+                         k="srv.subs.prev_scan_running",
+                         kv={"title": sub.get('title') or sub.get('url')})
                 return 0
             self._busy.add(sid)
         try:
@@ -8988,7 +8991,10 @@ class SubscriptionManager:
             kept = [a for a in sub["archived"] if str(a.get("id") or "") not in back]
             if len(kept) != len(sub["archived"]):
                 self.log(f"订阅「{sub.get('title') or sub.get('url')}」有 "
-                         f"{len(sub['archived']) - len(kept)} 条重新出现在源头，已从归档清单退回")
+                         f"{len(sub['archived']) - len(kept)} 条重新出现在源头，已从归档清单退回",
+                         k="srv.subs.archived_back",
+                         kv={"title": sub.get('title') or sub.get('url'),
+                             "n": len(sub['archived']) - len(kept)})
             sub["archived"] = kept
         return len(deleted)
 
@@ -9095,7 +9101,9 @@ class SubscriptionManager:
         if err:
             sub["last_error"] = err
             self.save()
-            self.log(f"订阅「{sub.get('title') or sub.get('url')}」读不到：{err}", "warning")
+            self.log(f"订阅「{sub.get('title') or sub.get('url')}」读不到：{err}", "warning",
+                     k="srv.subs.read_failed",
+                     kv={"title": sub.get('title') or sub.get('url'), "err": err})
             return 0
         url = sub.get("url") or ""
         kind = _sub_kind_of(sub)
@@ -9131,7 +9139,8 @@ class SubscriptionManager:
             # 音乐批量只有一条通道（进度是全局单槽），两批并行会互相盖掉对方的进度。
             # 这里必须原样返回：这一轮的新歌不能记成已读，记了就没人补下了。
             self.log(f"订阅「{sub.get('title')}」有 {len(new_entries)} 首新歌，"
-                     "但上一批音乐下载还没结束 —— 这次不记录新增，等下轮扫描再补", "warning")
+                     "但上一批音乐下载还没结束 —— 这次不记录新增，等下轮扫描再补", "warning",
+                     k="srv.subs.music_busy_defer", kv={"title": sub.get('title'), "n": len(new_entries)})
             return 0
 
         # 上游窗口对照：这一轮读到的这批就是下轮的比较基准，中间空掉的那些记成上游删除
@@ -9152,7 +9161,8 @@ class SubscriptionManager:
                 self.log(f"订阅初始化: {sub.get('title')} 记录 {len(all_ids)} 条，"
                          f"按规则[{rtext}]首次下载 {n} 条{extra}")
                 return n
-            self.log(f"订阅初始化: {sub.get('title')} 记录 {len(all_ids)} 条，跳过首次下载")
+            self.log(f"订阅初始化: {sub.get('title')} 记录 {len(all_ids)} 条，跳过首次下载",
+                     k="srv.subs.init_skip_first", kv={"title": sub.get('title'), "n": len(all_ids)})
             return 0
 
         if not new_entries:
@@ -9232,7 +9242,7 @@ class SubscriptionManager:
                 total_new += n
                 checked += 1
             except Exception as e:
-                self.log(f"订阅扫描异常: {e}", "warning")
+                self.log(f"订阅扫描异常: {e}", "warning", k="srv.subs.scan_error", kv={"e": str(e)})
         return {"checked": checked, "new": total_new}
 
     def start_scheduler(self):
@@ -9249,11 +9259,13 @@ class SubscriptionManager:
                             return
                         time.sleep(10)
                     if self.subs:
-                        self.log("开始定时扫描订阅…")
+                        self.log("开始定时扫描订阅…", k="srv.subs.loop_start")
                         res = self.scan_all()
-                        self.log(f"订阅扫描完成: 检查 {res['checked']} 源，新增 {res['new']}")
+                        self.log(f"订阅扫描完成: 检查 {res['checked']} 源，新增 {res['new']}",
+                                 k="srv.subs.loop_done", kv={"checked": res['checked'], "new": res['new']})
                 except Exception as e:
-                    self.log(f"订阅调度异常: {e}", "warning")
+                    self.log(f"订阅调度异常: {e}", "warning",
+                             k="srv.subs.loop_error", kv={"e": str(e)})
 
         self._stop = False
         self._thread = threading.Thread(target=loop, daemon=True)

@@ -95,7 +95,8 @@ class MemSubs(S.SubscriptionManager):
 def new_mgr(**cfgkw):
     cfgkw.setdefault("sub_auto_download", True)
     q, tg = FakeQueue(), FakeTG()
-    mgr = MemSubs(FakeEngine(), FakeCfg(**cfgkw), q, tg, lambda m, lv="info": LOGS.append(m))
+    mgr = MemSubs(FakeEngine(), FakeCfg(**cfgkw), q, tg,
+                  lambda m, lv="info", k="", kv=None: LOGS.append(m))
     return mgr, q, tg
 
 
