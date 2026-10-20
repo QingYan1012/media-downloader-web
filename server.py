@@ -5005,7 +5005,10 @@ def update_aria2(log: Callable = print) -> str:
         return f"解压失败: {e}"
     finally:
         tmp.unlink(missing_ok=True)
-    ok, why = bt_ensure(dict(cfg.data), lambda m, level="info": log_mgr.log(f"[aria2 安装] {m}", level))
+    ok, why = bt_ensure(
+        dict(cfg.data),
+        lambda m, level="info": log_mgr.log(f"[aria2 安装] {m}", level,
+                                            k="srv.comp.aria2_install_line", kv={"detail": m}))
     return ("装好并已自动拉起 aria2" if ok else f"装好了，但拉起失败：{why}")
 
 
@@ -13498,7 +13501,7 @@ def api_update_whisper(body: dict = None):
             log=lambda m, level="info": log_mgr.log(m, level),
             model=str(model),
         )
-        log_mgr.log(f"Whisper 更新结果: {res}")
+        log_mgr.log(f"Whisper 更新结果: {res}", k="srv.comp.whisper_update_result", kv={"res": res})
 
     threading.Thread(target=job, daemon=True).start()
     return {"ok": True, "message": f"Whisper (faster-whisper + 模型 {model}) 更新已在后台开始"}
@@ -13596,7 +13599,7 @@ def _disk_free_gb(path: str) -> float:
 def api_update_ytdlp():
     def job():
         res = engine.update_ytdlp()
-        log_mgr.log(f"yt-dlp 更新结果: {res}")
+        log_mgr.log(f"yt-dlp 更新结果: {res}", k="srv.comp.ytdlp_update_result", kv={"res": res})
 
     threading.Thread(target=job, daemon=True).start()
     return {"ok": True, "message": "yt-dlp 更新已在后台开始"}
@@ -13606,7 +13609,11 @@ def api_update_ytdlp():
 def api_update_ffmpeg():
     def job():
         ok = ffmpeg_mgr.update()
-        log_mgr.log(f"FFmpeg 更新结果: {'成功' if ok else '失败'}")
+        # 条件句拆成两处调用（口径同 #55 前几批）：落盘的中文一个字不变，英文才有两把键可拼
+        if ok:
+            log_mgr.log("FFmpeg 更新结果: 成功", k="srv.comp.ffmpeg_update_ok")
+        else:
+            log_mgr.log("FFmpeg 更新结果: 失败", k="srv.comp.ffmpeg_update_fail")
 
     threading.Thread(target=job, daemon=True).start()
     return {"ok": True, "message": "FFmpeg 更新已在后台开始"}
@@ -13616,7 +13623,7 @@ def api_update_ffmpeg():
 def api_update_n_m3u8dl():
     def job():
         res = update_n_m3u8dl(log=lambda m, level="info": log_mgr.log(m, level))
-        log_mgr.log(f"N_m3u8DL-RE 更新结果: {res}")
+        log_mgr.log(f"N_m3u8DL-RE 更新结果: {res}", k="srv.comp.nm3u8dl_update_result", kv={"res": res})
 
     threading.Thread(target=job, daemon=True).start()
     return {"ok": True, "message": "N_m3u8DL-RE 更新已在后台开始，请稍后刷新状态"}
@@ -13626,7 +13633,7 @@ def api_update_n_m3u8dl():
 def api_update_aria2():
     def job():
         res = update_aria2(log=lambda m, level="info": log_mgr.log(m, level))
-        log_mgr.log(f"aria2c 安装结果: {res}")
+        log_mgr.log(f"aria2c 安装结果: {res}", k="srv.comp.aria2_install_result", kv={"res": res})
 
     threading.Thread(target=job, daemon=True).start()
     return {"ok": True, "message": "aria2c 安装已在后台开始（约 2 MB），完成后刷新「组件与依赖」"}
@@ -13877,7 +13884,8 @@ def api_components(latest: str = ""):
         try:
             lv = latest_versions_cached(str(cfg.data.get("pip_mirror") or ""))
         except Exception as e:
-            log_mgr.log(f"上游版本查询失败：{str(e)[:160]}", "warning")
+            log_mgr.log(f"上游版本查询失败：{str(e)[:160]}", "warning",
+                        k="srv.comp.upstream_query_failed", kv={"e": str(e)[:160]})
     manifest = bundled_manifest()
     return {
         "items": _component_rows(lv, manifest),
@@ -14172,7 +14180,12 @@ def api_update_pkg(body: dict = None):
 
     def job():
         ok, res = pkg_update.pip_install([name], log=log_mgr.log, mirror=idx)
-        log_mgr.log(f"{name} 更新结果：{'成功' if ok else '失败'}（{res}）")
+        if ok:
+            log_mgr.log(f"{name} 更新结果：成功（{res}）", k="srv.comp.pkg_update_ok",
+                        kv={"name": name, "res": res})
+        else:
+            log_mgr.log(f"{name} 更新结果：失败（{res}）", k="srv.comp.pkg_update_fail",
+                        kv={"name": name, "res": res})
 
     threading.Thread(target=job, daemon=True).start()
     return {"ok": True, "message": f"{name} 更新已在后台开始"}
