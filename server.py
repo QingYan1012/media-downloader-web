@@ -22464,14 +22464,17 @@ async def api_catcatch_push(request: Request):
     if action in ("addkey", "key"):
         hexk = _hls_key_to_hex(payload.get("data"))
         if not hexk:
-            log_mgr.log("猫抓推送：密钥格式没认出来（要 base64 或 16 进制），本条已忽略", "warning")
+            log_mgr.log("猫抓推送：密钥格式没认出来（要 base64 或 16 进制），本条已忽略", "warning",
+                        k="srv.catcatch.key_rejected")
             return {"ok": False, "msg": "密钥格式不识别（要 base64 或 16 进制）"}
         with _catcatch_lock:
             _catcatch_keys[tab_id] = {"hex": hexk, "ts": time.time()}
             _catcatch_stat["keys"] += 1
         log_mgr.log(
             f"猫抓推送：收到 HLS 解密钥 {len(hexk) // 2} 字节（标签页 {tab_id}），"
-            f"1 小时内推来的 m3u8 自动带上"
+            f"1 小时内推来的 m3u8 自动带上",
+            k="srv.catcatch.key_received",
+            kv={"bytes": len(hexk) // 2, "tab": tab_id},
         )
         return {"ok": True, "action": "addKey"}
 
@@ -22486,7 +22489,8 @@ async def api_catcatch_push(request: Request):
             dropped += 1
             with _catcatch_lock:
                 _catcatch_stat["dropped"] += 1
-            log_mgr.log(f"猫抓推送：黑名单规则「{rule_name}」挡下 {url[:120]}", "warning")
+            log_mgr.log(f"猫抓推送：黑名单规则「{rule_name}」挡下 {url[:120]}", "warning",
+                        k="srv.catcatch.blocked_by_rule", kv={"rule": rule_name, "url": url[:120]})
             continue
         hdrs = it.get("requestHeaders") or it.get("headers") or {}
         opts: dict = {"skip_plugins": True}  # 推来的已是真实媒体地址，不必再走插件解析
@@ -22520,13 +22524,22 @@ async def api_catcatch_push(request: Request):
         try:
             r = _sniff_enqueue([url], opts)
             results.append({"url": url[:200], "ok": True, "ids": r.get("ids") or []})
-            log_mgr.log(f"猫抓推送：入队 {url[:120]}" + (f"（{'、'.join(note)}）" if note else ""))
+            if note:
+                log_mgr.log(f"猫抓推送：入队 {url[:120]}（{'、'.join(note)}）",
+                            k="srv.catcatch.queued_note",
+                            kv={"url": url[:120], "note": "、".join(note)})
+            else:
+                log_mgr.log(f"猫抓推送：入队 {url[:120]}",
+                            k="srv.catcatch.queued", kv={"url": url[:120]})
         except HTTPException as e:
             results.append({"url": url[:200], "ok": False, "msg": str(e.detail)})
-            log_mgr.log(f"猫抓推送：{url[:120]} 没能入队：{e.detail}", "error")
+            log_mgr.log(f"猫抓推送：{url[:120]} 没能入队：{e.detail}", "error",
+                        k="srv.catcatch.enqueue_rejected",
+                        kv={"url": url[:120], "msg": str(e.detail)})
         except Exception as e:
             results.append({"url": url[:200], "ok": False, "msg": str(e)})
-            log_mgr.log(f"猫抓推送：{url[:120]} 入队异常：{e}", "error")
+            log_mgr.log(f"猫抓推送：{url[:120]} 入队异常：{e}", "error",
+                        k="srv.catcatch.enqueue_failed", kv={"url": url[:120], "e": str(e)})
     with _catcatch_lock:
         _catcatch_stat["received"] += len(results)
         _catcatch_stat["last"] = (

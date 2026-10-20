@@ -43,7 +43,7 @@ def push(payload, as_text=None):
 tmp = Path(tempfile.mkdtemp(prefix="md_cc_test_"))
 S.CATCATCH_RULES_FILE = tmp / "catcatch_rules.json"
 LOGS: list[tuple] = []
-S.log_mgr = SimpleNamespace(log=lambda m, level="info": LOGS.append((level, str(m))))
+S.log_mgr = SimpleNamespace(log=lambda m, level="info", k="", kv=None: LOGS.append((level, str(m))))
 ENQUEUED: list[tuple] = []
 
 
