@@ -21716,7 +21716,8 @@ def _sniff_enqueue(urls, opts: dict) -> dict:
         masters = [u for u in urls if re.search(r"master\.(txt|m3u8|m3u)(\?|$)", u, re.I)]
         if masters:
             urls = masters
-            log_mgr.log(f"嗅探 HLS：仅保留 master（{len(urls)} 条），忽略 index 子列表")
+            log_mgr.log(f"嗅探 HLS：仅保留 master（{len(urls)} 条），忽略 index 子列表",
+                        k="srv.sniff.hls_master_only", kv={"n": len(urls)})
 
     # B站 DASH：若同时有视频+音频 m4s，走合并任务（与「嗅探合并下载」一致）
     pair = _pick_bili_m4s_pair(urls)
@@ -21749,8 +21750,10 @@ def _sniff_enqueue(urls, opts: dict) -> dict:
         queue.tasks[tid] = task
         log_mgr.log(
             f"[{tid[:8]}] B站 m4s 合并 video_score={_cdn_host_score(v_url)} "
-            f"audio_score={_cdn_host_score(a_url)} alt_a={len(alt_a)}"
-        )
+            f"audio_score={_cdn_host_score(a_url)} alt_a={len(alt_a)}",
+            k="srv.sniff.bili_m4s_pair",
+            kv={"tid": tid[:8], "video_score": _cdn_host_score(v_url),
+                "audio_score": _cdn_host_score(a_url), "alt_a": len(alt_a)})
         threading.Thread(
             target=_run_sniff_merge_task,
             kwargs={
@@ -21771,7 +21774,8 @@ def _sniff_enqueue(urls, opts: dict) -> dict:
     # 纯 m4s 单轨无法播放，提示用户多选音视频
     only_m4s = all(".m4s" in u.lower() for u in urls)
     if only_m4s and len(urls) == 1:
-        log_mgr.log("警告: 仅一条 m4s（可能是纯视频或纯音频轨），播放可能无声或无画面", "warning")
+        log_mgr.log("警告: 仅一条 m4s（可能是纯视频或纯音频轨），播放可能无声或无画面", "warning",
+                    k="srv.sniff.only_one_m4s")
 
     ids = queue.add_urls(urls, opts)
     return {"ok": True, "ids": ids, "count": len(ids)}
@@ -22197,7 +22201,8 @@ class BrowserSniffer:
 
         def on_error(ws, err):
             err_s = str(err) if err is not None else "unknown"
-            log_mgr.log(f"CDP 嗅探错误: {err_s}", "warning")
+            log_mgr.log(f"CDP 嗅探错误: {err_s}", "warning",
+                        k="srv.sniff.cdp_error", kv={"err": err_s})
             self.error = err_s
             self.status = "error"
             # 出错后自动停止，避免反复重连刷日志
@@ -22250,7 +22255,8 @@ class BrowserSniffer:
                             }))
             except Exception:
                 pass
-            log_mgr.log(f"浏览器 CDP 嗅探已启动 port={self.port}")
+            log_mgr.log(f"浏览器 CDP 嗅探已启动 port={self.port}",
+                        k="srv.sniff.cdp_started", kv={"port": self.port})
 
         self._ws = websocket.WebSocketApp(
             ws_url,
@@ -22265,7 +22271,8 @@ class BrowserSniffer:
             except Exception as e:
                 self.error = str(e)
                 self.status = "error"
-                log_mgr.log(f"CDP 嗅探异常退出: {e}", "warning")
+                log_mgr.log(f"CDP 嗅探异常退出: {e}", "warning",
+                            k="srv.sniff.cdp_crashed", kv={"e": str(e)})
                 self._stop.set()
                 break
             if self._stop.is_set():
@@ -22330,7 +22337,8 @@ class BrowserSniffer:
             # 若端口已被占用，直接 attach
             try:
                 self._cdp_http("/json/version")
-                log_mgr.log(f"端口 {self.port} 已有调试浏览器，改为连接")
+                log_mgr.log(f"端口 {self.port} 已有调试浏览器，改为连接",
+                            k="srv.sniff.attach_existing", kv={"port": self.port})
                 return self.start_attach(self.port)
             except Exception:
                 pass
