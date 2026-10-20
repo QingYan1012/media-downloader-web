@@ -248,6 +248,49 @@ ck("G4 建 venv 用主程序的 python，demucs 也只往这个 venv 装（不�
    "[sys.executable, \"-m\", \"venv\"" in VT_SRC
    and 'cmd = [py, "-m", "pip"' in VT_SRC)
 
+# ------------------------------------------------------------ H. 上游版本检测与更新
+# 这两个包在独立 venv 里，组件表那套 installed_version 问的是主环境，天然看不见它们。
+# 抓的就是「0.47.1 已经发布，界面还只有 获取 / 补齐、通知条也不报」这一次。
+_SV = V.separator_engine_versions
+try:
+    V.separator_engine_versions = lambda refresh=False: {"audio-separator": "0.47.0", "demucs": "4.1.0"}
+    lv = {"audio-separator": {"version": "0.47.1"}, "demucs": {"version": "4.1.0"}}
+    st = S._sep_engine_state(lv)
+    ck("H1 两个引擎读得出当前版本，0.47.0 对 0.47.1 判可更新、同版本的不算",
+       st["installed"] and {i["pkg"]: (i["active"], i["latest"], i["updatable"])
+                            for i in st["items"]}
+       == {"audio-separator": ("0.47.0", "0.47.1", True),
+           "demucs": ("4.1.0", "4.1.0", False)}, str(st))
+    av = S._sep_engine_available(lv)
+    ck("H2 检测名单只报一条 sep:engines，带着包名与「当前 → 最新」",
+       len(av) == 1 and av[0]["key"] == "sep:engines" and av[0]["pkg"] == "audio-separator"
+       and av[0]["current"] == "0.47.0" and av[0]["latest"] == "0.47.1", str(av))
+    ck("H3 同版本不算更新（反向验证，别把每一次检查都报成有新版）",
+       S._sep_engine_available({"audio-separator": {"version": "0.47.0"}}) == [])
+    V.separator_engine_versions = lambda refresh=False: {}
+    ck("H4 没建 venv / 读不到版本时不算更新，也不在开机时催装",
+       not S._sep_engine_state(lv)["installed"] and S._sep_engine_available(lv) == [])
+finally:
+    V.separator_engine_versions = _SV
+ck("H5 后台检测把引擎条目并进 available（否则通知条与侧栏点永远不报它）",
+   "available += _sep_engine_available(lv)" in SERVER)
+ck("H6 一键更新认得 sep:engines（名单进了、接口不认就只会弹确认再 400）",
+   '"sep:engines"' in SERVER and 'key == "sep:engines"' in SERVER)
+ck("H7 更新走 venv 里的 pip -U 并回读版本；新建环境的钉死版本不被改写",
+   "def update_separator_engines" in VT_SRC
+   and '"install", "-U"' in VT_SRC
+   and "separator_engine_versions(refresh=True)" in VT_SRC
+   and "audio-separator==0.47.0" in VT_SRC)
+ck("H8 界面有「更新」按钮与最新版标签：更新走 engines 步骤，收尾按真实锁回读",
+   'v-if="sepUpdatable"' in HTML and "updateSeparatorEngines" in HTML
+   and "setupSeparator('engines')" in HTML and "sepLatest('audio-separator')" in HTML)
+ck("H9 separator_setup 接受 engines；setup_separator 把它转给更新函数，不重复进锁",
+   '"venv", "weights", "all", "engines"' in SERVER
+   and 'if step == "engines":' in VT_SRC)
+ck("H10 更新与搭建的回话分开说：点「更新」不该回一句「搭建中」",
+   "分离引擎更新中，进度看运行日志" in SERVER
+   and '"srv.ai.update_ready"' in SERVER and '"srv.ai.update_failed"' in SERVER)
+
 print(f"== 汇总 ==\n共 {TOTAL} 条，失败 {len(FAILED)} 条")
 if FAILED:
     for f in FAILED:

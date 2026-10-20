@@ -725,7 +725,7 @@ PAGE_HANDLERS = {
         "changedKeys", "checkEnv", "checkGlossary", "checkPoToken",
         "checkRunWindows", "checkSpeedWindows", "clDescribe", "clGroupList",
         "clRun", "clearCookieCloudKey", "clearCookieFlag", "clearMusicCookie",
-        "clearOutbox", "compUpdatable", "copyMachineToken", "defBrief",
+        "clearOutbox", "copyMachineToken", "defBrief",
         "downloadExtension", "exportSync", "fetchCompCheck", "fmtWait",
         "formatSize", "installVoicePkgs", "loadAuthStatus", "loadCleanup",
         "loadCleanupTrash", "loadComponents", "loadConfigDefaults", "loadCookieCloud",

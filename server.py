@@ -12634,8 +12634,8 @@ def api_separator_setup(body: dict = None):
     两个动作都是分钟级、且要下两个多 GB，所以走后台任务 + 运行日志，不同步等。
     """
     step = ((body or {}).get("step") or "all").strip().lower()
-    if step not in ("venv", "weights", "all"):
-        raise HTTPException(400, f"step 只认 venv / weights / all，收到的是「{step[:16]}」")
+    if step not in ("venv", "weights", "all", "engines"):
+        raise HTTPException(400, f"step 只认 venv / weights / all / engines，收到的是「{step[:16]}」")
 
     def job():
         from voice_tools import setup_separator
@@ -12644,13 +12644,21 @@ def api_separator_setup(body: dict = None):
             log_mgr.log("已经有一个搭建任务在跑了，这一次先不叠加", "warning",
                         k="srv.ai.setup_busy")
         elif r == "ok":
-            log_mgr.log("分离环境就绪", k="srv.ai.setup_ready")
+            if step == "engines":
+                log_mgr.log("分离引擎已更新", k="srv.ai.update_ready")
+            else:
+                log_mgr.log("分离环境就绪", k="srv.ai.setup_ready")
+        elif step == "engines":
+            log_mgr.log(f"分离引擎更新未完成: {r}", "error",
+                        k="srv.ai.update_failed", kv={"r": r})
         else:
             log_mgr.log(f"分离环境搭建未完成: {r}", "error",
                         k="srv.ai.setup_failed", kv={"r": r})
 
     threading.Thread(target=job, daemon=True).start()
-    return {"ok": True, "message": "分离环境搭建中，进度看运行日志"}
+    return {"ok": True,
+            "message": "分离引擎更新中，进度看运行日志" if step == "engines"
+                       else "分离环境搭建中，进度看运行日志"}
 
 
 @app.post("/api/ai/realtime")
@@ -13800,7 +13808,8 @@ def latest_versions_cached(mirror: str) -> dict:
     now = time.time()
     if _latest_cache["data"] and _latest_cache["mirror"] == mirror and now - _latest_cache["ts"] < LATEST_TTL:
         return _latest_cache["data"]
-    names = [p["name"] for p in pkg_update.PIP_PACKAGES]
+    from voice_tools import SEP_ENGINE_PKGS
+    names = [p["name"] for p in pkg_update.PIP_PACKAGES] + list(SEP_ENGINE_PKGS)
     data = pkg_update.latest_versions(names, mirror)
     _latest_cache.update(ts=now, mirror=mirror, data=data)
     return data
@@ -13872,6 +13881,7 @@ def api_components(latest: str = ""):
     manifest = bundled_manifest()
     return {
         "items": _component_rows(lv, manifest),
+        "sep_engine": _sep_engine_state(lv),
         "env_path": env_path_status(),
         "pip": pkg_update.pip_available(),
         "pip_version": pkg_update.pip_version(),
@@ -13906,6 +13916,38 @@ def _ver_newer(current: str, latest: str) -> bool:
         if d:
             return d < 0
     return False
+
+
+def _sep_engine_rows(lv: dict) -> list:
+    """分离引擎的两个包在独立 venv 里，组件表那套「当前版本」问不到它们，
+    所以单独读元数据、单独比上游版。"""
+    from voice_tools import SEP_ENGINE_PKGS, separator_engine_versions
+    have = separator_engine_versions()
+    out = []
+    for pkg in SEP_ENGINE_PKGS:
+        active = str(have.get(pkg) or "")
+        row = lv.get(pkg) or {}
+        latest = str(row.get("version") or "")
+        out.append({"pkg": pkg, "active": active, "latest": latest,
+                    "latest_note": "" if latest else str(row.get("error") or ""),
+                    "updatable": bool(active and latest and _ver_newer(active, latest))})
+    return out
+
+
+def _sep_engine_state(lv: dict) -> dict:
+    items = _sep_engine_rows(lv)
+    return {"installed": any(i["active"] for i in items), "items": items}
+
+
+def _sep_engine_available(lv: dict) -> list:
+    """检测结果里只报一条：两个引擎是同一组一起升，列两行会变成两条同义通知。"""
+    outdated = [i for i in _sep_engine_rows(lv) if i["updatable"]]
+    if not outdated:
+        return []
+    e = outdated[0]
+    return [{"key": "sep:engines", "pkg": e["pkg"],
+             "label": "人声分离引擎（audio-separator / demucs）",
+             "current": e["active"], "latest": e["latest"]}]
 
 
 # 打开程序就自动查一遍上游版本：查一次要两三秒，绝不能挡在启动路径上，
@@ -13948,6 +13990,7 @@ def _comp_check_worker() -> None:
     try:
         lv = latest_versions_cached(str(cfg.data.get("pip_mirror") or ""))
         available = _comp_available_updates(_component_rows(lv, bundled_manifest()))
+        available += _sep_engine_available(lv)
         with _COMP_CHECK_LOCK:
             _COMP_CHECK.update(
                 status="done",
@@ -14014,6 +14057,10 @@ _COMP_ALL_LOCK = threading.Lock()
 
 def _comp_update_one(key: str, mirror: str, log: Callable) -> tuple:
     """更新一个组件，返回 (是否成功, 给人看的说明)。"""
+    if key == "sep:engines":
+        from voice_tools import update_separator_engines
+        res = str(update_separator_engines(log=log, mirror=mirror) or "")
+        return res == "ok", res
     if key == "ffmpeg":
         ok = bool(ffmpeg_mgr.update())
         return ok, f"当前 {ffmpeg_mgr.version() or '未安装'}"
@@ -14038,7 +14085,8 @@ def _comp_update_one(key: str, mirror: str, log: Callable) -> tuple:
 def _comp_update_all(keys: List[str], mirror: str) -> None:
     labels = {p["name"]: p["label"] for p in pkg_update.PIP_PACKAGES}
     labels.update({"ffmpeg": "FFmpeg", "ytdlp": "yt-dlp", "n_m3u8dl": "N_m3u8DL-RE",
-                   "faster-whisper": "faster-whisper", "aria2": "aria2c"})
+                   "faster-whisper": "faster-whisper", "aria2": "aria2c",
+                   "sep:engines": "人声分离引擎"})
     try:
         for i, key in enumerate(keys, 1):
             with _COMP_ALL_LOCK:
@@ -14089,7 +14137,7 @@ def api_components_update_all(body: dict = None):
     body = body or {}
     keys = [str(k).strip() for k in (body.get("keys") or []) if str(k).strip()]
     known = {p["name"] for p in pkg_update.PIP_PACKAGES} | {
-        "ffmpeg", "ytdlp", "n_m3u8dl", "faster-whisper", "aria2"}
+        "ffmpeg", "ytdlp", "n_m3u8dl", "faster-whisper", "aria2", "sep:engines"}
     bad = [k for k in keys if k not in known]
     if bad:
         raise HTTPException(400, f"这些条目不能从这里更新：{'、'.join(bad[:6])}")

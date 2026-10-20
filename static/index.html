@@ -975,14 +975,26 @@
     .settings-grid .enc-list {
       grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
     }
-    .settings-grid .env-grid {
-      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    /* 网络设置分五组：组名走细分隔线，组内按长短项显式跨列，避免长文本框把整行撑出空洞 */
+    .settings-grid .net-sec {
+      grid-column: 1 / -1;
+      margin-top: 2px;
+      padding-top: 10px;
+      border-top: 1px dashed var(--line);
+      font-size: var(--fs-ui-xs);
+      font-weight: 700;
+      color: var(--muted);
     }
-    /* 队列定时窗：五个队列各一行，在窄格子里每行都要折行；给这条表单两格宽，队列再分两栏 */
-    .settings-grid .queue-item { grid-column: span 2; }
+    .settings-grid .net-sec:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+    .settings-grid .net-form > .net-span2 { grid-column: span 2; }
+    @media (max-width: 1320px) {
+      .settings-grid .net-form > .net-span2 { grid-column: 1 / -1; }
+    }
+    /* 队列定时窗：五个队列各一行，在窄格子里每行都要折行；给这条表单整行宽，队列再分栏 */
+    .settings-grid .queue-item { grid-column: 1 / -1; }
     .settings-grid .queue-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
       gap: 4px 12px;
       width: 100%;
     }
@@ -1003,22 +1015,47 @@
       column-gap: 24px;
     }
     .settings-grid .credit { border-bottom: 0; padding: 4px 0; }
-    /* 环境卡原先竖排 6 个按钮，宽卡里改成三列；按钮文字在格子内折行，不许伸出卡片 */
-    .settings-grid .env-btns {
+    /* 环境状态只留路径：左栏四条 label+路径，右栏 FFmpeg 自定义路径与扩展包下载 */
+    .settings-grid .env-paths-wrap {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr);
+      gap: 20px;
+      align-items: start;
+    }
+    .settings-grid .env-paths { display: grid; }
+    .settings-grid .env-path {
+      display: grid;
+      grid-template-columns: 96px minmax(0, 1fr);
+      gap: 10px;
+      padding: 7px 0;
+      border-bottom: 1px solid var(--line);
+      font-size: var(--fs-ui-sm);
+      word-break: break-all;
+    }
+    .settings-grid .env-path:first-child { padding-top: 0; }
+    .settings-grid .env-path:last-child { border-bottom: 0; padding-bottom: 0; }
+    .settings-grid .env-path b {
+      font-size: var(--fs-ui-xs);
+      color: var(--muted);
+      font-weight: 600;
+      line-height: 20px;
+    }
+    .settings-grid .env-side {
+      display: flex;
+      flex-direction: column;
       gap: 8px;
+      padding-left: 20px;
+      border-left: 1px dashed var(--line);
+      min-width: 0;
     }
-    .settings-grid .env-btns > .el-button {
-      width: 100%;
-      max-width: 100%;
-      margin: 0;
-      height: auto;
-      min-height: 28px;
-      padding: 5px 10px;
-      white-space: normal;
-      line-height: 1.35;
+    /* 主题色五个选项等宽排一行，不再按文字宽度折成 4+1 */
+    .settings-grid .theme-grid {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 6px;
+      margin-top: 8px;
     }
+    .settings-grid .theme-grid .chip { padding: 0 4px; min-width: 0; }
     /* 「恢复默认」清单在宽卡里两栏铺开，长条目不再把一列拉到几屏 */
     .settings-grid .def-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px; }
     /* 订阅/直播的十来项在 1/3 宽卡里并成两组，省下一段空白 */
@@ -1074,10 +1111,13 @@
       .settings-grid .card--span2 { grid-column: auto; }
       .settings-grid .def-list { grid-template-columns: minmax(0, 1fr); }
       .settings-grid .comp-item--wide { grid-column: auto; }
-    }
-    @media (max-width: 700px) {
-      .settings-grid .queue-item { grid-column: auto; }
-      .settings-grid .env-btns { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .settings-grid .env-paths-wrap { grid-template-columns: 1fr; }
+      .settings-grid .env-side {
+        border-left: 0;
+        padding-left: 0;
+        border-top: 1px dashed var(--line);
+        padding-top: 12px;
+      }
     }
     .choice-grid {
       display: grid;
@@ -4636,8 +4676,9 @@
               <div class="settings-main">
                 <div v-show="stab === 'net'" class="card card--wide">
                   <div class="section-title">{{ tr('settings.netTitle') }}</div>
-                  <el-form label-position="top" @submit.prevent>
-                    <el-form-item :label="tr('settings.proxyModeLabel')">
+                  <el-form class="net-form" label-position="top" @submit.prevent>
+                    <div class="net-sec">{{ tr('settings.netSecProxy') }}</div>
+                    <el-form-item :label="tr('settings.proxyModeLabel')" class="net-span2">
                       <el-select size="small" v-model="settings.proxy_mode" style="width:180px" @change="loadNetInfo">
                         <el-option :label="tr('settings.proxyModeOptAuto')" value="auto"></el-option>
                         <el-option :label="tr('settings.proxyModeOptAlways')" value="always"></el-option>
@@ -4657,7 +4698,7 @@
                         </template>
                       </el-popconfirm>
                     </el-form-item>
-                    <el-form-item :label="tr('settings.proxyLabel')">
+                    <el-form-item :label="tr('settings.proxyLabel')" class="net-span2">
                       <el-input size="small" v-model="settings.proxy" placeholder="http://127.0.0.1:7890" clearable></el-input>
                       <div class="hint">
                         {{ tr('settings.systemProxyWord') }}
@@ -4671,20 +4712,29 @@
                       <el-switch v-model="settings.nocheckcertificate"></el-switch>
                       <span class="hint" style="margin-left:8px">{{ tr('settings.nocheckcertificateHint') }}</span>
                     </el-form-item>
+                    <el-form-item :label="tr('settings.httpImpersonateLabel')">
+                      <el-switch v-model="settings.http_impersonate"></el-switch>
+                      <span class="hint" style="margin-left:8px">{{ tr('settings.httpImpersonateHint') }}</span>
+                    </el-form-item>
                     <el-form-item :label="tr('settings.concurrentLabel')">
                       <el-input-number size="small" v-model="settings.concurrent" :min="1" :max="10"></el-input-number>
                     </el-form-item>
+                    <el-form-item :label="tr('settings.maxPerHostLabel')">
+                      <el-input-number size="small" v-model="settings.max_per_host" :min="1" :max="8"></el-input-number>
+                      <span class="hint" style="margin-left:8px">{{ tr('settings.maxPerHostHint') }}</span>
+                    </el-form-item>
+                    <div class="net-sec">{{ tr('settings.netSecSpeed') }}</div>
                     <el-form-item :label="tr('settings.speedLimitLabel')">
                       <el-input size="small" v-model="settings.speed_limit" :placeholder="tr('settings.speedLimitPh')" clearable></el-input>
                     </el-form-item>
                     <el-form-item :label="tr('settings.globalSpeedLimitLabel')">
                       <el-input size="small" v-model="settings.global_speed_limit" :placeholder="tr('settings.globalSpeedLimitPh')" clearable></el-input>
                     </el-form-item>
-                    <el-form-item :label="tr('settings.speedWindowsLabel')">
+                    <el-form-item :label="tr('settings.speedWindowsLabel')" class="net-span2">
                       <el-input size="small"
                         v-model="settings.speed_windows"
                         type="textarea"
-                        :rows="3"
+                        :rows="2"
                         :placeholder="tr('settings.speedWindowsPh')"
                       ></el-input>
                       <div class="row row--tight" style="margin-top:6px">
@@ -4698,17 +4748,18 @@
                         </span>
                       </div>
                     </el-form-item>
+                    <div class="net-sec">{{ tr('settings.netSecQueue') }}</div>
                     <el-form-item :label="tr('settings.runWindowLabel')" class="queue-item">
                       <el-input size="small"
                         v-model="settings.run_window"
                         type="textarea"
-                        :rows="3"
+                        :rows="2"
                         :placeholder="tr('settings.runWindowPh')"
                       ></el-input>
                       <div class="queue-grid">
                         <div v-for="q in queueRows" :key="'rw-' + q.name" class="row row--tight">
-                          <span style="width:88px;font-size:12px">{{ q.name }}</span>
-                          <el-input size="small" style="max-width:200px"
+                          <span style="width:72px;font-size:12px">{{ q.name }}</span>
+                          <el-input size="small" style="max-width:190px"
                             v-model="settings.queue_windows[q.name]"
                             :placeholder="tr('settings.queueWindowPh')"
                             @change="checkRunWindows(true)"></el-input>
@@ -4726,18 +4777,19 @@
                         </span>
                       </div>
                     </el-form-item>
-                    <el-form-item :label="tr('settings.ytdlpExtraArgsLabel')">
+                    <div class="net-sec">{{ tr('settings.netSecDownload') }}</div>
+                    <el-form-item :label="tr('settings.ytdlpExtraArgsLabel')" class="net-span2">
                       <el-input size="small" v-model="settings.ytdlp_extra_args" :placeholder="tr('settings.ytdlpExtraArgsPh')" clearable></el-input>
                     </el-form-item>
-                    <el-form-item :label="tr('settings.maxPerHostLabel')">
-                      <el-input-number size="small" v-model="settings.max_per_host" :min="1" :max="8"></el-input-number>
-                      <span class="hint" style="margin-left:8px">{{ tr('settings.maxPerHostHint') }}</span>
+                    <el-form-item :label="tr('settings.aria2ForLargeMbLabel')">
+                      <el-input-number size="small" v-model="settings.aria2_for_large_mb" :min="0" :max="2000"></el-input-number>
+                      <span class="hint" style="margin-left:8px">{{ tr('settings.aria2ForLargeMbHint') }}</span>
                     </el-form-item>
-                    <el-form-item :label="tr('settings.adaptiveThrottleLabel')">
-                      <el-switch v-model="settings.adaptive_throttle"></el-switch>
-                      <span class="hint" style="margin-left:8px">{{ tr('settings.adaptiveThrottleHint') }}</span>
+                    <el-form-item :label="tr('settings.subFirstDownloadNLabel')">
+                      <el-input-number size="small" v-model="settings.sub_first_download_n" :min="0" :max="50"></el-input-number>
+                      <span class="hint" style="margin-left:8px">{{ tr('settings.subFirstDownloadNHint') }}</span>
                     </el-form-item>
-                    <el-form-item :label="tr('settings.pluginsEnabledLabel')">
+                    <el-form-item :label="tr('settings.pluginsEnabledLabel')" class="net-span2">
                       <el-switch v-model="settings.plugins_enabled"></el-switch>
                       <span class="hint" style="margin-left:8px">{{ tr('settings.pluginsEnabledHint') }}</span>
                       <el-button size="small" style="margin-left:8px" @click="reloadPlugins">{{ tr('settings.reloadPluginsBtn') }}</el-button>
@@ -4747,15 +4799,12 @@
                       <el-switch v-model="settings.aria2_enabled"></el-switch>
                       <span class="hint" style="margin-left:8px">{{ tr('settings.aria2EnabledHint') }}</span>
                     </el-form-item>
-                    <el-form-item :label="tr('settings.aria2ForLargeMbLabel')">
-                      <el-input-number size="small" v-model="settings.aria2_for_large_mb" :min="0" :max="2000"></el-input-number>
-                      <span class="hint" style="margin-left:8px">{{ tr('settings.aria2ForLargeMbHint') }}</span>
+                    <el-form-item :label="tr('settings.adaptiveThrottleLabel')">
+                      <el-switch v-model="settings.adaptive_throttle"></el-switch>
+                      <span class="hint" style="margin-left:8px">{{ tr('settings.adaptiveThrottleHint') }}</span>
                     </el-form-item>
-                    <el-form-item :label="tr('settings.httpImpersonateLabel')">
-                      <el-switch v-model="settings.http_impersonate"></el-switch>
-                      <span class="hint" style="margin-left:8px">{{ tr('settings.httpImpersonateHint') }}</span>
-                    </el-form-item>
-                    <el-form-item :label="tr('settings.githubMirrorLabel')">
+                    <div class="net-sec">{{ tr('settings.netSecMirror') }}</div>
+                    <el-form-item :label="tr('settings.githubMirrorLabel')" class="net-span2">
                       <el-select size="small" v-model="settings.github_mirror" filterable allow-create
                                  default-first-option clearable style="width:100%"
                                  :placeholder="tr('settings.githubMirrorPh')">
@@ -4767,7 +4816,7 @@
                         <span class="hint">{{ mirrorHint('github') }}</span>
                       </div>
                     </el-form-item>
-                    <el-form-item :label="tr('settings.pipMirrorLabel')">
+                    <el-form-item :label="tr('settings.pipMirrorLabel')" class="net-span2">
                       <el-select size="small" v-model="settings.pip_mirror" filterable allow-create
                                  default-first-option clearable style="width:100%"
                                  :placeholder="tr('settings.pipMirrorPh')">
@@ -4778,10 +4827,6 @@
                         <el-button size="small" plain :loading="mirrorProbing === 'pypi'" @click="probeMirrors('pypi')">{{ tr('settings.probeMirrorBtn') }}</el-button>
                         <span class="hint">{{ mirrorHint('pypi') }}</span>
                       </div>
-                    </el-form-item>
-                    <el-form-item :label="tr('settings.subFirstDownloadNLabel')">
-                      <el-input-number size="small" v-model="settings.sub_first_download_n" :min="0" :max="50"></el-input-number>
-                      <span class="hint" style="margin-left:8px">{{ tr('settings.subFirstDownloadNHint') }}</span>
                     </el-form-item>
                   </el-form>
                 </div>
@@ -4846,11 +4891,13 @@
                 
                 <div v-show="stab === 'ui'" class="card">
                   <div class="section-title">{{ tr('settings.appearanceTitle') }}</div>
-                  <div class="row row--mb">
-                    <span class="row-label">{{ tr('header.themeGroup') }}</span>
-                    <div class="chip" v-for="t in UI_THEMES" :key="t.key"
-                         :class="{ active: (settings.ui_theme || 'blue') === t.key }" @click="setTheme(t.key)">
-                      <i class="theme-dot theme-dot--inline" :data-td="t.key"></i>{{ t.name[uiLang] }}
+                  <div style="margin-bottom: var(--row-mt)">
+                    <div class="row-label" style="margin-bottom:6px">{{ tr('header.themeGroup') }}</div>
+                    <div class="theme-grid">
+                      <div class="chip" v-for="t in UI_THEMES" :key="t.key"
+                           :class="{ active: (settings.ui_theme || 'blue') === t.key }" @click="setTheme(t.key)">
+                        <i class="theme-dot theme-dot--inline" :data-td="t.key"></i>{{ t.name[uiLang] }}
+                      </div>
                     </div>
                   </div>
                   <div class="row row--spread">
@@ -5928,40 +5975,34 @@
                     <span :style="{ color: it.ok ? 'var(--ok)' : 'var(--bad)', fontSize: '14px' }">●</span>
                     <div class="comp-main">
                       <div :style="{ fontWeight: 600, color: it.ok ? 'var(--ink)' : 'var(--bad)' }">{{ it.cn || it.label }}</div>
-                      <div v-if="compDetail" class="comp-ver" style="word-break:break-all">
+                      <div class="comp-ver" style="word-break:break-all">
                         {{ it.pkg || it.tool || it.key }} · {{ tr('settings.compCurrentWord') }} {{ it.active || tr('settings.notInstalled') }}
                         <span v-if="it.bundled && verCmp(it.bundled, it.active) !== 0">· {{ tr('settings.compBundledWord') }} {{ it.bundled }}</span>
                         <span v-if="it.latest">· {{ tr('settings.compLatestWord') }} {{ it.latest }}{{ verCmp(it.latest, it.active) > 0 ? tr('settings.compUpdatableTag') : '' }}</span>
                         <span v-else-if="it.latest_note">· {{ tr('settings.compLatestUnknown') }} {{ it.latest_note }}</span>
                       </div>
-                      <div v-else-if="it.ok && it.latest && verCmp(it.latest, it.active) > 0" class="comp-ver">
-                        {{ tr('settings.compUpstreamNew', { latest: it.latest, active: it.active }) }}
-                      </div>
                       <div v-if="it.note" class="comp-ver" style="color:var(--muted)">{{ it.note }}</div>
                     </div>
-                    <el-button v-if="compDetail || !it.ok || compUpdatable(it)" size="small"
+                    <el-button size="small"
                                :loading="updatingComp === it.key" @click="updateComponent(it)">
                       {{ it.ok ? tr('settings.compUpdateBtn') : tr('settings.compInstallBtn') }}
                     </el-button>
-                    <span v-else class="hint" style="margin:0;white-space:nowrap">{{ tr('settings.compReadyWord') }}</span>
                   </div>
                   <div class="comp-item comp-item--wide" :title="tr('settings.sepModelsLabel')">
                     <span :style="{ color: sepModelsReady ? 'var(--ok)' : 'var(--warn)', fontSize: '14px' }">●</span>
                     <div class="comp-main">
                       <div style="font-weight:600">{{ tr('settings.sepModelsLabel') }}</div>
                       <template v-if="sepInfo">
-                        <div class="comp-ver">RoFormer · audio-separator {{ sepRoformerVer }}</div>
-                        <div class="comp-ver">Demucs · demucs {{ sepDemucsVer }}</div>
+                        <div class="comp-ver">RoFormer · audio-separator {{ sepRoformerVer }}<template v-if="sepLatest('audio-separator')"> · {{ tr('settings.compLatestWord') }} {{ sepLatest('audio-separator') }}{{ sepUpdatablePkg === 'audio-separator' ? tr('settings.compUpdatableTag') : '' }}</template></div>
+                        <div class="comp-ver">Demucs · demucs {{ sepDemucsVer }}<template v-if="sepLatest('demucs')"> · {{ tr('settings.compLatestWord') }} {{ sepLatest('demucs') }}{{ sepUpdatablePkg === 'demucs' ? tr('settings.compUpdatableTag') : '' }}</template></div>
                         <div class="comp-ver">torch {{ sepTorchVer }} · {{ sepModelsState }}</div>
                       </template>
                       <div v-else class="comp-ver">{{ sepModelsState }}</div>
                       <div v-if="sepModelsMissing" class="comp-ver" style="color:var(--warn)">{{ sepModelsMissing }}</div>
                     </div>
+                    <el-button v-if="sepUpdatable" size="small" type="primary" plain :loading="sepBusy" @click="updateSeparatorEngines">{{ tr('settings.compUpdateBtn') }}</el-button>
                     <el-button size="small" :loading="sepBusy" @click="setupSeparatorAll">{{ tr('settings.sepModelsBtn') }}</el-button>
                   </div>
-                </div>
-                <div class="row row--tight" style="margin:6px 0 10px">
-                  <el-button size="small" text @click="compDetail = !compDetail">{{ compDetail ? tr('settings.compDetailHideBtn') : tr('settings.compDetailShowBtn') }}</el-button>
                 </div>
                 <div class="btn-grid">
                   <el-button size="small" type="primary" plain :loading="compAll.running || compAllBusy" @click="updateAllComponents()">{{ tr('settings.compAllBtn') }}</el-button>
@@ -6009,42 +6050,23 @@
                   {{ tr('settings.compRestartHint') }}
                 </div>
               </div>
-              <div v-show="stab === 'comp'" class="card card--span2">
-                <div class="section-title" style="margin-bottom:14px">{{ tr('settings.envTitle') }}</div>
-                <div class="env-list env-grid">
-                  <div class="env-item"><b>FFmpeg</b>{{ status.ffmpeg }}</div>
-                  <div class="env-item"><b>{{ tr('settings.envPathWord') }}</b>{{ status.ffmpeg_path || tr('settings.envNotFound') }}</div>
-                  <div class="env-item"><b>yt-dlp</b>{{ status.ytdlp }}</div>
-                  <div class="env-item">
-                    <b>Cookie</b>
-                    <template v-if="settings.cookie_source === 'none'">{{ tr('settings.envCookieOff') }}</template>
-                    <template v-else-if="settings.cookie_source === 'browser'">{{ tr('settings.envCookieBrowser') }} · {{ settings.cookie_browser }}</template>
-                    <template v-else>
-                      {{ settings.cookie_file || tr('settings.envCookieBlank') }}
-                      <span v-if="status.cookie_exists" style="color:var(--ok)">{{ tr('settings.envCookieFound') }}</span>
-                      <span v-else style="color:var(--warn)">{{ tr('settings.envCookieMissingFile') }}</span>
-                    </template>
+              <div v-show="stab === 'comp'" class="card card--wide">
+                <div class="section-title">{{ tr('settings.envTitle') }}</div>
+                <div class="env-paths-wrap">
+                  <div class="env-paths">
+                    <div class="env-path"><b>FFmpeg</b><span>{{ status.ffmpeg_path || tr('settings.envNotFound') }}</span></div>
+                    <div class="env-path"><b>tools</b><span>{{ status.tools_dir || '-' }}</span></div>
+                    <div class="env-path"><b>cookies</b><span>{{ status.cookies_dir || '-' }}</span></div>
+                    <div class="env-path"><b>{{ tr('settings.envExtWord') }}</b><span>{{ status.extension_dir || '-' }}</span></div>
                   </div>
-                  <div class="env-item"><b>tools</b>{{ status.tools_dir || '-' }}</div>
-                  <div class="env-item"><b>cookies</b>{{ status.cookies_dir || '-' }}</div>
-                  <div class="env-item"><b>N_m3u8DL</b>{{ status.n_m3u8dl || tr('settings.notInstalled') }}</div>
-                  <div class="env-item"><b>Whisper</b>{{ status.whisper || tr('settings.notInstalled') }}</div>
-                  <div class="env-item"><b>{{ tr('settings.envExtWord') }}</b>{{ status.extension_dir || '-' }}</div>
-                </div>
-                <div class="env-btns" style="margin-top:16px">
-                  <el-button size="small" @click="checkEnv">{{ tr('settings.compRecheckBtn') }}</el-button>
-                  <el-button size="small" :loading="updatingYtdlp" @click="updateYtdlp">{{ tr('settings.envUpdYtdlpBtn') }}</el-button>
-                  <el-button size="small" :loading="updatingFfmpeg" @click="updateFfmpeg">{{ tr('settings.envUpdFfmpegBtn') }}</el-button>
-                  <el-button size="small" type="primary" plain :loading="updatingNm3u8" @click="updateNm3u8">{{ tr('settings.envGetNm3u8Btn') }}</el-button>
-                  <el-button size="small" type="primary" plain :loading="updatingWhisper" @click="updateWhisper">{{ tr('settings.envGetWhisperBtn') }}</el-button>
-                  <el-button size="small" @click="downloadExtension">{{ tr('settings.envExtDlBtn') }}</el-button>
-                </div>
-              </div>
-              <div v-show="stab === 'comp'" class="card">
-                <div class="section-title">{{ tr('settings.ffmpegTitle') }}</div>
-                <div class="path-row">
-                  <el-input size="small" v-model="settings.ffmpeg_path" :placeholder="tr('settings.ffmpegPathPh')" clearable></el-input>
-                  <el-button size="small" @click="browsePath('file', 'settings.ffmpeg_path')">{{ tr('settings.selectFileBtn') }}</el-button>
+                  <div class="env-side">
+                    <div class="row-label">{{ tr('settings.ffmpegTitle') }}</div>
+                    <div class="path-row">
+                      <el-input size="small" v-model="settings.ffmpeg_path" :placeholder="tr('settings.ffmpegPathPh')" clearable></el-input>
+                      <el-button size="small" @click="browsePath('file', 'settings.ffmpeg_path')">{{ tr('settings.selectFileBtn') }}</el-button>
+                    </div>
+                    <el-button size="small" style="align-self:flex-start" @click="downloadExtension">{{ tr('settings.envExtDlBtn') }}</el-button>
+                  </div>
                 </div>
               </div>
               <div v-show="stab === 'ai'" class="card">
@@ -7044,6 +7066,22 @@
                    import: tr('voice.engWhyImport'), weights: tr('voice.engWhyWeights') }[e.reason]
             || tr('voice.engWhyUnknown');
         });
+        // 分离引擎的两个包在独立 venv 里，组件表那套 latest 不覆盖它们：
+        // 自动检测结果（compUpdates）与手动查询（compInfo.sep_engine）两处都认，
+        // 谁先到就先显示，别让同一个版本号在两张表里各说各话。
+        const sepUpdatablePkg = computed(() => {
+          const u = (compUpdates.value || []).find(x => x.key === 'sep:engines');
+          if (u) return u.pkg || 'audio-separator';
+          const row = ((compInfo.value.sep_engine || {}).items || []).find(e => e.updatable);
+          return row ? row.pkg : '';
+        });
+        const sepUpdatable = computed(() => !!sepUpdatablePkg.value);
+        function sepLatest(pkg) {
+          const row = ((compInfo.value.sep_engine || {}).items || []).find(e => e.pkg === pkg);
+          if (row && row.latest) return row.latest;
+          const u = (compUpdates.value || []).find(x => x.key === 'sep:engines' && x.pkg === pkg);
+          return u ? u.latest : '';
+        }
         const rtRecording = ref(false);
         const rtTranslate = ref(true);
         const rtTargetLang = ref('zh');
@@ -7421,11 +7459,6 @@
         const updatingFfmpeg = ref(false);
         const updatingNm3u8 = ref(false);
         const components = ref([]);
-        // 组件与依赖：平时只报「要不要动」，包名与三个版本号收进「看包名与版本号」那一键
-        const compDetail = ref(false);
-        function compUpdatable(it) {
-          return !!it && !!it.ok && !!it.latest && verCmp(it.latest, it.active) > 0;
-        }
         const SETTINGS_TABS = [
           { key: 'net', label: 'settings.tabNet' },
           { key: 'dl', label: 'settings.tabDl' },
@@ -8156,9 +8189,16 @@
         let compAllTimer = null;
         const compAll = computed(() => compInfo.value.update_all || {});
         // 待处理 = 没装上的 + 查过最新版且确实有新版的；没点过「查询上游最新版本」时只挑缺的
-        const compTargets = computed(() => (components.value || []).filter(
-          // skip_all：PO Token 那行缺的是要自己跑的服务端，一键更新替人装插件没意义
-          (it) => !it.skip_all && (!it.ok || (it.latest && verCmp(it.latest, it.active) > 0))));
+        const compTargets = computed(() => {
+          const list = (components.value || []).filter(
+            // skip_all：PO Token 那行缺的是要自己跑的服务端，一键更新替人装插件没意义
+            (it) => !it.skip_all && (!it.ok || (it.latest && verCmp(it.latest, it.active) > 0)));
+          // 分离引擎不在 items 里（独立 venv），但检测已经报了它，一键更新也得把它算上
+          const sep = (compUpdates.value || []).find((u) => u.key === 'sep:engines');
+          if (sep) list.push({ key: sep.key, label: sep.label, active: sep.current,
+                               latest: sep.latest, ok: true });
+          return list;
+        });
         const compAllSummary = computed(() => {
           const a = compAll.value;
           const rs = a.results || [];
@@ -9847,6 +9887,21 @@
         async function setupSeparatorEnv() { await setupSeparator('venv'); }
         async function setupSeparatorWeights() { await setupSeparator('weights'); }
         async function setupSeparatorAll() { await setupSeparator('all'); }
+        async function updateSeparatorEngines() {
+          // 与其它组件行一致：镜像先落盘，后端那次 pip 才读得到
+          try { await saveSettings(true); } catch (_) {}
+          await setupSeparator('engines');
+          // pip 跑完（服务端那把锁放开）再查版本：不等到真实读数回来，
+          // 按钮会停在旧版本上，下一次点又从头再装一遍
+          const t0 = Date.now();
+          const timer = setInterval(async () => {
+            await loadVoiceStatus(true);
+            if (sepBusy.value && Date.now() - t0 < 15 * 60 * 1000) return;
+            clearInterval(timer);
+            await loadComponents('1');
+            await startCompCheck(false);
+          }, 4000);
+        }
         async function setupSeparator(step) {
           try {
             const r = await api('/api/ai/separator_setup', { method: 'POST', body: JSON.stringify({ step }) });
@@ -14269,11 +14324,11 @@ const CFG_KEYS = {
           srtEditBox, srtQc, runSrtQc, runSrtRewrap, qcJumpTo, qcDropNoise,
           searchQuery, searchPlatform, searchContentType, searchSort, setSearchSort,
           searchTotal, searchTruncated, searchNotes, SEARCH_PLAT_NAMES, searchResults, searching, platformCookies, cookieIssueCount, syncFileInput,
-          musicKeyword, musicResults, musicSearching, musicSourceErrors, musicNeedsMatch, musicScoreLine, musicHasScore, musicdlVersion, musicdlReady, musicPreset, musicStrategy, saveMusicStrategy, musicSearchType, musicIncludeLocal, musicFilenameTemplate, musicEmbedMeta, musicSkipExisting, musicHideUnavailable, musicBlockReupload, musicIncludeReference, musicQualitySpec, musicQualityOptions, musicQualitySummary, refHint, matchHint, openRefLink, player, playerEl, playerPlaying, playerTime, playerDur, playerVol, playerMuted, playerSeeking, playerSeekVal, playerStep, playerToggle, playerClose, playerSeek, onPlayerTick, onPlayerMeta, onPlayerEnded, musicLrcLines, musicLrcActive, previewMusicRow, probeMusicRow, switchMusicSource, musicSwitching, scanLocalMusic, musicSources, musicSourceOptions, musicMatchSourceOptions, musicPresetOptions, musicSourceOrdered, musicPlaylistUrl, musicPlaylistMode, saveMusicPlaylistMode, musicCookies, musicSelected, aiPipeline, analyzeAudioFile, aiVocalSeparate, aiTts, installVoicePkgs, loadVoiceStatus, refreshSepStatus, setupSeparatorEnv, setupSeparatorWeights, setupSeparatorAll, sepModelLabel, sepBusy, sepInfo, sepModels, sepHasGpu, sepStatusText, sepDeviceText, sepEngineReason, sepModelsState, sepModelsMissing, sepModelsReady, sepRoformerVer, sepDemucsVer, sepTorchVer, toggleRealtime, installingVoice, voiceStatusText, rtRecording, rtTranslate, rtTargetLang, rtLog, searchMusic, batchSearchDownload, applyMusicPreset, parseMusicPlaylist, onMusicSelection, downloadMusicSelected, downloadMusicRow, showAlreadyHave, musicFavItems, musicFavMissing, musicFavSelected, musicFavReadySel, musicFavSwitching, musicFavDownloading, onMusicFavSelection, addMusicFav, removeMusicFav, clearMusicFav, previewMusicFav, switchMusicFav, downloadMusicFav, loadMusicFavs, installMusicdl,
+          musicKeyword, musicResults, musicSearching, musicSourceErrors, musicNeedsMatch, musicScoreLine, musicHasScore, musicdlVersion, musicdlReady, musicPreset, musicStrategy, saveMusicStrategy, musicSearchType, musicIncludeLocal, musicFilenameTemplate, musicEmbedMeta, musicSkipExisting, musicHideUnavailable, musicBlockReupload, musicIncludeReference, musicQualitySpec, musicQualityOptions, musicQualitySummary, refHint, matchHint, openRefLink, player, playerEl, playerPlaying, playerTime, playerDur, playerVol, playerMuted, playerSeeking, playerSeekVal, playerStep, playerToggle, playerClose, playerSeek, onPlayerTick, onPlayerMeta, onPlayerEnded, musicLrcLines, musicLrcActive, previewMusicRow, probeMusicRow, switchMusicSource, musicSwitching, scanLocalMusic, musicSources, musicSourceOptions, musicMatchSourceOptions, musicPresetOptions, musicSourceOrdered, musicPlaylistUrl, musicPlaylistMode, saveMusicPlaylistMode, musicCookies, musicSelected, aiPipeline, analyzeAudioFile, aiVocalSeparate, aiTts, installVoicePkgs, loadVoiceStatus, refreshSepStatus, setupSeparatorEnv, setupSeparatorWeights, setupSeparatorAll, sepModelLabel, sepBusy, sepInfo, sepModels, sepHasGpu, sepStatusText, sepDeviceText, sepEngineReason, sepModelsState, sepModelsMissing, sepModelsReady, sepRoformerVer, sepDemucsVer, sepTorchVer, sepUpdatablePkg, sepUpdatable, sepLatest, updateSeparatorEngines, toggleRealtime, installingVoice, voiceStatusText, rtRecording, rtTranslate, rtTargetLang, rtLog, searchMusic, batchSearchDownload, applyMusicPreset, parseMusicPlaylist, onMusicSelection, downloadMusicSelected, downloadMusicRow, showAlreadyHave, musicFavItems, musicFavMissing, musicFavSelected, musicFavReadySel, musicFavSwitching, musicFavDownloading, onMusicFavSelection, addMusicFav, removeMusicFav, clearMusicFav, previewMusicFav, switchMusicFav, downloadMusicFav, loadMusicFavs, installMusicdl,
           loadSubs, addSub, removeSub, toggleSub, scanOneSub, scanAllSubs, startLiveRecord, pauseLiveTask, resumeLiveTask, endLiveTask, endAllLive, cancelLiveTask, addLiveMonitor, removeLiveMonitor, pauseLiveMonitor, resumeLiveMonitor, scanLiveMonitors, loadLiveMonitors, liveRoomCfg, liveRoomFmts, liveRoomQualities, openLiveMonitorCfg, saveLiveMonitorCfg, liveMonitorCfgText, testTelegram,
           testWecom, applyRiskPreset, loadRiskPresets, loadFavTab, loadFavFolderItems, loadYtPlaylist, onFavSelChange,
           downloadFavSelected, downloadFavOne, subscribeFavSelected, subscribeFavOne, startBiliQr, pollBiliQr,
-          isPlayable, isAudioFile, isMediaFile, isVideoFile, openPicard, mbTagFile, mbEnrichFile, fingerprintFile, guessTagsFile, isSrtFile, aiVocalSeparate, aiTts, installVoicePkgs, loadVoiceStatus, refreshSepStatus, setupSeparatorEnv, setupSeparatorWeights, setupSeparatorAll, sepModelLabel, sepBusy, sepInfo, sepModels, sepHasGpu, sepStatusText, sepDeviceText, sepEngineReason, toggleRealtime, installingVoice, voiceStatusText, rtRecording, rtTranslate, rtTargetLang, rtLog, aiTranscribe, aiTranslateSrt, aiCalibrateSrt, onFileSelectionChange, runBatchAi, runSrtCalibrateSelected,
+          isPlayable, isAudioFile, isMediaFile, isVideoFile, openPicard, mbTagFile, mbEnrichFile, fingerprintFile, guessTagsFile, isSrtFile, aiVocalSeparate, aiTts, installVoicePkgs, loadVoiceStatus, refreshSepStatus, setupSeparatorEnv, setupSeparatorWeights, setupSeparatorAll, sepModelLabel, sepBusy, sepInfo, sepModels, sepHasGpu, sepStatusText, sepDeviceText, sepEngineReason, sepUpdatablePkg, sepUpdatable, sepLatest, updateSeparatorEngines, toggleRealtime, installingVoice, voiceStatusText, rtRecording, rtTranslate, rtTargetLang, rtLog, aiTranscribe, aiTranslateSrt, aiCalibrateSrt, onFileSelectionChange, runBatchAi, runSrtCalibrateSelected,
           burnDlg, burnJob, burnStarting, burnSubChoices, burnOutName, burnRunning, burnPercent, burnStatusText, openBurn, closeBurn, startBurn, stopBurn,
           batchMode, batchScope, batchRunning, selectedFiles, syncOffsetSec, syncScale, syncInplace, playFile, zipPath, zipCurrentFolder,
           doSearch, downloadSearchItem, analyzeSearchItem, subscribeSearchItem, normalizeSearchUrl, loadPlatformCookies, savePlatformCookie, savePlatformCookieText, clearCookieFlag, browsePlatformCookie, exportSync, triggerImportSync, onImportSync,
@@ -14298,7 +14353,7 @@ const CFG_KEYS = {
           fileSearch, fileSort, filteredFiles, runFileAction, openDownloadFolder, testCookie, redownload, toggleDark,
           UI_THEMES, setTheme,
           loadStatus, checkEnv, updateYtdlp, updateFfmpeg,
-          components, compInfo, compDetail, compUpdatable, stab, SETTINGS_TABS, updatingComp, latestBusy, verCmp, loadComponents, updateComponent, pathBusy, setEnvPath,
+          components, compInfo, stab, SETTINGS_TABS, updatingComp, latestBusy, verCmp, loadComponents, updateComponent, pathBusy, setEnvPath,
           compAll, compAllBusy, compTargets, compAllSummary, updateAllComponents,
           compUpdates, compCheckBusy, compCheckText, startCompCheck,
           encoders, encProbeBusy, encProbeText, loadEncoders,

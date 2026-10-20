@@ -451,6 +451,47 @@ put** — no tag move, no rebuild, no asset swap, documentation only.
 - This entry touches `CHANGELOG.md` and `CHANGELOG.en.md` only: `appVersion` unchanged, no rebuild, release untouched,
   tag unmoved, and no live run. The blob comparison above is the only new measurement in it.
 
+### After v1.4.0 — separator engines join the upstream check; network card grouped; the tag moves and the package is rebuilt
+
+Trigger: upstream `python-audio-separator` was at **v0.47.1** (released 13 hours earlier) while the dedicated venv still
+had **0.47.0**, and the components row offered only "Set up / fill in" — no Update button and no banner. The cause was
+not a missing button: the engines live in `tools/separator/venv`, and the existing upstream scan only walked the main
+environment's `pkg_update.PIP_PACKAGES`.
+
+- **Backend**: `latest_versions_cached()` now appends `voice_tools.SEP_ENGINE_PKGS`; `separator_engine_versions()`
+  reads the venv's `importlib.metadata` only (no torch import, 120-second cache), and
+  `_sep_engine_rows / _sep_engine_state / _sep_engine_available` compare each package against upstream.
+  `/api/components` returns a `sep_engine` block; the background check appends `sep:engines` to `available`; one entry
+  covers both packages because they are upgraded as one group. `_comp_update_one`, the update-all allow-list and
+  `api_separator_setup` all accept the key; `setup_separator()` forwards `step == "engines"` before taking
+  `_setup_lock`, so the update path does not deadlock against itself.
+- **Update path**: `update_separator_engines()` runs `pip install -U ... audio-separator demucs` inside that lock,
+  then forces a fresh version read and a `separation_probe`; success is reported from the read-back, not from pip's
+  exit code. **`SEP_ENGINE_PINS` is unchanged** (new environments still get 0.47.0 / 4.1.0) — only an explicit Update
+  moves past it. Logs use `srv.ai.update_ready` / `srv.ai.update_failed`, and the endpoint no longer answers an update
+  request with "setup in progress".
+- **Frontend**: the row reads `RoFormer · audio-separator 0.47.0 · latest 0.47.1 (updatable)` / `Demucs · demucs
+  4.1.0` and shows an **Update** button when one exists. `updateSeparatorEngines()` saves the mirror setting first,
+  calls the `engines` step, waits on the server's `setup_running` flag (15-minute cap), then re-reads versions and the
+  component check. `compTargets` includes `sep:engines`, so the banner count and the sidebar dot follow.
+- **Readings** (sandbox instance with its own state directory and a `bind(0)` port, never 8765): the real upstream
+  query returned `audio-separator 0.47.1` (Tsinghua mirror) and `demucs 4.1.0`; `update-check` reported exactly one
+  `sep:engines` entry (0.47.0 → 0.47.1); `sep_engine.items` held 0.47.0 / 4.1.0 with only the former updatable; the
+  row rendered the two lines above, the banner read "1 component has a new version: 人声分离引擎", console errors 0.
+  **The working venv was not actually upgraded** — the update path is covered by code and stub assertions (H1–H10),
+  not by a real `pip -U` against the 0.47.0 environment in use; the button in the UI is what performs it.
+- **Network card**: the 18 fields are grouped into five sections (proxy & concurrency / speed limits / queues /
+  downloader / mirrors) with full-width `.net-sec` dashed headings; long fields span two columns, and the queue item
+  is full-width with per-queue rows on `auto-fill minmax(280px, 1fr)`. Measured at 1600 / 1200 / 860: 4 / 2 / 1
+  columns, `hOver=0`, `docOver=0`. The settings page still scrolls (1639 / 842); this round only tidied the network
+  card.
+- **Tests**: `tests/separator_test.py` 57 (new H1–H10), `i18n_test` 509, `components_test`, `runwindow_test`,
+  `pagemount_test` 40 and `settingsave_test` 113 all green; full sweep **65/65 rc=0** (185.8 s).
+- **Tag and package**: on the explicit 2026-10-20 instruction ("修改后再推送动标签打包"), the lightweight `v1.4.0` tag
+  moves from `7ac0ff6` to this commit and is force-pushed, and `pack_release.py --skip-runtime` rebuilds the portable
+  package. This **supersedes the "#52 — leave the tag alone" decision** above: that decision assumed nobody had asked
+  for a tag move, and now someone has. Replacing the public release asset still waits for a separate approval.
+
 ---
 
 ## Earlier releases (summary)

@@ -1189,6 +1189,18 @@ v1.4.0 发出去之后接着三句要求：「跑一下音乐结果表确认排�
 - **要拿回哪种东西，走哪条路**：与已发布字节一致的源码树是 `git checkout caeb4f6`（要归档就 `git archive`）；用户实际下载到的那个文件是 Release 上那只 `MediaDownloader-1.4.0-portable.zip`，229,823,103 B，在 `dist/` 里对同名 `.zip.sha256` 跑 `sha256sum -c` 即可核（sidecar 现在写的是 `4ea6a8ec…`，本轮读的就是这一行）。**校验值仍然不写进这份随包文件**——沿用上面「发布物」那节定的口径，一个包装不下自己的校验值。
 - 这一笔只动 `CHANGELOG.md` 与 `CHANGELOG.en.md` 两份文档：`appVersion` 没动、包没重压、Release 没碰、标签没挪，也没有跑任何活体。上面那条 blob 比对是本轮唯一的新测量，读的是 `dist/` 里那只包的 zip 条目本身，不是 `dist/MediaDownloader-1.4.0-portable/` 那棵已解压的目录树。
 
+## 发布之后这一轮 · 分离引擎纳入上游检测与「更新」、设置页网络卡分组；标签 `v1.4.0` 前移并重出包
+
+起因是两张截图对不上：GitHub 上 `python-audio-separator` **v0.47.1** 已经发布 13 小时，本机独立 venv 仍是 **0.47.0**，而「组件与依赖」那一行只有「获取 / 补齐」—— 没有「更新」，顶部通知条也不报。根因不是按钮漏挂：两个引擎装在 `tools/separator/venv`，原有上游检测只遍历主环境的 `pkg_update.PIP_PACKAGES`，这个 venv 从没进过名单。
+
+- **后端**：`latest_versions_cached()` 的查询名单加上 `voice_tools.SEP_ENGINE_PKGS`；新增 `separator_engine_versions()` 只读 venv 的 `importlib.metadata`（不 import torch，结果缓存 120 秒），以及 `_sep_engine_rows / _sep_engine_state / _sep_engine_available`。`/api/components` 多回一份 `sep_engine`（两条包各自的 active / latest / updatable），后台检测 worker 把 `available += _sep_engine_available(lv)` 并进同一份状态；检测结果里只报一条 `sep:engines`（两个包是同一组一起升，列两行会变成两条同义通知）。`_comp_update_one`、一键更新的 labels 与白名单、`api_separator_setup` 的 step 白名单都认这个键；`setup_separator()` 在抢 `_setup_lock` 之前把 `step == "engines"` 转给 `update_separator_engines()`，避免自锁。
+- **更新路径**：`update_separator_engines()` 在同一个锁里跑 `pip install -U --disable-pip-version-check --no-input [-i 镜像] audio-separator demucs`，结束后强制刷新版本缓存与 `separation_probe`，成功与否都回读真实版本；**`SEP_ENGINE_PINS`（新建环境钉 0.47.0 / 4.1.0）没有改**，只有用户点「更新」才会脱离钉死版本。运行日志分开发 `srv.ai.update_ready` / `srv.ai.update_failed`，端点回话也不再对「更新」说「搭建中」。
+- **界面**：分离行按包显示 `RoFormer · audio-separator 0.47.0 · 最新 0.47.1（可更新）` 与 `Demucs · demucs 4.1.0`，有新版时出现「更新」按钮；`updateSeparatorEngines()` 先静默保存镜像设置，再走 `engines` 步骤，按服务端 `setup_running` 的真实锁收尾，回读版本后刷新组件表与检测状态（15 分钟上限）。`compTargets` 把 `sep:engines` 算进「一键更新」，顶部通知条与侧栏橙点的计数自然带上它。
+- **活体读数**（沙箱自起实例，`MEDIADOWNLOADER_STATE_DIR` + `bind(0)` 端口，不碰 8765）：真实查上游回 `audio-separator 0.47.1`（清华源）、`demucs 4.1.0`；`/api/components/update-check` 的 `available` 只有一条 `sep:engines`（0.47.0 → 0.47.1）；`/api/components` 的 `sep_engine.items` 是 0.47.0 / 4.1.0，只有前者 `updatable`；组件页那行渲染出的文字逐字为上面那两行，顶部条为「有 1 个组件出了新版本：人声分离引擎」，控制台 0 错误。**这台机器的 venv 没有真升**——更新路径的自检是代码级与桩级（H1–H10），没有拿正在用的 0.47.0 环境跑真实 `pip -U`；要升由界面那颗按钮触发。
+- **设置页网络卡分组**：18 个字段按「代理与并发 / 限速 / 队列 / 下载器 / 镜像」分成五组，组标题 `.net-sec` 通栏、虚线分隔；长字段 `net-span2` 跨两列，队列一项通栏并把每条命名队列铺成 `auto-fill minmax(280px,1fr)`。1600 / 1200 / 860 三档实测列数 4 / 2 / 1，`hOver=0`、`docOver=0`；设置页内容仍比一屏长（滚动 1639 / 842），这次只收拾网络卡，不承诺整页免滚。
+- **自检**：`tests/separator_test.py` 57 条（新增 H1–H10）、`i18n_test` 509、`components_test`、`runwindow_test`、`pagemount_test` 40、`settingsave_test` 113 全绿；全批 **65 套 rc=0**（185.8 秒）。`runwindow` 的 G11 锚点跟着 `net-span2` 更新了一次。
+- **标签与包**：按 2026-10-20 的明确要求（「修改后再推送动标签打包」），`v1.4.0` 轻量标签从 `7ac0ff6` 前移到本笔提交并 force-push，`pack_release.py --skip-runtime` 重出便携包。这**推翻了上面 #52 那节「标签不动」的处置**——那一条成立的前提是当时没有人要求动标签；现在要求明确，事后以本节为准。公开 Release 的资产替换仍等下一次单独点头。
+
 ## v1.3.2 · 2026-10-13（已出包）
 
 对着 [joeseesun/qiaomu-download](https://github.com/joeseesun/qiaomu-download) 那份平台清单盘了一遍 ours，盘出两条真的缺口，本轮做掉；第三条（B1 TikTok 归错档）是我看错了，代码一个字没改，判正的读数写在下面。B4（公开优先的 Cookie 策略）与 B5（Spotify 单曲入口 + 匹配置信度）按要求先排着，和 issue #206 那张「有但没做」的清单一起过。**已出包**：`appVersion` 升到 `v1.3.2 · Element Plus`（版本真源只有界面那一处），两份 README 的徽章与包名同处改口，产物见下方「发布物」。

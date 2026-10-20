@@ -310,7 +310,7 @@ ck("G10 界面：设置默认值与回填", "run_window: ''" in idx
    and "settings.value.queue_windows = Object.assign" in idx)
 ck("G11 界面：定时窗那一卡片排在限速时段之后",
    idx.index("""<el-form-item :label="tr('settings.runWindowLabel')" class="queue-item">""")
-   > idx.index("""<el-form-item :label="tr('settings.speedWindowsLabel')">""")
+   > idx.index("""<el-form-item :label="tr('settings.speedWindowsLabel')" class="net-span2">""")
    and ZH.get("settings.runWindowLabel") == "队列定时窗"
    and ZH.get("settings.speedWindowsLabel") == "限速时段",
    f"{ZH.get('settings.runWindowLabel')} @ {idx.index(chr(39) + 'settings.runWindowLabel')} "

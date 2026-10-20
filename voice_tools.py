@@ -273,6 +273,10 @@ SEP_VENV_DIR = SEP_VENV_PY.parents[1]
 # 钉死版本：audio-separator 的模型表和设备判定每次小版本都在动，
 # 装成「当时最新的」会让这台机器验过的选项在下一次装机的机器上变成没验过的。
 SEP_ENGINE_PINS = ["audio-separator==0.47.0", "demucs==4.1.0"]
+SEP_ENGINE_PKGS = ("audio-separator", "demucs")
+# 更新检查只读包的元数据，不 import torch：main 环境里那次 import 要几秒，
+# 组件页每次加载都做一遍会把「查一眼有没有新版」变成卡顿。
+_engine_ver_cache: dict = {"at": 0.0, "data": {}}
 # ckpt 在 TRvlvr 的 release 里，yaml 在 audio-separator 自己的 model-configs release 里。
 # 逐条 HEAD 过：官方那批 RoFormer 的 yaml 在主基址（.../mdx_model_data/mdx_c_configs）全是 404，
 # 只有备用基址能取到，所以这里写死备用那一个。
@@ -293,6 +297,42 @@ def _pip_in_venv(args: List[str], log: LogFn, timeout: int = 3600) -> Tuple[bool
                        errors="replace", timeout=timeout, env=_subprocess_env())
     tail = ((r.stderr or "") + (r.stdout or "")).strip()[-400:]
     return r.returncode == 0, tail
+
+
+def separator_engine_versions(refresh: bool = False) -> dict:
+    """只问 venv 的包元数据，拿两个引擎装在什么版本。
+
+    组件页要拿它和上游最新版比，这一步不能 import torch（要几秒），
+    所以单独起一次 importlib.metadata，结果缓存两分钟。"""
+    import time
+    py = separator_python()
+    if not py:
+        return {}
+    now = time.time()
+    if not refresh and _engine_ver_cache["data"] and now - _engine_ver_cache["at"] < 120:
+        return dict(_engine_ver_cache["data"])
+    code = ("import importlib.metadata as m, json\n"
+            "out = {}\n"
+            f"for p in {list(SEP_ENGINE_PKGS)!r}:\n"
+            "    try:\n"
+            "        out[p] = m.version(p)\n"
+            "    except Exception:\n"
+            "        pass\n"
+            "print('@@@' + json.dumps(out))")
+    data: dict = {}
+    try:
+        r = subprocess.run([py, "-c", code], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=30,
+                           env=_subprocess_env())
+        line = next((ln for ln in (r.stdout or "").splitlines() if ln.startswith("@@@")), "")
+        if line:
+            got = json.loads(line[3:])
+            if isinstance(got, dict):
+                data = {k: str(v) for k, v in got.items() if v}
+    except Exception:
+        data = {}
+    _engine_ver_cache.update(at=now, data=data)
+    return dict(data)
 
 
 def ensure_separator_venv(log: LogFn = print, mirror: str = "") -> str:
@@ -320,6 +360,34 @@ def ensure_separator_venv(log: LogFn = print, mirror: str = "") -> str:
         return f"failed: {msg}"
     separation_probe(refresh=True)
     return "ok"
+
+
+def update_separator_engines(log: LogFn = print, mirror: str = "") -> str:
+    """把 venv 里的两个引擎升到上游最新版（用户点「更新」才走这里）。
+
+    SEP_ENGINE_PINS 只钉「新建环境时装什么」，不负责拦更新：
+    不升级依赖大版本，torch 只在引擎的新依赖强制要求时才会被 pip 动。
+    成功与失败都回读一次真实版本，界面不信这一次命令的退出码说话。"""
+    if not _setup_lock.acquire(blocking=False):
+        return "busy"
+    try:
+        if not separator_python():
+            return "failed: 分离环境还没建，先用「获取 / 补齐」把环境装上"
+        idx = ["-i", mirror] if mirror else []
+        _log(log, "在分离环境里更新 " + " / ".join(SEP_ENGINE_PKGS) + " …")
+        ok, tail = _pip_in_venv(["install", "-U", "--disable-pip-version-check",
+                                 "--no-input", *idx, *SEP_ENGINE_PKGS], log)
+        separator_engine_versions(refresh=True)
+        separation_probe(refresh=True)
+        if not ok:
+            msg = "引擎更新失败：" + tail
+            _log(log, msg, "error")
+            return f"failed: {msg}"
+        _log(log, "分离引擎已更新：" + " / ".join(
+            f"{k} {v}" for k, v in separator_engine_versions().items()))
+        return "ok"
+    finally:
+        _setup_lock.release()
 
 
 def _finish_weight(part: Path, dest: Path, log: LogFn, expect_sha: str) -> bool:
@@ -404,7 +472,10 @@ def download_roformer_weights(log: LogFn = print) -> dict:
 
 def setup_separator(log: LogFn = print, *, step: str = "all", mirror: str = "") -> str:
     """一次点齐「建环境 + 补权重」，同一时刻只允许一个在跑：
-    两个进程往同一个 venv 里 pip 会互相把对方刚写的文件盖掉。"""
+    两个进程往同一个 venv 里 pip 会互相把对方刚写的文件盖掉。
+    step="engines" 走引擎升级，不碰权重。"""
+    if step == "engines":
+        return update_separator_engines(log, mirror)
     if not _setup_lock.acquire(blocking=False):
         return "busy"
     try:
