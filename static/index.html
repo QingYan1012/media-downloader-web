@@ -610,10 +610,10 @@
     .nav-collapse svg { width: 16px; height: 16px; transition: transform .18s ease; }
     /* 同一个箭头转 180 度当「展开」，省得为两种状态各存一份图标 */
     .sidebar.is-collapsed .nav-collapse svg { transform: rotate(180deg); }
-    /* 折叠后只剩 64px：图标 36 + 钮 30 并排放不下，所以让钮换行到图标下面居中，
-       而不是把两个都缩小硬挤 —— 挤完钮只剩十几像素，等于点不着。 */
-    .sidebar.is-collapsed .sidebar-logo { flex-wrap: wrap; justify-content: center; padding: 20px 0 12px; }
-    .sidebar.is-collapsed .nav-collapse { margin-left: 0; width: 100%; height: 26px; }
+    /* 折叠后只剩 64px：图标 36 + 钮 26 并排刚好放得下（各余 1px），钮贴到标题行右端。
+       以前让它换行到图标下面占一整条 —— 那一整条只有中间有东西，还把标题行顶高了一截。 */
+    .sidebar.is-collapsed .sidebar-logo { flex-wrap: nowrap; justify-content: center; gap: 0; padding: 20px 0 12px; }
+    .sidebar.is-collapsed .nav-collapse { margin-left: 0; width: 26px; height: 26px; }
     .sidebar.is-collapsed .sidebar-logo .brand,
     .sidebar.is-collapsed .sidebar-foot,
     .sidebar.is-collapsed .nav-group,

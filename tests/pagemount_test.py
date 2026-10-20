@@ -220,7 +220,8 @@ ck("P35 文件页默认按修改时间倒序，三处联动一致（目录仍钉
 
 # ---- #80 折叠钮移进标题行 ----
 # 这条只能静态钉「挂在哪儿」，量不出来「64px 里到底放不放得下」——
-# 后者是活体读的（tmp/nav80_check.py：展开 30×30 贴右端、折叠换行整行宽、来回点都回得来）。
+# 后者是活体读的（tmp/collapse_pos.py，2026-10-20 沙箱：展开 30×30 贴右端；折叠 logo x1..37 与
+# 钮 x37..63 并排一行、两者中心同高（centerDiff 0）、钮心命中钮自己、来回点都回得来、零 pageerror）。
 _logo_blk = HTML[HTML.index('<div class="sidebar-logo">'):HTML.index('<div class="nav-scroll">')]
 _btn_at = _logo_blk.index('class="nav-collapse"')
 ck("P36 折叠钮挂在标题行里、排在品牌名之后（挪回标题行下面那条整宽条，这一条就红）",
@@ -230,12 +231,14 @@ ck("P36 折叠钮挂在标题行里、排在品牌名之后（挪回标题行下
 _btn_rule = re.search(r"\.nav-collapse \{([^}]*)\}", HTML)
 _cl_logo = re.search(r"\.sidebar\.is-collapsed \.sidebar-logo \{([^}]*)\}", HTML)
 _cl_btn = re.search(r"\.sidebar\.is-collapsed \.nav-collapse \{([^}]*)\}", HTML)
-ck("P37 两档位置各靠一条规则：展开用 margin-left:auto 顶到右端、不再自带下划线；折叠靠 flex-wrap 换到图标下面整行宽",
+ck("P37 两档位置各靠一条规则：展开用 margin-left:auto 顶到右端、不再自带下划线；"
+   "折叠不换行（flex-wrap: nowrap），钮收成 26px 与 logo 并排在这一行里",
    _btn_rule is not None and _cl_logo is not None and _cl_btn is not None
    and re.search(r"margin-left:\s*auto", _btn_rule.group(1)) is not None
    and "border-bottom" not in _btn_rule.group(1)
-   and "flex-wrap: wrap" in _cl_logo.group(1)
-   and re.search(r"width:\s*100%", _cl_btn.group(1)) is not None,
+   and "flex-wrap: nowrap" in _cl_logo.group(1)
+   and re.search(r"width:\s*26px", _cl_btn.group(1)) is not None
+   and "width: 100%" not in _cl_btn.group(1),
    "btn=%r clLogo=%r clBtn=%r" % (_btn_rule and _btn_rule.group(1), _cl_logo and _cl_logo.group(1),
                                   _cl_btn and _cl_btn.group(1)))
 
