@@ -14606,10 +14606,14 @@ def api_net_reset():
     嗅探浏览器的 Chrome profile（可能存着登录态）同样保留，清的只是这次抓到的资源清单。
     """
     cleared: List[str] = []
+    # 界面按 key 取词表（#92）：这两份是同一件事的两种写法，cleared 留给日志原话和老调用方
+    cleared_keys: List[str] = []
     if (cfg.data.get("proxy") or "").strip():
         cleared.append("代理地址")
+        cleared_keys.append("proxy")
     if cfg.data.get("proxy_by_platform"):
         cleared.append("按平台代理策略")
+        cleared_keys.append("proxy_by_platform")
     cfg.data["proxy"] = ""
     cfg.data["proxy_by_platform"] = {}
     cfg.data["proxy_mode"] = "auto"
@@ -14620,12 +14624,14 @@ def api_net_reset():
     try:
         browser_sniffer.clear()
         cleared.append("嗅探到的资源列表")
+        cleared_keys.append("sniffed_list")
     except Exception as e:
         log_mgr.log(f"清空嗅探浏览器 profile 失败: {e}", "warning",
                     k="srv.net.sniff_profile_clear_failed", kv={"e": str(e)})
     cleared_text = "、".join(cleared) if cleared else "本来就是空的"
     log_mgr.log(f"网络设置已重置：{cleared_text}", k="srv.net.reset", kv={"what": cleared_text})
-    return {"ok": True, "cleared": cleared, "data": net_info_payload()}
+    return {"ok": True, "cleared": cleared, "cleared_keys": cleared_keys,
+            "data": net_info_payload()}
 
 
 def download_preflight(urls: List[str], opts: dict) -> Tuple[List[str], List[str]]:

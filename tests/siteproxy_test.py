@@ -8,6 +8,8 @@ vimeo / soundcloud / linkedin / 微博 / AcFun 则是整站落在 inherit（跟�
 代理一抖就跟着抖，而它们本来该有明确归属。
 
 这一套钉的是「表与集合不许再脱节」：集合里写了键，就必须有 URL 能识别出那个键。
+I 段管的是这条链的最后一环 —— 「清空并重置网络」回给界面的那份清空项名单：
+项名原来是写死的中文（英文界面直接印出来），现在改回语言中立的 key，中文原话只留给日志。
 全程只读，不联网、不起服务、不写 config.json（判 override 用临时 dict 喂 _decide_by_key，
 C 段的判定同样喂临时 dict 并把 system_proxy 钉成空 —— 这一轮它吃过真 config 里那台机器的代理
 地址，机器上代理一关就有 12 条红，而那张表一个字都没动）。
@@ -176,6 +178,85 @@ src = Path(S.__file__).read_text(encoding="utf-8")
 for key in ("facebook", "twitch", "reddit", "vimeo", "soundcloud", "linkedin", "weibo", "acfun"):
     ck(f"H {key} 在 PLATFORM_RULES 段落里（不是只在集合里）",
        f'("{key}", (' in src, key)
+
+print("== I. 网络重置的回话（#92：界面按 key 取词表，中文原话只留给日志） ==")
+import re as _re  # noqa: E402
+_CJK = _re.compile(r"[\u4e00-\u9fff]")
+FAKE_PROXY = "http://proxy.invalid:1"
+
+
+class FakeCfgI:
+    def __init__(self, data):
+        self.data = dict(data)
+        self.saved = 0
+
+    def save(self):
+        self.saved += 1          # 只计数，绝不落盘（这套件的承诺是不写 config.json）
+
+
+class FakeLogI:
+    def __init__(self):
+        self.rows = []
+
+    def log(self, msg, level="info", k="", kv=None):
+        self.rows.append((level, str(msg), k, kv or {}))
+        return True
+
+
+class _Sniffer:
+    def __init__(self, fail=False):
+        self.calls, self.fail = 0, fail
+
+    def clear(self):
+        self.calls += 1
+        if self.fail:
+            raise RuntimeError("profile 被占用")
+
+
+_REAL_I = (S.cfg, S.log_mgr, S.browser_sniffer, S.net_info_payload)
+try:
+    S.log_mgr = FakeLogI()
+    S.net_info_payload = lambda: {"ok": True, "platforms": []}   # 别去探本机系统代理
+
+    sn = _Sniffer()
+    S.browser_sniffer = sn
+    S.cfg = FakeCfgI({"proxy": FAKE_PROXY, "proxy_mode": "custom",
+                      "proxy_by_platform": {"youtube": FAKE_PROXY}})
+    r = S.api_net_reset()
+    ck("I1 三项都清了：界面拿到的 cleared_keys 是语言中立的项名",
+       r["cleared_keys"] == ["proxy", "proxy_by_platform", "sniffed_list"], str(r)[:220])
+    ck("I2 cleared_keys 里一个汉字都不许有（英文界面直接 join 它）",
+       not any(_CJK.search(x) for x in r["cleared_keys"]), str(r["cleared_keys"]))
+    ck("I3 两份一一对应，次序一致（对不上就有一条回落成中文原话）",
+       len(r["cleared"]) == len(r["cleared_keys"]),
+       f"{r['cleared']} / {r['cleared_keys']}")
+    ck("I4 中文原话照旧回着（日志和老调用方还要用）",
+       r["cleared"] == ["代理地址", "按平台代理策略", "嗅探到的资源列表"], str(r["cleared"]))
+    ck("I5 真清了：代理与按平台策略回默认、档位回 auto、profile 清了一次",
+       S.cfg.data["proxy"] == "" and S.cfg.data["proxy_by_platform"] == {}
+       and S.cfg.data["proxy_mode"] == "auto" and sn.calls == 1 and S.cfg.saved == 1,
+       str(S.cfg.data)[:200])
+    ck("I6 日志那句写的还是中文原话，不是键名",
+       any("代理地址" in m and "proxy_by_platform" not in m for _, m, _, _ in S.log_mgr.rows),
+       str(S.log_mgr.rows)[:220])
+
+    S.cfg = FakeCfgI({"proxy": "", "proxy_mode": "auto", "proxy_by_platform": {}})
+    sn = _Sniffer()
+    S.browser_sniffer = sn
+    r2 = S.api_net_reset()
+    ck("I7 本来就没东西：只报嗅探列表这一项，不谎报清了三样",
+       r2["cleared_keys"] == ["sniffed_list"] and r2["cleared"] == ["嗅探到的资源列表"],
+       str(r2)[:220])
+
+    S.browser_sniffer = _Sniffer(fail=True)
+    S.cfg = FakeCfgI({"proxy": FAKE_PROXY, "proxy_mode": "custom", "proxy_by_platform": {}})
+    r3 = S.api_net_reset()
+    ck("I8 profile 清不掉时不把它写进两份名单（英文不会多出「list of sniffed resources」）",
+       r3["cleared"] == ["代理地址"] and r3["cleared_keys"] == ["proxy"], str(r3)[:220])
+    ck("I9 清不掉那次的告警仍进日志（带 srv 键）",
+       any("profile" in m for _, m, _, _ in S.log_mgr.rows[-2:]), str(S.log_mgr.rows[-2:])[:220])
+finally:
+    S.cfg, S.log_mgr, S.browser_sniffer, S.net_info_payload = _REAL_I
 
 print(f"\nTOTAL {TOTAL} FAILED: {', '.join(FAILED) if FAILED else 'none'}")
 sys.exit(1 if FAILED else 0)

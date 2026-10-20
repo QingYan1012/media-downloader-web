@@ -14154,6 +14154,13 @@ const CFG_KEYS = {
           }
         }
 
+        /* ---- 网络重置清了哪几项：后端 cleared 是中文原话（日志用），cleared_keys 才是界面取的 ---- */
+        const NET_ITEM_KEYS = {
+          proxy: 'settings.netItem.proxy',
+          proxy_by_platform: 'settings.netItem.proxyByPlatform',
+          sniffed_list: 'settings.netItem.sniffedList',
+        };
+
         async function resetNetwork() {
           netBusy.value = true;
           try {
@@ -14162,9 +14169,11 @@ const CFG_KEYS = {
             settings.value.proxy_mode = 'auto';
             settings.value.proxy_by_platform = {};
             netInfo.value = r.data || netInfo.value;
+            const items = (r.cleared_keys || []).map(
+              (k, i) => NET_ITEM_KEYS[k] ? tr(NET_ITEM_KEYS[k]) : ((r.cleared || [])[i] || k));
             ElementPlus.ElMessage.success(
               tr('settings.netClearedHead')
-              + ((r.cleared || []).join(tr('settings.dunSep')) || tr('settings.netResetEmpty'))
+              + (items.join(tr('settings.dunSep')) || tr('settings.netResetEmpty'))
               + tr('settings.netClearedTail')
             );
           } catch (e) {

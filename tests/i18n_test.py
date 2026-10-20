@@ -185,6 +185,15 @@ ck("B14 数据表里登记的词表键两份都在（缺一个界面上就印键
    len(table_keys) > 100 and not miss_table, f"{len(table_keys)} 个，缺 {miss_table[:6]}")
 ck("B15 表里不再抄第二份文案（CREDITS 只剩 noteKey，CFG_RAW 那种两边一样的厂商名才算例外）",
    "note:" not in credit_blob and "title:" not in credit_blob, "CREDITS 里还有 note:/title:")
+# 网络重置的清空项名（#92）：后端 cleared_keys 是语言中立的 key，前端这张表把它接进词表。
+# 表少一条不是「那一格空着」，是回落到后端中文原话 —— 英文界面就印出「代理地址」。
+net_blob = block(HTML, "const NET_ITEM_KEYS = {", "};")
+net_items = dict(re.findall(r"^\s*(\w+):\s*'([^']+)'", net_blob, flags=re.M))
+net_srv = sorted(set(re.findall(r'cleared_keys\.append\("([\w_]+)"\)', SERVER_SRC)))
+miss_net = sorted(k for k in net_items.values() if k not in DICT["zh"] or k not in DICT["en"])
+ck("B16 网络重置清空项：表的 key 与后端给的一一对应，词表两份都在",
+   net_srv and sorted(net_items) == net_srv and not miss_net,
+   f"表 {sorted(net_items)} / 后端 {net_srv} / 缺 {miss_net}")
 
 # ---------------------------------------------------------------- C. 接线
 print("== C. 页面接线：引用顺序与那层 config-provider ==")
