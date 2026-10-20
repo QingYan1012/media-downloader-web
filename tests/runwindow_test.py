@@ -320,12 +320,18 @@ ck("G12 界面：每队列一行 + 检查格式 + 横幅都在",
 ck("G13 界面：SSE 与轮询两条路都喂 queueWindow",
    "if (d.window) queueWindow.value = d.window;" in idx
    and "if (data.window) queueWindow.value = data.window;" in idx)
-ck("G14 界面：新状态都在 setup 的 return 里", "windowHeld, queueRows, runWinStat, checkRunWindows" in idx)
+ck("G14 界面：新状态都在 setup 的 return 里",
+   "windowHeld, queueRows, queueLabel, runWinStat, checkRunWindows" in idx)
 ck("G15 界面：保存后拉一次活体状态", "await refreshRunWindow();" in idx)
 ck("G16 界面：体检路由认到一个动作键，词表 zh 那句仍是「检查队列定时窗格式」",
    "'/api/config/run_window/check': 'act.config.run_window.check'" in idx
    and ZH.get("act.config.run_window.check") == "检查队列定时窗格式",
    str(ZH.get("act.config.run_window.check")))
+ck("G17 界面：内置队列名按词表显示，自定义名照原样",
+   '{{ queueLabel(q.name) }}' in idx
+   and all(ZH.get(k) for k in ("settings.queueNameDefault", "settings.queueNameNight",
+                               "settings.queueNameSubscribe", "settings.queueNameSniff",
+                               "settings.queueNameMusic")))
 
 print("=== H. 收尾 ===")
 timers = [t for t in threading.enumerate() if isinstance(t, threading.Timer)]
