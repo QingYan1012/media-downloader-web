@@ -6616,8 +6616,9 @@ class DownloaderEngine:
         orig_url = url
         url = normalize_url(url)
         if url != orig_url:
-            self.log(f"[{task_id[:8]}] URL 规范化: {orig_url} → {url}")
-        self.log(f"[{task_id[:8]}] 开始: {url}")
+            self.log(f"[{task_id[:8]}] URL 规范化: {orig_url} → {url}",
+                     k="srv.download.url_normalized", kv={"tid": task_id[:8], "from": orig_url, "to": url})
+        self.log(f"[{task_id[:8]}] 开始: {url}", k="srv.download.task_start", kv={"tid": task_id[:8], "url": url})
         self._log_proxy_decision(task_id, url, cfg)
         retry_count = 0
         try:
@@ -6652,7 +6653,8 @@ class DownloaderEngine:
             and not any(x in low0 for x in ("youtube.com", "youtu.be", "bilibili.com/video", "b23.tv"))
         )
         if is_dash:
-            self.log(f"[{task_id[:8]}] 检测到 DASH/MPD，使用流媒体专用引擎")
+            self.log(f"[{task_id[:8]}] 检测到 DASH/MPD，使用流媒体专用引擎",
+                     k="srv.download.dash_detected", kv={"tid": task_id[:8]})
 
         # 嗅探到的 CDN 直链（bilivideo m4s/mp4 等）：禁止走 yt-dlp generic
         is_direct_cdn = bool(cfg.get("direct_cdn")) or (
@@ -6685,7 +6687,8 @@ class DownloaderEngine:
                 dest = dest.with_suffix(".flv")
             try:
                 self.note_raw_bytes(task_id)   # 这一支不转封装不嵌轨，成品=上游那份字节
-                self.log(f"[{task_id[:8]}] CDN 直链下载（绕过 yt-dlp）…")
+                self.log(f"[{task_id[:8]}] CDN 直链下载（绕过 yt-dlp）…",
+                         k="srv.download.cdn_direct_start", kv={"tid": task_id[:8]})
                 if progress_cb:
                     try:
                         progress_cb(task_id, 5, "", "")
@@ -6716,7 +6719,8 @@ class DownloaderEngine:
                                 headers=hdrs,
                                 split=int(cfg.get("aria2_split") or 8),
                             )
-                            self.log(f"[{task_id[:8]}] aria2 任务 {gid}")
+                            self.log(f"[{task_id[:8]}] aria2 任务 {gid}",
+                                     k="srv.download.cdn_aria2_gid", kv={"tid": task_id[:8], "gid": gid})
                             for _ in range(7200):
                                 if self._stop_flags.get(task_id):
                                     ac.remove(gid)
@@ -6752,9 +6756,13 @@ class DownloaderEngine:
                             progress_cb(task_id, 100, "", "")
                         except Exception:
                             pass
-                    self.log(f"[{task_id[:8]}] CDN 完成: {dest.name} ({dest.stat().st_size // 1024} KB)")
+                    self.log(f"[{task_id[:8]}] CDN 完成: {dest.name} ({dest.stat().st_size // 1024} KB)",
+                             k="srv.download.cdn_done",
+                             kv={"tid": task_id[:8], "name": dest.name,
+                                 "kb": dest.stat().st_size // 1024})
                     return True, str(dest)
-                self.log(f"[{task_id[:8]}] CDN 下载文件为空", "warning")
+                self.log(f"[{task_id[:8]}] CDN 下载文件为空", "warning",
+                         k="srv.download.cdn_empty", kv={"tid": task_id[:8]})
             except Exception as e:
                 self.log(f"[{task_id[:8]}] CDN 直链失败: {e}，尝试其它方式", "warning",
                          k="srv.download.cdn_failed", kv={"tid": task_id[:8], "e": str(e)})
@@ -6815,9 +6823,13 @@ class DownloaderEngine:
         if "youtube.com" in url.lower() or "youtu.be" in url.lower():
             pc_chain, pc_note = self._yt_player_chain(cfg, url)
             if pc_note:
-                self.log(f"[{task_id[:8]}] YouTube 客户端链 {pc_chain}（{pc_note}）")
+                self.log(f"[{task_id[:8]}] YouTube 客户端链 {pc_chain}（{pc_note}）",
+                         k="srv.download.yt_client_chain",
+                         kv={"tid": task_id[:8], "chain": str(pc_chain), "note": pc_note})
             else:
-                self.log(f"[{task_id[:8]}] YouTube 客户端链: {' → '.join(pc_chain)}")
+                self.log(f"[{task_id[:8]}] YouTube 客户端链: {' → '.join(pc_chain)}",
+                         k="srv.download.yt_client_chain_join",
+                         kv={"tid": task_id[:8], "chain": ' → '.join(pc_chain)})
 
         while retry_count <= self.max_retries:
             try:
@@ -6888,14 +6900,18 @@ class DownloaderEngine:
                     if wide:
                         self.log(
                             f"[{task_id[:8]}] 解析出的清单来自 {'/'.join(map(str, clients))}（含独立视频轨），"
-                            f"下载沿用同一套客户端，列表最高约 {max_listed}p"
+                            f"下载沿用同一套客户端，列表最高约 {max_listed}p",
+                            k="srv.download.dash_list_from",
+                            kv={"tid": task_id[:8], "clients": '/'.join(map(str, clients)), "h": max_listed},
                         )
                     elif pc_chain:
                         pci = max(0, min(int(cfg.get("_pc_idx") or 0), len(pc_chain) - 1))
                         clients = [pc_chain[pci]]
                     else:
                         clients = None
-                    self.log(f"[{task_id[:8]}] YouTube 使用格式表达式: {format_sel}（列表最高约 {max_listed}p）")
+                    self.log(f"[{task_id[:8]}] YouTube 使用格式表达式: {format_sel}（列表最高约 {max_listed}p）",
+                             k="srv.download.yt_format_sel",
+                             kv={"tid": task_id[:8], "fmt": format_sel, "h": max_listed})
                 else:
                     format_sel = self._resolve_format(
                         media, video_q, audio_q, audio_only, cfg.get("prefer_codec", "auto")
@@ -6926,7 +6942,8 @@ class DownloaderEngine:
                     safe_id = safe_filename_component(str(info.get("id") or task_id[:8]), 40)
                     if safe_title != raw_title.strip():
                         self.log(f"[{task_id[:8]}] 标题里有 Windows 不能用于文件名的字符，"
-                                 f"落盘名已清洗为「{safe_title}」")
+                                 f"落盘名已清洗为「{safe_title}」",
+                                 k="srv.download.title_cleaned", kv={"tid": task_id[:8], "name": safe_title})
                     out_tmpl = str(Path(dl_dir) / f"{safe_title} [{safe_id}].%(ext)s")
                     if is_live:
                         # 记下真正落盘的文件名主干，结束录制时靠它点名找回拉流子进程
