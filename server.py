@@ -6875,7 +6875,8 @@ class DownloaderEngine:
                             int(self._listed_max.get(task_id) or 0), max_listed
                         )
                 else:
-                    self.log(f"[{task_id[:8]}] 直播模式：跳过预解析，直接录制")
+                    self.log(f"[{task_id[:8]}] 直播模式：跳过预解析，直接录制",
+                             k="srv.download.live_skip_preparse", kv={"tid": task_id[:8]})
                     try:
                         # 轻量探测标题（失败忽略）
                         info = self.get_info(url, cfg)
@@ -6884,11 +6885,13 @@ class DownloaderEngine:
 
                 if force_format:
                     format_sel = str(force_format).strip()
-                    self.log(f"[{task_id[:8]}] 指定格式: {format_sel}")
+                    self.log(f"[{task_id[:8]}] 指定格式: {format_sel}",
+                             k="srv.download.format_pinned", kv={"tid": task_id[:8], "fmt": format_sel})
                 elif is_live:
                     # 直播流用 best，避免 bv* 在直播上失败
                     format_sel = "best/bestvideo+bestaudio/best"
-                    self.log(f"[{task_id[:8]}] 直播格式: {format_sel}")
+                    self.log(f"[{task_id[:8]}] 直播格式: {format_sel}",
+                             k="srv.download.live_format", kv={"tid": task_id[:8], "fmt": format_sel})
                 elif is_yt and not audio_only:
                     format_sel = self._resolve_format(
                         [], video_q, audio_q, audio_only, cfg.get("prefer_codec", "auto")
@@ -7017,10 +7020,13 @@ class DownloaderEngine:
                     if cfg.get("_live_pref_fallback"):
                         alt = {"flv": "hls", "hls": "flv", "dash": "hls"}.get(stream_pref, "auto")
                         stream_pref = alt
-                        self.log(f"[{task_id[:8]}] 流偏好回退 → {stream_pref}")
+                        self.log(f"[{task_id[:8]}] 流偏好回退 → {stream_pref}",
+                                 k="srv.download.live_pref_switch", kv={"tid": task_id[:8], "pref": stream_pref})
                     format_sel = live_format_selector(stream_pref)
                     opts["format"] = format_sel
-                    self.log(f"[{task_id[:8]}] 直播流偏好={stream_pref} format={format_sel}")
+                    self.log(f"[{task_id[:8]}] 直播流偏好={stream_pref} format={format_sel}",
+                             k="srv.download.live_pref_format",
+                             kv={"tid": task_id[:8], "pref": stream_pref, "fmt": format_sel})
                     # B站直播
                     if is_bili_live:
                         opts.pop("live_from_start", None)
@@ -7039,12 +7045,14 @@ class DownloaderEngine:
                             if cfg.get("nocheckcertificate", True) is not False:
                                 ff_args += ["-tls_verify", "0"]
                             opts["external_downloader_args"] = {"ffmpeg": ff_args}
-                            self.log(f"[{task_id[:8]}] B站直播录制（ffmpeg，偏好={stream_pref}）")
+                            self.log(f"[{task_id[:8]}] B站直播录制（ffmpeg，偏好={stream_pref}）",
+                                     k="srv.download.bili_live_ffmpeg", kv={"tid": task_id[:8], "pref": stream_pref})
                         else:
                             opts.pop("external_downloader", None)
                             opts.pop("external_downloader_args", None)
                             opts["hls_prefer_native"] = True
-                            self.log(f"[{task_id[:8]}] B站直播录制（原生，偏好={stream_pref}）")
+                            self.log(f"[{task_id[:8]}] B站直播录制（原生，偏好={stream_pref}）",
+                                     k="srv.download.bili_live_native", kv={"tid": task_id[:8], "pref": stream_pref})
                     else:
                         if cfg.get("live_from_start", True) and (
                             "youtube.com" in low or "youtu.be" in low
@@ -7056,7 +7064,10 @@ class DownloaderEngine:
                             pass
                         self.log(
                             f"[{task_id[:8]}] 直播录制 偏好={stream_pref} "
-                            f"从开头={bool(cfg.get('live_from_start', True))}"
+                            f"从开头={bool(cfg.get('live_from_start', True))}",
+                            k="srv.download.live_record_opts",
+                            kv={"tid": task_id[:8], "pref": stream_pref,
+                                "from_start": bool(cfg.get("live_from_start", True))},
                         )
                 # 片段下载：*开始-结束，如 *01:00-02:30
                 sec = (download_section or cfg.get("download_section") or "").strip()
@@ -7066,9 +7077,11 @@ class DownloaderEngine:
                     try:
                         from yt_dlp.utils import download_range_func
                         opts["download_ranges"] = download_range_func(None, [sec])
-                        self.log(f"[{task_id[:8]}] 片段裁剪: {sec}")
+                        self.log(f"[{task_id[:8]}] 片段裁剪: {sec}",
+                                 k="srv.download.section_clip", kv={"tid": task_id[:8], "sec": sec})
                     except Exception as e:
-                        self.log(f"[{task_id[:8]}] 片段参数无效，忽略: {e}", "warning")
+                        self.log(f"[{task_id[:8]}] 片段参数无效，忽略: {e}", "warning",
+                                 k="srv.download.section_invalid", kv={"tid": task_id[:8], "e": str(e)})
                 # 风控：请求间隔
                 delay = float(cfg.get("risk_delay_sec") or 0)
                 if delay > 0:
@@ -7150,9 +7163,11 @@ class DownloaderEngine:
                         if p.get("key") != "FFmpegEmbedSubtitle"
                     ]
                     if skip_subtitles:
-                        self.log(f"[{task_id[:8]}] 无字幕降级 | 画质/音质保持 format={format_sel}")
+                        self.log(f"[{task_id[:8]}] 无字幕降级 | 画质/音质保持 format={format_sel}",
+                                 k="srv.download.no_sub_fallback", kv={"tid": task_id[:8], "fmt": format_sel})
                     else:
-                        self.log(f"[{task_id[:8]}] 格式={format_sel} 无字幕")
+                        self.log(f"[{task_id[:8]}] 格式={format_sel} 无字幕",
+                                 k="srv.download.format_no_sub", kv={"tid": task_id[:8], "fmt": format_sel})
                 t_try = time.time()
                 self.log(
                     f"[{task_id[:8]}] 目标容器={opts.get('merge_output_format') or fmt} "
