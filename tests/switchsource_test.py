@@ -253,7 +253,7 @@ try:
     S.cfg = _Cfg({"download_dir": str(DL), "musicdl_cookies": "",
                   "musicdl_strategy": {"match_sources": ["NeteaseMusicClient", "QQMusicClient"]},
                   "musicdl_sources": ["NeteaseMusicClient"]})
-    S.log_mgr.log = lambda m, lv="info": SLOG.append(f"[{lv}] {m}")
+    S.log_mgr.log = lambda m, lv="info", k="", kv=None: SLOG.append(f"[{lv}] {m}")
     S.music_proxy_resolver = lambda _p: (lambda _s: "")
 
     def stub_switch(cid, **kw):

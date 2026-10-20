@@ -51,7 +51,7 @@ class FakeEngine:
     def __init__(self):
         self.lines: list[tuple[str, str]] = []
 
-    def log(self, msg, level="info"):
+    def log(self, msg, level="info", k="", kv=None):
         self.lines.append((str(msg), str(level)))
 
 

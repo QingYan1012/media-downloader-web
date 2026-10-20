@@ -4145,7 +4145,8 @@ class LogManager:
             keep = LOG_KEEP_DAYS
         removed = _prune_old_logs(keep)
         if removed:
-            self.log(f"已清理 {removed} 个超过 {keep} 天的日志归档", "info")
+            self.log(f"已清理 {removed} 个超过 {keep} 天的日志归档", "info",
+                     k="srv.logs.archives_purged", kv={"removed": removed, "keep": keep})
 
     def _rollover_locked(self, today: str):
         """跨天时把昨天的 app.log 归档，保证单个文件内最多只有一天的内容（持锁调用）"""
@@ -7992,7 +7993,9 @@ def start_clipboard_watch() -> None:
                 if cfg.data.get("clipboard_watch"):
                     _clip_tick()
             except Exception as e:
-                log_mgr.log(f"剪贴板监听轮询异常：{type(e).__name__}: {str(e)[:120]}", "warning")
+                log_mgr.log(f"剪贴板监听轮询异常：{type(e).__name__}: {str(e)[:120]}", "warning",
+                            k="srv.clipboard.poll_failed",
+                            kv={"cls": type(e).__name__, "msg": str(e)[:120]})
             _clip_stop.wait(CLIP_POLL_SEC)
 
     _clip_stop.clear()
@@ -16396,7 +16399,7 @@ def api_subs_add(body: SubAddBody):
             n = sub_mgr.scan_one(item, auto_download=False)
             item = next((s for s in sub_mgr.list() if s.get("id") == item.get("id")), item)
         except Exception as ex:
-            log_mgr.log(f"订阅初始化扫描: {ex}", "warning")
+            log_mgr.log(f"订阅初始化扫描: {ex}", "warning", k="srv.subs.init_scan_failed", kv={"e": ex})
         return {"ok": True, "item": _sub_view(item), "init_count": len(item.get("last_ids") or [])}
     except Exception as e:
         raise HTTPException(400, str(e))
@@ -18655,7 +18658,8 @@ def api_music_favorites_remove(body: dict):
             _music_favs_save(keep)
     if not gone:
         raise HTTPException(404, "清单里没有这些行（页面刷新一下再看）")
-    log_mgr.log(f"收藏清单删除 {gone} 首，还剩 {len(keep)} 首")
+    log_mgr.log(f"收藏清单删除 {gone} 首，还剩 {len(keep)} 首",
+                k="srv.music.favs_removed", kv={"gone": gone, "left": len(keep)})
     return {"ok": True, "removed": gone, "total": len(keep)}
 
 
@@ -18725,7 +18729,8 @@ def api_music_favorites_mark(body: dict):
         marked = sum(1 for it in items if it.get("state") == "missing")
     if changed:
         log_mgr.log(f"收藏清单核对完成：{changed} 行状态有变，现在标着失效 {marked} 行",
-                    "warning" if marked else "info")
+                    "warning" if marked else "info",
+                    k="srv.music.favs_checked", kv={"changed": changed, "marked": marked})
     return {"ok": True, "changed": changed, "missing": marked, "total": len(items)}
 
 
@@ -18761,7 +18766,8 @@ def api_music_lyrics(body: dict):
             shifted = shift_lrc_text(text, offset_ms)
             Path(resolve_media_path(path)).write_text(shifted, encoding="utf-8")
             text = shifted
-            log_mgr.log(f"LRC 已平移 {offset_ms}ms → {Path(path).name}")
+            log_mgr.log(f"LRC 已平移 {offset_ms}ms → {Path(path).name}",
+                        k="srv.music.lrc_shifted", kv={"ms": offset_ms, "name": Path(path).name})
         except Exception as e:
             raise HTTPException(400, str(e))
     rows = parse_lrc_words(text, offset_ms=0 if (offset_ms and save) else offset_ms)
@@ -19205,7 +19211,8 @@ def api_music_download(body: dict):
                     embed_cover=embed_meta,
                 )
             except Exception as e:
-                log_mgr.log(f"musicdl 任务失败: {e}", "error")
+                log_mgr.log(f"musicdl 任务失败: {e}", "error",
+                            k="srv.music.musicdl_failed", kv={"e": str(e)})
         threading.Thread(target=job2, daemon=True).start()
         return {"ok": True, "mode": "musicdl", "message": f"已用 musicdl 下载：{title or artists}"}
 
@@ -19303,7 +19310,8 @@ def api_music_tag(body: dict):
             audio.save()
         else:
             raise HTTPException(400, f"暂不支持格式 {suf}，请用 Picard")
-        log_mgr.log(f"已写标签: {pth.name} title={title}")
+        log_mgr.log(f"已写标签: {pth.name} title={title}",
+                    k="srv.music.tag_written", kv={"file": pth.name, "title": title})
         return {"ok": True, "message": f"已写入标签: {pth.name}"}
     except HTTPException:
         raise
@@ -19364,7 +19372,7 @@ def api_music_mb_enrich(body: dict):
             )
             log_mgr.log(r.get("message") or ("完成" if r.get("ok") else "未写入"))
         except Exception as e:
-            log_mgr.log(f"MB 富化失败: {e}", "error")
+            log_mgr.log(f"MB 富化失败: {e}", "error", k="srv.music.mb_failed", kv={"e": str(e)})
 
     threading.Thread(target=job, daemon=True).start()
     return {"ok": True, "message": f"正在 MusicBrainz 匹配并写标签: {Path(path).name}"}
@@ -21644,7 +21652,7 @@ def sniff_page_media(page_url: str, proxy: str = "", timeout: int = 25) -> List[
         r.encoding = r.apparent_encoding or r.encoding or "utf-8"
         html = r.text or ""
     except Exception as e:
-        log_mgr.log(f"嗅探拉取页面失败: {e}", "warning")
+        log_mgr.log(f"嗅探拉取页面失败: {e}", "warning", k="srv.sniff.page_failed", kv={"e": str(e)})
 
     if html:
         for m in _MEDIA_URL_RE.finditer(html):
@@ -21706,7 +21714,7 @@ def sniff_page_media(page_url: str, proxy: str = "", timeout: int = 25) -> List[
                 },
             )
     except Exception as e:
-        log_mgr.log(f"嗅探 yt-dlp: {e}", "info")
+        log_mgr.log(f"嗅探 yt-dlp: {e}", "info", k="srv.sniff.ytdlp_failed", kv={"e": str(e)})
 
     order = {
         "page": 0,
@@ -23759,7 +23767,8 @@ def api_torrent_select(body: TorrentSelectBody):
         for f in t.files:
             f["selected"] = f["index"] in want
     except Exception as e:
-        log_mgr.log(f"改选后读文件清单失败：{e}", "warning")
+        log_mgr.log(f"改选后读文件清单失败：{e}", "warning",
+                    k="srv.torrent.files_read_failed", kv={"e": str(e)})
     log_mgr.log(f"[界面] 任务 {t.id[:8]} 改选 {len(idx)} 个文件",
                 k="log.torrent_files_selected", kv={"tid": t.id[:8], "n": len(idx)})
     return {"ok": True, "files": t.files, "count": len(idx)}
@@ -23898,7 +23907,8 @@ def api_torrent_stop_seed(body: TorrentStopBody):
                 if gid and st.get("bittorrent") and total and done >= total:
                     picked.add(gid)
         except Exception as e:
-            log_mgr.log(f"停做种前列 aria2 活动任务失败：{e}", "warning")
+            log_mgr.log(f"停做种前列 aria2 活动任务失败：{e}", "warning",
+                        k="srv.torrent.aria2_list_failed", kv={"e": str(e)})
     if not picked:
         return {"ok": True, "stopped": 0, "message": "没有点到在做种的任务"}
     ac = _bt_client(dict(cfg.data))
@@ -23907,7 +23917,8 @@ def api_torrent_stop_seed(body: TorrentStopBody):
         try:
             ac.remove(gid)
         except Exception as e:
-            log_mgr.log(f"停止做种失败（{gid[:10]}）：{e}", "warning")
+            log_mgr.log(f"停止做种失败（{gid[:10]}）：{e}", "warning",
+                        k="srv.torrent.remove_failed", kv={"gid": gid[:10], "e": str(e)})
             continue
         with _BT_WATCH_LOCK:
             w = _BT_WATCH.pop(gid, None) or {}
@@ -24313,7 +24324,8 @@ def _sse_loop():
                 SSE_HUB.publish("hardsub", hs)
         except Exception as e:
             try:
-                log_mgr.log(f"SSE 广播异常: {e}", "warning")
+                log_mgr.log(f"SSE 广播异常: {e}", "warning",
+                            k="srv.sse.publish_failed", kv={"e": str(e)})
             except Exception:
                 pass
         time.sleep(SSE_TICK_SEC)

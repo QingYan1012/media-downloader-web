@@ -78,7 +78,7 @@ class FakeTG:
 
 
 class FakeLogMgr:
-    def log(self, msg, level="info"):
+    def log(self, msg, level="info", k="", kv=None):
         LOGS.append(f"[{level}] {msg}")
 
 

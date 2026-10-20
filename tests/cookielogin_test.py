@@ -57,7 +57,7 @@ class FakeCfg:
 
 
 class FakeLog:
-    def log(self, msg, level="info"):
+    def log(self, msg, level="info", k="", kv=None):
         LOGS.append((level, str(msg)))
 
 

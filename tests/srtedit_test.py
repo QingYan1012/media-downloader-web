@@ -42,7 +42,7 @@ class FakeLog:
     def __init__(self):
         self.rows = []
 
-    def log(self, msg, level="info"):
+    def log(self, msg, level="info", k="", kv=None):
         self.rows.append((level, str(msg)))
 
 
