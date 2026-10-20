@@ -14555,7 +14555,8 @@ def _cfg_backup_config() -> str:
         shutil.copyfile(CONFIG_FILE, dst)
         return dst.name
     except OSError as e:
-        log_mgr.log(f"[界面] 恢复默认前想留一份配置备份没成：{e}（恢复照常执行）", level="warning")
+        log_mgr.log(f"[界面] 恢复默认前想留一份配置备份没成：{e}（恢复照常执行）", level="warning",
+                    k="log.cfg_backup_failed", kv={"e": str(e)})
         return ""
 
 
@@ -15183,7 +15184,7 @@ def api_browse(body: BrowseBody = None):
 def api_clear_finished():
     n = sum(1 for t in queue.tasks.values() if t.status == TaskStatus.FINISHED.value)
     queue.clear_finished()
-    log_mgr.log(f"[界面] 清除已完成任务（{n} 个）", "warning")
+    log_mgr.log(f"[界面] 清除已完成任务（{n} 个）", "warning", k="log.clear_finished", kv={"n": n})
     return {"ok": True}
 
 
@@ -15698,7 +15699,7 @@ def api_files_open(path: str):
     target = (root / path).resolve()
     if not str(target).startswith(str(root)) or not target.is_file():
         raise HTTPException(404, "文件不存在")
-    log_mgr.log(f"[文件] 打开：{target.name}")
+    log_mgr.log(f"[文件] 打开：{target.name}", k="srv.files.open", kv={"name": target.name})
     return FileResponse(target, filename=target.name)
 
 
@@ -15719,10 +15720,11 @@ def api_files_delete(body: FilePathBody):
             shutil.rmtree(target)
         else:
             target.unlink()
-        log_mgr.log(f"[文件] 已删除：{target.name}")
+        log_mgr.log(f"[文件] 已删除：{target.name}", k="srv.files.deleted", kv={"name": target.name})
         return {"ok": True}
     except Exception as e:
-        log_mgr.log(f"[文件] 删除失败：{target.name} —— {e}", "warning")
+        log_mgr.log(f"[文件] 删除失败：{target.name} —— {e}", "warning",
+                    k="srv.files.delete_failed", kv={"name": target.name, "e": str(e)})
         raise HTTPException(500, str(e))
 
 
@@ -15732,10 +15734,11 @@ def api_clear_archive():
     try:
         if arch.exists():
             arch.unlink()
-        log_mgr.log("[文件] 已清空下载记录（download_archive.txt）", "warning")
+        log_mgr.log("[文件] 已清空下载记录（download_archive.txt）", "warning", k="srv.files.archive_cleared")
         return {"ok": True, "path": str(arch)}
     except Exception as e:
-        log_mgr.log(f"[文件] 清空下载记录失败：{e}", "warning")
+        log_mgr.log(f"[文件] 清空下载记录失败：{e}", "warning",
+                    k="srv.files.archive_clear_failed", kv={"e": str(e)})
         raise HTTPException(500, str(e))
 
 
@@ -16003,7 +16006,7 @@ def api_history(q: str = ""):
 def api_history_clear():
     n = len(history_mgr.history)
     history_mgr.clear()
-    log_mgr.log(f"[界面] 清空下载历史（{n} 条）", "warning")
+    log_mgr.log(f"[界面] 清空下载历史（{n} 条）", "warning", k="log.history_cleared", kv={"n": n})
     return {"ok": True}
 
 
@@ -16022,7 +16025,7 @@ def api_logs(level: str = "all", search: str = ""):
 def api_logs_clear():
     n = len(log_mgr.entries)  # 先数清楚要清掉多少条，再真的清
     log_mgr.clear()
-    log_mgr.log(f"[界面] 清空运行日志（{n} 条）", "warning")
+    log_mgr.log(f"[界面] 清空运行日志（{n} 条）", "warning", k="log.logs_cleared", kv={"n": n})
     return {"ok": True}
 
 
@@ -16348,7 +16351,9 @@ def api_diagnostics_export():
     name = f"diagnostics-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
     log_mgr.log(
         f"[界面] 导出诊断包（{info['files']} 个文件 · {info['bytes']} 字节 · "
-        f"配置里隐藏敏感值 {info['hidden']} 处）"
+        f"配置里隐藏敏感值 {info['hidden']} 处）",
+        k="log.diagnostics_exported",
+        kv={"files": info["files"], "bytes": info["bytes"], "hidden": info["hidden"]}
     )
     return StreamingResponse(
         io.BytesIO(blob),
@@ -23725,7 +23730,8 @@ async def api_torrent_upload(file: UploadFile = File(...)):
     except OSError as e:
         raise HTTPException(500, f"种子存不下来：{type(e).__name__}: {str(e)[:120]}")
     url = dest.as_uri()
-    log_mgr.log(f"[界面] 收到种子文件 {name} → {dest.name}")
+    log_mgr.log(f"[界面] 收到种子文件 {name} → {dest.name}",
+                k="log.torrent_received", kv={"from": name, "to": dest.name})
     return {"ok": True, "url": url, "path": str(dest), "name": dest.stem, "size": len(data)}
 
 
@@ -23754,7 +23760,8 @@ def api_torrent_select(body: TorrentSelectBody):
             f["selected"] = f["index"] in want
     except Exception as e:
         log_mgr.log(f"改选后读文件清单失败：{e}", "warning")
-    log_mgr.log(f"[界面] 任务 {t.id[:8]} 改选 {len(idx)} 个文件")
+    log_mgr.log(f"[界面] 任务 {t.id[:8]} 改选 {len(idx)} 个文件",
+                k="log.torrent_files_selected", kv={"tid": t.id[:8], "n": len(idx)})
     return {"ok": True, "files": t.files, "count": len(idx)}
 
 
@@ -23910,7 +23917,9 @@ def api_torrent_stop_seed(body: TorrentStopBody):
             # 停完还挂着「一直做种（要停就在…）」就成了假话，这行跟着改口
             t.resume_hint = "做种已手动停止，已下载的文件不动"
         n += 1
-        log_mgr.log(f"[界面] 手动停止做种：{(t.title if t else w.get('name')) or gid[:10]}")
+        log_mgr.log(f"[界面] 手动停止做种：{(t.title if t else w.get('name')) or gid[:10]}",
+                    k="log.seeding_stopped",
+                    kv={"what": ((t.title if t else w.get('name')) or gid[:10])})
     return {"ok": True, "stopped": n, "message": f"已停止 {n} 个做种任务"}
 
 
