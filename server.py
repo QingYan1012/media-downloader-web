@@ -14051,7 +14051,7 @@ def api_components_update_check(body: CompCheckBody = None):
 
 # 「一键更新」：一次只跑一批，批内串行 —— pip 并发装会互相踩，GitHub 大文件同时下也没意义
 _COMP_ALL: Dict[str, Any] = {"running": False, "total": 0, "done": 0,
-                             "current": "", "results": [], "started": ""}
+                             "current": "", "current_key": "", "results": [], "started": ""}
 _COMP_ALL_LOCK = threading.Lock()
 
 
@@ -14092,6 +14092,7 @@ def _comp_update_all(keys: List[str], mirror: str) -> None:
             with _COMP_ALL_LOCK:
                 _COMP_ALL["done"] = i - 1
                 _COMP_ALL["current"] = labels.get(key, key)
+                _COMP_ALL["current_key"] = key
             log_mgr.log(f"一键更新（{i}/{len(keys)}）：开始 {labels.get(key, key)}",
                         k="srv.comp.update_start",
                         kv={"i": i, "total": len(keys), "label": labels.get(key, key)})
@@ -14125,6 +14126,7 @@ def _comp_update_all(keys: List[str], mirror: str) -> None:
             bad = [r["label"] for r in _COMP_ALL["results"] if not r["ok"]]
             _COMP_ALL["running"] = False
             _COMP_ALL["current"] = ""
+            _COMP_ALL["current_key"] = ""
             _COMP_ALL["done"] = done
         log_mgr.log(f"一键更新结束：完成 {done}/{len(keys)} 项"
                     + (f"，失败 {len(bad)} 项（{'、'.join(bad)}），原因见上面各行" if bad
@@ -14150,7 +14152,7 @@ def api_components_update_all(body: dict = None):
                                f"当前 {_COMP_ALL['current']}），请等它结束",
                     "update_all": dict(_COMP_ALL)}
         _COMP_ALL.update({"running": True, "total": len(keys), "done": 0,
-                          "current": keys[0], "results": [],
+                          "current": keys[0], "current_key": keys[0], "results": [],
                           "started": datetime.now().strftime("%H:%M:%S")})
     mirror = str(body.get("mirror") or cfg.data.get("pip_mirror") or "")
     log_mgr.log(f"一键更新开始：{len(keys)} 项（{'、'.join(keys[:8])}"
@@ -15164,8 +15166,24 @@ def _pot_row_extra(row: dict, cfg: dict, po: Optional[dict] = None) -> dict:
     p["installed"] = _pot_plugin_installed()
     row["ok"] = bool(p.get("installed") and c.get("po_provider_enabled") and p.get("ok"))
     row["note"] = _pot_component_note(p, c)
+    row["note_state"], row["note_kv"] = _pot_component_note_state(p, c)
     row["skip_all"] = True  # 「一键更新」不该在没跑服务端的机器上替人装插件
     return row
+
+
+def _pot_component_note_state(po: dict, cfg: dict) -> tuple:
+    """同一句 note 的语言无关状态码：前端按它取界面语言那句，后端 note 仍留中文原话。"""
+    c = cfg or {}
+    p = po or {}
+    url = str(c.get("po_provider_url") or PO_DEFAULT_URL)
+    if not p.get("installed"):
+        return "install", {"dir": POT_SERVER_DIR_NAME}
+    if not c.get("po_provider_enabled"):
+        return "gate_off", {"url": url}
+    if not p.get("ok"):
+        return "no_server", {"url": url, "detail": str(p.get("detail") or "—"),
+                             "dir": POT_SERVER_DIR_NAME}
+    return "ready", {}
 
 
 def _pot_component_note(po: dict, cfg: dict) -> str:

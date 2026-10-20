@@ -10,6 +10,7 @@ from __future__ import annotations
 import atexit
 import importlib.util
 import json
+import re
 import shutil
 import sys
 import tempfile
@@ -196,6 +197,24 @@ try:
        row["latest"] == "" and "Timeout" in row["latest_note"], row["latest_note"])
     ck("C10 包信息随清单一起报出来", d["bundled"]["app"] == "1.2.7" and d["bundled"]["built"] == "2026-09-20 10:00",
        str(d["bundled"]))
+
+    # 界面侧：组件名 / 悬停说明都按 key 过词表，英文界面不该再印后端中文 cn/label
+    html_src = (Path(__file__).resolve().parent.parent / "static" / "index.html").read_text(encoding="utf-8")
+
+    def _ui_map(name):
+        blob = html_src[html_src.index(f"const {name} = {{"):]
+        return set(re.findall(r"'([^']+)':\s*'[^']+'", blob[:blob.index("};")]))
+
+    expect_keys = ({"ffmpeg", "ytdlp", "n_m3u8dl", "aria2", "faster-whisper"}
+                   | {p["name"] for p in P.PIP_PACKAGES} | {"sep:engines"})
+    names, descs = _ui_map("COMP_NAME_KEYS"), _ui_map("COMP_DESC_KEYS")
+    ck("C12 每个组件行都有界面词表名（英文界面不再印后端中文 cn）",
+       expect_keys <= names, str(sorted(expect_keys - names)))
+    ck("C13 悬停说明也走词表（title 不再出中文 label）",
+       expect_keys - {"sep:engines"} <= descs, str(sorted(expect_keys - descs - {"sep:engines"})))
+    ck("C14 模板走 compName / compNote / compActive，不再直出 cn / note / 未安装",
+       "{{ compName(it) }}" in html_src and "{{ compNote(it) }}" in html_src
+       and "{{ compActive(it) }}" in html_src and "it.cn || it.label" not in html_src)
 
     # 缓存：第二次点按钮不该再问一遍 pip
     hits: list[int] = []

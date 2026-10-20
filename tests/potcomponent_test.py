@@ -75,6 +75,21 @@ ck("B6 两层都齐：说的是「票 + 会吃票的客户端」，不再写成�
    "all" in n and "不解决 4K" not in n and "缺的是网络出口" not in n, n)
 ck("B7 配置整个缺字段也不炸", bool(S._pot_component_note({}, {})))
 
+_cases = [
+    ("install", {"installed": False}, {"po_provider_enabled": True, "po_provider_url": URL}),
+    ("gate_off", {"installed": True, "ok": False}, {"po_provider_enabled": False, "po_provider_url": URL}),
+    ("no_server", {"installed": True, "ok": False, "detail": "x"},
+     {"po_provider_enabled": True, "po_provider_url": URL}),
+    ("ready", {"installed": True, "ok": True}, {"po_provider_enabled": True, "po_provider_url": URL}),
+]
+_states = [S._pot_component_note_state(po, cfg)[0] for _, po, cfg in _cases]
+ck("B8 四种情形各有一个语言无关的状态码（英文界面据此取词表那句）",
+   _states == [x[0] for x in _cases], str(_states))
+ck("B9 no_server 的状态码带着地址与现探到的原因",
+   S._pot_component_note_state({"installed": True, "ok": False, "detail": "连不上"},
+                               {"po_provider_enabled": True, "po_provider_url": URL})[1]
+   == {"url": URL, "detail": "连不上", "dir": S.POT_SERVER_DIR_NAME})
+
 # ---------- C 组件行的 ok 判定 ----------
 row = {"key": PKG, "pkg": PKG, "label": "x", "active": "2.0.2", "ok": True}
 cfg = {"po_provider_enabled": True, "po_provider_url": URL}
@@ -144,7 +159,10 @@ ck("E1 组件表逐行过 _pot_row_extra", "_pot_row_extra(row, cfg.data)" in se
 ck("E2 PIP_PACKAGES 确实有这条（否则 /api/update/pkg 白名单不认它）",
    any(p["name"] == PKG for p in P.PIP_PACKAGES))
 ck("E3 风控卡那条改走 _po_ready_tip", "tips.append(_po_ready_tip(po, cfg or {}))" in SRC)
-ck("E4 界面那行会把 note 显示出来", "it.note" in Path("static/index.html").read_text(encoding="utf-8"))
+_html = Path("static/index.html").read_text(encoding="utf-8")
+ck("E4 界面那行按 note_state 取词表，不再直出后端中文 note",
+   "{{ compNote(it) }}" in _html and "const COMP_NOTE_KEYS = {" in _html
+   and "{{ it.note }}" not in _html)
 
 print(f"\nTOTAL {TOTAL}  FAILED {len(FAILED)}"
       + ("" if not FAILED else "  ==> " + "; ".join(FAILED)))

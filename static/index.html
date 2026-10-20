@@ -5971,17 +5971,17 @@
                   <span class="hint" style="margin:0">{{ compCheckText }}</span>
                 </div>
                 <div class="env-list comp-list">
-                  <div class="comp-item" v-for="it in components" :key="it.key" :title="it.label">
+                  <div class="comp-item" v-for="it in components" :key="it.key" :title="compDesc(it)">
                     <span :style="{ color: it.ok ? 'var(--ok)' : 'var(--bad)', fontSize: '14px' }">●</span>
                     <div class="comp-main">
-                      <div :style="{ fontWeight: 600, color: it.ok ? 'var(--ink)' : 'var(--bad)' }">{{ it.cn || it.label }}</div>
+                      <div :style="{ fontWeight: 600, color: it.ok ? 'var(--ink)' : 'var(--bad)' }">{{ compName(it) }}</div>
                       <div class="comp-ver" style="word-break:break-all">
-                        {{ it.pkg || it.tool || it.key }} · {{ tr('settings.compCurrentWord') }} {{ it.active || tr('settings.notInstalled') }}
+                        {{ it.pkg || it.tool || it.key }} · {{ tr('settings.compCurrentWord') }} {{ compActive(it) }}
                         <span v-if="it.bundled && verCmp(it.bundled, it.active) !== 0">· {{ tr('settings.compBundledWord') }} {{ it.bundled }}</span>
                         <span v-if="it.latest">· {{ tr('settings.compLatestWord') }} {{ it.latest }}{{ verCmp(it.latest, it.active) > 0 ? tr('settings.compUpdatableTag') : '' }}</span>
                         <span v-else-if="it.latest_note">· {{ tr('settings.compLatestUnknown') }} {{ it.latest_note }}</span>
                       </div>
-                      <div v-if="it.note" class="comp-ver" style="color:var(--muted)">{{ it.note }}</div>
+                      <div v-if="it.note" class="comp-ver" style="color:var(--muted)">{{ compNote(it) }}</div>
                     </div>
                     <el-button size="small"
                                :loading="updatingComp === it.key" @click="updateComponent(it)">
@@ -6000,7 +6000,7 @@
                       <div v-else class="comp-ver">{{ sepModelsState }}</div>
                       <div v-if="sepModelsMissing" class="comp-ver" style="color:var(--warn)">{{ sepModelsMissing }}</div>
                     </div>
-                    <el-button size="small" type="primary" plain :loading="sepBusy" @click="updateSeparatorEngines">{{ tr('settings.compUpdateBtn') }}</el-button>
+                    <el-button size="small" :loading="sepBusy" @click="updateSeparatorEngines">{{ tr('settings.compUpdateBtn') }}</el-button>
                     <el-button size="small" :loading="sepBusy" @click="setupSeparatorAll">{{ tr('settings.sepModelsBtn') }}</el-button>
                   </div>
                 </div>
@@ -6015,7 +6015,7 @@
                   </span>
                 </div>
                 <div v-if="compTargets.length" class="hint" style="margin-top:4px">
-                  {{ tr('settings.compTargetsLine', { n: compTargets.length, list: compTargets.map(x => x.label).join(tr('settings.dunSep')) }) }}
+                  {{ tr('settings.compTargetsLine', { n: compTargets.length, list: compTargets.map(compName).join(tr('settings.dunSep')) }) }}
                 </div>
                 <div v-if="compAllSummary" class="hint" style="margin-top:4px;line-height:1.6">{{ compAllSummary }}</div>
                 <div v-if="(compInfo.bundled || {}).app" class="hint" style="margin-top:6px">
@@ -8016,6 +8016,78 @@
           }
         }
 
+        /* ---- 组件行文案：后端 cn / label 是中文原话，界面按 key 取词表；漏映射就回落到原话 ---- */
+        const COMP_NAME_KEYS = {
+          'ffmpeg': 'components.name.ffmpeg',
+          'ytdlp': 'components.name.ytdlp',
+          'n_m3u8dl': 'components.name.n_m3u8dl',
+          'aria2': 'components.name.aria2',
+          'faster-whisper': 'components.name.fasterWhisper',
+          'yt-dlp': 'components.name.ytdlpPkg',
+          'musicdl': 'components.name.musicdl',
+          'zhconv': 'components.name.zhconv',
+          'mutagen': 'components.name.mutagen',
+          'edge-tts': 'components.name.edgeTts',
+          'deep-translator': 'components.name.deepTranslator',
+          'telethon': 'components.name.telethon',
+          'python-socks': 'components.name.pythonSocks',
+          'cryptg': 'components.name.cryptg',
+          'psutil': 'components.name.psutil',
+          'numpy': 'components.name.numpy',
+          'librosa': 'components.name.librosa',
+          'bgutil-ytdlp-pot-provider': 'components.name.potPlugin',
+          'sep:engines': 'settings.sepModelsLabel',
+        };
+        const COMP_DESC_KEYS = {
+          'ffmpeg': 'components.desc.ffmpeg',
+          'ytdlp': 'components.desc.ytdlp',
+          'n_m3u8dl': 'components.desc.n_m3u8dl',
+          'aria2': 'components.desc.aria2',
+          'faster-whisper': 'components.desc.fasterWhisper',
+          'yt-dlp': 'components.desc.ytdlpPkg',
+          'musicdl': 'components.desc.musicdl',
+          'zhconv': 'components.desc.zhconv',
+          'mutagen': 'components.desc.mutagen',
+          'edge-tts': 'components.desc.edgeTts',
+          'deep-translator': 'components.desc.deepTranslator',
+          'telethon': 'components.desc.telethon',
+          'python-socks': 'components.desc.pythonSocks',
+          'cryptg': 'components.desc.cryptg',
+          'psutil': 'components.desc.psutil',
+          'numpy': 'components.desc.numpy',
+          'librosa': 'components.desc.librosa',
+          'bgutil-ytdlp-pot-provider': 'components.desc.potPlugin',
+        };
+        const COMP_NOTE_KEYS = {
+          install: 'settings.compPotNoteInstall',
+          gate_off: 'settings.compPotNoteGateOff',
+          no_server: 'settings.compPotNoteNoServer',
+          ready: 'settings.compPotNoteReady',
+        };
+        function compKeyOf(row) {
+          return typeof row === 'string' ? row : String((row && row.key) || '');
+        }
+        function compName(row) {
+          const key = COMP_NAME_KEYS[compKeyOf(row)];
+          if (key) return tr(key);
+          if (typeof row === 'string') return row;
+          return (row && (row.cn || row.label || row.key)) || '';
+        }
+        function compDesc(row) {
+          const key = COMP_DESC_KEYS[compKeyOf(row)];
+          return key ? tr(key) : ((row && row.label) || compName(row));
+        }
+        function compActive(it) {
+          const v = String((it && it.active) || '');
+          if (!v || v === '未安装') return tr('settings.notInstalled');
+          if (v === '未找到') return tr('settings.compNotFound');
+          return v;
+        }
+        function compNote(it) {
+          const key = COMP_NOTE_KEYS[(it && it.note_state) || ''];
+          return key ? tr(key, (it && it.note_kv) || {}) : ((it && it.note) || '');
+        }
+
         /* ---- 组件上游版本自动检测：查询在后端后台线程跑，界面读状态、缺一次就补发 ---- */
         const compUpdates = ref([]);   // 确有可更新版本的组件；未安装的和查不到上游版的都不算
         const compCheckAt = ref('');
@@ -8041,7 +8113,7 @@
             + (names.length > 3 ? ' ' + tr('settings.compEtcN', { n: names.length }) : '');
         }
         function compUpdateList() {
-          return joinCapped(compUpdates.value.map((u) => u.label.split('（')[0]));
+          return joinCapped(compUpdates.value.map((u) => compName(u)));
         }
 
         // 检测结果里带的上游版直接补进表格的「最新」列，界面不再单设一个查询按钮
@@ -8110,7 +8182,7 @@
 
         function maybePopupCompUpdates() {
           if (!compUpdates.value.length) return;
-          const rows = compUpdates.value.map((u) => `<li><b>${escHtml(u.label)}</b>`
+          const rows = compUpdates.value.map((u) => `<li><b>${escHtml(compName(u))}</b>`
             + `${tr('settings.compAllRowArrow', { from: escHtml(u.current), to: escHtml(u.latest) })}</li>`);
           ElementPlus.ElMessageBox.confirm(
             `<div style="margin-bottom:6px">${tr('settings.compPopupLead')}</div>`
@@ -8200,13 +8272,13 @@
           const a = compAll.value;
           const rs = a.results || [];
           if (a.running) {
-            return tr('settings.compAllRunning', { a: (a.done || 0) + 1, b: a.total || 0, c: a.current || '-' });
+            return tr('settings.compAllRunning', { a: (a.done || 0) + 1, b: a.total || 0, c: a.current_key ? compName(a.current_key) : (a.current || '-') });
           }
           if (!rs.length) return '';
           const bad = rs.filter((r) => !r.ok);
           const head = tr('settings.compAllHead', { t: a.started || '-', ok: rs.length - bad.length, n: rs.length });
           if (!bad.length) return head + tr('settings.compAllAllOk');
-          const why = bad.map((r) => r.label + tr('settings.compAllReason', { m: r.msg || tr('settings.compAllWhyInLog') })).join(tr('settings.clPlanSep'));
+          const why = bad.map((r) => compName(r) + tr('settings.compAllReason', { m: r.msg || tr('settings.compAllWhyInLog') })).join(tr('settings.clPlanSep'));
           return head + tr('settings.compAllBadTail') + why + tr('settings.dotSep');
         });
 
@@ -8235,8 +8307,8 @@
           }
           try { await saveSettings(true); } catch (_) {}
           const rows = list.map((it) => (it.ok
-            ? `<li>${tr('settings.compUpdateBtn')} <b>${escHtml(it.label)}</b>${tr('settings.compAllRowArrow', { from: escHtml(it.active || '?'), to: escHtml(it.latest) })}</li>`
-            : `<li>${tr('settings.compInstallBtn')} <b>${escHtml(it.label)}</b>${tr('settings.compAllRowCur', { v: escHtml(it.active || tr('settings.notInstalled')) })}</li>`));
+            ? `<li>${tr('settings.compUpdateBtn')} <b>${escHtml(compName(it))}</b>${tr('settings.compAllRowArrow', { from: escHtml(it.active || '?'), to: escHtml(it.latest) })}</li>`
+            : `<li>${tr('settings.compInstallBtn')} <b>${escHtml(compName(it))}</b>${tr('settings.compAllRowCur', { v: escHtml(compActive(it)) })}</li>`));
           try {
             await ElementPlus.ElMessageBox.confirm(
               `<ul style="margin:0;padding-left:18px">${rows.join('')}</ul>`
@@ -14362,6 +14434,7 @@ const CFG_KEYS = {
           UI_THEMES, setTheme,
           loadStatus, checkEnv, updateYtdlp, updateFfmpeg,
           components, compInfo, stab, SETTINGS_TABS, updatingComp, verCmp, loadComponents, updateComponent, pathBusy, setEnvPath,
+          compName, compDesc, compActive, compNote,
           compAll, compAllBusy, compTargets, compAllSummary, updateAllComponents,
           compUpdates, compCheckBusy, compCheckText, startCompCheck,
           encoders, encProbeBusy, encProbeText, loadEncoders,

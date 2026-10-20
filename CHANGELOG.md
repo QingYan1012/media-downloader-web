@@ -1211,6 +1211,19 @@ v1.4.0 发出去之后接着三句要求：「跑一下音乐结果表确认排�
 - **关服时不再打 CancelledError**：用户贴的 `ERROR: Cancel 1 running task(s), timeout graceful shutdown exceeded` 与随后的 `Exception in ASGI application ... CancelledError`，触发条件是浏览器留着 `/api/events` 这条 SSE 长连接时按 Ctrl+C —— `timeout_graceful_shutdown=5` 到期后 uvicorn 取消还挂着的流任务，这段堆栈是**关闭阶段的噪声，不是运行期崩溃**，`finally` 里的 BT 守护收尾照常执行。现在 `main()` 自己持有 `uvicorn.Server`，SSE 生成器每轮看一次 `should_exit`，收到退出信号就主动收流；AB 实测（SSE 挂着、同一套配置）：改前 5.14 s 并打出完整 Cancel + CancelledError，改后 0.13 s、stderr 0 行。端到端探针（真 `python server.py`、沙箱端口、SSE 挂着后发 CTRL_BREAK）同样 0.17 s 收流、无 Cancel 行；Ctrl+C 的退出路径与原来一致。
 - **自检**：`separator_test` 57（H8 改钉「按钮不按有无更新切换显隐」）、`platform_test` 45（新增 E1b 钉 SSE 看 `should_exit`）、`startup_test`（B2/B4 跟着 `_UVICORN_SERVER.run()` 改锚点）、`sse_test`、`i18n_test` 509、`pagemount_test` 40、`settingsave_test` 113、`runwindow_test` 全绿；全批 **65 套 rc=0**（189.4 秒）。
 
+## 发布之后这一轮（再续）· 组件页整页英文化、行内「更新」统一成默认样式
+
+这一笔仍停在 `appVersion = v1.4.0`；标签、包与 Release 资产都没动。用户拿两张截图指出组件页「还有一些地方没有英文化，按钮风格也不一致」。
+
+- **这一页的中文有四个来源，不是一个词表能盖住的**：行名来自后端 `_component_rows()` 的 `cn`（18 条）、悬停说明来自 `label`、POT 那一行的整段话来自 `_pot_component_note()`、状态来自 `active` 的 `未安装 / 未找到`；「一键更新」的名单与进度也直接印后端的 `cn / label`。翻译只改词表的话，这五处一处都不会变。
+- **名字与说明走字面量映射**：`static/index.html` 新增 `COMP_NAME_KEYS`（18 个包 / 工具 + `sep:engines`）与 `COMP_DESC_KEYS`（18 条），值是 `components.name.*` / `components.desc.*`；`compName(row)` / `compDesc(row)` 查表，查不到才回落到后端原话（不在表里的行不会变空白）。没有用 `'components.name.' + key` 这种拼键，因为 `i18n_test` 的 B2 只允许 `nav.` / `navGroup.` 两族动态前缀；写整键也让 B10 的死键检查把 36 个新键都算作「在用」。中文界面的值与原 `cn / label` 同文，显示一字未变。
+- **状态词单独走词表**：`compActive()` 把 `未安装` / `未找到` 换成 `settings.notInstalled` / `settings.compNotFound`，其余版本号原样显示。
+- **POT 的整段话不把判断逻辑复制到前端**：后端新增 `_pot_component_note_state()`（紧挨 `_pot_component_note`），输出语言无关的 `note_state`（`install / gate_off / no_server / ready`）与 `note_kv`（`dir / url / detail`）；前端 `COMP_NOTE_KEYS` + `compNote()` 按当前界面语言取 `settings.compPotNote*` 四把键。后端那份中文 `note` 照旧保留（日志与旧调用方还在读），只是模板不再直出它。
+- **一键更新的三处一起改**：顶部名单、进度里的当前项、结束摘要都走 `compName()`。进度原来只有一个中文 `current`，现在后端多带一个 `current_key`（`api_components_update_all` 启动时是 `keys[0]`，`_comp_update_all` 每换一项就写，`finally` 清掉），前端先用它查词表，查不到才用 `current` —— 英文界面里进度条不会忽然蹦出中文包名。
+- **一页只留一个主按钮**：分离引擎那行原来用 `type="primary" plain`，在 19 行里独一份；现在与所有行一致，是默认灰色 `el-button--small`。底部「全部更新」保留 `primary plain` 作为唯一 CTA。
+- **自检**：`components_test` 新增 C12（每个组件行都有名字键）、C13（悬停说明覆盖到每一行，`sep:engines` 无独立说明除外）、C14（模板走 `compName / compNote / compActive`，不再直出 `cn / note / 未安装`），109 项全绿；`potcomponent_test` 新增 B8/B9 钉四种 `note_state` 与 `no_server` 的 kv，E4 改钉模板按状态取词，30 项 0 失败；`separator_test` H8 改钉「按钮不带 `type="primary plain"`」，57 项 0 失败。`i18n_test` 509、`pagemount_test` 40、`indexsnap_test` 全绿；全批 **65 套 rc=0**（190.3 秒）。
+- **沙箱读数**（独立 `STATE_DIR` + `bind(0)` 端口，不是 8765）：EN 界面 19 行 `CJK_ROWS []`、`CJK_TITLES []`、卡片内 `CARD_CJK []`；18 枚行内 Update 的计算样式只有一种（`el-button el-button--small`、白底 `rgb(255,255,255)`、灰边 `rgb(220,223,230)`、66×24），「Update all」仍是唯一的 `el-button--primary`；卡片 884 px、`SCROLL_H 882` 不出滚动条；控制台 0 错误。截图 `tmp/ui_comp_i18n_en.png`。
+
 ## v1.3.2 · 2026-10-13（已出包）
 
 对着 [joeseesun/qiaomu-download](https://github.com/joeseesun/qiaomu-download) 那份平台清单盘了一遍 ours，盘出两条真的缺口，本轮做掉；第三条（B1 TikTok 归错档）是我看错了，代码一个字没改，判正的读数写在下面。B4（公开优先的 Cookie 策略）与 B5（Spotify 单曲入口 + 匹配置信度）按要求先排着，和 issue #206 那张「有但没做」的清单一起过。**已出包**：`appVersion` 升到 `v1.3.2 · Element Plus`（版本真源只有界面那一处），两份 README 的徽章与包名同处改口，产物见下方「发布物」。

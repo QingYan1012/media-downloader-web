@@ -281,9 +281,10 @@ ck("H7 更新走 venv 里的 pip -U 并回读版本；新建环境的钉死版�
    and '"install", "-U"' in VT_SRC
    and "separator_engine_versions(refresh=True)" in VT_SRC
    and "audio-separator==0.47.0" in VT_SRC)
-ck("H8 界面有常驻「更新」按钮与最新版标签：按钮不按有无更新切换显隐",
-   'plain :loading="sepBusy" @click="updateSeparatorEngines"' in HTML
+ck("H8 界面有常驻「更新」按钮与最新版标签：按钮不按有无更新切换显隐，样式与普通组件行一致",
+   ':loading="sepBusy" @click="updateSeparatorEngines"' in HTML
    and 'v-if="sepUpdatable"' not in HTML
+   and 'type="primary" plain :loading="sepBusy" @click="updateSeparatorEngines"' not in HTML
    and "setupSeparator('engines')" in HTML and "sepLatest('audio-separator')" in HTML)
 ck("H9 separator_setup 接受 engines；setup_separator 把它转给更新函数，不重复进锁",
    '"venv", "weights", "all", "engines"' in SERVER
