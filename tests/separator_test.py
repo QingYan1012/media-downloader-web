@@ -59,14 +59,15 @@ ck("A2 每条权重都有 ckpt 与 yaml 两个真文件名（只给一个就跑�
 ck("A3 设备只有三档，界面不会给出去第四个", V.SEPARATION_DEVICES == ["auto", "cpu", "cuda"],
    str(V.SEPARATION_DEVICES))
 
-_demucs_block = HTML[HTML.index('v-model="settings.demucs_model"'):]
-_demucs_block = _demucs_block[:_demucs_block.index("</el-select>")]
-_ui_demucs = re.findall(r'<el-option label="([^"]+)" value="([^"]+)"', _demucs_block)
-ck("A4 Demucs 下拉里的选项和后端那张表逐条相等（不一致时保存会把界面自己的选项判成非法）",
-   [v for _l, v in _ui_demucs] == V.DEMUCS_MODELS, f"界面={[v for _l, v in _ui_demucs]} 表={V.DEMUCS_MODELS}")
+ck("A4 Demucs 那两处下拉都照回包里的名单渲染，名单本身就是 voice_tools 那张表（界面抄一份迟早和保存闸门对不上）",
+   HTML.count('v-for="m in sepDemucsModels"') == 2
+   and '"demucs_models": list(DEMUCS_MODELS)' in SERVER
+   and not re.search(r'<el-option label="htdemucs', HTML))
 _ui_roformer = re.findall(r'v-for="m in sepModels"', HTML)
-ck("A5 RoFormer 那格是照后端那张表渲染的，不在界面里抄第二份名单",
-   len(_ui_roformer) == 1 and "SEP_MODEL_NAMES" in HTML)
+ck("A5 两处 RoFormer 下拉（语音页 + 文件页的分离对话框）都是照后端那张表渲染的，界面里没有抄第二份名单",
+   len(_ui_roformer) == 2
+   and not re.search(r'<el-option[^>]*value="(bs_1297|bs_1296|mel_1143|mel_inst_v2)"', HTML)
+   and "SEP_MODEL_NAMES" in HTML)
 
 ck("A6 每条权重都钉了 ckpt 与 yaml 两个校验值（这条路径上 TLS 不验证，值是唯一能挡住截断和镜像错位的）",
    all(re.fullmatch(r"[0-9a-f]{64}", m.get("file_sha256") or "")
@@ -194,9 +195,10 @@ ck("F4 四个新键在默认表、ConfigBody、校验闸门三处都齐",
    and '"demucs_model"' in SERVER)
 ck("F5 默认是 auto：GPU 被人占着时降级跑，而不是抛错让人以为功能坏了",
    S.cfg.DEFAULTS["ai_device"] == "auto" and S.cfg.DEFAULTS["vocal_engine"] == "roformer")
-ck("F6 文件页菜单指到新函数，command 与 FILE_ACTIONS、return 名单三处对得上",
-   "aiVocalSeparate|" in HTML and HTML.count("aiVocalSeparate") >= 5
-   and "aiDemucs" not in HTML)
+ck("F6 文件页菜单指的每一项在 command、FILE_ACTIONS、return 三处都挂上（少一处就是点了没反应）",
+   all(("'%s|'" % fn) in HTML and re.search(r"FILE_ACTIONS = \{[^}]*\b%s\b" % fn, HTML)
+       and HTML.count("%s," % fn) >= 2 for fn in ("openSepDlg", "openStemMixer"))
+   and "aiDemucs" not in HTML and "aiVocalSeparate" not in HTML)
 ck("F7 语音页三个下拉绑的就是那四个键，成品去向写在卡片里",
    all(f'v-model="settings.{k}"' in HTML for k in
        ("vocal_engine", "roformer_model", "ai_device", "vocal_native_fp16")))
@@ -359,6 +361,62 @@ ck("I13 新键两份词表都在（各出现两次），zh 那半不带首尾空
    f"空格 {list(_pad)} 汉字 {list(_han)}")
 ck("I14 混音那两条后端日志从一开始就带键与 kv（#55 口径：新写的句子不留裸中文）",
    'k="srv.ai.mix_done"' in _mix_fn and 'k="srv.ai.mix_failed"' in _mix_fn)
+
+# ------------------------------------------------- J. 文件行「分离人声」的选择对话框
+# 这一条是被用户指出来的：混音台和四项选择先只做在语音页，可分离是从文件页点的，
+# 点下去连引擎都没得挑 —— 动作在哪儿，选择就得在哪儿。
+_sep_fn = _slice(HTML, "async function startVocalSeparate", "function goMixer")
+_open_fn = _slice(HTML, "function openSepDlg(row)", "async function startVocalSeparate")
+_clamp_fn = _slice(HTML, "function clampSepStems()", "function openSepDlg(row)")
+_dlg_html = _slice(HTML, '<el-dialog v-model="sepDlg.visible"', "</el-dialog>")
+ck("J1 文件行的「分离人声」不再直接发请求，改为先开对话框（老的裸 POST 那条路要断干净）",
+   "'openSepDlg|' + $index" in HTML and "aiVocalSeparate" not in HTML
+   and "/api/ai/vocal_separate" in _sep_fn)
+ck("J1b 对话框是替掉原来那条菜单，不是新加的第 15 项；「分轨混音」才是新增的那一条",
+   HTML.count("tr('files.miVocal')") == 2 and HTML.count("tr('files.miMixStems')") == 1)
+ck("J2 对话框把五项都发出去，后端那五项也确实各读一个 body 键（读不到就悄悄用默认值，界面白挑）",
+   all(x in _sep_fn for x in ("engine: sepDlg.engine", "device: sepDlg.device",
+                              "model: sepDlg.model", "demucs_model: sepDlg.demucsModel",
+                              "stems_mode: sepDlg.stems"))
+   and all(('body.get("%s")' % x) in SERVER for x in
+           ("engine", "device", "model", "demucs_model", "stems_mode")),
+   "缺项：" + str([x for x in ("engine", "device", "model", "demucs_model", "stems_mode")
+                  if ('body.get("%s")' % x) not in SERVER]))
+ck("J3 对话框只读设置、不写设置：语音页那一格才是默认值的家，这里挑一次不该顺手改掉默认",
+   "settings.value" in _open_fn and "settings.value." not in _sep_fn
+   and not re.search(r"settings\.value\.\w+\s*=", _open_fn + _sep_fn + _clamp_fn))
+ck("J4 换模型或换引擎时把范围收回「只取人声」（六档只有 htdemucs_6s 出得来，留着配不上的选择等于埋一次失败）",
+   "if (!six && sepDlg.stems === 'six') sepDlg.stems = 'vocal';" in _clamp_fn
+   and "if (six && sepDlg.stems === 'four') sepDlg.stems = 'vocal';" in _clamp_fn
+   and _dlg_html.count('@change="clampSepStems"') == 2)
+ck("J5 对话框里的四项文字全走 tr()，且六轨那两项的禁用条件跟着对话框自己那份模型走",
+   "voice.stemsLabel" in _dlg_html and "settings.demucs_model" not in _dlg_html
+   and ':disabled="sepDlg.demucsModel === \'htdemucs_6s\'"' in _dlg_html)
+ck("J6 「分轨混音」在文件页有入口，跳过去带着路径并立刻读轨（分离过的文件不该让人回语音页抄路径）",
+   "'openStemMixer|' + $index" in HTML and 'id="mixer-card"' in HTML
+   and "mixSrc.value = row.path" in _slice(HTML, "function openStemMixer(row)", "print(")
+   and "loadStems()" in _slice(HTML, "function openStemMixer(row)", "print("))
+_dlg_keys = ["files.miMixStems", "ui.goto_mixer", "voice.sepDlgOut", "voice.sepDlgRun",
+             "voice.sepDlgStarted", "voice.sepGoMixer"]
+ck("J7 这批新键两份词表都在（各出现两次），zh 那半不带首尾空格、en 那半不含汉字",
+   all(I18N.count(f"'{k}':") == 2 for k in _dlg_keys)
+   and not [k for k in _dlg_keys
+            if (m := re.search(r"^      '%s': '(.*?)',$" % re.escape(k), _zh_half, re.M))
+            and m.group(1) != m.group(1).strip()]
+   and not [k for k in _dlg_keys
+            if re.search(r"[\u4e00-\u9fff]", "".join(re.findall(
+                r"^      '%s': '(.*?)',$" % re.escape(k), _en, re.M)))],
+   str([k for k in _dlg_keys if I18N.count(f"'{k}':") != 2]))
+ck("J8 对话框用到的六个新名字在 setup 的两行 return 里都挂上了（漏一个不是少一行，是整页渲染炸）",
+   sum("sepDlg, startVocalSeparate, goMixer, clampSepStems," in ln
+       for ln in HTML.splitlines()) == 2
+   and sum("sepModels, sepDemucsModels, sepHasGpu" in ln
+           for ln in HTML.splitlines()) == 2)
+# 活体抓到的：模型两格是 v-for，读数只在进语音页时取；直接从文件页开对话框 → 一格空白，
+# 选中值退化成裸 id。修法是打开时补一次 voice_status（服务端那侧本来就有 60 秒缓存）。
+ck("J9 打开对话框会补取一次分离状态：voice_status 原本只在进语音页时读，不补这一下模型格是空的",
+   "if (!sepInfo.value) loadVoiceStatus();" in _open_fn
+   and "if (p === 'voice') loadVoiceStatus();" in HTML)
 
 print(f"== 汇总 ==\n共 {TOTAL} 条，失败 {len(FAILED)} 条")
 if FAILED:

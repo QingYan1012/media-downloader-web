@@ -3339,12 +3339,14 @@
                                  「人声分离」音频也做（flac/ogg/wma/opus 靠 isAudioFile 进来），
                                  但它的分组线只跟 isMediaFile 走：纯音频行上面没有「转写」那一族，写死会凭空多一条线。
                                  Picard 这一族在 flac/ogg/wma/opus 上是整个菜单的第一项（isMediaFile 不含这些扩展名），
-                                 那种时候线要收起来，否则顶上凭空多一条。 -->
+                                 那种时候线要收起来，否则顶上凭空多一条。
+                                 「分轨混音」不画线：它就是「分离人声」的下一步，中间没有别的事，分开反而像两个功能。 -->
                             <el-dropdown-item v-if="isMediaFile(row)" :command="'aiTranscribe|' + $index">{{ tr('files.miTranscribe') }}</el-dropdown-item>
                             <el-dropdown-item v-if="isMediaFile(row) || isSrtFile(row)" :command="'aiTranslateSrt|' + $index">{{ tr('files.miTranslate') }}</el-dropdown-item>
                             <el-dropdown-item v-if="isMediaFile(row)" divided :command="'aiPipeline|' + $index">{{ tr('files.miPipeline') }}</el-dropdown-item>
                             <el-dropdown-item v-if="isMediaFile(row)" :command="'showPipeline|' + $index">{{ tr('files.miOutputs') }}</el-dropdown-item>
-                            <el-dropdown-item v-if="isMediaFile(row) || isAudioFile(row)" :divided="isMediaFile(row)" :command="'aiVocalSeparate|' + $index">{{ tr('files.miVocal') }}</el-dropdown-item>
+                            <el-dropdown-item v-if="isMediaFile(row) || isAudioFile(row)" :divided="isMediaFile(row)" :command="'openSepDlg|' + $index">{{ tr('files.miVocal') }}</el-dropdown-item>
+                            <el-dropdown-item v-if="isMediaFile(row) || isAudioFile(row)" :command="'openStemMixer|' + $index">{{ tr('files.miMixStems') }}</el-dropdown-item>
                             <el-dropdown-item v-if="isMediaFile(row)" :command="'analyzeAudioFile|' + $index">{{ tr('files.miAnalyze') }}</el-dropdown-item>
                             <el-dropdown-item v-if="(row.ext||'').toLowerCase()==='.srt'" divided :command="'aiTts|' + $index">{{ tr('files.miTts') }}</el-dropdown-item>
                             <el-dropdown-item v-if="isSrtFile(row)" :command="'aiCalibrateSrt|' + $index">{{ tr('files.miCalibrate') }}</el-dropdown-item>
@@ -3366,6 +3368,61 @@
                              :total="pagers.files.total" layout="total, prev, pager, next, jumper" size="small" background class="pager"></el-pagination>
               <div v-if="pagers.files.show" class="hint hint--block">{{ tr('files.pagerHint') }}</div>
             </div>
+            <!-- 分离参数在动手这一步就要能挑：语音页那一格是「默认值的家」，这里的四项只覆盖本次任务，
+                 点完不回头写设置。选项与语音页同源，权重在不在也共用同一份回读（没下载的仍然置灰）。 -->
+            <el-dialog v-model="sepDlg.visible" :title="tr('files.miVocal')" width="470px">
+              <div class="hint hint--block">{{ sepDlg.name }}</div>
+              <div class="row row--tight row--mt">
+                <div style="flex:1">
+                  <div class="tile-label">{{ tr('voice.engineLabel') }}</div>
+                  <el-select v-model="sepDlg.engine" size="small" style="width:100%" @change="clampSepStems">
+                    <el-option :label="tr('voice.engRoformer')" value="roformer"></el-option>
+                    <el-option :label="tr('voice.engDemucs')" value="demucs"></el-option>
+                  </el-select>
+                </div>
+                <div style="flex:1">
+                  <div class="tile-label">{{ tr('voice.deviceLabel') }}</div>
+                  <el-select v-model="sepDlg.device" size="small" style="width:100%">
+                    <el-option :label="tr('voice.devAuto')" value="auto"></el-option>
+                    <el-option :label="tr('voice.devCpu')" value="cpu"></el-option>
+                    <el-option :label="tr('voice.devGpu')" value="cuda" :disabled="!sepHasGpu"></el-option>
+                  </el-select>
+                </div>
+              </div>
+              <div v-if="sepDlg.engine === 'roformer'" class="row row--tight row--mt">
+                <div style="flex:1">
+                  <div class="tile-label">{{ tr('settings.cfg.roformer_model') }}</div>
+                  <el-select v-model="sepDlg.model" size="small" style="width:100%">
+                    <el-option v-for="m in sepModels" :key="m.id" :label="sepModelLabel(m)" :value="m.id" :disabled="!m.present"></el-option>
+                  </el-select>
+                </div>
+              </div>
+              <div v-else class="row row--tight row--mt">
+                <div style="flex:1">
+                  <div class="tile-label">{{ tr('settings.cfg.demucs_model') }}</div>
+                  <el-select v-model="sepDlg.demucsModel" size="small" style="width:100%" @change="clampSepStems">
+                    <el-option v-for="m in sepDemucsModels" :key="m" :label="m" :value="m"></el-option>
+                  </el-select>
+                </div>
+                <div style="flex:1">
+                  <div class="tile-label">{{ tr('voice.stemsLabel') }}</div>
+                  <el-select v-model="sepDlg.stems" size="small" style="width:100%">
+                    <el-option :label="tr('voice.stemsVocal')" value="vocal"></el-option>
+                    <el-option :label="tr('voice.stemsFour')" value="four" :disabled="sepDlg.demucsModel === 'htdemucs_6s'"></el-option>
+                    <el-option :label="tr('voice.stemsSix')" value="six" :disabled="sepDlg.demucsModel !== 'htdemucs_6s'"></el-option>
+                  </el-select>
+                </div>
+              </div>
+              <div class="hint hint--block" style="margin-top:10px">{{ tr('voice.sepDlgOut', { dir: sepDlg.engine === 'roformer' ? 'separated' : 'demucs' }) }}</div>
+              <div v-if="sepDlg.started" class="hint hint--block">{{ tr('voice.sepDlgStarted') }}</div>
+              <template #footer>
+                <div class="row row--tight" style="justify-content:flex-end">
+                  <el-button size="small" @click="sepDlg.visible = false">{{ sepDlg.started ? tr('common.close') : tr('common.cancel') }}</el-button>
+                  <el-button v-if="!sepDlg.started" size="small" type="primary" :loading="sepDlg.busy" @click="startVocalSeparate">{{ tr('voice.sepDlgRun') }}</el-button>
+                  <el-button v-else size="small" type="primary" @click="goMixer">{{ tr('voice.sepGoMixer') }}</el-button>
+                </div>
+              </template>
+            </el-dialog>
           </div>
 
           <!-- 历史 -->
@@ -3479,10 +3536,7 @@
                 </el-form-item>
                 <el-form-item v-else :label="tr('settings.cfg.demucs_model')">
                   <el-select size="small" v-model="settings.demucs_model" style="width:220px">
-                    <el-option label="htdemucs" value="htdemucs"></el-option>
-                    <el-option label="htdemucs_ft" value="htdemucs_ft"></el-option>
-                    <el-option label="mdx_extra" value="mdx_extra"></el-option>
-                    <el-option label="htdemucs_6s" value="htdemucs_6s"></el-option>
+                    <el-option v-for="m in sepDemucsModels" :key="m" :label="m" :value="m"></el-option>
                   </el-select>
                 </el-form-item>
                 <el-form-item v-if="settings.vocal_engine === 'demucs'" :label="tr('voice.stemsLabel')">
@@ -3530,7 +3584,7 @@
                 </el-form>
               </div>
             </div>
-            <div class="card">
+            <div class="card" id="mixer-card">
               <div class="section-title">{{ tr('voice.mixTitle') }}</div>
               <div class="row row--tight row--mb">
                 <el-input size="small" v-model="mixSrc" :placeholder="tr('voice.mixPh')"
@@ -7071,6 +7125,7 @@
           mel_inst_v2: 'Mel-RoFormer Inst V2',
         };
         const sepModels = computed(() => (sepInfo.value && sepInfo.value.models) || []);
+        const sepDemucsModels = computed(() => (sepInfo.value && sepInfo.value.demucs_models) || []);
         const sepHasGpu = computed(() => !!(sepInfo.value && sepInfo.value.cuda_available));
         const sepStatusText = computed(() => {
           const s = sepInfo.value;
@@ -7494,7 +7549,7 @@
         /* 文件行「更多」下拉：command 形如「方法名|行号」，行号取当前页切片内的下标。
            列排序全部走 sortable="custom"，Element 不再二次排序，故 $index 与当页切片一一对应。 */
         const FILE_ACTIONS = {
-          aiTranscribe, aiTranslateSrt, aiPipeline, showPipeline, aiVocalSeparate, analyzeAudioFile,
+          aiTranscribe, aiTranslateSrt, aiPipeline, showPipeline, openSepDlg, openStemMixer, analyzeAudioFile,
           aiTts, aiCalibrateSrt, exportBilingual, openBurn, openPicard, mbTagFile,
           mbEnrichFile, fingerprintFile, guessTagsFile,
         };
@@ -9976,13 +10031,63 @@
             else ElementPlus.ElMessage.success(r.message || '分析已开始，见日志');
           } catch (e) { ElementPlus.ElMessage.error(String(e.message || e)); }
         }
-        async function aiVocalSeparate(row) {
+        // ---- 文件行的「分离人声」：四项选择在动手的这一格就能改 ----
+        // 预填自设置，但对话框只改自己那份副本：语音页那格是默认值的家，
+        // 在这里挑一次不该顺手把默认设置改掉（改默认有回存、恢复默认那一整套动作，归设置页管）。
+        const sepDlg = reactive({
+          visible: false, busy: false, started: false, path: '', name: '',
+          engine: 'roformer', model: '', demucsModel: 'htdemucs', stems: 'vocal', device: 'auto',
+        });
+        function clampSepStems() {
+          // 范围和模型对不上不用等点「开始」才说破：直接收回「人声/伴奏」——
+          // 这一档四个模型都出得来，换了模型也不会剩一个配不上的选择。
+          if (sepDlg.engine !== 'demucs') return;
+          const six = sepDlg.demucsModel === 'htdemucs_6s';
+          if (!six && sepDlg.stems === 'six') sepDlg.stems = 'vocal';
+          if (six && sepDlg.stems === 'four') sepDlg.stems = 'vocal';
+        }
+        function openSepDlg(row) {
+          // 模型那两格是 v-for 出来的，数据只来自 /api/ai/voice_status —— 而那份读数原先只在进语音页时才取。
+          // 没进过语音页的人直接点「分离人声」，就会看到一格空白（选中值只剩裸 id）。补一次，服务端那侧有缓存。
+          if (!sepInfo.value) loadVoiceStatus();
+          const s = settings.value || {};
+          sepDlg.path = row.path;
+          sepDlg.name = row.name || String(row.path || '');
+          sepDlg.engine = s.vocal_engine === 'demucs' ? 'demucs' : 'roformer';
+          sepDlg.model = s.roformer_model || '';
+          sepDlg.demucsModel = s.demucs_model || 'htdemucs';
+          sepDlg.stems = ['vocal', 'four', 'six'].includes(s.demucs_stems) ? s.demucs_stems : 'vocal';
+          sepDlg.device = ['auto', 'cpu', 'cuda'].includes(s.ai_device) ? s.ai_device : 'auto';
+          clampSepStems();
+          sepDlg.started = false;
+          sepDlg.busy = false;
+          sepDlg.visible = true;
+        }
+        async function startVocalSeparate() {
+          sepDlg.busy = true;
           try {
-            const r = await api('/api/ai/vocal_separate', { method: 'POST', body: JSON.stringify({ path: row.path }) });
-            if (r.ok === false) { ElementPlus.ElMessage.error(r.error || tr('voice.sepFail')); return; }
-            mixSrc.value = row.path;   // 跑完直接能在混音台里认出来，不用人再抄一遍路径
+            const r = await api('/api/ai/vocal_separate', {
+              method: 'POST',
+              body: JSON.stringify({
+                path: sepDlg.path, engine: sepDlg.engine, device: sepDlg.device,
+                model: sepDlg.model, demucs_model: sepDlg.demucsModel, stems_mode: sepDlg.stems,
+              }),
+            });
+            if (r.ok === false) { ElementPlus.ElMessage.error(r.error || r.message || tr('voice.sepFail')); return; }
+            mixSrc.value = sepDlg.path;   // 跑完直接能在混音台里认出来，不用人再抄一遍路径
+            sepDlg.started = true;
             ElementPlus.ElMessage.success(r.message || tr('voice.sepStarted'));
           } catch (e) { ElementPlus.ElMessage.error(String(e.message || e)); }
+          finally { sepDlg.busy = false; }
+        }
+        function goMixer() {
+          sepDlg.visible = false;
+          gotoCard('voice', 'mixer-card', 'ui.goto_mixer');
+        }
+        function openStemMixer(row) {
+          mixSrc.value = row.path;
+          gotoCard('voice', 'mixer-card', 'ui.goto_mixer');
+          loadStems();
         }
         // ---- 分轨混音台：轨来自上一次分离落盘的那堆 wav，静音/独奏/音量都在前端调，导出交给后端 ffmpeg ----
         const mixSrc = ref('');
@@ -14566,13 +14671,13 @@ const CFG_KEYS = {
           srtEditBox, srtQc, runSrtQc, runSrtRewrap, qcJumpTo, qcDropNoise,
           searchQuery, searchPlatform, searchContentType, searchSort, setSearchSort,
           searchTotal, searchTruncated, searchNotes, SEARCH_PLAT_NAMES, searchResults, searching, platformCookies, cookieIssueCount, syncFileInput,
-          musicKeyword, musicResults, musicSearching, musicSourceErrors, musicNeedsMatch, musicScoreLine, musicHasScore, musicdlVersion, musicdlReady, musicPreset, musicStrategy, saveMusicStrategy, musicSearchType, musicIncludeLocal, musicFilenameTemplate, musicEmbedMeta, musicSkipExisting, musicHideUnavailable, musicBlockReupload, musicIncludeReference, musicQualitySpec, musicQualityOptions, musicQualitySummary, refHint, matchHint, openRefLink, player, playerEl, playerPlaying, playerTime, playerDur, playerVol, playerMuted, playerSeeking, playerSeekVal, playerStep, playerToggle, playerClose, playerSeek, onPlayerTick, onPlayerMeta, onPlayerEnded, musicLrcLines, musicLrcActive, previewMusicRow, probeMusicRow, switchMusicSource, musicSwitching, scanLocalMusic, musicSources, musicSourceOptions, musicMatchSourceOptions, musicPresetOptions, musicSourceOrdered, musicPlaylistUrl, musicPlaylistMode, saveMusicPlaylistMode, musicCookies, musicSelected, aiPipeline, analyzeAudioFile, aiVocalSeparate, aiTts, installVoicePkgs, loadVoiceStatus, refreshSepStatus, setupSeparatorEnv, setupSeparatorWeights, setupSeparatorAll, sepModelLabel, sepBusy, sepInfo, sepModels, sepHasGpu, sepStatusText, sepDeviceText, sepEngineReason, sepModelsState, sepModelsMissing, sepModelsReady, sepRoformerVer, sepDemucsVer, sepTorchVer, sepUpdatablePkg, sepUpdatable, sepLatest, updateSeparatorEngines, toggleRealtime, installingVoice, voiceStatusText, rtRecording, rtTranslate, rtTargetLang, rtLog,
+          musicKeyword, musicResults, musicSearching, musicSourceErrors, musicNeedsMatch, musicScoreLine, musicHasScore, musicdlVersion, musicdlReady, musicPreset, musicStrategy, saveMusicStrategy, musicSearchType, musicIncludeLocal, musicFilenameTemplate, musicEmbedMeta, musicSkipExisting, musicHideUnavailable, musicBlockReupload, musicIncludeReference, musicQualitySpec, musicQualityOptions, musicQualitySummary, refHint, matchHint, openRefLink, player, playerEl, playerPlaying, playerTime, playerDur, playerVol, playerMuted, playerSeeking, playerSeekVal, playerStep, playerToggle, playerClose, playerSeek, onPlayerTick, onPlayerMeta, onPlayerEnded, musicLrcLines, musicLrcActive, previewMusicRow, probeMusicRow, switchMusicSource, musicSwitching, scanLocalMusic, musicSources, musicSourceOptions, musicMatchSourceOptions, musicPresetOptions, musicSourceOrdered, musicPlaylistUrl, musicPlaylistMode, saveMusicPlaylistMode, musicCookies, musicSelected, aiPipeline, analyzeAudioFile, openSepDlg, openStemMixer, sepDlg, startVocalSeparate, goMixer, clampSepStems, aiTts, installVoicePkgs, loadVoiceStatus, refreshSepStatus, setupSeparatorEnv, setupSeparatorWeights, setupSeparatorAll, sepModelLabel, sepBusy, sepInfo, sepModels, sepDemucsModels, sepHasGpu, sepStatusText, sepDeviceText, sepEngineReason, sepModelsState, sepModelsMissing, sepModelsReady, sepRoformerVer, sepDemucsVer, sepTorchVer, sepUpdatablePkg, sepUpdatable, sepLatest, updateSeparatorEngines, toggleRealtime, installingVoice, voiceStatusText, rtRecording, rtTranslate, rtTargetLang, rtLog,
           mixSrc, mixRows, mixLoading, mixBusy, mixPlaying, mixLoop, mixFormat, mixOut, mixOutUrl,
           stemLabel, streamUrl, loadStems, applyMixGains, applyMixLoop, toggleMixPlay, exportMix, searchMusic, batchSearchDownload, applyMusicPreset, parseMusicPlaylist, onMusicSelection, downloadMusicSelected, downloadMusicRow, showAlreadyHave, musicFavItems, musicFavMissing, musicFavSelected, musicFavReadySel, musicFavSwitching, musicFavDownloading, onMusicFavSelection, addMusicFav, removeMusicFav, clearMusicFav, previewMusicFav, switchMusicFav, downloadMusicFav, loadMusicFavs, installMusicdl,
           loadSubs, addSub, removeSub, toggleSub, scanOneSub, scanAllSubs, startLiveRecord, pauseLiveTask, resumeLiveTask, endLiveTask, endAllLive, cancelLiveTask, addLiveMonitor, removeLiveMonitor, pauseLiveMonitor, resumeLiveMonitor, scanLiveMonitors, loadLiveMonitors, liveRoomCfg, liveRoomFmts, liveRoomQualities, openLiveMonitorCfg, saveLiveMonitorCfg, liveMonitorCfgText, testTelegram,
           testWecom, applyRiskPreset, loadRiskPresets, loadFavTab, loadFavFolderItems, loadYtPlaylist, onFavSelChange,
           downloadFavSelected, downloadFavOne, subscribeFavSelected, subscribeFavOne, startBiliQr, pollBiliQr,
-          isPlayable, isAudioFile, isMediaFile, isVideoFile, openPicard, mbTagFile, mbEnrichFile, fingerprintFile, guessTagsFile, isSrtFile, aiVocalSeparate, aiTts, installVoicePkgs, loadVoiceStatus, refreshSepStatus, setupSeparatorEnv, setupSeparatorWeights, setupSeparatorAll, sepModelLabel, sepBusy, sepInfo, sepModels, sepHasGpu, sepStatusText, sepDeviceText, sepEngineReason, sepUpdatablePkg, sepUpdatable, sepLatest, updateSeparatorEngines, toggleRealtime, installingVoice, voiceStatusText, rtRecording, rtTranslate, rtTargetLang, rtLog,
+          isPlayable, isAudioFile, isMediaFile, isVideoFile, openPicard, mbTagFile, mbEnrichFile, fingerprintFile, guessTagsFile, isSrtFile, openSepDlg, openStemMixer, sepDlg, startVocalSeparate, goMixer, clampSepStems, aiTts, installVoicePkgs, loadVoiceStatus, refreshSepStatus, setupSeparatorEnv, setupSeparatorWeights, setupSeparatorAll, sepModelLabel, sepBusy, sepInfo, sepModels, sepDemucsModels, sepHasGpu, sepStatusText, sepDeviceText, sepEngineReason, sepUpdatablePkg, sepUpdatable, sepLatest, updateSeparatorEngines, toggleRealtime, installingVoice, voiceStatusText, rtRecording, rtTranslate, rtTargetLang, rtLog,
           mixSrc, mixRows, mixLoading, mixBusy, mixPlaying, mixLoop, mixFormat, mixOut, mixOutUrl,
           stemLabel, streamUrl, loadStems, applyMixGains, applyMixLoop, toggleMixPlay, exportMix, aiTranscribe, aiTranslateSrt, aiCalibrateSrt, onFileSelectionChange, runBatchAi, runSrtCalibrateSelected,
           burnDlg, burnJob, burnStarting, burnSubChoices, burnOutName, burnRunning, burnPercent, burnStatusText, openBurn, closeBurn, startBurn, stopBurn,

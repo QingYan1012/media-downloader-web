@@ -208,13 +208,12 @@ Caught as false reds, not product bugs:
 
 ---
 
-## After v1.4.0 — 37 commits in the repository, none of them in the published package
+## After v1.4.0 — 28 commits in the repository, none of them in the published package
 
-Everything below landed after the archive was compressed. It is pushed (`3f9cafc..ea16c82` on `main`, one
-fast-forward, screened first: 38 files, no binaries, no state files — the only credential-shaped string in the range
-is the `http://user:pass@` placeholder inside `tests/cookiecloud_test.py`). **The `v1.4.0` tag still points at
-`7ac0ff6` and no package was rebuilt**, so the published asset trails all of this. The readings quoted here are the
-ones recorded in each round's own commit — this entry consolidates them, it does not re-measure them.
+Everything below landed after the archive was compressed. **None of it is pushed**: `main` is 28 commits ahead of
+`origin/main`, the `v1.4.0` tag still points at `d922732` (the byte-for-byte commit behind the published asset), and no
+package has been rebuilt - so the published release trails all of this. The readings quoted here are the ones recorded
+in each round's own commit — this entry consolidates them, it does not re-measure them.
 
 ### Stem separation: a six-stem model, and a stem mixer
 
@@ -252,6 +251,48 @@ the archive, so nothing is integrated - the model choice is borrowed, and the cr
 - End to end in a self-spawned sandbox: six stems listed, a four-stem mix written (guitar and piano muted, bass at
   50%), `ffprobe` reading it back as `pcm_s16le / 44100 / 2ch`, and the browser button producing the same file with a
   toast and zero `pageerror`.
+
+### The chooser moved to where the action is
+
+The first thing the user said after that round was "there is no engine chooser on separate vocals". Six stems and the
+mixer had both been built on the voice page, but separation is started from the files page - and clicking it there
+offered no choice at all. Everything existed; it was sitting in the wrong place.
+
+- **The files page's "more → separate vocals" opens a chooser now**: engine / model / stem range / device, prefilled
+  from Settings, and what you change applies to this run only. The voice page card stays the home of the defaults, so
+  starting a job from the dialog never writes back to `settings.*` (assertion J3 is exactly that: no assignment to a
+  settings field anywhere in the dialog's code). After starting, the button becomes "open the mixer" and carries the
+  file's path across.
+- **The mixer gets an entry point on the files page too**: for a file that has been separated, "mix stems" jumps to the
+  mixer and reads the stems back immediately. It draws no divider line - it is the next step of separation, not the
+  head of a family.
+- **One copy of the model list**: the four Demucs names used to be hard-coded twice in the UI (voice page + dialog).
+  `/api/ai/voice_status` now returns them as `separation.demucs_models` and both dropdowns render from it - a second
+  copy drifts from the list the save-time validator checks, which would then mark the app's own option illegal.
+  Assertion A4 changed shape accordingly: it no longer compares a hard-coded quartet, it requires both dropdowns to be
+  `v-for` and forbids a written-out option.
+- **A real bug the live run caught (not a wiring problem)**: `loadVoiceStatus()` was only called when the voice page
+  opened, so a user who went straight from the files page to the chooser found both `v-for` dropdowns **empty**, with
+  the selection degraded to a bare id (`htdemucs_6s`, `bs_1297`). The first diagnosis was wrong - it blamed `v-if` /
+  `v-else` reusing the component instance, added `key` to both branches, re-ran: still empty. Looking at the DOM showed
+  the static options (engine / device / stem range) present and only the `v-for` ones missing, which points at data that
+  never arrived. The fix is `if (!sepInfo.value) loadVoiceStatus()` in `openSepDlg`, and the `key` experiment was
+  reverted. Offline gates cannot see this: `voice_status` is stubbed in that batch, and the stub always returned both
+  fields.
+- **Changing the model pulls the stem range back, never forward**: `htdemucs_6s` with "six stems" switched to another
+  model clamps to "vocals only", but switching back does not restore six - that would be deciding how someone else
+  wants to run their job.
+- Tests: `tests/separator_test.py` gained J1-J9 (the old bare POST is gone, the five overrides match the five
+  `body.get()` calls one for one, the dialog never writes settings, the clamp rule, both `return` lines carry the new
+  names, the six new keys exist in both dictionary halves, and opening the dialog fetches the status). `pagemount_test.py`
+  P8's menu count moved 15 → 16; the number of divider lines is still five. The live run passed 12 checks in a
+  self-spawned sandbox: prefilled readings, the field set changing with the engine, clamp and re-pick, the five
+  overrides in the intercepted request body, the jump carrying the path, six stems read back from the files-page entry,
+  zero `pageerror`.
+- Files touched: `server.py` (`voice_status` also returns `demucs_models`), `static/index.html` (the dialog, two menu
+  items, both `v-for` dropdowns, the `sepDlg` family of functions), `static/i18n.js` (+6 keys per language),
+  `tests/separator_test.py`, `tests/pagemount_test.py`, `CHANGELOG.md`, `CHANGELOG.en.md`,
+  `docs/详细功能介绍.md`, `docs/detailed-features.en.md`.
 
 ### Interface language, second batch: all 17 page bodies
 

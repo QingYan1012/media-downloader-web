@@ -12477,7 +12477,7 @@ def api_voice_status(refresh: int = 0):
     最后一种是换设备或装驱动）。所以这里不打包成一个 bool。
     """
     try:
-        from voice_tools import (SEP_RUNNER, EDGE_VOICE_PRESETS, deep_translator_available,
+        from voice_tools import (SEP_RUNNER, DEMUCS_MODELS, EDGE_VOICE_PRESETS, deep_translator_available,
                                  edge_tts_available, roformer_model_states, separation_probe,
                                  separator_setup_running)
         probe = separation_probe(refresh=bool(refresh))
@@ -12519,6 +12519,8 @@ def api_voice_status(refresh: int = 0):
                 "models": models,
                 "ready_models": ready,
                 "default_model": ready[0] if ready else "",
+                # Demucs 的模型名同样从这里出：界面上有两处下拉，抄第二份名单就会和保存闸门那份对不上。
+                "demucs_models": list(DEMUCS_MODELS),
                 "engines": [
                     {"id": "roformer", "available": venv and runner and as_ok and bool(ready),
                      "reason": why(as_ok and bool(ready), as_ok)},
