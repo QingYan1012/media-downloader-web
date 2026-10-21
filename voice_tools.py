@@ -94,10 +94,16 @@ ROFORMER_MODELS = [
      "yaml_sha256": "4b902a7360a930c178edb4846b30e4e326aa1219d1b2daf660d46a311e0cd50b"},
 ]
 
-# 就列界面下拉里那三个：htdemucs 是默认，htdemucs_ft 是微调四轨，mdx_extra 是老 mdx 一路。
-# htdemucs_6s / mdx23c 这些名字在 demucs 的注册表里确实有，但这台机器上没实测下载与跑通，
-# 没验过的名字不给选项 —— 给了就是让用户点下去报「模型下不下来」。
-DEMUCS_MODELS = ["htdemucs", "htdemucs_ft", "mdx_extra"]
+# 就列界面下拉里那几个：htdemucs 是默认，htdemucs_ft 是微调四轨，mdx_extra 是老 mdx 一路。
+# htdemucs_6s 是六轨（多吉他与钢琴），参照 StemDeck（Apache-2.0）的选型加进来 ——
+# 但它必须在本机真跑通下载与分离才配出现在下拉里，mdx23c 那类仍按老规矩先验后列。
+DEMUCS_MODELS = ["htdemucs", "htdemucs_ft", "mdx_extra", "htdemucs_6s"]
+# 分轨范围：vocal = 只取人声（--two-stems vocals，现有默认，出两条）；
+# four / six = 去掉 --two-stems，让 demucs 把自己那套轨全铺开，档位与模型必须对得上，
+# 否则用户选「六轨」拿到的是四条，或选「四轨」却下了一份六轨的权重。
+DEMUCS_STEMS_MODES = ["vocal", "four", "six"]
+DEMUCS_SIX_MODEL = "htdemucs_6s"
+DEMUCS_STEMS_BY_MODEL = {DEMUCS_SIX_MODEL: 6, "htdemucs": 4, "htdemucs_ft": 4, "mdx_extra": 4}
 SEPARATION_DEVICES = ["auto", "cpu", "cuda"]
 
 _probe_cache: dict = {"at": 0.0, "data": None}
@@ -231,8 +237,13 @@ def separate_demucs(
     device: str = "auto",
     out_dir: str = "",
     log: LogFn = print,
+    stems_mode: str = "vocal",
 ) -> dict:
-    """用 venv 里的 demucs 分离；设备三档靠它自己的 -d（实测 cpu/cuda 两档吞吐差 3.5 倍）。"""
+    """用 venv 里的 demucs 分离；设备三档靠它自己的 -d（实测 cpu/cuda 两档吞吐差 3.5 倍）。
+
+    stems_mode 只决定要不要带 --two-stems：vocal 沿用现有那条命令（人声 + 伴奏两条），
+    four / six 让 demucs 铺开自己全部的轨。档与模型不匹配直接抛，不让它跑完才发现轨数不对。
+    """
     py = separator_python()
     if not py:
         raise RuntimeError("分离引擎的独立环境还没建（tools/separator/venv 里没有 python）")
@@ -242,11 +253,24 @@ def separate_demucs(
     want = _resolved_device(device, probe)
     if device == "cuda" and not probe.get("cuda_available"):
         raise RuntimeError("这个环境看不到 CUDA（torch 报 cuda_available=False），选不了 GPU")
+    mode = (stems_mode or "vocal").strip().lower()
+    if mode not in DEMUCS_STEMS_MODES:
+        raise RuntimeError("分轨范围只认 %s，收到的是 %s" % (" / ".join(DEMUCS_STEMS_MODES), stems_mode))
+    mdl = (model or "htdemucs").strip()
+    cap = DEMUCS_STEMS_BY_MODEL.get(mdl)
+    if cap is None:
+        raise RuntimeError("Demucs 模型只认 %s，收到的是 %s" % (" / ".join(DEMUCS_MODELS), model))
+    if mode == "six" and cap < 6:
+        raise RuntimeError("六轨只有 %s 出得来，当前模型 %s 是 %d 轨" % (DEMUCS_SIX_MODEL, mdl, cap))
+    if mode == "four" and cap != 4:
+        raise RuntimeError("%s 出的是 %d 轨，配不上「四轨」这一档" % (mdl, cap))
     dest = Path(out_dir) if out_dir else Path(media_path).parent / "demucs"
     dest.mkdir(parents=True, exist_ok=True)
-    cmd = [py, "-m", "demucs", "--two-stems", "vocals", "-n", model or "htdemucs",
-           "-d", want, "-o", str(dest), str(media_path)]
-    _log(log, f"Demucs 开始: {model} / {want}")
+    cmd = [py, "-m", "demucs"]
+    if mode == "vocal":
+        cmd += ["--two-stems", "vocals"]
+    cmd += ["-n", mdl, "-d", want, "-o", str(dest), str(media_path)]
+    _log(log, f"Demucs 开始: {mdl} / {want} / {mode}")
     r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
                        errors="replace", timeout=7200, env=_subprocess_env())
     if r.returncode != 0:
@@ -260,7 +284,7 @@ def separate_demucs(
         raise RuntimeError("Demucs 跑完了但没找到成品（期望 %s/vocals.wav）" % track)
     _log(log, f"Demucs 完成: 实际设备 {want}，{len(found)} 条轨")
     return {"outputs": sorted(found.values()), "actual_device": want,
-            "stems": found, "device_matched": True}
+            "stems": found, "device_matched": True, "stems_mode": mode, "model": mdl}
 
 
 # ── 独立环境的搭建与权重预载 ────────────────────────────

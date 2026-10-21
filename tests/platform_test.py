@@ -212,7 +212,13 @@ ck("E4 探针不查工具（不跑 ffmpeg/yt-dlp/whisper），否则每 30s 白�
    health_body[:200])
 ck("E5 无桌面时「打开文件夹」给的是可懂的替代说明，不是 TclError 原文",
    "无界面运行" in SERVER_PY and "503" in SERVER_PY.split("def api_browse")[1][:1600])
-ck("E6 PATH 读写没有残留写死的分号", 'split(";")' not in SERVER_PY and '";".join' not in SERVER_PY)
+# 只看 PATH 读写那一段：全文件扫 '";".join' 会误伤 —— 分轨混音那边用分号是 ffmpeg 的
+# filter chain 分隔符，和系统 PATH 没关系。断言收窄到它真正管的范围，别靠运气不撞别的子系统。
+_path_region = SERVER_PY[SERVER_PY.index("def _path_split"):]
+_path_region = _path_region[:_path_region.index("def api_env_path_get")]
+ck("E6 PATH 读写没有残留写死的分号（窗口就是 _path_split 到 env 状态那一段）",
+   'split(";")' not in _path_region and '";".join' not in _path_region
+   and "_path_split(" in _path_region, f"窗口 {len(_path_region)} 字符")
 ck("E7 工具状态在 Linux 上认系统 PATH（apt 装的 ffmpeg 不该报缺失）",
    "present += [n for n in tools if n not in present and shutil.which(n)]" in SERVER_PY)
 ck("E8 界面「组件与依赖」的文件名列跟随平台（不再硬写 .exe）",

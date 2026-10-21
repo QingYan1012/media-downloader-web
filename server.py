@@ -3591,6 +3591,8 @@ class ConfigManager:
         # 语音工具那两项以前只写在读取处的兜底里，默认值表没登记：界面上有这两项，
         # 「恢复默认」的名单里就没有它们。默认值和代码里那份兜底保持一致。
         "demucs_model": "htdemucs",
+        # 分轨范围：默认 vocal —— 和这一项存在之前一样只出人声两条，改了默认等于替老用户重跑一遍分离
+        "demucs_stems": "vocal",
         # #78 人声分离：引擎 / RoFormer 权重 / 设备三档。默认走新装的 RoFormer，
         # 设备默认 auto —— 默认值不能替用户挑 GPU：装了别的程序占着显存时，
         # auto 会自己回到 CPU，写死 cuda 就变成「一按分离就报错」。
@@ -12039,6 +12041,7 @@ class ConfigBody(BaseModel):
     summary_lang: Optional[str] = None
     translate_auto_fallback: Optional[bool] = None
     demucs_model: Optional[str] = None
+    demucs_stems: Optional[str] = None
     vocal_engine: Optional[str] = None
     roformer_model: Optional[str] = None
     ai_device: Optional[str] = None
@@ -12751,20 +12754,30 @@ def api_ai_vocal_separate(body: dict):
         device = "auto"
     model_id = (body.get("model") or cfg.data.get("roformer_model") or "").strip()
     demucs_model = (body.get("demucs_model") or cfg.data.get("demucs_model") or "htdemucs").strip()
+    stems_mode = (body.get("stems_mode") or cfg.data.get("demucs_stems") or "vocal").strip().lower()
     out_dir = str(media.parent / ("separated" if engine == "roformer" else "demucs"))
 
-    from voice_tools import SEP_RUNNER, separator_python
+    from voice_tools import (DEMUCS_MODELS, DEMUCS_STEMS_BY_MODEL, SEP_RUNNER,
+                             separator_python)
     if not separator_python() or not SEP_RUNNER.is_file():
         # 这一层缺了不用等三十秒：命令行了无音讯地失败，界面上只有一行日志，
         # 人会以为「分离慢」，其实引擎根本不在。
         return {"ok": False, "error": "分离引擎的独立环境还没建（tools/separator/venv 里没有 python）"}
+    if engine == "demucs" and stems_mode != "vocal":
+        # 档与模型对不上要在起线程之前就说破：跑完一趟几分钟，才发现拿回的是别的轨数
+        cap = DEMUCS_STEMS_BY_MODEL.get(demucs_model)
+        if cap is None:
+            return {"ok": False, "error": f"Demucs 模型只认 {' / '.join(DEMUCS_MODELS)}，收到的是「{demucs_model}」"}
+        if (stems_mode == "six" and cap < 6) or (stems_mode == "four" and cap != 4):
+            return {"ok": False, "error": f"{demucs_model} 出 {cap} 轨，配不上「{stems_mode}」这一档"}
 
     def job():
         try:
             from voice_tools import separate_demucs, separate_roformer
             if engine == "demucs":
                 fact = separate_demucs(str(media), model=demucs_model, device=device,
-                                       out_dir=out_dir, log=log_mgr.log)
+                                       out_dir=out_dir, log=log_mgr.log,
+                                       stems_mode=stems_mode)
             else:
                 fact = separate_roformer(str(media), model_id=model_id, device=device,
                                          out_dir=out_dir,
@@ -12788,6 +12801,97 @@ def api_ai_vocal_separate(body: dict):
 
     threading.Thread(target=job, daemon=True).start()
     return {"ok": True, "message": f"人声分离中: {media.name}（{engine} / {device}）"}
+
+
+MIX_FORMATS = {"wav": ["-c:a", "pcm_s16le"], "mp3": ["-c:a", "libmp3lame", "-b:a", "320k"]}
+# 混音成品的名字里带这个标记：/api/voice/stems 靠它把自己产出的文件挡在轨列表之外
+MIX_NAME_MARK = "-mix-"
+
+
+@app.post("/api/voice/mix")
+def api_voice_mix(body: dict):
+    """把界面上调好的那几条轨按音量合成一条：静音的轨根本不进命令，混音是服务端 ffmpeg 干的。
+
+    口径：输入必须都在下载目录里（分离成品本来就落在那儿），输出写在第一条轨旁边；
+    音量 0–2（1 = 原样），amix 关掉 normalize —— 开了它会把每条轨按轨数等分压下去，
+    人在界面上听到的平衡和写出来的文件就不是一个东西。
+    """
+    fmt = str((body or {}).get("format") or "wav").strip().lower()
+    if fmt not in MIX_FORMATS:
+        raise HTTPException(400, f"导出格式只认 {' / '.join(sorted(MIX_FORMATS))}，收到的是「{fmt}」")
+    rows = []
+    for t in (body.get("tracks") or []):
+        if not isinstance(t, dict) or t.get("mute"):
+            continue
+        p = resolve_media_path(str(t.get("path") or ""))
+        root = Path(cfg.data.get("download_dir") or DEFAULT_DOWNLOAD_DIR).resolve()
+        if not str(p).startswith(str(root)):
+            raise HTTPException(400, f"只能混下载目录里的成品：{p.name}")
+        try:
+            vol = float(t.get("volume", 1.0))
+        except (TypeError, ValueError):
+            raise HTTPException(400, "音量得是个数")
+        rows.append((p, max(0.0, min(2.0, vol))))
+    if len(rows) < 2:
+        raise HTTPException(400, "至少留两条不静音的轨才谈得上混音")
+    ff = ffmpeg_mgr.find(ffmpeg_mgr.manual_path)
+    if not ff:
+        raise HTTPException(400, "找不到 ffmpeg，合不成混音")
+    stem = rows[0][0].parent.name.lower() == "demucs" and rows[0][0].parent.parent.name or rows[0][0].parent.name
+    out = rows[0][0].parent / f"{stem}-mix-{datetime.now().strftime('%H%M%S')}.{fmt}"
+    cmd = [ff, "-y"]
+    for p, _ in rows:
+        cmd += ["-i", str(p)]
+    labels = []
+    for i, (_p, vol) in enumerate(rows):
+        labels.append(f"[{i}:a]volume={vol:g}[a{i}]")
+    # 每条 volume 之间要有 ';'，最后再接 amix 那条 —— 连写会被 ffmpeg 当成一条非法 filterchain
+    chain = ";".join(labels) + ";" + "".join(f"[a{i}]" for i in range(len(rows)))
+    chain += f"amix=inputs={len(rows)}:duration=longest:normalize=0[out]"
+    cmd += ["-filter_complex", chain, "-map", "[out]", "-vn"] + MIX_FORMATS[fmt] + [str(out)]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           timeout=1800, creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
+    except subprocess.TimeoutExpired:
+        out.unlink(missing_ok=True)
+        raise HTTPException(500, "混音跑了 30 分钟还没完，先少留几条轨试试")
+    if r.returncode != 0 or not out.is_file():
+        out.unlink(missing_ok=True)
+        tail = ((r.stderr or "") + (r.stdout or "")).strip()[-300:]
+        log_mgr.log(f"分轨混音失败: {tail}", "error", k="srv.ai.mix_failed", kv={"e": tail})
+        raise HTTPException(500, f"混音没成：{tail[:160]}")
+    mb = out.stat().st_size / 1048576.0
+    log_mgr.log(f"分轨混音完成: {out.name}（{len(rows)} 条轨 · {mb:.1f} MB）",
+                k="srv.ai.mix_done", kv={"name": out.name, "n": len(rows), "mb": f"{mb:.1f}"})
+    return {"ok": True, "path": _ui_path(out), "tracks": len(rows), "format": fmt,
+            "message": f"已合成 {out.name}（{len(rows)} 条轨 · {mb:.1f} MB）"}
+
+
+@app.get("/api/voice/stems")
+def api_voice_stems(path: str = ""):
+    """列出某个文件分离出来的轨（混音台的数据源）。
+
+    成品是三层：<曲名所在目录>/demucs/<模型>/<曲名>/<轨名>.wav（roformer 那一路是 separated/<模型>/<曲名>/），
+    所以按「曲名那一层」精确取。不能把 demucs/ 底下所有 wav 都 rglob 回来 —— 同一首歌换过模型跑两次，
+    混音台就会拿到两批同名轨。
+    """
+    media = resolve_media_path(path)
+    root = media.parent
+    rows, seen = [], set()
+    for sub in ("demucs", "separated"):
+        base = root / sub
+        if not base.is_dir():
+            continue
+        for cand in sorted(base.rglob(f"{media.stem}/*.wav")):
+            # 混音成品就写在同一层，不排除的话下一次「载入分轨」会把自己也当成一条轨
+            if cand.stem in seen or MIX_NAME_MARK in cand.name:
+                continue
+            seen.add(cand.stem)
+            rows.append({"name": cand.stem, "path": _ui_path(cand),
+                         "size": cand.stat().st_size})
+        if rows:
+            break
+    return {"ok": True, "source": media.name, "stems": rows}
 
 
 @app.post("/api/ai/tts")
@@ -14500,7 +14604,7 @@ def _apply_config(data: dict, request: Request = None) -> dict:
     if any(k.startswith("web_auth_") for k in data) and request is not None and _auth_token_only(request):
         # 令牌是「让自动脚本能读能写下载」的，不该顺手把这道门本身关掉或改口径
         raise HTTPException(403, "机器令牌只开数据接口：改访问保护的设置要从界面登录")
-    from voice_tools import DEMUCS_MODELS, ROFORMER_MODELS, SEPARATION_DEVICES
+    from voice_tools import DEMUCS_MODELS, DEMUCS_STEMS_MODES, ROFORMER_MODELS, SEPARATION_DEVICES
     for k, allowed, label in (("video_encoder", VIDEO_ENCODER_MODES, "视频编码器"),
                               ("video_cpu_codec", VIDEO_CPU_CODECS, "CPU 编码器"),
                               ("video_cpu_preset", VIDEO_CPU_PRESETS, "编码档位"),
@@ -14509,7 +14613,8 @@ def _apply_config(data: dict, request: Request = None) -> dict:
                               ("vocal_engine", ("roformer", "demucs"), "分离引擎"),
                               ("ai_device", tuple(SEPARATION_DEVICES), "分离设备"),
                               ("roformer_model", tuple(m["id"] for m in ROFORMER_MODELS), "分离权重"),
-                              ("demucs_model", tuple(DEMUCS_MODELS), "Demucs 模型")):
+                              ("demucs_model", tuple(DEMUCS_MODELS), "Demucs 模型"),
+                              ("demucs_stems", tuple(DEMUCS_STEMS_MODES), "分轨范围")):
         if k in data:
             v = str(data[k] or "").strip().lower()
             if v not in allowed:

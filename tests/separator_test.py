@@ -293,6 +293,73 @@ ck("H10 更新与搭建的回话分开说：点「更新」不该回一句「搭
    "分离引擎更新中，进度看运行日志" in SERVER
    and '"srv.ai.update_ready"' in SERVER and '"srv.ai.update_failed"' in SERVER)
 
+# ------------------------------------------------- I. 六轨与分轨混音台（参照 StemDeck）
+_stems_block = HTML[HTML.index('v-model="settings.demucs_stems"'):]
+_stems_block = _stems_block[:_stems_block.index("</el-select>")]
+ck("I1 分轨范围三档在界面上给全，且值与后端那张表逐条相等（不一致时保存闸门会判界面自己的选项非法）",
+   sorted(re.findall(r'value="(vocal|four|six)"', _stems_block)) == sorted(V.DEMUCS_STEMS_MODES)
+   and [f'value="{x}"' for x in V.DEMUCS_STEMS_MODES]
+   and all(f'value="{x}"' in _stems_block for x in V.DEMUCS_STEMS_MODES),
+   str(V.DEMUCS_STEMS_MODES))
+ck("I2 默认值仍是只取人声：DEFAULTS、前端 settings 初值、loadConfig 回填三处都说 vocal（改了默认等于替老用户重跑分离）",
+   '"demucs_stems": "vocal"' in SERVER and "demucs_stems: 'vocal'," in HTML
+   and "settings.value.demucs_stems" in HTML)
+ck("I3 demucs_stems 上了保存那道闸门（它是直接拼进子进程命令行的参数，脏值不能进）",
+   '("demucs_stems", tuple(DEMUCS_STEMS_MODES)' in SERVER and "DEMUCS_STEMS_MODES" in SERVER)
+ck("I4 --two-stems 只在 vocal 档出现，four/six 走全轨（写死它就一直只有两条）",
+   VT_SRC.index('if mode == "vocal":') < VT_SRC.index('"--two-stems", "vocals"')
+   and VT_SRC.count('"--two-stems"') == 1)
+ck("I5 六轨只允许 htdemucs_6s，且界面与后端两处都拦（跑完几分钟才发现轨数不对太亏）",
+   'if mode == "six" and cap < 6' in VT_SRC and '(stems_mode == "six" and cap < 6)' in SERVER
+   and ':disabled="settings.demucs_model !== \'htdemucs_6s\'"' in HTML)
+ck("I6 六轨模型进表的条件是这台机器真跑通过（实测：4 秒片段 CPU 262 s，出 bass/drums/guitar/other/piano/vocals）",
+   "htdemucs_6s" in V.DEMUCS_MODELS and V.DEMUCS_STEMS_BY_MODEL.get("htdemucs_6s") == 6,
+   str(V.DEMUCS_STEMS_BY_MODEL))
+# 混音导出：filter 链少一个 ';' 就是 500（第一版就是这么翻车的），别让它回潮
+def _slice(src, start, stop):
+    """按标记截一段函数体；标记找不到就退回整段尾部，绝不让整套自检在 ValueError 上中断。"""
+    a = src.find(start)
+    if a < 0:
+        return ""
+    b = src.find(stop, a)
+    return src[a:(b if b > a else len(src))]
+
+
+_mix_fn = _slice(SERVER, "def api_voice_mix", '@app.get("/api/voice/stems")')
+ck("I7 混音的 filter_complex 用 ';' 串起来（连写会被 ffmpeg 判成非法 filterchain，接口直接 500）",
+   '";".join(labels)' in _mix_fn and '";" + "".join' in _mix_fn)
+ck("I8 混音只收下载目录里的成品，且至少两条不静音的轨（静音的不进命令）",
+   "只能混下载目录里的成品" in _mix_fn and "至少留两条不静音的轨" in _mix_fn
+   and "if not isinstance(t, dict) or t.get(\"mute\"):" in _mix_fn)
+ck("I9 amix 关掉 normalize：不然界面调好的平衡和写出来的文件不是一个东西",
+   "normalize=0" in _mix_fn and "duration=longest" in _mix_fn)
+_stem_fn = _slice(SERVER, "def api_voice_stems", '@app.post("/api/ai/tts")')
+ck("I10 轨列表按曲名那一层精确取，并排掉自己的混音成品（不然重载一次会把 mix 当成第七条轨）",
+   'rglob(f"{media.stem}/*.wav")' in _stem_fn and "MIX_NAME_MARK in cand.name" in _stem_fn
+   and 'MIX_NAME_MARK = "-mix-"' in SERVER and 'f"{stem}-mix-' in SERVER)
+ck("I11 混音台卡在语音页里，行内有静音/独奏/音量/循环与导出，全部文字走 tr()",
+   "voice.mixTitle" in HTML and 'class="row row--tight mix-row"' in HTML
+   and "applyMixGains" in HTML and "exportMix" in HTML)
+ck("I12 混音台的七个新名字都挂进了 setup 的 return（漏一个整页渲染炸，不是少一行）",
+   all(("mixSrc, " in HTML or "mixSrc," in HTML) for _ in [0])
+   and "stemLabel, streamUrl, loadStems, applyMixGains, applyMixLoop, toggleMixPlay, exportMix," in HTML)
+_dict_src = I18N
+_mix_keys = ["voice.mixTitle", "voice.mixCount", "voice.mixExportHint", "voice.stemVocals",
+             "voice.stemGuitar", "voice.stemsSix", "srv.ai.mix_done", "srv.ai.mix_failed"]
+_zh_half = _dict_src[:_dict_src.index("\n    en: {")]
+_pad = [k for k in _mix_keys
+        if (m := re.search(r"^      '%s': '(.*?)',$" % re.escape(k), _zh_half, re.M))
+        and m.group(1) != m.group(1).strip()]
+_han = [k for k in _mix_keys
+        if re.search(r"[\u4e00-\u9fff]", "".join(re.findall(
+            r"^      '%s': '(.*?)',$" % re.escape(k), _dict_src[_dict_src.index("\n    en: {"):], re.M)))]
+ck("I13 新键两份词表都在（各出现两次），zh 那半不带首尾空格、en 那半不含汉字"
+   "（只查这批新键，不拿整份词表当靶子 —— 拼接片段本来就以空格为内容）",
+   all(_dict_src.count(f"'{k}':") == 2 for k in _mix_keys) and not _pad and not _han,
+   f"空格 {list(_pad)} 汉字 {list(_han)}")
+ck("I14 混音那两条后端日志从一开始就带键与 kv（#55 口径：新写的句子不留裸中文）",
+   'k="srv.ai.mix_done"' in _mix_fn and 'k="srv.ai.mix_failed"' in _mix_fn)
+
 print(f"== 汇总 ==\n共 {TOTAL} 条，失败 {len(FAILED)} 条")
 if FAILED:
     for f in FAILED:

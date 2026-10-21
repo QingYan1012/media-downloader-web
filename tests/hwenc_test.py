@@ -333,10 +333,13 @@ cb = cb[:cb.index("def api_set_config") if "def api_set_config" in cb else 4000]
 ck("H2 ConfigBody 声明了这三行（不声明 model_dump 会静默丢）",
    "video_encoder: Optional[str]" in cb and "video_cpu_codec: Optional[str]" in cb
    and "video_cpu_preset: Optional[str]" in cb, cb[:200])
-blk = srv[srv.index('for k, allowed, label in (("video_encoder"'):]
-ck("H3 保存当场校验枚举", 'VIDEO_ENCODER_MODES' in blk[:600] and 'VIDEO_CPU_CODECS' in blk[:600]
-   and 'VIDEO_CPU_PRESETS' in blk[:600], blk[:400])
-ck("H4 校验不过顶回 400，不静默收下", 'HTTPException(400' in blk[:900], blk[:400])
+# 窗口取「那圈枚举校验」的函数体本身，不取固定字符数：往表里多加一项（分轨范围）就会把
+# 900 字符的窗口撑到 HTTPException 之后，红的是取样，不是校验。
+_blk_end = srv.index('if "concurrent" in data:', srv.index('for k, allowed, label in (("video_encoder"'))
+blk = srv[srv.index('for k, allowed, label in (("video_encoder"'):_blk_end]
+ck("H3 保存当场校验枚举", 'VIDEO_ENCODER_MODES' in blk and 'VIDEO_CPU_CODECS' in blk
+   and 'VIDEO_CPU_PRESETS' in blk, blk[:400])
+ck("H4 校验不过顶回 400，不静默收下", 'HTTPException(400' in blk, blk[-260:])
 ck("H5 读数接口注册在 app 之后", srv.count('@app.get("/api/video/encoders")') == 1
    and srv.index('@app.get("/api/video/encoders")') > srv.index('app = FastAPI'))
 ck("H6 烧字幕走链，一个不行换下一个", "chain = _video_encode_chain(crf)" in srv

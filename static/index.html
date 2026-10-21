@@ -1584,6 +1584,10 @@
       color: var(--ink);
       margin-bottom: 12px;
     }
+    /* 混音台一轨一行：名字定宽对齐，滑杆跟在后面，整行不折 */
+    .mix-row { gap: 10px; }
+    .mix-row .mix-name { min-width: 76px; font-weight: 600; }
+    .mix-row audio { display: none; }
     .hint {
       font-size: var(--fs-ui-xs);
       color: var(--muted);
@@ -3478,7 +3482,18 @@
                     <el-option label="htdemucs" value="htdemucs"></el-option>
                     <el-option label="htdemucs_ft" value="htdemucs_ft"></el-option>
                     <el-option label="mdx_extra" value="mdx_extra"></el-option>
+                    <el-option label="htdemucs_6s" value="htdemucs_6s"></el-option>
                   </el-select>
+                </el-form-item>
+                <el-form-item v-if="settings.vocal_engine === 'demucs'" :label="tr('voice.stemsLabel')">
+                  <el-select size="small" v-model="settings.demucs_stems" style="width:220px">
+                    <el-option :label="tr('voice.stemsVocal')" value="vocal"></el-option>
+                    <el-option :label="tr('voice.stemsFour')" value="four"
+                               :disabled="settings.demucs_model === 'htdemucs_6s'"></el-option>
+                    <el-option :label="tr('voice.stemsSix')" value="six"
+                               :disabled="settings.demucs_model !== 'htdemucs_6s'"></el-option>
+                  </el-select>
+                  <span class="hint">{{ tr('voice.stemsHint') }}</span>
                 </el-form-item>
                 <el-form-item :label="tr('voice.deviceLabel')">
                   <el-select size="small" v-model="settings.ai_device" style="width:220px">
@@ -3516,6 +3531,40 @@
               </div>
             </div>
             <div class="card">
+              <div class="section-title">{{ tr('voice.mixTitle') }}</div>
+              <div class="row row--tight row--mb">
+                <el-input size="small" v-model="mixSrc" :placeholder="tr('voice.mixPh')"
+                          style="max-width:460px" clearable @keyup.enter="loadStems"></el-input>
+                <el-button size="small" :loading="mixLoading" @click="loadStems">{{ tr('voice.mixLoad') }}</el-button>
+                <el-button size="small" type="primary" :disabled="!mixRows.length" @click="toggleMixPlay">
+                  {{ mixPlaying ? tr('voice.mixPause') : tr('voice.mixPlay') }}</el-button>
+                <el-checkbox v-model="mixLoop" size="small" @change="applyMixLoop">{{ tr('voice.mixLoop') }}</el-checkbox>
+                <span class="hint" v-if="mixRows.length">{{ tr('voice.mixCount', { n: mixRows.length }) }}</span>
+              </div>
+              <div v-if="!mixRows.length" class="hint">{{ tr('voice.mixEmpty') }}</div>
+              <div v-for="(r, i) in mixRows" :key="r.path" class="row row--tight mix-row">
+                <el-checkbox v-model="r.mute" size="small" @change="applyMixGains">{{ tr('voice.mixMute') }}</el-checkbox>
+                <el-checkbox v-model="r.solo" size="small" @change="applyMixGains">{{ tr('voice.mixSolo') }}</el-checkbox>
+                <span class="mix-name">{{ stemLabel(r.name) }}</span>
+                <el-slider v-model="r.volume" :min="0" :max="1" :step="0.05" size="small"
+                           style="width:180px" @input="applyMixGains"></el-slider>
+                <span class="hint">{{ Math.round(r.volume * 100) }}%</span>
+                <audio :data-mix="i" :src="streamUrl(r.path)" preload="none"></audio>
+              </div>
+              <div class="row row--tight" v-if="mixRows.length">
+                <el-select v-model="mixFormat" size="small" style="width:110px">
+                  <el-option label="WAV" value="wav"></el-option>
+                  <el-option label="MP3" value="mp3"></el-option>
+                </el-select>
+                <el-button size="small" type="primary" :loading="mixBusy" @click="exportMix">{{ tr('voice.mixExport') }}</el-button>
+                <span class="hint">{{ tr('voice.mixExportHint') }}</span>
+              </div>
+              <div class="row row--tight" v-if="mixOut">
+                <span class="hint">{{ mixOut }}</span>
+                <audio controls :src="mixOutUrl" style="height:32px"></audio>
+              </div>
+            </div>
+            <div class="card">
               <div class="section-title">{{ tr('voice.rtTitle') }}</div>
               <div class="row row--tight row--mb">
                 <el-button size="small" :type="rtRecording ? 'danger' : 'primary'" @click="toggleRealtime">{{ rtRecording ? tr('common.stop') : tr('voice.rtStart') }}</el-button>
@@ -3526,7 +3575,7 @@
                   <el-option :label="tr('common.langJa')" value="ja"></el-option>
                 </el-select>
               </div>
-              <div style="background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;min-height:120px;white-space:pre-wrap;font-size:15px">{{ rtLog || tr('voice.rtIdle') }}</div>
+              <div style="background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;min-height:96px;max-height:180px;overflow-y:auto;white-space:pre-wrap;font-size:15px">{{ rtLog || tr('voice.rtIdle') }}</div>
             </div>
           </div>
 
@@ -6677,6 +6726,7 @@
           translate_auto_fallback: true,
           edge_tts_voice: 'zh-CN-XiaoxiaoNeural',
           demucs_model: 'htdemucs',
+          demucs_stems: 'vocal',
           vocal_engine: 'roformer',
           roformer_model: 'bs_1297',
           ai_device: 'auto',
@@ -8458,6 +8508,7 @@
             settings.value.vocal_engine = ['roformer', 'demucs'].includes(data.vocal_engine) ? data.vocal_engine : 'roformer';
             settings.value.roformer_model = data.roformer_model || 'bs_1297';
             settings.value.demucs_model = data.demucs_model || 'htdemucs';
+            settings.value.demucs_stems = ['vocal', 'four', 'six'].indexOf(data.demucs_stems) >= 0 ? data.demucs_stems : 'vocal';
             settings.value.ai_device = ['auto', 'cpu', 'cuda'].includes(data.ai_device) ? data.ai_device : 'auto';
             settings.value.vocal_native_fp16 = !!data.vocal_native_fp16;
             settings.value.diarization_enabled = !!data.diarization_enabled;
@@ -9927,9 +9978,89 @@
         async function aiVocalSeparate(row) {
           try {
             const r = await api('/api/ai/vocal_separate', { method: 'POST', body: JSON.stringify({ path: row.path }) });
-            if (r.ok === false) { ElementPlus.ElMessage.error(r.error || '分离没能开始'); return; }
-            ElementPlus.ElMessage.success(r.message || '分离已开始，成品路径写在运行日志里');
+            if (r.ok === false) { ElementPlus.ElMessage.error(r.error || tr('voice.sepFail')); return; }
+            mixSrc.value = row.path;   // 跑完直接能在混音台里认出来，不用人再抄一遍路径
+            ElementPlus.ElMessage.success(r.message || tr('voice.sepStarted'));
           } catch (e) { ElementPlus.ElMessage.error(String(e.message || e)); }
+        }
+        // ---- 分轨混音台：轨来自上一次分离落盘的那堆 wav，静音/独奏/音量都在前端调，导出交给后端 ffmpeg ----
+        const mixSrc = ref('');
+        const mixRows = ref([]);
+        const mixLoading = ref(false);
+        const mixBusy = ref(false);
+        const mixPlaying = ref(false);
+        const mixLoop = ref(false);
+        const mixFormat = ref('wav');
+        const mixOut = ref('');
+        const mixOutUrl = ref('');
+        // 轨名是 demucs 自己写进文件名的（vocals / no_vocals / drums…），认不出的照原样显示，
+        // 不硬翻 —— 猜错一个名字比留英文文件名更容易误导人。
+        const STEM_NAME_KEYS = {
+          vocals: 'voice.stemVocals', no_vocals: 'voice.stemNoVocals', accompaniment: 'voice.stemNoVocals',
+          drums: 'voice.stemDrums', bass: 'voice.stemBass', other: 'voice.stemOther',
+          guitar: 'voice.stemGuitar', piano: 'voice.stemPiano',
+        };
+        function stemLabel(name) {
+          const k = STEM_NAME_KEYS[String(name || '').toLowerCase()];
+          return k ? tr(k) : String(name || '');
+        }
+        function streamUrl(p) { return '/api/files/stream?path=' + encodeURIComponent(p); }
+        function mixEls() {
+          return [...document.querySelectorAll('audio[data-mix]')].map((el) => [Number(el.dataset.mix), el]);
+        }
+        function applyMixGains() {
+          const anySolo = mixRows.value.some(r => r.solo);
+          mixEls().forEach(([i, el]) => {
+            const r = mixRows.value[i] || {};
+            const audible = !r.mute && (!anySolo || r.solo);
+            el.volume = audible ? Math.max(0, Math.min(1, Number(r.volume ?? 1))) : 0;
+          });
+        }
+        function applyMixLoop() { mixEls().forEach(([, el]) => { el.loop = !!mixLoop.value; }); }
+        async function loadStems() {
+          if (!mixSrc.value.trim()) { ElementPlus.ElMessage.warning(tr('voice.mixNeedPath')); return; }
+          mixLoading.value = true;
+          stopMixPlay();
+          try {
+            const r = await api('/api/voice/stems?path=' + encodeURIComponent(mixSrc.value.trim()));
+            const list = (r && r.stems) || [];
+            mixRows.value = list.map(s => ({ ...s, mute: false, solo: false, volume: 1 }));
+            mixOut.value = ''; mixOutUrl.value = '';
+            if (!mixRows.value.length) ElementPlus.ElMessage.warning(tr('voice.mixNone'));
+            else ElementPlus.ElMessage.success(tr('voice.mixLoaded', { n: mixRows.value.length }));
+          } catch (e) { ElementPlus.ElMessage.error(String(e.message || e)); }
+          finally { mixLoading.value = false; }
+        }
+        function stopMixPlay() {
+          mixEls().forEach(([, el]) => { try { el.pause(); el.currentTime = 0; } catch (err) { /* 已销毁 */ } });
+          mixPlaying.value = false;
+        }
+        function toggleMixPlay() {
+          const els = mixEls();
+          if (!els.length) return;
+          if (mixPlaying.value) { stopMixPlay(); return; }
+          applyMixGains(); applyMixLoop();
+          els.forEach(([, el]) => { const p = el.play(); if (p && p.catch) p.catch(() => {}); });
+          mixPlaying.value = true;
+        }
+        async function exportMix() {
+          const live = mixRows.value.filter(r => !r.mute);
+          if (live.length < 2) { ElementPlus.ElMessage.warning(tr('voice.mixTooFew')); return; }
+          mixBusy.value = true;
+          try {
+            const r = await api('/api/voice/mix', {
+              method: 'POST',
+              body: JSON.stringify({
+                format: mixFormat.value,
+                tracks: mixRows.value.map(x => ({ path: x.path, volume: x.volume, mute: x.mute })),
+              }),
+            });
+            if (r.ok === false) { ElementPlus.ElMessage.error(r.message || tr('voice.mixFail')); return; }
+            mixOut.value = r.path || '';
+            mixOutUrl.value = r.path ? streamUrl(r.path) : '';
+            ElementPlus.ElMessage.success(r.message || tr('voice.mixDone'));
+          } catch (e) { ElementPlus.ElMessage.error(String(e.message || e)); }
+          finally { mixBusy.value = false; }
         }
         async function aiTts(row) {
           try {
@@ -13532,6 +13663,7 @@ const CFG_KEYS = {
           "cookie_file": 'settings.cfg.cookie_file',
           "cookie_public_first": 'settings.cfg.cookie_public_first',
           "demucs_model": 'settings.cfg.demucs_model',
+          "demucs_stems": 'settings.cfg.demucs_stems',
           "diarization_enabled": 'settings.diarLabel',
           "diarization_max_speakers": 'settings.diarLabel',
           "download_dir": 'settings.cfg.download_dir',
@@ -14433,11 +14565,15 @@ const CFG_KEYS = {
           srtEditBox, srtQc, runSrtQc, runSrtRewrap, qcJumpTo, qcDropNoise,
           searchQuery, searchPlatform, searchContentType, searchSort, setSearchSort,
           searchTotal, searchTruncated, searchNotes, SEARCH_PLAT_NAMES, searchResults, searching, platformCookies, cookieIssueCount, syncFileInput,
-          musicKeyword, musicResults, musicSearching, musicSourceErrors, musicNeedsMatch, musicScoreLine, musicHasScore, musicdlVersion, musicdlReady, musicPreset, musicStrategy, saveMusicStrategy, musicSearchType, musicIncludeLocal, musicFilenameTemplate, musicEmbedMeta, musicSkipExisting, musicHideUnavailable, musicBlockReupload, musicIncludeReference, musicQualitySpec, musicQualityOptions, musicQualitySummary, refHint, matchHint, openRefLink, player, playerEl, playerPlaying, playerTime, playerDur, playerVol, playerMuted, playerSeeking, playerSeekVal, playerStep, playerToggle, playerClose, playerSeek, onPlayerTick, onPlayerMeta, onPlayerEnded, musicLrcLines, musicLrcActive, previewMusicRow, probeMusicRow, switchMusicSource, musicSwitching, scanLocalMusic, musicSources, musicSourceOptions, musicMatchSourceOptions, musicPresetOptions, musicSourceOrdered, musicPlaylistUrl, musicPlaylistMode, saveMusicPlaylistMode, musicCookies, musicSelected, aiPipeline, analyzeAudioFile, aiVocalSeparate, aiTts, installVoicePkgs, loadVoiceStatus, refreshSepStatus, setupSeparatorEnv, setupSeparatorWeights, setupSeparatorAll, sepModelLabel, sepBusy, sepInfo, sepModels, sepHasGpu, sepStatusText, sepDeviceText, sepEngineReason, sepModelsState, sepModelsMissing, sepModelsReady, sepRoformerVer, sepDemucsVer, sepTorchVer, sepUpdatablePkg, sepUpdatable, sepLatest, updateSeparatorEngines, toggleRealtime, installingVoice, voiceStatusText, rtRecording, rtTranslate, rtTargetLang, rtLog, searchMusic, batchSearchDownload, applyMusicPreset, parseMusicPlaylist, onMusicSelection, downloadMusicSelected, downloadMusicRow, showAlreadyHave, musicFavItems, musicFavMissing, musicFavSelected, musicFavReadySel, musicFavSwitching, musicFavDownloading, onMusicFavSelection, addMusicFav, removeMusicFav, clearMusicFav, previewMusicFav, switchMusicFav, downloadMusicFav, loadMusicFavs, installMusicdl,
+          musicKeyword, musicResults, musicSearching, musicSourceErrors, musicNeedsMatch, musicScoreLine, musicHasScore, musicdlVersion, musicdlReady, musicPreset, musicStrategy, saveMusicStrategy, musicSearchType, musicIncludeLocal, musicFilenameTemplate, musicEmbedMeta, musicSkipExisting, musicHideUnavailable, musicBlockReupload, musicIncludeReference, musicQualitySpec, musicQualityOptions, musicQualitySummary, refHint, matchHint, openRefLink, player, playerEl, playerPlaying, playerTime, playerDur, playerVol, playerMuted, playerSeeking, playerSeekVal, playerStep, playerToggle, playerClose, playerSeek, onPlayerTick, onPlayerMeta, onPlayerEnded, musicLrcLines, musicLrcActive, previewMusicRow, probeMusicRow, switchMusicSource, musicSwitching, scanLocalMusic, musicSources, musicSourceOptions, musicMatchSourceOptions, musicPresetOptions, musicSourceOrdered, musicPlaylistUrl, musicPlaylistMode, saveMusicPlaylistMode, musicCookies, musicSelected, aiPipeline, analyzeAudioFile, aiVocalSeparate, aiTts, installVoicePkgs, loadVoiceStatus, refreshSepStatus, setupSeparatorEnv, setupSeparatorWeights, setupSeparatorAll, sepModelLabel, sepBusy, sepInfo, sepModels, sepHasGpu, sepStatusText, sepDeviceText, sepEngineReason, sepModelsState, sepModelsMissing, sepModelsReady, sepRoformerVer, sepDemucsVer, sepTorchVer, sepUpdatablePkg, sepUpdatable, sepLatest, updateSeparatorEngines, toggleRealtime, installingVoice, voiceStatusText, rtRecording, rtTranslate, rtTargetLang, rtLog,
+          mixSrc, mixRows, mixLoading, mixBusy, mixPlaying, mixLoop, mixFormat, mixOut, mixOutUrl,
+          stemLabel, streamUrl, loadStems, applyMixGains, applyMixLoop, toggleMixPlay, exportMix, searchMusic, batchSearchDownload, applyMusicPreset, parseMusicPlaylist, onMusicSelection, downloadMusicSelected, downloadMusicRow, showAlreadyHave, musicFavItems, musicFavMissing, musicFavSelected, musicFavReadySel, musicFavSwitching, musicFavDownloading, onMusicFavSelection, addMusicFav, removeMusicFav, clearMusicFav, previewMusicFav, switchMusicFav, downloadMusicFav, loadMusicFavs, installMusicdl,
           loadSubs, addSub, removeSub, toggleSub, scanOneSub, scanAllSubs, startLiveRecord, pauseLiveTask, resumeLiveTask, endLiveTask, endAllLive, cancelLiveTask, addLiveMonitor, removeLiveMonitor, pauseLiveMonitor, resumeLiveMonitor, scanLiveMonitors, loadLiveMonitors, liveRoomCfg, liveRoomFmts, liveRoomQualities, openLiveMonitorCfg, saveLiveMonitorCfg, liveMonitorCfgText, testTelegram,
           testWecom, applyRiskPreset, loadRiskPresets, loadFavTab, loadFavFolderItems, loadYtPlaylist, onFavSelChange,
           downloadFavSelected, downloadFavOne, subscribeFavSelected, subscribeFavOne, startBiliQr, pollBiliQr,
-          isPlayable, isAudioFile, isMediaFile, isVideoFile, openPicard, mbTagFile, mbEnrichFile, fingerprintFile, guessTagsFile, isSrtFile, aiVocalSeparate, aiTts, installVoicePkgs, loadVoiceStatus, refreshSepStatus, setupSeparatorEnv, setupSeparatorWeights, setupSeparatorAll, sepModelLabel, sepBusy, sepInfo, sepModels, sepHasGpu, sepStatusText, sepDeviceText, sepEngineReason, sepUpdatablePkg, sepUpdatable, sepLatest, updateSeparatorEngines, toggleRealtime, installingVoice, voiceStatusText, rtRecording, rtTranslate, rtTargetLang, rtLog, aiTranscribe, aiTranslateSrt, aiCalibrateSrt, onFileSelectionChange, runBatchAi, runSrtCalibrateSelected,
+          isPlayable, isAudioFile, isMediaFile, isVideoFile, openPicard, mbTagFile, mbEnrichFile, fingerprintFile, guessTagsFile, isSrtFile, aiVocalSeparate, aiTts, installVoicePkgs, loadVoiceStatus, refreshSepStatus, setupSeparatorEnv, setupSeparatorWeights, setupSeparatorAll, sepModelLabel, sepBusy, sepInfo, sepModels, sepHasGpu, sepStatusText, sepDeviceText, sepEngineReason, sepUpdatablePkg, sepUpdatable, sepLatest, updateSeparatorEngines, toggleRealtime, installingVoice, voiceStatusText, rtRecording, rtTranslate, rtTargetLang, rtLog,
+          mixSrc, mixRows, mixLoading, mixBusy, mixPlaying, mixLoop, mixFormat, mixOut, mixOutUrl,
+          stemLabel, streamUrl, loadStems, applyMixGains, applyMixLoop, toggleMixPlay, exportMix, aiTranscribe, aiTranslateSrt, aiCalibrateSrt, onFileSelectionChange, runBatchAi, runSrtCalibrateSelected,
           burnDlg, burnJob, burnStarting, burnSubChoices, burnOutName, burnRunning, burnPercent, burnStatusText, openBurn, closeBurn, startBurn, stopBurn,
           batchMode, batchScope, batchRunning, selectedFiles, syncOffsetSec, syncScale, syncInplace, playFile, zipPath, zipCurrentFolder,
           doSearch, downloadSearchItem, analyzeSearchItem, subscribeSearchItem, normalizeSearchUrl, loadPlatformCookies, savePlatformCookie, savePlatformCookieText, clearCookieFlag, browsePlatformCookie, exportSync, triggerImportSync, onImportSync,
