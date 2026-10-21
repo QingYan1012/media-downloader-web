@@ -497,10 +497,12 @@ ck("H20 ACTION_NAMES 只剩「路径 → 键」：138 条一个不多一个不�
 # 片段带了会拼到句子中间。它们只当 kv 的值发，永远不当 k。
 FRAG = [k for k in DICT["zh"] if k.startswith(("list.", "col.", "sort.", "favtab.", "theme.", "dir.",
                                                # #93a：日志句子洞里的「我们自己的中文」也走这一式，K11 管对表
-                                               "enc.", "tpreset.", "track.", "ccop."))]
-ck("H21 片段键自成一批前缀（list./col./sort./favtab./theme./dir./enc./tpreset./track./ccop.），"
+                                               "enc.", "tpreset.", "track.", "ccop.",
+                                               # 第三十一批：兜底词与状态词（未知/开/关/密钥五种状态）
+                                               "misc.", "ccnote."))]
+ck("H21 片段键自成一批前缀（list./col./sort./favtab./theme./dir./enc./tpreset./track./ccop./misc./ccnote.），"
    "两份都有、en 不带「[UI] 」、也不当 k 用",
-   len(FRAG) >= 50 and not [k for k in FRAG if k not in DICT["en"]
+   len(FRAG) >= 70 and not [k for k in FRAG if k not in DICT["en"]
                             or DICT["en"][k].startswith("[UI] ") or k in kb],
    f"{len(FRAG)} 个片段键")
 ck("H22 落盘基线本身够分量（改前那句中文逐条在册，G39 才有得比；基线空了等于这条闸门没跑）",
@@ -743,10 +745,21 @@ ck("K11d 轨道名与 CookieCloud 动作名两头对得上：调用点每个字�
    _fr_calls and not _fr_unreg and not _fr_dead,
    f"调用点 {len(_fr_calls)} 个：{sorted(_fr_calls)} / 没登记 {_fr_unreg} / 没人用 {_fr_dead}")
 _fr_orphan = sorted(k for k in DICT["zh"]
-                    if k.split(".")[0] in ("enc", "tpreset", "track", "ccop")
+                    if k.split(".")[0] in ("enc", "tpreset", "track", "ccop", "misc", "ccnote")
                     and k not in S.LOG_FRAG_KEYS)
 ck("K11e 词表里这四个前缀的键全在登记表里（后端发不出来的键等于凭空多一条没人用的句子）",
    not _fr_orphan, str(_fr_orphan[:4]))
+# K11f：兜底词那一批（misc.* / ccnote.*）不在某处调用的第 N 个实参上，抠不出调用点，
+# 但它们在 server.py 里本来就是写死的字面量 —— 于是钉「表外的源码里这句话还在」：
+# 有人把「未知」改成「读不出来」而忘了登记表，反查就悄悄失效，英文界面重新漏中文。
+_m_reg = re.search(r"LOG_FRAG_KEYS = \{.*?\n\}", SERVER_SRC, re.S)
+_src_off_reg = SERVER_SRC[:_m_reg.start()] + SERVER_SRC[_m_reg.end():]
+_fr_nolit = sorted(f"{k}={v!r}" for k, v in S.LOG_FRAG_KEYS.items()
+                   if k.split(".")[0] in ("misc", "ccnote")
+                   and f'"{v}"' not in _src_off_reg and f"'{v}'" not in _src_off_reg)
+ck("K11f 兜底词与状态词的每条原话都还在登记表以外的源码里当字面量出现"
+   "（改了话没改表，_frag_text 反查不到，英文界面就重新把中文拼进句子）",
+   not _fr_nolit, str(_fr_nolit[:4]))
 
 # ---------------------------------------------------------------- I. 逐页正文闸门
 print("== I. 逐页推进：翻完的那几页，块里除注释以外不许再有中文 ==")

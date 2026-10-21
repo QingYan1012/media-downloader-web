@@ -7102,7 +7102,9 @@ class DownloaderEngine:
                     )
                     if codec != fmt:
                         self.log(
-                            f"[{task_id[:8]}] 仅音频：容器 {fmt or '未选'} 装不了纯音轨，成品转成 {codec}"
+                            f"[{task_id[:8]}] 仅音频：容器 {fmt or '未选'} 装不了纯音轨，成品转成 {codec}",
+                            k="srv.download.audio_only_no_container",
+                            kv={"tid": task_id[:8], "fmt": _frag_text(fmt or '未选'), "codec": codec},
                         )
                 elif fmt in ("mp4", "mkv", "webm"):
                     opts["merge_output_format"] = fmt
@@ -10387,8 +10389,12 @@ class TaskQueue:
         if not task.title or task.title == "等待中...":
             task.title = ref["name"]
         task.resume_hint = f"aria2 {gid[:10]}"
-        self.log.log(f"{'磁力' if ref['kind'] == 'magnet' else '种子'}任务交给 aria2："
-                     f"{ref['name']}（任务号 {gid[:10]}，存到 {out_dir}）")
+        kind_txt = '磁力' if ref['kind'] == 'magnet' else '种子'
+        self.log.log(f"{kind_txt}任务交给 aria2："
+                     f"{ref['name']}（任务号 {gid[:10]}，存到 {out_dir}）",
+                     k="srv.torrent.handoff",
+                     kv={"kind": _frag_text(kind_txt), "name": ref['name'],
+                         "gid": gid[:10], "dir": out_dir})
         # 磁力是两段下载：先只下元数据，元数据一到 aria2 就另起一个 gid 下真文件，
         # 父任务随即报 complete、totalLength 也只有元数据那一两百字节 —— 跟着父任务走会把这当成「下完了」。
         watch = gid
@@ -12698,7 +12704,9 @@ def api_ai_vocal_separate(body: dict):
             outs = fact.get("outputs") or []
             if device == "cuda" and not got.startswith("cuda"):
                 # 「选了 GPU、实际在 CPU 上跑」必须自己说破，不然设置里那格就成了谎话
-                log_mgr.log(f"分离完成，但没跑在 GPU 上（实际用的是 {got or '未知'}）", "warning")
+                dev_txt = got or '未知'
+                log_mgr.log(f"分离完成，但没跑在 GPU 上（实际用的是 {dev_txt}）", "warning",
+                            k="srv.ai.sep_not_on_gpu", kv={"dev": _frag_text(dev_txt)})
             for p in outs:
                 log_mgr.log(f"分离成品: {p}", k="srv.ai.separate_file", kv={"file": p})
             if not outs:
@@ -17214,8 +17222,12 @@ def api_cookiecloud_account(body: CookieCloudAccountBody, request: Request = Non
     cfg.data.update(upd)
     cfg.save()
     who = _cc_host(str(cfg.data.get("cookiecloud_server") or "")) or "地址没填"
-    log_mgr.log(f"[CookieCloud] 设置已保存：{'开' if cfg.data.get('cookiecloud_enabled') else '关'} · "
-                f"服务器 {who} · 加密 {cfg.data.get('cookiecloud_scheme')} · {key_note}")
+    state_txt = '开' if cfg.data.get("cookiecloud_enabled") else '关'
+    log_mgr.log(f"[CookieCloud] 设置已保存：{state_txt} · "
+                f"服务器 {who} · 加密 {cfg.data.get('cookiecloud_scheme')} · {key_note}",
+                k="srv.cookiecloud.settings_saved",
+                kv={"state": _frag_text(state_txt), "host": _frag_text(who),
+                    "scheme": cfg.data.get('cookiecloud_scheme'), "note": _frag_text(key_note)})
     return _cc_payload()
 
 
@@ -18138,11 +18150,18 @@ def api_cleanup_account(body: CleanupAccountBody, request: Request = None):
     cfg.save()
     _cl_arm()   # 天数、开关刚改过，闹钟按新时间重排
     if "cleanup_enabled" in upd:
-        log_mgr.log(f"[清理] 按龄自动清理{'已打开' if upd['cleanup_enabled'] else '已关掉'}"
+        state_txt = '已打开' if upd['cleanup_enabled'] else '已关掉'
+        log_mgr.log(f"[清理] 按龄自动清理{state_txt}"
                     f"（日志 {int(cfg.data.get('cleanup_log_days', 7))} 天 / 备份 "
                     f"{int(cfg.data.get('cleanup_backup_days', 0))} 天 / 下载 "
                     f"{int(cfg.data.get('cleanup_download_days', 0))} 天 / 回收目录 "
-                    f"{int(cfg.data.get('cleanup_trash_days', 30))} 天）")
+                    f"{int(cfg.data.get('cleanup_trash_days', 30))} 天）",
+                    k="srv.clean.aged_switched",
+                    kv={"state": _frag_text(state_txt),
+                        "logs": int(cfg.data.get('cleanup_log_days', 7)),
+                        "backups": int(cfg.data.get('cleanup_backup_days', 0)),
+                        "downloads": int(cfg.data.get('cleanup_download_days', 0)),
+                        "trash": int(cfg.data.get('cleanup_trash_days', 30))})
     return {"ok": True, **_cl_payload()}
 
 
@@ -18562,14 +18581,14 @@ def api_music_switch_source(body: dict):
                 "info",
                 k="srv.music.switch_ok",
                 kv={"name": r.get('title') or cid[:8], "to": r.get('to'),
-                    "score": r.get('score'), "duration": dur_txt})
+                    "score": r.get('score'), "duration": _frag_text(dur_txt)})
         else:
             reason_txt = r.get('reason') or '其他源里没有过闸门的结果'
             log_mgr.log(
                 f"换源「{r.get('title') or cid[:8]}」：没换成 —— {reason_txt}",
                 "warning",
                 k="srv.music.switch_fail",
-                kv={"name": r.get('title') or cid[:8], "reason": reason_txt})
+                kv={"name": r.get('title') or cid[:8], "reason": _frag_text(reason_txt)})
     switched = sum(1 for r in results if r.get("ok"))
     return {"ok": bool(switched), "count": len(results), "switched": switched,
             "results": results}
@@ -21437,10 +21456,14 @@ def _douyin_search_in_cooldown(q: str, cd: Dict, has_cookie: bool) -> Dict:
     base = str(last.get("describe") or last.get("human") or "上次向抖音取结果被站点挡下了")
     why = f"{base}（该站点正在降速冷却，还剩 {left}s，本次没有再向它发请求）"
     action = str(last.get("action") or "")
+    kind_txt = last.get('kind') or '未知'
     log_mgr.log(
         f"抖音搜索跳过 q={q}：{cd.get('host')} 冷却还剩 {left}s"
-        f"（第 {cd.get('strikes')} 次命中），上次判定 {last.get('kind') or '未知'}",
+        f"（第 {cd.get('strikes')} 次命中），上次判定 {kind_txt}",
         "warning",
+        k="srv.search.douyin_cooldown",
+        kv={"q": q, "host": cd.get('host'), "left": left,
+            "strikes": cd.get('strikes'), "kind": _frag_text(kind_txt)},
     )
     return {
         "results": [],
@@ -23720,6 +23743,24 @@ LOG_FRAG_KEYS = {
     "ccop.test": "测试连接",
     "ccop.pull": "拉取",
     "ccop.push": "推送",
+    # 兜底词与状态词（同一式的第二批）：这些短句在调用点上就是字面量，注册之后 kv 里带键名，
+    # 英文界面拼得出「(it actually used unknown)」而不是「(实际用的是 未知)」。
+    # 闸门 K11f 要求每条原话在登记表以外的源码里仍作为字面量出现 —— 话改了却忘了改表，这条就红。
+    "misc.unknown": "未知",
+    "misc.none": "未选",
+    "misc.on": "开",
+    "misc.off": "关",
+    "misc.magnet": "磁力",
+    "misc.torrent": "种子",
+    "misc.no_host": "地址没填",
+    "misc.enabled_on": "已打开",
+    "misc.enabled_off": "已关掉",
+    "misc.no_gate_pass": "其他源里没有过闸门的结果",
+    "ccnote.untouched": "密钥没动",
+    "ccnote.absent": "密钥还没填",
+    "ccnote.cleared": "密钥已清掉",
+    "ccnote.updated": "密钥已更新",
+    "ccnote.filled": "密钥已填上",
 }
 LOG_FRAG_BY_TEXT = {v: k for k, v in LOG_FRAG_KEYS.items()}
 
