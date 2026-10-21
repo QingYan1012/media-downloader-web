@@ -253,8 +253,10 @@ ck("F5d 音乐页四个下载入口每次都带当前勾选值（整批 / 链接
    str(re.findall(r"\b(?:music_)?embed_metadata: !!musicEmbedMeta\.value", IDX)))
 ck("F6 界面重开时按后端存的值回填（不是每次回到默认）",
    '"embed_metadata": bool(cfg.data.get("music_embed_metadata", True))' in SVC)
-ck("F6b 批量开头先把开关状态写进日志（不勾时后面每首都安静，没这句分不清是没勾还是没封面）",
-   "内嵌封面: " in SVC and "'开' if embed else '关'" in SVC)
+ck("F6b 批量开头先把开关状态写进日志（不勾时后面每首都安静，没这句分不清是没勾还是没封面）"
+   "· #93b 把这句拆成两处字面调用，开与关两支各挂一键，话还是那句",
+   'k="srv.music.embed_on"' in SVC and 'k="srv.music.embed_off"' in SVC
+   and "内嵌封面: 开" in SVC and "内嵌封面: 关" in SVC)
 sig = inspect.signature(M.download_songs)
 ck("F7 download_songs / download_via_musicdl 都接了 embed_cover",
    "embed_cover" in sig.parameters

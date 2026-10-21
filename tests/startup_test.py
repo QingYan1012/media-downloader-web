@@ -118,8 +118,11 @@ ck("B6 errno 在模块顶部就 import 了（OSError 分支一走才碰到它，
    "\nimport errno\n" in SRC[:SRC.index("def main():")])
 ck("B7 预检只认「地址被占」这一类错，别的错留给 uvicorn 自己报",
    "errno.EADDRINUSE" in SRC and "别在这里替它下结论" in SRC)
-ck("B8 撞端口那句也写进运行日志（只有控制台话的话，事后查不到这台为什么没起来）",
-   'log_mgr.log("端口 %d 已被占用' in main_src[:i_banner])
+ck("B8 撞端口那句也写进运行日志（只有控制台话的话，事后查不到这台为什么没起来）"
+   "· #93b 把「谁占着」那个洞拆成两支字面调用，两支都落日志、各挂一键",
+   'log_mgr.log(f"端口 {port} 已被占用' in main_src[:i_banner]
+   and 'k="srv.boot.port_busy_us"' in main_src[:i_banner]
+   and 'k="srv.boot.port_busy_other"' in main_src[:i_banner])
 health_line = 'def api_health' 
 ck("B9 /api/health 确实是个只读探针（这几项断言靠它答话，它自己要很重就本末倒置）",
    health_line in SRC and "别用 /api/status 当探针" in SRC)

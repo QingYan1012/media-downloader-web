@@ -7311,10 +7311,23 @@ class DownloaderEngine:
                                 got = list((info2.get("requested_subtitles") or {}).keys())
                                 miss = [x for x in want_langs if x not in got and x != "all"]
                                 if got:
-                                    self.log(
-                                        f"[{task_id[:8]}] 字幕已写入 {len(got)} 条：{'、'.join(got)}"
-                                        + (f"；视频没有这些语言，已跳过：{'、'.join(miss)}" if miss else "")
-                                    )
+                                    # 条件句拆成两处调用（口径同 #55 前几批）：一次事件仍只落一条日志，
+                                    # 落盘的中文一个字不变，英文才有两把键可拼
+                                    if miss:
+                                        self.log(
+                                            f"[{task_id[:8]}] 字幕已写入 {len(got)} 条：{'、'.join(got)}"
+                                            f"；视频没有这些语言，已跳过：{'、'.join(miss)}",
+                                            k="srv.download.subtitle_written_with_miss",
+                                            kv={"tid": task_id[:8], "n": len(got),
+                                                "langs": '、'.join(got), "miss": '、'.join(miss)},
+                                        )
+                                    else:
+                                        self.log(
+                                            f"[{task_id[:8]}] 字幕已写入 {len(got)} 条：{'、'.join(got)}",
+                                            k="srv.download.subtitle_written",
+                                            kv={"tid": task_id[:8], "n": len(got),
+                                                "langs": '、'.join(got)},
+                                        )
                                 else:
                                     self.log(
                                         f"[{task_id[:8]}] 该视频没有所请求的字幕语言"
@@ -8990,9 +9003,19 @@ class SubscriptionManager:
             arch[:0] = deleted
             sub["archived"] = arch[:SUB_ARCHIVE_CAP]
             names = "、".join((d.get("title") or d.get("id") or "")[:40] for d in deleted[:3])
-            self.log(f"订阅「{sub.get('title') or sub.get('url')}」本轮有 {len(deleted)} 条已从源头消失"
-                     f"（上游删除，比它更旧的条目还在），已记入归档：{names}"
-                     + ("等" if len(deleted) > 3 else ""))
+            # 条件句拆成两处调用（口径同 #55 前几批）：落盘中文不变，一次事件仍只一条日志
+            if len(deleted) > 3:
+                self.log(f"订阅「{sub.get('title') or sub.get('url')}」本轮有 {len(deleted)} 条已从源头消失"
+                         f"（上游删除，比它更旧的条目还在），已记入归档：{names}等",
+                         k="srv.subs.feed_deleted_more",
+                         kv={"name": sub.get('title') or sub.get('url'),
+                             "n": len(deleted), "names": names})
+            else:
+                self.log(f"订阅「{sub.get('title') or sub.get('url')}」本轮有 {len(deleted)} 条已从源头消失"
+                         f"（上游删除，比它更旧的条目还在），已记入归档：{names}",
+                         k="srv.subs.feed_deleted",
+                         kv={"name": sub.get('title') or sub.get('url'),
+                             "n": len(deleted), "names": names})
         if sub.get("archived"):
             back = {str(r.get("id") or "") for r in feed}
             kept = [a for a in sub["archived"] if str(a.get("id") or "") not in back]
@@ -13702,7 +13725,14 @@ def api_throttle_reset(body: dict):
     host = str((body or {}).get("host") or "").strip().lower()
     n = HOST_THROTTLE.reset(host)
     if n:
-        log_mgr.log(f"已清除 {n} 个站点的降速冷却" + (f"（{host}）" if host else ""))
+        # 条件句拆成两处调用（口径同 #55 前几批）：落盘中文不变，一次事件仍只一条日志
+        if host:
+            log_mgr.log(f"已清除 {n} 个站点的降速冷却（{host}）",
+                        k="srv.queue.throttle_cleared_one",
+                        kv={"n": n, "host": host})
+        else:
+            log_mgr.log(f"已清除 {n} 个站点的降速冷却",
+                        k="srv.queue.throttle_cleared_all", kv={"n": n})
     queue._pump()
     return {"ok": True, "cleared": n, "throttle": HOST_THROTTLE.snapshot()}
 
@@ -14258,9 +14288,17 @@ def _comp_update_all(keys: List[str], mirror: str) -> None:
             _COMP_ALL["current"] = ""
             _COMP_ALL["current_key"] = ""
             _COMP_ALL["done"] = done
-        log_mgr.log(f"一键更新结束：完成 {done}/{len(keys)} 项"
-                    + (f"，失败 {len(bad)} 项（{'、'.join(bad)}），原因见上面各行" if bad
-                       else "，全部成功"))
+        # 条件句拆成两处调用（口径同 #55 前几批）：落盘中文不变，一次事件仍只一条日志。
+        # 失败项那串标签还是后端表里的原话（一个洞装不下一串键），英文界面这一句会带着组件名照旧印。
+        if bad:
+            log_mgr.log(f"一键更新结束：完成 {done}/{len(keys)} 项，失败 {len(bad)} 项（{'、'.join(bad)}），原因见上面各行",
+                        k="srv.comp.all_done_failed",
+                        kv={"done": done, "total": len(keys), "n": len(bad),
+                            "labels": '、'.join(bad)})
+        else:
+            log_mgr.log(f"一键更新结束：完成 {done}/{len(keys)} 项，全部成功",
+                        k="srv.comp.all_done_ok",
+                        kv={"done": done, "total": len(keys)})
 
 
 @app.post("/api/components/update-all")
@@ -15158,7 +15196,15 @@ def api_tasks_delete(body: IdsBody):
         names.append(" ".join((t.title or "").split())[:40] or url_host(t.url) or "未命名任务")
     queue.delete_tasks(ids)
     shown = "、".join(names[:5]) + ("…" if len(names) > 5 else "")
-    log_mgr.log(f"[界面] 删除任务 {len(ids)} 个" + (f"：{shown}" if shown else ""))
+    # 条件句拆成两处调用（口径同 #55 前几批）：落盘中文不变，一次事件仍只一条日志。
+    # 「[界面] 」开头 → 键挂 log.*（K8 不许 srv.* 带这枚前缀），代价是这条不在 K1–K7 的逐字比对里，
+    # 由 tmp/b23_render.py 补一次中英两边的拼装取证。
+    if shown:
+        log_mgr.log(f"[界面] 删除任务 {len(ids)} 个：{shown}",
+                    k="log.tasks_deleted_named", kv={"n": len(ids), "names": shown})
+    else:
+        log_mgr.log(f"[界面] 删除任务 {len(ids)} 个",
+                    k="log.tasks_deleted", kv={"n": len(ids)})
     return {"ok": True}
 
 
@@ -16485,11 +16531,23 @@ def api_subs_preview(body: SubIdBody):
     if plan.get("error"):
         log_mgr.log(f"订阅预览「{plan.get('title') or body.id}」：{plan['error']}", "warning")
     else:
-        log_mgr.log(f"订阅预览「{plan.get('title') or body.id}」："
-                    f"读到 {plan.get('read', 0)} 条，未读 {plan.get('new', 0)} 条，"
-                    f"计划入队 {plan.get('picked_total', 0)} 条"
-                    + (f"，上游删除待归档 {plan.get('archive_total', 0)} 条"
-                       if plan.get("archive_total") else ""))
+        # 条件句拆成两处调用（口径同 #55 前几批）：落盘中文不变，一次事件仍只一条日志
+        if plan.get("archive_total"):
+            log_mgr.log(f"订阅预览「{plan.get('title') or body.id}」："
+                        f"读到 {plan.get('read', 0)} 条，未读 {plan.get('new', 0)} 条，"
+                        f"计划入队 {plan.get('picked_total', 0)} 条"
+                        f"，上游删除待归档 {plan.get('archive_total', 0)} 条",
+                        k="srv.subs.preview_with_archive",
+                        kv={"name": plan.get('title') or body.id, "read": plan.get('read', 0),
+                            "new": plan.get('new', 0), "picked": plan.get('picked_total', 0),
+                            "archive": plan.get('archive_total', 0)})
+        else:
+            log_mgr.log(f"订阅预览「{plan.get('title') or body.id}」："
+                        f"读到 {plan.get('read', 0)} 条，未读 {plan.get('new', 0)} 条，"
+                        f"计划入队 {plan.get('picked_total', 0)} 条",
+                        k="srv.subs.preview",
+                        kv={"name": plan.get('title') or body.id, "read": plan.get('read', 0),
+                            "new": plan.get('new', 0), "picked": plan.get('picked_total', 0)})
     return {"ok": True, "plan": plan}
 
 
@@ -16512,9 +16570,17 @@ def api_subs_archived_clear(body: SubArchiveClearBody):
     except ValueError as e:
         raise HTTPException(404, str(e))
     item = next((s for s in sub_mgr.list() if s.get("id") == body.id), None)
-    log_mgr.log(f"订阅「{(item or {}).get('title') or body.id}」"
-                + (f"归档清单移除 1 条（{body.entry_id[:24]}）" if body.entry_id
-                   else f"归档清单已清空（{removed} 条）"))
+    # 条件句拆成两处调用（口径同 #55 前几批）：落盘中文不变，一次事件仍只一条日志
+    if body.entry_id:
+        log_mgr.log(f"订阅「{(item or {}).get('title') or body.id}」"
+                    f"归档清单移除 1 条（{body.entry_id[:24]}）",
+                    k="srv.subs.archived_removed_one",
+                    kv={"name": (item or {}).get('title') or body.id, "entry": body.entry_id[:24]})
+    else:
+        log_mgr.log(f"订阅「{(item or {}).get('title') or body.id}」"
+                    f"归档清单已清空（{removed} 条）",
+                    k="srv.subs.archived_cleared",
+                    kv={"name": (item or {}).get('title') or body.id, "n": removed})
     return {"ok": True, "removed": removed, "item": _sub_view(item) if item else {}}
 
 
@@ -16644,8 +16710,13 @@ def api_clear_cookie_flag(body: CookieFlagClearBody):
         raise HTTPException(400, "未知平台")
     had = bool(_login_flag_snapshot().get(plat))
     _login_flag_clear(plat)
-    log_mgr.log(f"清除 {PLATFORM_LABELS.get(plat, plat)} 的 Cookie 登录态标记"
-                + ("（本来就没有标记）" if not had else ""))
+    # 条件句拆成两处调用（口径同 #55 前几批）：落盘中文不变，一次事件仍只一条日志
+    if had:
+        log_mgr.log(f"清除 {PLATFORM_LABELS.get(plat, plat)} 的 Cookie 登录态标记",
+                    k="srv.cookie.login_flag_cleared", kv={"plat": PLATFORM_LABELS.get(plat, plat)})
+    else:
+        log_mgr.log(f"清除 {PLATFORM_LABELS.get(plat, plat)} 的 Cookie 登录态标记（本来就没有标记）",
+                    k="srv.cookie.login_flag_absent", kv={"plat": PLATFORM_LABELS.get(plat, plat)})
     return {"ok": True, "cleared": had}
 
 
@@ -17242,9 +17313,24 @@ def _cc_do_pull() -> dict:
     _cc_state_save({"pull_rows": len(rows),
                     "pull_domains": len(got["domains"]), "scheme_seen": got["scheme"],
                     "pull_files": [{"file": w["file"], "count": w["count"], "at": now} for w in written]})
-    log_mgr.log(f"[CookieCloud] 拉取：云端 {len(got['rows'])} 条 → 收下 {len(rows)} 条"
-                f"（{len(got['domains'])} 个域，加密 {got['scheme']}），写了 {len(changed)} 个文件："
-                + ("、".join(f"{w['file']}({w['count']} 条)" for w in changed) if changed else "内容一样，没动"))
+    # 条件句拆成两处调用（口径同 #55 前几批）：落盘中文不变，一次事件仍只一条日志
+    if changed:
+        files_txt = "、".join(f"{w['file']}({w['count']} 条)" for w in changed)
+        log_mgr.log(f"[CookieCloud] 拉取：云端 {len(got['rows'])} 条 → 收下 {len(rows)} 条"
+                    f"（{len(got['domains'])} 个域，加密 {got['scheme']}），写了 {len(changed)} 个文件："
+                    f"{files_txt}",
+                    k="srv.cookiecloud.pull_files",
+                    kv={"cloud": len(got['rows']), "rows": len(rows),
+                        "domains": len(got['domains']), "scheme": got['scheme'],
+                        "n": len(changed), "files": files_txt})
+    else:
+        log_mgr.log(f"[CookieCloud] 拉取：云端 {len(got['rows'])} 条 → 收下 {len(rows)} 条"
+                    f"（{len(got['domains'])} 个域，加密 {got['scheme']}），写了 {len(changed)} 个文件："
+                    f"内容一样，没动",
+                    k="srv.cookiecloud.pull_unchanged",
+                    kv={"cloud": len(got['rows']), "rows": len(rows),
+                        "domains": len(got['domains']), "scheme": got['scheme'],
+                        "n": len(changed)})
     for w in changed:
         if w["backup"]:
             log_mgr.log(f"[CookieCloud] {w['file']} 覆盖前的原样备份为 {w['backup']}",
@@ -17299,8 +17385,19 @@ def _cc_do_push() -> dict:
     _cc_state_save({"push_rows": len(rows),
                     "push_domains": len(groups), "scheme_seen": scheme,
                     "push_files": [Path(f).name for f in files]})
-    log_mgr.log(f"[CookieCloud] 推送：本机 {len(rows)} 条 / {len(groups)} 个域（来自 {len(files)} 个文件）"
-                f"已覆盖云端那一份，写法 {scheme}" + ("，服务器回 action=done" if action == "done" else ""))
+    # 条件句拆成两处调用（口径同 #55 前几批）：落盘中文不变，一次事件仍只一条日志
+    if action == "done":
+        log_mgr.log(f"[CookieCloud] 推送：本机 {len(rows)} 条 / {len(groups)} 个域（来自 {len(files)} 个文件）"
+                    f"已覆盖云端那一份，写法 {scheme}，服务器回 action=done",
+                    k="srv.cookiecloud.push_acked",
+                    kv={"rows": len(rows), "domains": len(groups),
+                        "files": len(files), "scheme": scheme})
+    else:
+        log_mgr.log(f"[CookieCloud] 推送：本机 {len(rows)} 条 / {len(groups)} 个域（来自 {len(files)} 个文件）"
+                    f"已覆盖云端那一份，写法 {scheme}",
+                    k="srv.cookiecloud.push_done",
+                    kv={"rows": len(rows), "domains": len(groups),
+                        "files": len(files), "scheme": scheme})
     return {"ok": True, "message": f"{now} 推了 {len(rows)} 条 / {len(groups)} 个域（{scheme}），云端那一份已被覆盖",
             "rows": len(rows), "domains": len(groups), "scheme": scheme,
             "from_files": [Path(f).name for f in files]}
@@ -18188,9 +18285,20 @@ def set_music_cookie(platform: str, raw: str, via: str = "粘贴") -> dict:
     cfg.data["music_platform_cookies"] = store
     cfg.save()
     missing = music_cookie_missing(platform, pairs)
-    log_mgr.log(f"[界面] {'保存' if pairs else '清除'}{label} 登录 Cookie"
-                + (f"（{len(pairs)} 个键" + (f"，缺 {' 或 '.join(missing)}" if missing else "，键齐了") + "）"
-                   if pairs else ""))
+    # 条件句拆成三处调用（口径同 #55 前几批）：落盘中文不变，一次事件仍只一条日志。
+    # 「保存/清除」那个洞里的值本来就是我们自己的话，拆完各句都是整句字面量；
+    # 「[界面] 」开头 → 键挂 log.*（K8 不许 srv.* 带这枚前缀）
+    if not pairs:
+        log_mgr.log(f"[界面] 清除{label} 登录 Cookie",
+                    k="log.music_cookie_cleared", kv={"label": label})
+    elif missing:
+        miss_txt = " 或 ".join(missing)
+        log_mgr.log(f"[界面] 保存{label} 登录 Cookie（{len(pairs)} 个键，缺 {miss_txt}）",
+                    k="log.music_cookie_saved_missing",
+                    kv={"label": label, "n": len(pairs), "missing": miss_txt})
+    else:
+        log_mgr.log(f"[界面] 保存{label} 登录 Cookie（{len(pairs)} 个键，键齐了）",
+                    k="log.music_cookie_saved_full", kv={"label": label, "n": len(pairs)})
     return {"ok": True, "configured": bool(pairs), "keys": sorted(pairs), "missing": missing}
 
 
@@ -18443,12 +18551,25 @@ def api_music_switch_source(body: dict):
                                proxy_for=proxy_for, current_source=cur, st=strategy)
         r["id"] = cid
         results.append(r)
-        log_mgr.log(
-            f"换源「{r.get('title') or cid[:8]}」："
-            + (f"已换成 {r.get('to')}（同曲判定 {r.get('score')} 分，"
-               f"时长 {r.get('row', {}).get('duration') or '未知'}）" if r.get("ok")
-               else f"没换成 —— {r.get('reason') or '其他源里没有过闸门的结果'}"),
-            "info" if r.get("ok") else "warning")
+        # 条件句拆成两处调用（口径同 #55 前几批）：落盘中文不变，一次事件仍只一条日志。
+        # 「未知」「其他源里没有过闸门的结果」那两个兜底值是我们自己的话，留在洞里当数据（#93a 的按值改造另批做）
+        dur_txt = r.get('row', {}).get('duration') or '未知'
+        if r.get("ok"):
+            log_mgr.log(
+                f"换源「{r.get('title') or cid[:8]}」："
+                f"已换成 {r.get('to')}（同曲判定 {r.get('score')} 分，"
+                f"时长 {dur_txt}）",
+                "info",
+                k="srv.music.switch_ok",
+                kv={"name": r.get('title') or cid[:8], "to": r.get('to'),
+                    "score": r.get('score'), "duration": dur_txt})
+        else:
+            reason_txt = r.get('reason') or '其他源里没有过闸门的结果'
+            log_mgr.log(
+                f"换源「{r.get('title') or cid[:8]}」：没换成 —— {reason_txt}",
+                "warning",
+                k="srv.music.switch_fail",
+                kv={"name": r.get('title') or cid[:8], "reason": reason_txt})
     switched = sum(1 for r in results if r.get("ok"))
     return {"ok": bool(switched), "count": len(results), "switched": switched,
             "results": results}
@@ -18486,9 +18607,17 @@ def api_music_check_quality(body: dict):
     n_low = sum(1 for r in rows if r.get("state") == "low")
     n_ref_below = sum(1 for r in rows if r.get("ref_state") == "below")
     for r in rows:
-        log_mgr.log(f"音质核对「{r['name']}」：{r['note']}"
-                    + (f"｜{r['ref_note']}" if r.get("ref_note") else ""),
-                    "warning" if r.get("state") == "low" or r.get("ref_state") == "below" else "info")
+        # 条件句拆成两处调用（口径同 #55 前几批）：落盘中文不变，一次事件仍只一条日志。
+        # note / ref_note 是核对器给的话（#93a 的按值改造另批做），英文界面这一句会带着它照原样印
+        lvl = "warning" if r.get("state") == "low" or r.get("ref_state") == "below" else "info"
+        if r.get("ref_note"):
+            log_mgr.log(f"音质核对「{r['name']}」：{r['note']}｜{r['ref_note']}", lvl,
+                        k="srv.music.quality_row_ref",
+                        kv={"name": r['name'], "note": r['note'], "ref": r['ref_note']})
+        else:
+            log_mgr.log(f"音质核对「{r['name']}」：{r['note']}", lvl,
+                        k="srv.music.quality_row",
+                        kv={"name": r['name'], "note": r['note']})
     return {"ok": True, "count": len(rows), "below_spec": n_low, "below_reference": n_ref_below,
             "spec": spec, "rows": rows}
 
@@ -18717,8 +18846,14 @@ def api_music_favorites_download(body: dict):
         "cookies": str(body.get("cookies") or ""),
     })
     res.update({"fav_total": len(picked), "reminted": reminted, "slots": slots})
-    log_mgr.log(f"收藏清单开始下载 {len(picked)} 首"
-                + (f"，其中 {reminted} 首要先按曲名重新找地址" if reminted else ""))
+    # 条件句拆成两处调用（口径同 #55 前几批）：落盘中文不变，一次事件仍只一条日志
+    if reminted:
+        log_mgr.log(f"收藏清单开始下载 {len(picked)} 首，其中 {reminted} 首要先按曲名重新找地址",
+                    k="srv.music.fav_start_reminted",
+                    kv={"n": len(picked), "reminted": reminted})
+    else:
+        log_mgr.log(f"收藏清单开始下载 {len(picked)} 首",
+                    k="srv.music.fav_start", kv={"n": len(picked)})
     return res
 
 
@@ -18995,8 +19130,14 @@ def api_music_download(body: dict):
                                      if body.get("quality_spec") is not None
                                      else cfg.data.get("music_quality_spec"))
     if quality_spec_active(quality_spec):
-        log_mgr.log(f"本批音质要求：{quality_spec_label(quality_spec)}"
-                    + ("｜已勾「不达标不下」" if quality_spec["strict"] else ""), "info")
+        # 条件句拆成两处调用（口径同 #55 前几批）：落盘中文不变，一次事件仍只一条日志
+        spec_txt = quality_spec_label(quality_spec)
+        if quality_spec["strict"]:
+            log_mgr.log(f"本批音质要求：{spec_txt}｜已勾「不达标不下」", "info",
+                        k="srv.music.quality_spec_strict", kv={"spec": spec_txt})
+        else:
+            log_mgr.log(f"本批音质要求：{spec_txt}", "info",
+                        k="srv.music.quality_spec", kv={"spec": spec_txt})
 
     dup_skipped: List[dict] = []
     already_have: List[dict] = []
@@ -19060,10 +19201,14 @@ def api_music_download(body: dict):
                 embed = embed_meta
                 # 这一句先落在日志里：不勾时后面每首都不会有封面的动静，
                 # 没有这句就分不清「这个格式没封面可嵌」和「你本来就没勾」
-                log_mgr.log(f"内嵌封面: {'开' if embed else '关'}"
-                            + ("" if embed else
-                               "（同名封面图片仍留在成品旁边；我们不写图，"
-                               "下载器顺手写进标签的那张也会被移出去）"))
+                # 条件句拆成两处调用（口径同 #55 前几批）：落盘中文不变，一次事件仍只一条日志
+                if embed:
+                    log_mgr.log("内嵌封面: 开", k="srv.music.embed_on")
+                else:
+                    log_mgr.log("内嵌封面: 关"
+                                "（同名封面图片仍留在成品旁边；我们不写图，"
+                                "下载器顺手写进标签的那张也会被移出去）",
+                                k="srv.music.embed_off")
 
                 def finish(i: int, path: str) -> None:
                     _MUSIC_JOB["done"] = int(_MUSIC_JOB.get("done") or 0) + 1
@@ -24052,8 +24197,19 @@ def api_bt_trackers_refresh():
     srcs = data.get("sources") or {}
     bad = [(u, (v or {}).get("error") or "") for u, v in srcs.items() if not (v or {}).get("ok")]
     got, note = bt_trackers.effective(c, APP_DIR)
-    log_mgr.log(f"[界面] 更新 tracker 列表：来源抓到 {len(urls) - len(bad)}/{len(urls)} 个，"
-                f"现在一共 {len(got)} 条" + (f"（{note}）" if note else ""))
+    # 条件句拆成两处调用（口径同 #55 前几批）：落盘中文不变，一次事件仍只一条日志。
+    # 「[界面] 」开头 → 键挂 log.*（K8 不许 srv.* 带这枚前缀），逐字比对由 tmp/b23_render.py 取证
+    if note:
+        log_mgr.log(f"[界面] 更新 tracker 列表：来源抓到 {len(urls) - len(bad)}/{len(urls)} 个，"
+                    f"现在一共 {len(got)} 条（{note}）",
+                    k="log.bt_trackers_refreshed_note",
+                    kv={"ok_src": len(urls) - len(bad), "src": len(urls),
+                        "count": len(got), "note": note})
+    else:
+        log_mgr.log(f"[界面] 更新 tracker 列表：来源抓到 {len(urls) - len(bad)}/{len(urls)} 个，"
+                    f"现在一共 {len(got)} 条",
+                    k="log.bt_trackers_refreshed",
+                    kv={"ok_src": len(urls) - len(bad), "src": len(urls), "count": len(got)})
     return {"ok": not bad, "count": len(got), "sources": len(urls),
             "failed": [{"url": u, "error": e} for u, e in bad], "note": note,
             "time": data.get("time") or "",
@@ -24110,8 +24266,10 @@ def api_bt_limit(body: BtLimitBody):
     if t:
         t.resume_hint = ((t.resume_hint or "") + "｜限速 下%s 上%s" % (
             opts.get("max-download-limit") or "不变", opts.get("max-upload-limit") or "不变"))[:120]
-    log_mgr.log(f"[界面] 任务 {gid[:10]} 限速改为："
-                + "、".join(f"{k}={v}" for k, v in opts.items()))
+    # 尾巴那串是 aria2 的键=值（数据，不是话术），绑成局部量好让整句是一条字面量
+    opts_txt = "、".join(f"{k}={v}" for k, v in opts.items())
+    log_mgr.log(f"[界面] 任务 {gid[:10]} 限速改为：{opts_txt}",
+                k="log.bt_limit_set", kv={"gid": gid[:10], "opts": opts_txt})
     return {"ok": True, "gid": gid, "actual": actual,
             "message": "限速已生效（下 %s / 上 %s）" % (
                 opts.get("max-download-limit") or "不变", opts.get("max-upload-limit") or "不变")}
@@ -24542,8 +24700,14 @@ def main():
         print(tip)
         print("  要让这一台也起来：设环境变量 MEDIADOWNLOADER_PORT 换个端口再启动。")
         print("=" * 50)
-        log_mgr.log("端口 %d 已被占用，本次启动退出（%s）"
-                    % (port, "同一台机器上已有一个实例在跑" if by_us else "被别的程序占着"), "warning")
+        # 条件句拆成两处调用（口径同 #55 前几批）：落盘中文不变，一次事件仍只一条日志。
+        # 原来是 "…%s…" % (port, 中文二选一) —— 那个洞里的值就是我们自己的话，拆完两边各一句完整字面量
+        if by_us:
+            log_mgr.log(f"端口 {port} 已被占用，本次启动退出（同一台机器上已有一个实例在跑）", "warning",
+                        k="srv.boot.port_busy_us", kv={"port": port})
+        else:
+            log_mgr.log(f"端口 {port} 已被占用，本次启动退出（被别的程序占着）", "warning",
+                        k="srv.boot.port_busy_other", kv={"port": port})
         raise SystemExit(1)
 
     # 启动时按配置放宽 SSL（解决 bytefcdn 等 Hostname mismatch）

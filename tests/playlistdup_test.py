@@ -231,7 +231,7 @@ SLOTS: list = []
 
 class FakeLog:
     @staticmethod
-    def log(m, lv="info"):
+    def log(m, lv="info", k="", kv=None):   # k/kv 是 #55 后端运行日志的键，桩不收
         SLOTS.append(f"[{lv}] {m}")
 
 

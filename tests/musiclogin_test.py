@@ -52,7 +52,7 @@ class FakeCfg:
 
 
 class FakeLogMgr:
-    def log(self, msg, lv="info"):
+    def log(self, msg, lv="info", k="", kv=None):   # k/kv 是 #55 后端运行日志的键，桩不收
         LOGS.append(str(msg))
 
 
