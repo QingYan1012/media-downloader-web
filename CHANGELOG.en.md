@@ -216,6 +216,43 @@ is the `http://user:pass@` placeholder inside `tests/cookiecloud_test.py`). **Th
 `7ac0ff6` and no package was rebuilt**, so the published asset trails all of this. The readings quoted here are the
 ones recorded in each round's own commit — this entry consolidates them, it does not re-measure them.
 
+### Stem separation: a six-stem model, and a stem mixer
+
+Asked whether [StemDeck](https://github.com/stemdeckapp/stemdeck) could be added, we compared it against what this
+app already does and took only the two real gaps: **six stems** and **multi-track mixing**. Its bundled FastAPI plus
+own Python runtime (700 MB - 1.6 GB) collides with our rule that neither the separation venv nor the weights ship in
+the archive, so nothing is integrated - the model choice is borrowed, and the credits list gained an entry for it
+(the project is Apache-2.0).
+
+- **`htdemucs_6s` earned its place in the table by running here**: a 4-second synthetic clip on CPU, 262 s, producing
+  `bass / drums / guitar / other / piano / vocals` at 705,644 B each. The comment above that table says an unverified
+  name does not become an option, because it only means the user clicks it and gets "model would not download" - so
+  `mdx23c` and friends still stay out.
+- **Three stem ranges, and the default is the old behaviour verbatim**: `demucs_stems=vocal` builds exactly the
+  command used before (`--two-stems vocals`, two files); `four` / `six` drop that flag and let Demucs lay out all of
+  its stems. The default is written in four places - `DEFAULTS`, `ConfigBody`, the save-time validator and the UI
+  initial value - because changing it would silently re-run separation for everyone who upgraded.
+- **A range that does not fit the model is refused before the thread starts**: only `htdemucs_6s` can do six, the UI
+  option is greyed out and the backend rejects it again. Learning the stem count was wrong after a several-minute run
+  is the worst possible failure.
+- **Stem mixer** (new card on the voice page): `GET /api/voice/stems` reads exactly
+  `<track>/demucs/<model>/<track>/*.wav` - a plain recursive glob would serve two batches of same-named stems for a
+  track separated twice with different models - and skips its own `*-mix-*` output. `POST /api/voice/mix` mixes with
+  the local ffmpeg: muted stems never reach the command, output is WAV (`pcm_s16le`) or MP3 (320k), written next to the
+  first stem.
+- **`amix` runs with `normalize=0`**: left on, it divides the level by the track count, so the balance you dialled in
+  the UI is not what lands in the file. The first cut also failed outright - filter chains need `;` between them, and
+  ffmpeg rejected the chain with a 500.
+- **The fader stops at 100% on purpose**: preview goes through `element.volume`, which cannot exceed 1, so a slider
+  that offered 200% would be lying. Real gain would need a Web Audio `GainNode` layer, left for later.
+- The engine option no longer hard-codes a stem count ("Demucs (four stems...)" became range-driven), and
+  `tests/separator_test.py` gained I1-I14 covering it. Two existing assertions had their sampling window widened the
+  honest way - they sliced a fixed character count / scanned the whole file, and this change pushed the target out of
+  frame without anything actually breaking.
+- End to end in a self-spawned sandbox: six stems listed, a four-stem mix written (guitar and piano muted, bass at
+  50%), `ffprobe` reading it back as `pcm_s16le / 44100 / 2ch`, and the browser button producing the same file with a
+  toast and zero `pageerror`.
+
 ### Interface language, second batch: all 17 page bodies
 
 The scope moved from "frontend only, log lines untouched" to **frontend in full plus the runtime log following the

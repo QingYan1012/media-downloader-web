@@ -1416,6 +1416,22 @@ itags 两边完全一致（`91/92/93/94` 的 HLS 切片 + `18` 的 1080p 渐进�
 
 ---
 
+## 分轨：六轨模型与分轨混音台（同一轮内，参照 StemDeck）
+
+有人问「StemDeck 这个能加吗」。核完差距只有两处值得拿：**六轨**与**多轨混音**，其余（它自带 FastAPI + 自己的 Python 运行时、700 MB～1.6 GB 的分发）和我们「venv 与权重都不进包」的口径冲突，不做集成、只借选型。它本身是 Apache-2.0，界面鸣谢名单里补了一条。
+
+- **`htdemucs_6s` 进表的条件是这台机器真跑通**：4 秒合成片段、CPU、262 秒，落出 `bass / drums / guitar / other / piano / vocals` 六条各 705,644 B。`voice_tools.py` 那张表原来的注释写着「没验过的名字不给选项 —— 给了就是让人点下去报『模型下不下来』」，所以先验再列，`mdx23c` 那类仍然不给选项。
+- **分轨范围三档，默认那档就是改动前的行为**：`demucs_stems` 取 `vocal` 时命令与从前逐字相同（仍带 `--two-stems vocals`，出「人声 + 伴奏」两条），`four` / `six` 才去掉那个参数让 Demucs 铺全轨。默认值 `vocal` 写进 `DEFAULTS`、`ConfigBody`、保存闸门与界面初值四处 —— 把默认改成多轨等于替每个老用户重跑一遍分离。
+- **档与模型对不上在起线程之前就说破**：六轨只有 `htdemucs_6s` 出得来，界面那格直接置灰，后端再拒一次。跑完几分钟才发现拿回的轨数不对，是最亏的一种失败。
+- **分轨混音台**（语音页新卡）：`GET /api/voice/stems` 按 `<曲名>/demucs/<模型>/<曲名>/*.wav` 精确取轨（整目录 rglob 会把同一首歌换模型跑过的两批同名轨一起端上来），并排掉自己产出的 `*-mix-*`；`POST /api/voice/mix` 用本机 ffmpeg 合成，静音的轨不进命令，导出 WAV（`pcm_s16le`）或 MP3（320k），成品写在首条轨旁边。
+- **`amix` 关掉 `normalize`**：开着它会把每条轨按轨数等分压下去，人在界面上调好的平衡和写出来的文件就不是一个东西。第一版还翻过一次车 —— filter chain 之间少了 `;`，ffmpeg 直接判非法、接口 500。
+- **音量条只做 0–100%，不做增益**：预览走 `element.volume`，它上不去 1；给一根能拉到 200% 的条就是骗人。要增益得换 Web Audio 的 GainNode，那一层留给以后。
+- 「分离引擎」那一格的措辞从「Demucs（四轨，能出 `no_vocals`）」改成不写死轨数 —— 现在轨数由「分轨范围」决定。
+- 自检：`tests/separator_test.py` 加 I1–I14（`--two-stems` 只出现一次、六轨只配 `htdemucs_6s`、filter chain 用 `;`、自产文件被排除、混音台七个新名字都在 setup 的 return 里）；`hwenc_test.py` H3/H4 与 `platform_test.py` E6 的取样窗口原先按固定字符数 / 全文件扫，被这一轮的改动撑歪，改成按函数边界取。活体端到端在自起沙箱里跑通：6 轨读全 → 导出 4 轨混音（静音吉他与钢琴、贝斯 50%）→ `ffprobe` 回读 `pcm_s16le / 44100 / 2ch` → 浏览器点导出真落盘并弹提示，`pageerror` 0。
+- 改 / 加的文件：`voice_tools.py`（模型表、`DEMUCS_STEMS_MODES` / `DEMUCS_STEMS_BY_MODEL`、`separate_demucs` 的 `stems_mode`）、`server.py`（`DEFAULTS` / `ConfigBody` / 保存闸门 / `api_ai_vocal_separate` / 新 `api_voice_stems` 与 `api_voice_mix`）、`static/index.html`（分轨范围那一格、混音台卡、`CREDITS` 补一条）、`static/i18n.js`（+35 键 / 份）、`tests/separator_test.py`、`tests/hwenc_test.py`、`tests/platform_test.py`、`CHANGELOG.md`、`CHANGELOG.en.md`、`docs/详细功能介绍.md`、`docs/detailed-features.en.md`。
+
+---
+
 ## v1.3.0 · 2026-10-13
 
 本版一次落了六条线，彼此独立。**磁力 / 种子**从「有 aria2 就顺一点」做成了完整的一条：侧栏多一页，下载、选文件、做种看护、tracker 加料、自动分类、分上下行限速都在那一页上，参照的是 qBittorrent Enhanced Edition 的交互口径。**字幕**从「一条流水线跑完就不管了」做成能改的：文件页新增逐句校对台（读完改、改前留备份、被闸门挡住会说是谁在你读之后动过这个文件），翻译链上补了反射质检与「按每行字数重排」。**直播录制**的每一间房终于能各设各的（容器、画质、转码预设、最长录多久、只在几点到几点录）。**订阅**会先告诉你它打算怎么同步，上游删掉的条目也不再凭空消失。**通用下载链**补了一批直通与预估：自定义 yt-dlp 参数（全局与单任务，被拒的项当场点名）、每档画质的预估体积、播放列表按序号区间勾选、限速按时段分档、落盘文件名统一清洗、队列卡片显示实际下到的清晰度 / 字节数 / 封面、浏览器通知点一下跳到那条任务。另外整站接口挂出了一条 **MCP 桥**（192 个工具，只连本机）。还修了一件必须修的：**六个接口的请求体被当成了查询参数**，其中一条连带把 `/openapi.json` 打进 500 —— 那正是 MCP 桥和接口文档唯一的取数处。**音乐下载与收藏那几条链一行判定没动**（本版出现的三行 `music` 分支两行在订阅同步里、一行是诊断包的 Cookie 排除项）；Telegram 只跟着换了同一套文件名清洗口径。
