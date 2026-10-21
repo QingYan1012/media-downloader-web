@@ -13330,11 +13330,20 @@ def api_ai_srt_save(body: dict):
     except OSError as e:
         raise HTTPException(500, f"写入字幕失败: {e}（备份名 {bak.name}，原文件可能未改动）")
 
-    log_mgr.log(
-        f"逐句校对字幕：{srt.name} 写入 {len(cues)} 句"
-        + (f"，其中 {dropped} 行正文为空已跳过" if dropped else "")
-        + f"，原文件备份为 {bak.name}"
-    )
+    # 可选尾巴收成两支整句字面调用（口径同 #55 前几批）：落盘中文不变，一次事件仍只一条日志
+    if dropped:
+        log_mgr.log(
+            f"逐句校对字幕：{srt.name} 写入 {len(cues)} 句，"
+            f"其中 {dropped} 行正文为空已跳过，原文件备份为 {bak.name}",
+            k="srv.files.subtitle_saved_dropped",
+            kv={"name": srt.name, "n": len(cues), "dropped": dropped, "backup": bak.name},
+        )
+    else:
+        log_mgr.log(
+            f"逐句校对字幕：{srt.name} 写入 {len(cues)} 句，原文件备份为 {bak.name}",
+            k="srv.files.subtitle_saved",
+            kv={"name": srt.name, "n": len(cues), "backup": bak.name},
+        )
     return {
         "ok": True,
         "srt": _ui_path(srt),
@@ -14368,8 +14377,14 @@ def api_components_update_all(body: dict = None):
                           "current": keys[0], "current_key": keys[0], "results": [],
                           "started": datetime.now().strftime("%H:%M:%S")})
     mirror = str(body.get("mirror") or cfg.data.get("pip_mirror") or "")
-    log_mgr.log(f"一键更新开始：{len(keys)} 项（{'、'.join(keys[:8])}"
-                + ("…" if len(keys) > 8 else "") + "），一项一项串行跑")
+    # 可选的「…」收成两支整句字面调用：落盘中文不变，一次事件仍只一条日志
+    head = "、".join(keys[:8])
+    if len(keys) > 8:
+        log_mgr.log(f"一键更新开始：{len(keys)} 项（{head}…），一项一项串行跑",
+                    k="srv.comp.all_start_many", kv={"n": len(keys), "head": head})
+    else:
+        log_mgr.log(f"一键更新开始：{len(keys)} 项（{head}），一项一项串行跑",
+                    k="srv.comp.all_start", kv={"n": len(keys), "head": head})
     threading.Thread(target=_comp_update_all, args=(keys, mirror), daemon=True).start()
     return {"ok": True, "message": f"一键更新已在后台开始（{len(keys)} 项，串行跑，进度见运行日志）",
             "update_all": dict(_COMP_ALL)}
@@ -14575,8 +14590,13 @@ def _apply_config(data: dict, request: Request = None) -> dict:
         # 谁在什么时候开始让程序盯剪贴板，应该看得出来，但盯到了什么不该留在盘上。
         on = bool(data["clipboard_watch"])
         if on != bool(cfg.data.get("clipboard_watch")):
-            log_mgr.log("剪贴板监听已打开：发现链接只在界面上问一句，加入 / 忽略由你决定" if on
-                        else "剪贴板监听已关闭：程序不再读系统剪贴板")
+            # 两句话本来就是一条三元表达式，收成两支整句字面调用才挂得上键
+            if on:
+                log_mgr.log("剪贴板监听已打开：发现链接只在界面上问一句，加入 / 忽略由你决定",
+                            k="srv.clipboard.enabled")
+            else:
+                log_mgr.log("剪贴板监听已关闭：程序不再读系统剪贴板",
+                            k="srv.clipboard.disabled")
         data["clipboard_watch"] = on
     if "proxy_mode" in data:
         data["proxy_mode"] = (
@@ -18834,9 +18854,14 @@ def api_music_favorites_add(body: dict):
             _music_favs_save(items)
         total = len(items)
     if added:
-        log_mgr.log(f"收藏清单加入 {len(added)} 首："
-                    + "、".join(f"「{a['title']}」" for a in added[:6])
-                    + ("…" if len(added) > 6 else ""))
+        # 可选的「…」收成两支整句字面调用；曲名是用户数据，两边都原样带
+        head = "、".join(f"「{a['title']}」" for a in added[:6])
+        if len(added) > 6:
+            log_mgr.log(f"收藏清单加入 {len(added)} 首：{head}…",
+                        k="srv.music.fav_added_many", kv={"n": len(added), "titles": head})
+        else:
+            log_mgr.log(f"收藏清单加入 {len(added)} 首：{head}",
+                        k="srv.music.fav_added", kv={"n": len(added), "titles": head})
     if dup or no_title or refused:
         log_mgr.log(f"收藏清单跳过 {dup} 首（已在本清单里）"
                     + (f"、{refused} 行是无损参照或本地成品（这一单要能下，收进来也下不动）"
@@ -19210,11 +19235,19 @@ def api_music_download(body: dict):
             # 判不了重的行（缓存查不到、没有曲名）在 _track_clusters 里各自成组，一定留在 keep 里
             ids = [i for n, i in enumerate(ids) if n in keep]
             songs = [s for n, s in enumerate(songs) if n in keep]
-            log_mgr.log(
-                f"下载清单里有 {sum(int(d['count']) - 1 for d in dup_skipped)} 首重复"
-                "（同一首歌排了两遍），只下第一遍："
-                + "、".join(f"「{d['title']}」×{d['count']}" for d in dup_skipped[:6])
-                + ("…" if len(dup_skipped) > 6 else ""))
+            n_dup = sum(int(d['count']) - 1 for d in dup_skipped)
+            # 可选的「…」收成两支整句字面调用；曲名与遍数是用户清单里的数据，原样带
+            head = "、".join(f"「{d['title']}」×{d['count']}" for d in dup_skipped[:6])
+            if len(dup_skipped) > 6:
+                log_mgr.log(
+                    f"下载清单里有 {n_dup} 首重复"
+                    f"（同一首歌排了两遍），只下第一遍：{head}…",
+                    k="srv.music.dup_list_many", kv={"n": n_dup, "titles": head})
+            else:
+                log_mgr.log(
+                    f"下载清单里有 {n_dup} 首重复"
+                    f"（同一首歌排了两遍），只下第一遍：{head}",
+                    k="srv.music.dup_list", kv={"n": n_dup, "titles": head})
         # 上一次下的歌还躺在下载目录里，这次整张歌单再点一遍就会下一份 `_1` 副本。
         # 所以在建后台任务之前先按命名模板比一遍目录，已有同名成品的行直接不下。
         tpl = (cfg.data.get("music_filename_template") or "{artist}/{name} - {artist}").strip()
@@ -21442,9 +21475,18 @@ def _login_flag_mark(url: str, r: Dict, task_id: str = "") -> Dict:
         _LOGIN_FLAGS[plat] = item
     # 一批任务里同一个站能连挡几十次，只在头一次说一句话
     if fresh:
-        log_mgr.log(f"Cookie 登录态标记：{PLATFORM_LABELS.get(plat, plat)} 有下载被判定为需要登录"
-                    + (f"（{host}）" if host else "")
-                    + "，重新导入这一平台的 Cookie 即可清除；本标记只保留到程序关闭", "warning")
+        # 可选的「（站点）」收成两支整句字面调用；平台标签是后端表里的原话（品牌名，两边同形，
+        # 不登记进片段表 —— 给 YouTube 这种挂一条 en==zh 的行没有意义，F7 也判它红）
+        plat_txt = PLATFORM_LABELS.get(plat, plat)
+        if host:
+            log_mgr.log(f"Cookie 登录态标记：{plat_txt} 有下载被判定为需要登录（{host}）"
+                        "，重新导入这一平台的 Cookie 即可清除；本标记只保留到程序关闭", "warning",
+                        k="srv.cookie.login_flag_marked_host",
+                        kv={"plat": plat_txt, "host": host})
+        else:
+            log_mgr.log(f"Cookie 登录态标记：{plat_txt} 有下载被判定为需要登录"
+                        "，重新导入这一平台的 Cookie 即可清除；本标记只保留到程序关闭", "warning",
+                        k="srv.cookie.login_flag_marked", kv={"plat": plat_txt})
     return dict(item)
 
 
