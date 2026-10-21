@@ -1723,6 +1723,24 @@
       .bento > .span-3,
       .bento > .span-2 { grid-column: 1 / -1; }
     }
+    /* 矮屏（笔记本 768 一档，去掉浏览器 chrome 后 .content 只有 ~710px）优先保「首屏看完这一页」：
+       这里只收留白与间距，不动列数、不动字号 —— 实测收完后 首页/直播/语音 免滚动。
+       按高度而不是宽度判定：1600x900 那一档本来就不滚，不该被顺手压扁。 */
+    @media (max-height: 830px) {
+      :root {
+        --content-pad-y: 12px;
+        --row-mt: 10px;
+        --gap: 9px;
+        --gap-tight: 6px;
+        --gap-loose: 12px;
+      }
+      .bento { gap: 10px; margin-bottom: 10px; }
+      .card { padding: 12px 16px; }
+      .card > .section-title:first-child { margin-bottom: 8px; padding-bottom: 7px; }
+      .section-title { margin-bottom: 8px; }
+      .hint { margin-top: 4px; }
+      .settings-grid .card .el-form-item { margin-bottom: 6px; }
+    }
     /* 媒体链接卡：左侧链接输入，右侧「开始」操作块；窄到放不下时操作块整块换行 */
     .link-start {
       display: flex;
