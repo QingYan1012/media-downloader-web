@@ -7277,13 +7277,46 @@ class DownloaderEngine:
                             n_ent = len([e for e in (info2.get("entries") or [])
                                          if isinstance(e, dict)])
                             if len(pl_files) != n_ent or n_ent > 1:
-                                self.log(
-                                    f"[{task_id[:8]}] 列表 {n_ent} 条，本次在下载目录写出 "
-                                    f"{len(pl_files)} 个文件"
-                                    + ("（差额是命中下载记录或抽取失败的条目）" if len(pl_files) != n_ent else "")
-                                    + (f"；任务记录最后 1 个：{Path(filepath).name}" if filepath else ""),
-                                    "warning",
-                                )
+                                # 两处可选尾巴各自成句（口径同 #55 前几批）：四种形状四条整句字面量，
+                                # 落盘中文与原来逐字相同，一次事件仍只一条日志
+                                last_txt = Path(filepath).name
+                                if len(pl_files) != n_ent and last_txt:
+                                    self.log(
+                                        f"[{task_id[:8]}] 列表 {n_ent} 条，本次在下载目录写出 "
+                                        f"{len(pl_files)} 个文件（差额是命中下载记录或抽取失败的条目）"
+                                        f"；任务记录最后 1 个：{last_txt}",
+                                        "warning",
+                                        k="srv.download.playlist_count_diff",
+                                        kv={"tid": task_id[:8], "n_ent": n_ent,
+                                            "written": len(pl_files), "last": last_txt},
+                                    )
+                                elif len(pl_files) != n_ent:
+                                    self.log(
+                                        f"[{task_id[:8]}] 列表 {n_ent} 条，本次在下载目录写出 "
+                                        f"{len(pl_files)} 个文件（差额是命中下载记录或抽取失败的条目）",
+                                        "warning",
+                                        k="srv.download.playlist_count_only",
+                                        kv={"tid": task_id[:8], "n_ent": n_ent,
+                                            "written": len(pl_files)},
+                                    )
+                                elif last_txt:
+                                    self.log(
+                                        f"[{task_id[:8]}] 列表 {n_ent} 条，本次在下载目录写出 "
+                                        f"{len(pl_files)} 个文件；任务记录最后 1 个：{last_txt}",
+                                        "warning",
+                                        k="srv.download.playlist_named",
+                                        kv={"tid": task_id[:8], "n_ent": n_ent,
+                                            "written": len(pl_files), "last": last_txt},
+                                    )
+                                else:
+                                    self.log(
+                                        f"[{task_id[:8]}] 列表 {n_ent} 条，本次在下载目录写出 "
+                                        f"{len(pl_files)} 个文件",
+                                        "warning",
+                                        k="srv.download.playlist_written",
+                                        kv={"tid": task_id[:8], "n_ent": n_ent,
+                                            "written": len(pl_files)},
+                                    )
                             if not pl_files and _ids_in_archive(
                                 [e.get("id") for e in (info2.get("entries") or [])
                                  if isinstance(e, dict)]
@@ -14732,9 +14765,26 @@ def api_reset_config(body: ConfigResetBody, request: Request = None):
     data = {k: _cfg_copy(cfg.DEFAULTS.get(k)) for k in ok_keys}
     out = _apply_config(data, request)
     names = " / ".join(ok_keys[:6]) + ("…" if len(ok_keys) > 6 else "")
-    log_mgr.log(f"[界面] 恢复默认：{len(ok_keys)} 项（{names}）"
-                + (f"，改动前的配置留在 {backup}" if backup else "")
-                + (f"，另有 {len(bad)} 项没动（不在可默认名单里）" if bad else ""))
+    # 两处可选尾巴各自成句（口径同 #55 前几批）：四种形状四条整句字面量，落盘中文不变。
+    # 「[界面] 」开头 → 键挂 log.*（K8），逐字比对由 tmp/b23_render.py log 取证
+    if backup and bad:
+        log_mgr.log(f"[界面] 恢复默认：{len(ok_keys)} 项（{names}）"
+                    f"，改动前的配置留在 {backup}，另有 {len(bad)} 项没动（不在可默认名单里）",
+                    k="log.cfg_reset_backup_refused",
+                    kv={"n": len(ok_keys), "names": names, "backup": backup, "refused": len(bad)})
+    elif backup:
+        log_mgr.log(f"[界面] 恢复默认：{len(ok_keys)} 项（{names}），改动前的配置留在 {backup}",
+                    k="log.cfg_reset_backup",
+                    kv={"n": len(ok_keys), "names": names, "backup": backup})
+    elif bad:
+        log_mgr.log(f"[界面] 恢复默认：{len(ok_keys)} 项（{names}）"
+                    f"，另有 {len(bad)} 项没动（不在可默认名单里）",
+                    k="log.cfg_reset_refused",
+                    kv={"n": len(ok_keys), "names": names, "refused": len(bad)})
+    else:
+        log_mgr.log(f"[界面] 恢复默认：{len(ok_keys)} 项（{names}）",
+                    k="log.cfg_reset_plain",
+                    kv={"n": len(ok_keys), "names": names})
     out["restored"] = ok_keys
     out["refused"] = bad
     out["backup"] = backup
@@ -14997,8 +15047,19 @@ def api_download(body: AddUrlsBody):
         opts["live_max_minutes"] = max(0, min(_LIVE_MAX_MINUTES, lm))
     ids = queue.add_urls(urls, opts)
     merged = max(0, len(urls) - len(ids))
-    log_mgr.log(f"加入 {len(ids)} 个任务" + (f"（合并 {merged} 条重复）" if merged else "")
-                + (f"（忽略 {skipped} 条无效链接）" if skipped else ""))
+    # 两处可选尾巴各自成句（口径同 #55 前几批）：四种形状四条整句字面量，落盘中文不变
+    if merged and skipped:
+        log_mgr.log(f"加入 {len(ids)} 个任务（合并 {merged} 条重复）（忽略 {skipped} 条无效链接）",
+                    k="srv.tasks.added_merged_skipped",
+                    kv={"n": len(ids), "merged": merged, "skipped": skipped})
+    elif merged:
+        log_mgr.log(f"加入 {len(ids)} 个任务（合并 {merged} 条重复）",
+                    k="srv.tasks.added_merged", kv={"n": len(ids), "merged": merged})
+    elif skipped:
+        log_mgr.log(f"加入 {len(ids)} 个任务（忽略 {skipped} 条无效链接）",
+                    k="srv.tasks.added_skipped", kv={"n": len(ids), "skipped": skipped})
+    else:
+        log_mgr.log(f"加入 {len(ids)} 个任务", k="srv.tasks.added", kv={"n": len(ids)})
     return {"ok": True, "ids": ids, "added": len(ids), "merged": merged, "skipped": skipped,
             "arg_notes": arg_notes}
 
@@ -18863,10 +18924,24 @@ def api_music_favorites_add(body: dict):
             log_mgr.log(f"收藏清单加入 {len(added)} 首：{head}",
                         k="srv.music.fav_added", kv={"n": len(added), "titles": head})
     if dup or no_title or refused:
-        log_mgr.log(f"收藏清单跳过 {dup} 首（已在本清单里）"
-                    + (f"、{refused} 行是无损参照或本地成品（这一单要能下，收进来也下不动）"
-                       if refused else "")
-                    + (f"、{no_title} 行没有曲名收不进来" if no_title else ""), "warning")
+        # 两处可选尾巴各自成句（口径同 #55 前几批）：四种形状四条整句字面量，落盘中文不变
+        if refused and no_title:
+            log_mgr.log(f"收藏清单跳过 {dup} 首（已在本清单里）"
+                        f"、{refused} 行是无损参照或本地成品（这一单要能下，收进来也下不动）"
+                        f"、{no_title} 行没有曲名收不进来", "warning",
+                        k="srv.music.fav_skip_all",
+                        kv={"dup": dup, "refused": refused, "no_title": no_title})
+        elif refused:
+            log_mgr.log(f"收藏清单跳过 {dup} 首（已在本清单里）"
+                        f"、{refused} 行是无损参照或本地成品（这一单要能下，收进来也下不动）", "warning",
+                        k="srv.music.fav_skip_refused", kv={"dup": dup, "refused": refused})
+        elif no_title:
+            log_mgr.log(f"收藏清单跳过 {dup} 首（已在本清单里）"
+                        f"、{no_title} 行没有曲名收不进来", "warning",
+                        k="srv.music.fav_skip_no_title", kv={"dup": dup, "no_title": no_title})
+        else:
+            log_mgr.log(f"收藏清单跳过 {dup} 首（已在本清单里）", "warning",
+                        k="srv.music.fav_skip_dup", kv={"dup": dup})
     return {"ok": True, "added": len(added), "duplicated": dup, "no_title": no_title,
             "refused": refused, "total": total}
 
