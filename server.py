@@ -6032,11 +6032,25 @@ class DownloaderEngine:
         ov = (cfg.get("proxy_by_platform") or {}).get(key)
         mode, px = proxy_decision(url, cfg_data=cfg)
         tp = task_proxy_override(cfg)
-        txt = f"任务指定 {tp}" if tp else ({"proxy": f"走 {px}", "direct": "强制直连"}.get(mode) or "跟随系统")
-        self.log(
-            f"[{task_id[:8]}] 代理: {txt}"
-            f"（{key}，{'手动覆写' if isinstance(ov, bool) else cfg.get('proxy_mode') or 'auto'}）"
-        )
+        note_txt = '手动覆写' if isinstance(ov, bool) else (cfg.get('proxy_mode') or 'auto')
+        # 这句原来靠 txt 变量把四种中文现拼进同一个句子，K2 钉不住。拆成四支整句字面量：
+        # 落盘的中文与原来逐字相同，一次事件仍只一条日志，英文这才拿到四把能拼的键。
+        if tp:
+            self.log(f"[{task_id[:8]}] 代理: 任务指定 {tp}（{key}，{note_txt}）",
+                     k="srv.engine.proxy_by_task",
+                     kv={"tid": task_id[:8], "tp": tp, "key": key, "note": _frag_text(note_txt)})
+        elif mode == "proxy":
+            self.log(f"[{task_id[:8]}] 代理: 走 {px}（{key}，{note_txt}）",
+                     k="srv.engine.proxy_via",
+                     kv={"tid": task_id[:8], "px": px, "key": key, "note": _frag_text(note_txt)})
+        elif mode == "direct":
+            self.log(f"[{task_id[:8]}] 代理: 强制直连（{key}，{note_txt}）",
+                     k="srv.engine.proxy_direct",
+                     kv={"tid": task_id[:8], "key": key, "note": _frag_text(note_txt)})
+        else:
+            self.log(f"[{task_id[:8]}] 代理: 跟随系统（{key}，{note_txt}）",
+                     k="srv.engine.proxy_follow",
+                     kv={"tid": task_id[:8], "key": key, "note": _frag_text(note_txt)})
 
     def _ydl_opts(self, cfg: dict, *, for_info: bool = False, player_clients=None, url: str = "") -> dict:
         opts: dict = {
@@ -7152,11 +7166,24 @@ class DownloaderEngine:
                             # True = 嵌完再留一份外挂文件；False = 只留在容器里
                             "already_have_subtitle": keep_files,
                         })
-                    how = "＋".join(
-                        x for x in (("嵌进容器" if embed_sub else ""),
-                                    ("外挂文件" if keep_files else "")) if x
-                    )
-                    self.log(f"[{task_id[:8]}] 格式={format_sel} 字幕={langs}（{how}）")
+                    # 「嵌进容器 / 外挂文件」是本地现拼的中文，拼在句中间键化不了 ——
+                    # 拆成四支整句字面量：落盘中文与原来逐字相同，一次事件仍只一条日志
+                    if embed_sub and keep_files:
+                        self.log(f"[{task_id[:8]}] 格式={format_sel} 字幕={langs}（嵌进容器＋外挂文件）",
+                                 k="srv.download.subs_embed_and_file",
+                                 kv={"tid": task_id[:8], "fmt": format_sel, "langs": str(langs)})
+                    elif embed_sub:
+                        self.log(f"[{task_id[:8]}] 格式={format_sel} 字幕={langs}（嵌进容器）",
+                                 k="srv.download.subs_embed_only",
+                                 kv={"tid": task_id[:8], "fmt": format_sel, "langs": str(langs)})
+                    elif keep_files:
+                        self.log(f"[{task_id[:8]}] 格式={format_sel} 字幕={langs}（外挂文件）",
+                                 k="srv.download.subs_file_only",
+                                 kv={"tid": task_id[:8], "fmt": format_sel, "langs": str(langs)})
+                    else:
+                        self.log(f"[{task_id[:8]}] 格式={format_sel} 字幕={langs}（）",
+                                 k="srv.download.subs_no_delivery",
+                                 kv={"tid": task_id[:8], "fmt": format_sel, "langs": str(langs)})
                 else:
                     # 无字幕降级：仅去掉字幕相关选项，画质/音质不变
                     opts.pop("writesubtitles", None)
@@ -7173,9 +7200,13 @@ class DownloaderEngine:
                         self.log(f"[{task_id[:8]}] 格式={format_sel} 无字幕",
                                  k="srv.download.format_no_sub", kv={"tid": task_id[:8], "fmt": format_sel})
                 t_try = time.time()
+                container_txt = opts.get('merge_output_format') or fmt
+                pp_txt = ','.join(p.get('key', '?') for p in (opts.get("postprocessors") or [])) or '无'
                 self.log(
-                    f"[{task_id[:8]}] 目标容器={opts.get('merge_output_format') or fmt} "
-                    f"后期处理={','.join(p.get('key', '?') for p in (opts.get('postprocessors') or [])) or '无'}"
+                    f"[{task_id[:8]}] 目标容器={container_txt} "
+                    f"后期处理={pp_txt}",
+                    k="srv.download.plan_shown",
+                    kv={"tid": task_id[:8], "container": container_txt, "pp": _frag_text(pp_txt)},
                 )
                 arch_file = opts.get("download_archive") or ""
                 m_arch = re.search(
@@ -12606,7 +12637,13 @@ def api_subtitle_rewrap(body: dict):
     backup = _edit_backup_path(srt)
     shutil.copy2(srt, backup)
     srt.write_text(write_vtt(wrapped) if is_vtt else write_srt(wrapped), encoding="utf-8")
-    log_mgr.log(f"字幕重排: {srt.name} 改了 {changed} 句（{info}），原文件备份为 {backup.name}")
+    # 那句「每行 ≤N 个全角宽、最多 M 行」原来靠 info 变量拼进句子中间，K2 钉不住；
+    # 这里把它内联成整句字面量 —— 落盘的中文与原来逐字相同（width 仍按 :g 走）
+    log_mgr.log(f"字幕重排: {srt.name} 改了 {changed} 句"
+                f"（每行 ≤{width:g} 个全角宽、最多 {max_lines} 行），原文件备份为 {backup.name}",
+                k="srv.files.subtitle_rewrap",
+                kv={"name": srt.name, "changed": changed, "width": f"{width:g}",
+                    "lines": max_lines, "backup": backup.name})
     tail = f"，其中 {over} 句没有合适的断点、仍然超行" if over else ""
     return {
         "ok": True, "changed": changed, "total": len(cues), "width": width, "lines": max_lines,
@@ -23756,6 +23793,8 @@ LOG_FRAG_KEYS = {
     "misc.enabled_on": "已打开",
     "misc.enabled_off": "已关掉",
     "misc.no_gate_pass": "其他源里没有过闸门的结果",
+    "misc.override": "手动覆写",
+    "misc.none_only": "无",
     "ccnote.untouched": "密钥没动",
     "ccnote.absent": "密钥还没填",
     "ccnote.cleared": "密钥已清掉",
