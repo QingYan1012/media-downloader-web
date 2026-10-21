@@ -208,12 +208,14 @@ Caught as false reds, not product bugs:
 
 ---
 
-## After v1.4.0 — 28 commits in the repository, none of them in the published package
+## After v1.4.0 — the repository is ahead of the published package, none of it in the archive
 
-Everything below landed after the archive was compressed. **None of it is pushed**: `main` is 28 commits ahead of
+Everything below landed after the archive was compressed. **None of it is pushed**: `main` sits ahead of
 `origin/main`, the `v1.4.0` tag still points at `d922732` (the byte-for-byte commit behind the published asset), and no
-package has been rebuilt - so the published release trails all of this. The readings quoted here are the ones recorded
-in each round's own commit — this entry consolidates them, it does not re-measure them.
+package has been rebuilt - so the published release trails all of this. The count is deliberately not written here:
+every commit made it stale the moment it was committed (it used to say 37, then 28) - ask git with
+`git rev-list --count origin/main..HEAD`. The readings quoted below are the ones recorded in each round's own commit —
+this entry consolidates them, it does not re-measure them.
 
 ### Stem separation: a six-stem model, and a stem mixer
 
