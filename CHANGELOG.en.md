@@ -294,6 +294,43 @@ offered no choice at all. Everything existed; it was sitting in the wrong place.
   `tests/separator_test.py`, `tests/pagemount_test.py`, `CHANGELOG.md`, `CHANGELOG.en.md`,
   `docs/详细功能介绍.md`, `docs/detailed-features.en.md`.
 
+### Demucs models joined the components table: what is missing, and a button that fills it in
+
+The other half of the user's request - "add the dependency too, with update detection". The four RoFormer weights were
+already listed; Demucs was not, because that path does not go through us at all: the package fetches its own files
+into torch's cache, so the table could not see them and nobody could tell how long "separate with htdemucs" would take
+the first time.
+
+- **The 口径 first, because it decides the wording: these models have no version of their own.** What can be detected
+  is presence - how many files are there, how many are missing; what "update" can mean is filling in the gap. The line
+  on screen says `{ready} / {total} models complete, {n} file(s) still missing` and never "an update is available",
+  because there is no such thing here.
+- **Names, addresses and checksums are all read from the installed package**: `remote/files.txt` is "`root:` subfolder
+  plus one filename per line", and each `remote/<model>.yaml` lists the first eight hex digits of those filenames -
+  only the two tables together give a URL. `voice_tools` keeps no second copy (K1: a literal
+  `xxxxxxxx-xxxxxxxx.th` may not appear in that source). A signature listed in a yaml but missing from the index must
+  be zero (K2) - the symptom of a parsing hole is a UI that says "missing" forever.
+- **Checksums compare exactly as far as they go**: the second half of the filename is an 8-digit sha256 prefix, and
+  both torch.hub and demucs (`check_hash=True`) verify only that far, so we verify only that far and do not promise
+  more. `_finish_weight` used to require equality with a full digest; it now compares `hexdigest()[:len(expect)]`,
+  which leaves the RoFormer behaviour (64 digits) unchanged (K5).
+- **Only missing files are fetched; files already present are not touched** - this is filling a gap, not re-downloading.
+  One job at a time (`_DEMUCS_MODEL_LOCK`): two threads writing the same `.part` overwrite each other's bytes and
+  neither ends up complete. Both "no package" and "nothing missing" answer before any thread starts (K7).
+- **It is deliberately not in the one-click batch**: several hundred MB should not be spendable by an accidental
+  double click. The row has its own "Fetch missing models" button and progress goes to the run log.
+- Side cleanup: `_fetch_weight` used to prepend GitHub mirror prefixes to *any* URL. The Demucs files live on
+  Meta's own host, so those candidates were a list of guaranteed 404s - prefixes are now applied to GitHub URLs only.
+- Readings taken from disk after the suite ran: `htdemucs_6s` 1/1 file present, 54,996,327 B; `htdemucs` 0/1,
+  `htdemucs_ft` 0/4, `mdx_extra` 0/4 - nine files missing in total.
+- Tests: K1-K13 in `tests/separator_test.py`. F1 ("the old `/api/ai/demucs` endpoint is gone") had to be tightened to
+  match the whole quoted path - the new `/api/ai/demucs_models` is a different thing and substring matching hit it.
+- Files touched: `voice_tools.py` (`demucs_ckpt_dir` / `demucs_remote_dir` / `demucs_model_index` /
+  `demucs_models_status` / `download_demucs_models`, the prefix comparison in `_finish_weight`, the mirror guard in
+  `_fetch_weight`), `server.py` (`voice_status` returns `demucs_model_files`; new `POST /api/ai/demucs_models`),
+  `static/index.html` (the status line and button, `sepDemucsState` / `fetchDemucsModels`, the endpoint's action name),
+  `static/i18n.js` (+11 keys per language), `tests/separator_test.py`.
+
 ### Interface language, second batch: all 17 page bodies
 
 The scope moved from "frontend only, log lines untouched" to **frontend in full plus the runtime log following the

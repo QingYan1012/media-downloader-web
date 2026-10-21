@@ -6119,12 +6119,14 @@
                         <div class="comp-ver">RoFormer · audio-separator {{ sepRoformerVer }}<template v-if="sepLatest('audio-separator')"> · {{ tr('settings.compLatestWord') }} {{ sepLatest('audio-separator') }}{{ sepUpdatablePkg === 'audio-separator' ? tr('settings.compUpdatableTag') : '' }}</template></div>
                         <div class="comp-ver">Demucs · demucs {{ sepDemucsVer }}<template v-if="sepLatest('demucs')"> · {{ tr('settings.compLatestWord') }} {{ sepLatest('demucs') }}{{ sepUpdatablePkg === 'demucs' ? tr('settings.compUpdatableTag') : '' }}</template></div>
                         <div class="comp-ver">torch {{ sepTorchVer }} · {{ sepModelsState }}</div>
+                        <div class="comp-ver">{{ tr('settings.sepDemucsLabel') }} · {{ sepDemucsState }}</div>
                       </template>
                       <div v-else class="comp-ver">{{ sepModelsState }}</div>
                       <div v-if="sepModelsMissing" class="comp-ver" style="color:var(--warn)">{{ sepModelsMissing }}</div>
                     </div>
                     <el-button size="small" :loading="sepBusy" @click="updateSeparatorEngines">{{ tr('settings.compUpdateBtn') }}</el-button>
                     <el-button size="small" :loading="sepBusy" @click="setupSeparatorAll">{{ tr('settings.sepModelsBtn') }}</el-button>
+                    <el-button size="small" :loading="sepBusy" @click="fetchDemucsModels">{{ tr('settings.sepDemucsBtn') }}</el-button>
                   </div>
                 </div>
                 <div class="btn-grid">
@@ -7169,6 +7171,15 @@
           return !!s && !!s.venv && !!s.audio_separator_ok
             && ms.length > 0 && ms.every(m => m.present);
         });
+        // Demucs 的模型没有版本号可比，能报的只有「几个模型的文件齐了、还缺几个文件」。
+        // 回包里没这个字段（旧进程）只算「说不准」，不算「缺依赖」—— 和上面那两个包同一口径。
+        const sepDemucsFiles = computed(() => (sepInfo.value && sepInfo.value.demucs_model_files) || null);
+        const sepDemucsState = computed(() => {
+          const d = sepDemucsFiles.value;
+          if (!d) return tr('settings.sepDemucsUnknown');
+          if (!d.known) return tr('settings.sepDemucsNoIndex');
+          return tr('settings.sepDemucsState', { ready: d.ready, total: d.total, n: d.missing_files });
+        });
         // 旧进程的 voice_status 还没有这两个包的字段：缺字段只能算「版本未知」，
         // 不能当成「未安装」——那会把一台装好的机器说成缺依赖
         const sepPkgVer = (s, okKey, verKey) => {
@@ -7826,6 +7837,7 @@
           '/api/ai/hardsub': 'act.ai.hardsub',
           '/api/ai/hardsub_stop': 'act.ai.hardsub_stop',
           '/api/ai/vocal_separate': 'act.ai.vocal_separate',
+          '/api/ai/demucs_models': 'act.ai.demucs_models',
           '/api/ai/tts': 'act.ai.tts',
           '/api/ai/install_voice': 'act.ai.install_voice',
           '/api/telegram/test': 'act.telegram.test',
@@ -10212,6 +10224,20 @@
         }
         async function setupSeparatorEnv() { await setupSeparator('venv'); }
         async function setupSeparatorWeights() { await setupSeparator('weights'); }
+        async function fetchDemucsModels() {
+          // 只补缺的那几个文件，已经在的一个不动；几百 MB，所以后端起线程、进度写运行日志。
+          sepBusy.value = true;
+          try {
+            const r = await api('/api/ai/demucs_models', { method: 'POST', body: JSON.stringify({}) });
+            if (r.ok === false) {
+              ElementPlus.ElMessage.error(r.error || r.message || tr('settings.sepDemucsFail'));
+              return;
+            }
+            ElementPlus.ElMessage.success(r.message || tr('settings.sepDemucsStarted'));
+            loadVoiceStatus(true);
+          } catch (e) { ElementPlus.ElMessage.error(String(e.message || e)); }
+          finally { sepBusy.value = false; }
+        }
         async function setupSeparatorAll() { await setupSeparator('all'); }
         async function updateSeparatorEngines() {
           // 与其它组件行一致：镜像先落盘，后端那次 pip 才读得到
@@ -14671,13 +14697,13 @@ const CFG_KEYS = {
           srtEditBox, srtQc, runSrtQc, runSrtRewrap, qcJumpTo, qcDropNoise,
           searchQuery, searchPlatform, searchContentType, searchSort, setSearchSort,
           searchTotal, searchTruncated, searchNotes, SEARCH_PLAT_NAMES, searchResults, searching, platformCookies, cookieIssueCount, syncFileInput,
-          musicKeyword, musicResults, musicSearching, musicSourceErrors, musicNeedsMatch, musicScoreLine, musicHasScore, musicdlVersion, musicdlReady, musicPreset, musicStrategy, saveMusicStrategy, musicSearchType, musicIncludeLocal, musicFilenameTemplate, musicEmbedMeta, musicSkipExisting, musicHideUnavailable, musicBlockReupload, musicIncludeReference, musicQualitySpec, musicQualityOptions, musicQualitySummary, refHint, matchHint, openRefLink, player, playerEl, playerPlaying, playerTime, playerDur, playerVol, playerMuted, playerSeeking, playerSeekVal, playerStep, playerToggle, playerClose, playerSeek, onPlayerTick, onPlayerMeta, onPlayerEnded, musicLrcLines, musicLrcActive, previewMusicRow, probeMusicRow, switchMusicSource, musicSwitching, scanLocalMusic, musicSources, musicSourceOptions, musicMatchSourceOptions, musicPresetOptions, musicSourceOrdered, musicPlaylistUrl, musicPlaylistMode, saveMusicPlaylistMode, musicCookies, musicSelected, aiPipeline, analyzeAudioFile, openSepDlg, openStemMixer, sepDlg, startVocalSeparate, goMixer, clampSepStems, aiTts, installVoicePkgs, loadVoiceStatus, refreshSepStatus, setupSeparatorEnv, setupSeparatorWeights, setupSeparatorAll, sepModelLabel, sepBusy, sepInfo, sepModels, sepDemucsModels, sepHasGpu, sepStatusText, sepDeviceText, sepEngineReason, sepModelsState, sepModelsMissing, sepModelsReady, sepRoformerVer, sepDemucsVer, sepTorchVer, sepUpdatablePkg, sepUpdatable, sepLatest, updateSeparatorEngines, toggleRealtime, installingVoice, voiceStatusText, rtRecording, rtTranslate, rtTargetLang, rtLog,
+          musicKeyword, musicResults, musicSearching, musicSourceErrors, musicNeedsMatch, musicScoreLine, musicHasScore, musicdlVersion, musicdlReady, musicPreset, musicStrategy, saveMusicStrategy, musicSearchType, musicIncludeLocal, musicFilenameTemplate, musicEmbedMeta, musicSkipExisting, musicHideUnavailable, musicBlockReupload, musicIncludeReference, musicQualitySpec, musicQualityOptions, musicQualitySummary, refHint, matchHint, openRefLink, player, playerEl, playerPlaying, playerTime, playerDur, playerVol, playerMuted, playerSeeking, playerSeekVal, playerStep, playerToggle, playerClose, playerSeek, onPlayerTick, onPlayerMeta, onPlayerEnded, musicLrcLines, musicLrcActive, previewMusicRow, probeMusicRow, switchMusicSource, musicSwitching, scanLocalMusic, musicSources, musicSourceOptions, musicMatchSourceOptions, musicPresetOptions, musicSourceOrdered, musicPlaylistUrl, musicPlaylistMode, saveMusicPlaylistMode, musicCookies, musicSelected, aiPipeline, analyzeAudioFile, openSepDlg, openStemMixer, sepDlg, startVocalSeparate, goMixer, clampSepStems, aiTts, installVoicePkgs, loadVoiceStatus, refreshSepStatus, setupSeparatorEnv, setupSeparatorWeights, setupSeparatorAll, sepModelLabel, sepBusy, sepInfo, sepModels, sepDemucsModels, sepDemucsState, fetchDemucsModels, sepHasGpu, sepStatusText, sepDeviceText, sepEngineReason, sepModelsState, sepModelsMissing, sepModelsReady, sepRoformerVer, sepDemucsVer, sepTorchVer, sepUpdatablePkg, sepUpdatable, sepLatest, updateSeparatorEngines, toggleRealtime, installingVoice, voiceStatusText, rtRecording, rtTranslate, rtTargetLang, rtLog,
           mixSrc, mixRows, mixLoading, mixBusy, mixPlaying, mixLoop, mixFormat, mixOut, mixOutUrl,
           stemLabel, streamUrl, loadStems, applyMixGains, applyMixLoop, toggleMixPlay, exportMix, searchMusic, batchSearchDownload, applyMusicPreset, parseMusicPlaylist, onMusicSelection, downloadMusicSelected, downloadMusicRow, showAlreadyHave, musicFavItems, musicFavMissing, musicFavSelected, musicFavReadySel, musicFavSwitching, musicFavDownloading, onMusicFavSelection, addMusicFav, removeMusicFav, clearMusicFav, previewMusicFav, switchMusicFav, downloadMusicFav, loadMusicFavs, installMusicdl,
           loadSubs, addSub, removeSub, toggleSub, scanOneSub, scanAllSubs, startLiveRecord, pauseLiveTask, resumeLiveTask, endLiveTask, endAllLive, cancelLiveTask, addLiveMonitor, removeLiveMonitor, pauseLiveMonitor, resumeLiveMonitor, scanLiveMonitors, loadLiveMonitors, liveRoomCfg, liveRoomFmts, liveRoomQualities, openLiveMonitorCfg, saveLiveMonitorCfg, liveMonitorCfgText, testTelegram,
           testWecom, applyRiskPreset, loadRiskPresets, loadFavTab, loadFavFolderItems, loadYtPlaylist, onFavSelChange,
           downloadFavSelected, downloadFavOne, subscribeFavSelected, subscribeFavOne, startBiliQr, pollBiliQr,
-          isPlayable, isAudioFile, isMediaFile, isVideoFile, openPicard, mbTagFile, mbEnrichFile, fingerprintFile, guessTagsFile, isSrtFile, openSepDlg, openStemMixer, sepDlg, startVocalSeparate, goMixer, clampSepStems, aiTts, installVoicePkgs, loadVoiceStatus, refreshSepStatus, setupSeparatorEnv, setupSeparatorWeights, setupSeparatorAll, sepModelLabel, sepBusy, sepInfo, sepModels, sepDemucsModels, sepHasGpu, sepStatusText, sepDeviceText, sepEngineReason, sepUpdatablePkg, sepUpdatable, sepLatest, updateSeparatorEngines, toggleRealtime, installingVoice, voiceStatusText, rtRecording, rtTranslate, rtTargetLang, rtLog,
+          isPlayable, isAudioFile, isMediaFile, isVideoFile, openPicard, mbTagFile, mbEnrichFile, fingerprintFile, guessTagsFile, isSrtFile, openSepDlg, openStemMixer, sepDlg, startVocalSeparate, goMixer, clampSepStems, aiTts, installVoicePkgs, loadVoiceStatus, refreshSepStatus, setupSeparatorEnv, setupSeparatorWeights, setupSeparatorAll, sepModelLabel, sepBusy, sepInfo, sepModels, sepDemucsModels, sepDemucsState, fetchDemucsModels, sepHasGpu, sepStatusText, sepDeviceText, sepEngineReason, sepUpdatablePkg, sepUpdatable, sepLatest, updateSeparatorEngines, toggleRealtime, installingVoice, voiceStatusText, rtRecording, rtTranslate, rtTargetLang, rtLog,
           mixSrc, mixRows, mixLoading, mixBusy, mixPlaying, mixLoop, mixFormat, mixOut, mixOutUrl,
           stemLabel, streamUrl, loadStems, applyMixGains, applyMixLoop, toggleMixPlay, exportMix, aiTranscribe, aiTranslateSrt, aiCalibrateSrt, onFileSelectionChange, runBatchAi, runSrtCalibrateSelected,
           burnDlg, burnJob, burnStarting, burnSubChoices, burnOutName, burnRunning, burnPercent, burnStatusText, openBurn, closeBurn, startBurn, stopBurn,

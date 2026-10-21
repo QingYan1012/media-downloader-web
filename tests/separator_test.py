@@ -180,8 +180,9 @@ ck("E6 「缺的是 ckpt 还是 yaml」在状态里分得开（两种处置不�
    '"ckpt_present"' in VT_SRC and '"yaml_present"' in VT_SRC and '"missing"' in VT_SRC)
 
 # ------------------------------------------------------------ F. 界面接线
-ck("F1 老端点 /api/ai/demucs 已经从程序与界面里退干净",
-   "/api/ai/demucs" not in SERVER and "/api/ai/demucs" not in HTML)
+ck("F1 老端点 /api/ai/demucs 已经从程序与界面里退干净（按整串路径查 —— 新那个 /api/ai/demucs_models 是另一回事）",
+   '"/api/ai/demucs"' not in SERVER and "'/api/ai/demucs'" not in HTML
+   and '@app.post("/api/ai/demucs_models")' in SERVER)
 ck("F2 新端点在：vocal_separate 收引擎/权重/设备三项设置，separator_setup 管搭建",
    '@app.post("/api/ai/vocal_separate")' in SERVER
    and '@app.post("/api/ai/separator_setup")' in SERVER)
@@ -410,13 +411,81 @@ ck("J7 这批新键两份词表都在（各出现两次），zh 那半不带首�
 ck("J8 对话框用到的六个新名字在 setup 的两行 return 里都挂上了（漏一个不是少一行，是整页渲染炸）",
    sum("sepDlg, startVocalSeparate, goMixer, clampSepStems," in ln
        for ln in HTML.splitlines()) == 2
-   and sum("sepModels, sepDemucsModels, sepHasGpu" in ln
+   and sum("sepModels, sepDemucsModels, sepDemucsState, fetchDemucsModels, sepHasGpu" in ln
            for ln in HTML.splitlines()) == 2)
 # 活体抓到的：模型两格是 v-for，读数只在进语音页时取；直接从文件页开对话框 → 一格空白，
 # 选中值退化成裸 id。修法是打开时补一次 voice_status（服务端那侧本来就有 60 秒缓存）。
 ck("J9 打开对话框会补取一次分离状态：voice_status 原本只在进语音页时读，不补这一下模型格是空的",
    "if (!sepInfo.value) loadVoiceStatus();" in _open_fn
    and "if (p === 'voice') loadVoiceStatus();" in HTML)
+
+# ------------------------------------------------- K. Demucs 模型进「组件与依赖」
+# 用户要的「依赖也加上并支持检测更新」。模型这一类没有独立版本号，能检测的只有在不在，
+# 能「更新」的只有补齐 —— 所以这一段的断言全部围着「名单从包来、状态从磁盘来」这两句。
+_idx = V.demucs_model_index()
+ck("K1 模型名单与地址全部读自装好的那个包（files.txt + <模型>.yaml），voice_tools 里没有第二份表",
+   set(_idx) == set(V.DEMUCS_MODELS)
+   and all(re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{8}\.th", f["file"]) for v in _idx.values() for f in v)
+   and all(f["url"].startswith(V.DEMUCS_ROOT_URL) for v in _idx.values() for f in v)
+   and not re.search(r"[0-9a-f]{8}-[0-9a-f]{8}\.th", VT_SRC),
+   f"模型 {sorted(_idx)} 文件 {sum(len(v) for v in _idx.values())} 个")
+
+
+def _yaml_sigs(name):
+    """包里那份 yaml 的 models: [...] 那一行里列的签名。"""
+    body = (V.demucs_remote_dir() / f"{name}.yaml").read_text(encoding="utf-8").splitlines()
+    line = next((l for l in body if l.strip().startswith("models:")), "")
+    return set(re.findall(r"[0-9a-f]{8}", line))
+
+
+ck("K2 包里的 yaml 列了却没进索引的签名是 0 个（真漏了，界面上会永远显示「缺」，其实是解析没接住）",
+   all(_yaml_sigs(n) == {f["sig"] for f in _idx[n]} for n in _idx),
+   str({n: sorted(_yaml_sigs(n) ^ {f["sig"] for f in _idx[n]}) for n in _idx
+        if _yaml_sigs(n) != {f["sig"] for f in _idx[n]}}))
+ck("K3 状态里「在不在」是问磁盘的：present+missing 必须等于文件总数，且与目录里真有的文件一致",
+   all(r["present"] + len(r["missing"]) == r["files"] for r in V.demucs_models_status()["models"])
+   and sum(1 for v in _idx.values() for f in v
+           if (V.demucs_ckpt_dir() / f["file"]).is_file())
+   == sum(r["present"] for r in V.demucs_models_status()["models"]))
+ck("K4 缓存目录跟着 torch 走（TORCH_HUB / TORCH_HOME 改过的机器上，问错地方就会把「有」报成「缺」）",
+   'os.environ.get("TORCH_HUB")' in VT_SRC and 'os.environ.get("TORCH_HOME")' in VT_SRC
+   and V.demucs_ckpt_dir().name == "checkpoints")
+ck("K5 校验值按「给多长核多长」：RoFormer 那批仍是整份 sha256，Demucs 只有文件名里那 8 位前缀"
+   "（torch.hub 与 demucs 自己也就核到这个长度，多承诺一分就是假安全感）",
+   "h.hexdigest()[:len(expect_sha)] != expect_sha" in VT_SRC
+   and all(re.fullmatch(r"[0-9a-f]{8}", f["checksum"]) for v in _idx.values() for f in v))
+ck("K6 非 GitHub 的地址不拼镜像前缀（拼上只会得到一串必然 404 的候选，白绕几圈）",
+   'if "github.com" in url else [url]' in VT_SRC)
+_ep = _slice(SERVER, "def api_ai_demucs_models", "MIX_FORMATS =")
+ck("K7 补齐只补缺的：包不在先报缺环境，一个都不缺直接回「不用补」，两种都不起线程",
+   'if not st["known"]' in _ep and 'if not st["missing_files"]' in _ep
+   and _ep.index("return") < _ep.index("threading.Thread"))
+ck("K8 同一时刻只让一个补：两个线程往同一个 .part 上写会互相盖掉，最后谁都不完整",
+   "_DEMUCS_MODEL_LOCK.acquire(blocking=False)" in _ep
+   and "_DEMUCS_MODEL_LOCK.release()" in _ep)
+ck("K9 这三条新日志从一开始就带键与 kv（#55 口径：新写的句子不留裸中文）",
+   all(f'k="srv.ai.demucs_models_{x}"' in _ep for x in ("done", "failed", "error")))
+ck("K10 状态随 voice_status 一起回（界面上那一格不再自己猜），且不与「模型名列表」那个键混用",
+   '"demucs_model_files": dmodels' in SERVER and '"demucs_models": list(DEMUCS_MODELS)' in SERVER)
+ck("K11 界面那一格与按钮都在，文字走 tr()，且新名字挂进了 setup 的两行 return",
+   "settings.sepDemucsLabel" in HTML and "settings.sepDemucsBtn" in HTML
+   and "fetchDemucsModels" in HTML
+   and sum("sepDemucsState, fetchDemucsModels," in ln for ln in HTML.splitlines()) == 2)
+_dm_keys = ["settings.sepDemucsLabel", "settings.sepDemucsState", "settings.sepDemucsNoIndex",
+            "settings.sepDemucsUnknown", "settings.sepDemucsBtn", "settings.sepDemucsFail",
+            "settings.sepDemucsStarted", "act.ai.demucs_models", "srv.ai.demucs_models_done",
+            "srv.ai.demucs_models_failed", "srv.ai.demucs_models_error"]
+ck("K12 这批新键两份词表都在（各出现两次），zh 那半不带首尾空格、en 那半不含汉字",
+   all(I18N.count(f"'{k}':") == 2 for k in _dm_keys)
+   and not [k for k in _dm_keys
+            if (m := re.search(r"^      '%s': '(.*?)',$" % re.escape(k), _zh_half, re.M))
+            and m.group(1) != m.group(1).strip()]
+   and not [k for k in _dm_keys
+            if re.search(r"[\u4e00-\u9fff]", "".join(re.findall(
+                r"^      '%s': '(.*?)',$" % re.escape(k), _en, re.M)))],
+   str([k for k in _dm_keys if I18N.count(f"'{k}':") != 2]))
+ck("K13 「补齐」不进一键更新的自动挑选（几百 MB，不该被一次顺手点掉），但键本身认",
+   "sep:models" not in SERVER and "/api/ai/demucs_models" in HTML)
 
 print(f"== 汇总 ==\n共 {TOTAL} 条，失败 {len(FAILED)} 条")
 if FAILED:

@@ -12478,6 +12478,7 @@ def api_voice_status(refresh: int = 0):
     """
     try:
         from voice_tools import (SEP_RUNNER, DEMUCS_MODELS, EDGE_VOICE_PRESETS, deep_translator_available,
+                                 demucs_models_status,
                                  edge_tts_available, roformer_model_states, separation_probe,
                                  separator_setup_running)
         probe = separation_probe(refresh=bool(refresh))
@@ -12485,6 +12486,8 @@ def api_voice_status(refresh: int = 0):
         runner = bool(probe.get("runner_present", SEP_RUNNER.is_file()))
         models = roformer_model_states()
         ready = [m["id"] for m in models if m["present"]]
+        # Demucs 的模型不在这张表里：它由包自己去 torch 的缓存目录取，缺不缺要问那个目录
+        dmodels = demucs_models_status()
 
         def why(engine_ok: bool, pkg_ok: bool) -> str:
             if not venv:
@@ -12521,6 +12524,7 @@ def api_voice_status(refresh: int = 0):
                 "default_model": ready[0] if ready else "",
                 # Demucs 的模型名同样从这里出：界面上有两处下拉，抄第二份名单就会和保存闸门那份对不上。
                 "demucs_models": list(DEMUCS_MODELS),
+                "demucs_model_files": dmodels,
                 "engines": [
                     {"id": "roformer", "available": venv and runner and as_ok and bool(ready),
                      "reason": why(as_ok and bool(ready), as_ok)},
@@ -12803,6 +12807,48 @@ def api_ai_vocal_separate(body: dict):
 
     threading.Thread(target=job, daemon=True).start()
     return {"ok": True, "message": f"人声分离中: {media.name}（{engine} / {device}）"}
+
+
+# Demucs 那批模型是几百 MB 的后台活儿。同一时刻只让一个在补：
+# 两个线程往同一个 .part 上写，会互相把对方刚写的字节盖掉，最后谁都不完整。
+_DEMUCS_MODEL_LOCK = threading.Lock()
+
+
+@app.post("/api/ai/demucs_models")
+def api_ai_demucs_models():
+    """补齐缺的 Demucs 模型文件（落在 torch 的缓存目录，不在程序目录下）。
+    只补缺的那几个，已经在的一个字节都不动 —— 这是「补齐」，不是「重下」。"""
+    from voice_tools import demucs_models_status, download_demucs_models
+    st = demucs_models_status()
+    if not st["known"]:
+        # 包都不在，清单就读不出来 —— 这一句要说清缺的是环境，不是让人对着空列表点下载
+        return {"ok": False, "error": "看不到 demucs 包里的模型清单：分离环境还没建，建完再来补模型"}
+    if not st["missing_files"]:
+        return {"ok": True, "message": "Demucs 的模型都齐了，不用补", "missing": 0}
+    if not _DEMUCS_MODEL_LOCK.acquire(blocking=False):
+        return {"ok": False, "message": "已经有一批 Demucs 模型在补，请等它结束", "running": True}
+
+    def job():
+        try:
+            res = download_demucs_models(log=log_mgr.log)
+            got = res.get("ok") or []
+            bad = res.get("failed") or []
+            if bad:
+                log_mgr.log(f"Demucs 模型没补齐：成了 {len(got)} 个，失败 {len(bad)} 个", "error",
+                            k="srv.ai.demucs_models_failed",
+                            kv={"ok": str(len(got)), "bad": str(len(bad))})
+            else:
+                log_mgr.log(f"Demucs 模型补齐完成：{len(got)} 个模型的文件都到位了",
+                            k="srv.ai.demucs_models_done", kv={"n": str(len(got))})
+        except Exception as e:
+            log_mgr.log(f"Demucs 模型下载失败: {e}", "error",
+                        k="srv.ai.demucs_models_error", kv={"e": str(e)})
+        finally:
+            _DEMUCS_MODEL_LOCK.release()
+
+    threading.Thread(target=job, daemon=True).start()
+    return {"ok": True, "message": f"开始补 {st['missing_files']} 个模型文件，进度看运行日志",
+            "missing": st["missing_files"]}
 
 
 MIX_FORMATS = {"wav": ["-c:a", "pcm_s16le"], "mp3": ["-c:a", "libmp3lame", "-b:a", "320k"]}

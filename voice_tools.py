@@ -418,13 +418,15 @@ def _finish_weight(part: Path, dest: Path, log: LogFn, expect_sha: str) -> bool:
     """核完校验值才把 .part 换成真名字。
     钉的是「下载过程中被截断、被中间设备改写、镜像给错了文件」这三种，
     值本身是本机下回来的字节算出来的（两条独立下载路径算出同一份），
-    所以它证明的是一致性，不是上游作者的真伪 —— 那句「已就绪」也只说到这儿。"""
+    所以它证明的是一致性，不是上游作者的真伪 —— 那句「已就绪」也只说到这儿。
+    比对按「给多长核多长」：RoFormer 那批给的是整份 sha256，Demucs 那边文件名里只有 8 位前缀
+    （torch.hub 与 demucs 自己也只按这个前缀核），写死等长就没法用同一套下载。"""
     if expect_sha:
         h = hashlib.sha256()
         with open(part, "rb") as f:
             for chunk in iter(lambda: f.read(1 << 20), b""):
                 h.update(chunk)
-        if h.hexdigest() != expect_sha:
+        if h.hexdigest()[:len(expect_sha)] != expect_sha:
             part.unlink(missing_ok=True)
             _log(log, f"{dest.name} 校验值对不上（{h.hexdigest()[:12]}…），这份丢掉不用", "error")
             return False
@@ -441,7 +443,10 @@ def _fetch_weight(url: str, dest: Path, log: LogFn, expect_sha: str = "") -> boo
     from pkg_update import github_url_candidates
 
     part = dest.with_name(dest.name + ".part")
-    for u in github_url_candidates(url):
+    # 镜像前缀只对 GitHub 那两个 release 地址有意义；Demucs 的模型在 facebook 自己的站上，
+    # 给它拼镜像前缀只会得到一串必然 404 的候选，白绕几圈。
+    cands = github_url_candidates(url) if "github.com" in url else [url]
+    for u in cands:
         for _round in range(4):
             have = part.stat().st_size if part.is_file() else 0
             headers = {"Range": f"bytes={have}-"} if have else {}
@@ -492,6 +497,118 @@ def download_roformer_weights(log: LogFn = print) -> dict:
             ok = _fetch_weight(f"{base}/{fname}", SEP_MODELS_DIR / fname, log, sha) and ok
         (done if ok else failed).append(m["id"])
     return {"ok": done, "failed": failed}
+
+
+# ---- Demucs 的模型：名单、地址、校验值全在装好的那个包里，这里只读不抄 ----
+# 抄一份就会漂移：包里换了一个签名，界面还在报「有 / 缺」，实际载入的却是另一个文件。
+DEMUCS_ROOT_URL = "https://dl.fbaipublicfiles.com/demucs/"
+DEMUCS_FILE_RE = re.compile(r"^([0-9a-f]{8})-([0-9a-f]{8})\.th$")
+
+
+def demucs_ckpt_dir() -> Path:
+    """demucs 取模型走 torch.hub，所以文件落在它的缓存目录里，不在程序目录下。
+    TORCH_HUB / TORCH_HOME 任一个都能改这个位置 —— 改过的机器上「缺不缺」要问对地方。"""
+    hub = os.environ.get("TORCH_HUB")
+    if hub:
+        return Path(hub) / "checkpoints"
+    root = os.environ.get("TORCH_HOME") or str(Path.home() / ".cache" / "torch")
+    return Path(root) / "hub" / "checkpoints"
+
+
+def demucs_remote_dir() -> Optional[Path]:
+    """装好的 demucs 包里那个 remote/ 目录（files.txt 与各模型的 yaml 都在里面）。"""
+    venv = SEP_VENV_PY.parents[1]
+    for cand in [venv / "Lib" / "site-packages" / "demucs" / "remote"] + \
+            sorted(venv.glob("lib*/site-packages/demucs/remote")):
+        if (cand / "files.txt").is_file():
+            return cand
+    return None
+
+
+def demucs_model_index() -> dict:
+    """{模型名: [{sig, file, checksum, url}]}。
+    files.txt 是「root: 子目录 + 一行一个文件名」，<模型>.yaml 的 models: [...] 给的是文件名
+    前半那 8 位签名 —— 两张表拼起来才是完整地址；文件名后半那 8 位就是 sha256 前缀，
+    torch.hub 与 demucs 载入时都按它核（check_hash=True），所以我们核的也是它，不多承诺一分。"""
+    rd = demucs_remote_dir()
+    if not rd:
+        return {}
+    by_sig: dict = {}
+    root = ""
+    try:
+        listing = (rd / "files.txt").read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    for line in listing.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        if s.startswith("root:"):
+            root = s.split(":", 1)[1].strip()
+            continue
+        m = DEMUCS_FILE_RE.match(s)
+        if m:
+            by_sig[m.group(1)] = {"sig": m.group(1), "file": s, "checksum": m.group(2),
+                                  "url": DEMUCS_ROOT_URL + root + s}
+    out: dict = {}
+    for name in DEMUCS_MODELS:
+        y = rd / f"{name}.yaml"
+        if not y.is_file():
+            continue
+        try:
+            body = y.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        decl = next((l for l in body.splitlines() if l.strip().startswith("models:")), "")
+        files = [by_sig[s] for s in re.findall(r"[0-9a-f]{8}", decl) if s in by_sig]
+        if files:
+            out[name] = files
+    return out
+
+
+def demucs_models_status() -> dict:
+    """每个模型「几个文件在、缺哪几个」。模型没有独立版本号，所以这里能说的就是在不在 ——
+    体积也不猜（没 HEAD 过就不知道远端多大），只报本机已在的字节数。"""
+    idx = demucs_model_index()
+    d = demucs_ckpt_dir()
+    rows = []
+    for name, files in idx.items():
+        miss, size = [], 0
+        for f in files:
+            p = d / f["file"]
+            if p.is_file():
+                size += p.stat().st_size
+            else:
+                miss.append(f["file"])
+        rows.append({"name": name, "files": len(files), "present": len(files) - len(miss),
+                     "missing": miss, "bytes": size, "ready": not miss})
+    return {"known": bool(idx), "dir": str(d), "models": rows,
+            "ready": sum(1 for r in rows if r["ready"]), "total": len(rows),
+            "missing_files": sum(len(r["missing"]) for r in rows)}
+
+
+def download_demucs_models(log: LogFn = print) -> dict:
+    """补齐缺的 Demucs 模型文件。名字必须和包里列的一致（前半签名就是它找文件的键），
+    先写 .part 再按 sha256 前缀改名，和 RoFormer 那批同一套卫生。
+    已经在的那些一个字节都不动 —— 这是「补齐」，不是「重下」。"""
+    idx = demucs_model_index()
+    done: List[str] = []
+    failed: List[str] = []
+    if not idx:
+        _log(log, "看不到 demucs 包里的模型清单：分离环境还没建，建完再来补模型", "error")
+        return {"ok": done, "failed": failed, "known": False}
+    d = demucs_ckpt_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    for name, files in idx.items():
+        ok = True
+        for f in files:
+            dest = d / f["file"]
+            if dest.is_file():
+                continue
+            _log(log, f"下载 Demucs 模型 {f['file']}（{name}）…")
+            ok = _fetch_weight(f["url"], dest, log, f["checksum"]) and ok
+        (done if ok else failed).append(name)
+    return {"ok": done, "failed": failed, "known": True}
 
 
 def setup_separator(log: LogFn = print, *, step: str = "all", mirror: str = "") -> str:

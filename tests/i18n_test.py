@@ -480,7 +480,7 @@ for _ln in HTML.splitlines():
                if x.startswith(KB_PREFIX)}
 _kb_dyn = sorted(k for k in kb if k.endswith("_"))          # 'ui.lang_' + pref 这种拼出来的前缀
 kb -= set(_kb_dyn)
-ck("H17 埋点键抠得出（ACTION_NAMES 138 条 + 各调用点的 uiName/logAction 字面键）",
+ck("H17 埋点键抠得出（ACTION_NAMES 139 条 + 各调用点的 uiName/logAction 字面键）",
    len(kb) > 150, f"{len(kb)} 个，动态前缀 {len(_kb_dyn)} 个：{_kb_dyn}")
 _kb_bad = sorted(k for k in kb if not S._LOG_KEY_RE.fullmatch(k))
 ck("H18 每个会当 k 发给后端的键都过后端那把尺 _LOG_KEY_RE"
@@ -489,8 +489,8 @@ ck("H18 每个会当 k 发给后端的键都过后端那把尺 _LOG_KEY_RE"
 _kb_miss = sorted(k for k in kb if k not in DICT["zh"] or k not in DICT["en"])
 ck("H19 每个会当 k 发给后端的键两份词表都有（少一份，日志页那句就退回后端原话）",
    not _kb_miss, str(_kb_miss[:8]))
-ck("H20 ACTION_NAMES 只剩「路径 → 键」：138 条一个不多一个不少，表里不再写中文",
-   bool(_m_an) and len(_pairs_an) == 138 and not CJK.search(_m_an.group(1))
+ck("H20 ACTION_NAMES 只剩「路径 → 键」：139 条一个不多一个不少，表里不再写中文",
+   bool(_m_an) and len(_pairs_an) == 139 and not CJK.search(_m_an.group(1))
    and all(v.startswith("act.") for _, v in _pairs_an),
    f"{len(_pairs_an)} 条")
 # 片段键（拼进整句里的列名/排序方向/页签名/主题名/目录名）不占 ui.*：H10 认定 ui.* 的 en 自带「[UI] 」，
