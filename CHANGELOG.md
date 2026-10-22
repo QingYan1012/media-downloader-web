@@ -5,7 +5,105 @@
 
 ---
 
-## v1.4.0 · 2026-10-15（本轮出包）
+## v1.5.0 · 2026-10-22（本轮出包）
+
+`appVersion` 从 `v1.4.0` 升到 **`v1.5.0`**（真源只有 `static/index.html` 那一行，`pack_release.py` 的 `app_version()` 从同一处抓，界面显示 / 便携包名 / README 标题跟着一起走）。这一版收的是 `d922732`（上一轮发布物背后的那一笔）之后的 **32 笔**：一条大的功能线（分轨与音频分析的第二层）加一整批界面与日志收口。量上不是补丁 —— 六轨分离、分轨混音台、分离选择框、Demucs 模型补齐、拍点与段落结构、后端日志二十批挂键，任何一件都够单独一个次版本号。
+
+**功能线（下面四节有逐条细节，位置沿用它们各自落地时写下的位置）**
+
+- **#129 六轨与分轨混音台**：`htdemucs_6s` 出 bass / drums / guitar / other / piano / vocals，分轨范围三档（默认仍是「只取人声」，与这一项存在之前逐字相同）；混音台逐轨静音 / 独奏 / 音量、整段循环、按当前平衡导出。
+- **#131 分离的选择框挪到动手那一步**：文件页「更多 → 分离人声」先弹引擎 / 模型 / 分轨范围 / 跑在哪四项，预填自设置而**不回头写设置**；顺带抓出一个真 bug —— 那份状态读数原先只在进语音页时才取，从不进语音页的人开对话框，两格模型下拉是空的。
+- **#132 Demucs 的模型进「组件与依赖」**：能检测缺哪几个文件、能一键补齐，名单与校验值读自装好的那个包；模型没有独立版本号，所以这里只有「在不在」，也不进一键批次。
+- **#133 音频分析的第二层**：拍点（beat-this）与段落结构（all-in-one）装进分离那个 venv 复用同一份 torch，产出并进同一份 JSON 与同一行日志；**librosa 的旧读数不静默替换**（合成 180 BPM 它报 89.1、真歌 76 报成 152、85.7 报成 112.3，而两个神经网络来源彼此差不到 1%）。
+
+**界面与运行日志收口**
+
+- **#55 后端运行日志第十五～三十四批**（20 批）：闸门里带 `srv.*` 键的调用点从 **144 涨到 370**，词表两份各 **3102 键**；其中 **#93a 片段键机制**（兜底词与状态词走 `misc.*` / `ccnote.*`）与 **#93b 条件句拆两处字面调用**是这一段的两个新口径，各先定口径再动代码。第十七批的前置一笔把 `self.log(...)` 这条接收式接上 `k`/`kv` 通道，一下解锁了原先不可见的 100 处（K10 现在读 113 处裸调用 / 送到 4 份适配口 / 送不到 0）。
+- **#92** 网络重置的清空项名单改回语言中立的 key，英文界面不再印中文；**#80 续** 折叠栏里的展开钮回到 logo 那一行；**#98** 矮屏加一层紧凑留白，直播与语音页收进免滚动。
+- **#96** 自检不再把日志写进项目根的 `app.log`：两处泄漏（`outbox_test.py` 的嵌套桩恢复错了对象、`bt_boost_test.py` 只换了 cfg 而接口仍走真 `log_mgr`），修完一轮全批 append **0 B**。
+
+**这一版踩到并修好的环境级缺陷**：主环境 numpy 升到 2.5.x 而 numba 停在 0.65（上限 `<2.5`）会让 `import numba` 直接抛错，音频分析与声纹说话人分离整条坏掉 —— 这条本机**踩过两次**，上一轮按「退回 numpy 2.4.6」处理，这一轮按选择往前修（`numba 0.68.0` + `llvmlite 0.50.0`）。numba 不在「组件与依赖」表里、一键更新带着 numpy 单独走就还会脱钩，这一条记成 #134 未做。
+
+**自检**：全批 **62 套 bad=0**，其中 `separator_test.py` **117 项**（J1–J9 选择框 / K1–K13 Demucs 模型 / L1–L23 拍点与结构）、`i18n_test.py` **517 项 FAILED: none**、`pagemount_test.py` 40 项；活体一律自起沙箱（`MEDIADOWNLOADER_STATE_DIR` + 空端口），分离对话框 12 条、Demucs 模型行 6 条、拍点与结构 14 条各自全过。
+
+### 发布物
+
+（打包完成后回填：zip 字节数与 sha256、条目数、包内自检读数、标签与 Release 资产核对。）
+
+---
+
+## 分轨：六轨模型与分轨混音台（同一轮内，参照 StemDeck）
+
+有人问「StemDeck 这个能加吗」。核完差距只有两处值得拿：**六轨**与**多轨混音**，其余（它自带 FastAPI + 自己的 Python 运行时、700 MB～1.6 GB 的分发）和我们「venv 与权重都不进包」的口径冲突，不做集成、只借选型。它本身是 Apache-2.0，界面鸣谢名单里补了一条。
+
+- **`htdemucs_6s` 进表的条件是这台机器真跑通**：4 秒合成片段、CPU、262 秒，落出 `bass / drums / guitar / other / piano / vocals` 六条各 705,644 B。`voice_tools.py` 那张表原来的注释写着「没验过的名字不给选项 —— 给了就是让人点下去报『模型下不下来』」，所以先验再列，`mdx23c` 那类仍然不给选项。
+- **分轨范围三档，默认那档就是改动前的行为**：`demucs_stems` 取 `vocal` 时命令与从前逐字相同（仍带 `--two-stems vocals`，出「人声 + 伴奏」两条），`four` / `six` 才去掉那个参数让 Demucs 铺全轨。默认值 `vocal` 写进 `DEFAULTS`、`ConfigBody`、保存闸门与界面初值四处 —— 把默认改成多轨等于替每个老用户重跑一遍分离。
+- **档与模型对不上在起线程之前就说破**：六轨只有 `htdemucs_6s` 出得来，界面那格直接置灰，后端再拒一次。跑完几分钟才发现拿回的轨数不对，是最亏的一种失败。
+- **分轨混音台**（语音页新卡）：`GET /api/voice/stems` 按 `<曲名>/demucs/<模型>/<曲名>/*.wav` 精确取轨（整目录 rglob 会把同一首歌换模型跑过的两批同名轨一起端上来），并排掉自己产出的 `*-mix-*`；`POST /api/voice/mix` 用本机 ffmpeg 合成，静音的轨不进命令，导出 WAV（`pcm_s16le`）或 MP3（320k），成品写在首条轨旁边。
+- **`amix` 关掉 `normalize`**：开着它会把每条轨按轨数等分压下去，人在界面上调好的平衡和写出来的文件就不是一个东西。第一版还翻过一次车 —— filter chain 之间少了 `;`，ffmpeg 直接判非法、接口 500。
+- **音量条只做 0–100%，不做增益**：预览走 `element.volume`，它上不去 1；给一根能拉到 200% 的条就是骗人。要增益得换 Web Audio 的 GainNode，那一层留给以后。
+- 「分离引擎」那一格的措辞从「Demucs（四轨，能出 `no_vocals`）」改成不写死轨数 —— 现在轨数由「分轨范围」决定。
+- 自检：`tests/separator_test.py` 加 I1–I14（`--two-stems` 只出现一次、六轨只配 `htdemucs_6s`、filter chain 用 `;`、自产文件被排除、混音台七个新名字都在 setup 的 return 里）；`hwenc_test.py` H3/H4 与 `platform_test.py` E6 的取样窗口原先按固定字符数 / 全文件扫，被这一轮的改动撑歪，改成按函数边界取。活体端到端在自起沙箱里跑通：6 轨读全 → 导出 4 轨混音（静音吉他与钢琴、贝斯 50%）→ `ffprobe` 回读 `pcm_s16le / 44100 / 2ch` → 浏览器点导出真落盘并弹提示，`pageerror` 0。
+- 改 / 加的文件：`voice_tools.py`（模型表、`DEMUCS_STEMS_MODES` / `DEMUCS_STEMS_BY_MODEL`、`separate_demucs` 的 `stems_mode`）、`server.py`（`DEFAULTS` / `ConfigBody` / 保存闸门 / `api_ai_vocal_separate` / 新 `api_voice_stems` 与 `api_voice_mix`）、`static/index.html`（分轨范围那一格、混音台卡、`CREDITS` 补一条）、`static/i18n.js`（+35 键 / 份）、`tests/separator_test.py`、`tests/hwenc_test.py`、`tests/platform_test.py`、`CHANGELOG.md`、`CHANGELOG.en.md`、`docs/详细功能介绍.md`、`docs/detailed-features.en.md`。
+
+---
+
+## 分轨的下一步 · 选择挪到动手的那一步（用户指正）
+
+上面那一轮做完，用户第一句是「人声分离没有选择引擎窗口啊」。六轨与混音台都建在语音页，可分离是从文件页点的 —— 点下去连引擎都没得挑。功能都在，只是摆错了地方。
+
+- **文件行「更多 → 分离人声」先弹一格选择框**：引擎 / 模型 / 分轨范围 / 跑在哪，四项预填自设置，改的只有这一次。语音页那张卡不动，它仍是默认值的家 —— 从对话框点出去不回头写 `settings.*`（自检 J3 钉的就是这条：对话框里不许出现给设置赋值）。开始之后那枚按钮换成「去混音台」，带着这个文件的路径跳过去。
+- **混音台的入口也挂到文件页**：分离过的文件，菜单里多一条「分轨混音」，跳过去直接把那几条轨读回来。这一条不画分组线 —— 它是「分离人声」的下一步，不是一族之首。
+- **模型名单收回到一份**：Demucs 那四个名字原先在界面里写死了两份（语音页一格 + 对话框一格），现在由 `/api/ai/voice_status` 的 `separation.demucs_models` 带回，两处 `v-for` 渲染。界面抄第二份名单迟早和保存闸门那份对不上，把界面自己的选项判成非法值（A4 从「比对写死的四项」改成「两处都是 v-for，且界面里不许再出现写死的 option」）。
+- **活体跑抓到的真 bug（不是接线问题）**：`loadVoiceStatus()` 原先只在 `page === 'voice'` 时调用，从不进语音页的人直接开对话框，两格 `v-for` 的模型下拉是**空的**，选中值退化成裸 id（`htdemucs_6s` / `bs_1297`）。第一次误判成「v-if/v-else 复用组件实例」，加了 `key` 复跑 —— 没用，同一处仍然空；回到 DOM 上看才看清静态选项（引擎 / 设备 / 分轨范围）都在、只有 `v-for` 的没在，指向的是数据没到。修法是 `openSepDlg` 里 `if (!sepInfo.value) loadVoiceStatus()`，`key` 那两处撤回。自检测不到这一条：`voice_status` 的读数在离线批里是桩，桩回包一直有这两个字段。
+- **换模型时范围自己收回**：`htdemucs_6s` 配「六轨」，换成别的模型时那档已经点不得了，`clampSepStems` 把它收回「只取人声」，但**不会**在换回 6s 时自动替人选回六轨 —— 那是替别人决定跑法。
+- 自检：`separator_test.py` 加 J1–J9（老那条裸 POST 断干净、五项覆盖与后端五个 `body.get` 一一对上、对话框不写设置、收回规则、两处 return 都挂名、新键两份词表齐、打开时补取状态），`pagemount_test.py` P8 的菜单项数从 15 改 16（带线的仍是五个组首）。活体在自起沙箱里 12 条全过：预填读数、切引擎换格、收回与再点、请求体五项、跳混音台带路径、从文件页读回六条轨、`pageerror` 0。
+- 改 / 加的文件：`server.py`（`voice_status` 多带 `demucs_models`）、`static/index.html`（对话框、两项菜单、两处 `v-for`、`sepDlg` 一族函数）、`static/i18n.js`（+6 键 / 份）、`tests/separator_test.py`、`tests/pagemount_test.py`、`CHANGELOG.md`、`CHANGELOG.en.md`、`docs/详细功能介绍.md`、`docs/detailed-features.en.md`。
+
+---
+
+## Demucs 的模型进「组件与依赖」：能检测缺哪几个，也能一键补齐
+
+上一节做完，用户那句还挂着：「依赖也加上并支持检测更新」。RoFormer 那四条权重本来就在表里，缺的是 Demucs 这一路 —— 它不经过我们，是包自己去 torch 的缓存目录取，所以表上既看不见它，也就没人知道「选了 htdemucs 要等多久」。
+
+- **口径先说死：模型没有独立版本号。** 能检测的只有「在不在、缺几个文件」，能「更新」的只有「补齐缺的那几个」。界面那句话就写 `{ready} / {total} 个模型的文件齐了，还缺 {n} 个`，不写成「有新版可更新」——那是没有的东西。
+- **名单、地址、校验值全部读自装好的那个包**：`remote/files.txt` 是「`root:` 子目录 + 一行一个文件名」，`remote/<模型>.yaml` 的 `models: [...]` 给的是文件名前半那 8 位签名，两张表拼起来才是完整地址。`voice_tools` 里不写第二份名单（K1 钉着：源码里不许出现 `xxxxxxxx-xxxxxxxx.th` 这样的字面量）。yaml 列了而索引没接住的签名必须为 0（K2）—— 真漏了的症状是界面上永远显示「缺」，其实是解析没接住。
+- **校验值按「给多长核多长」**：文件名后半那 8 位是 sha256 前缀，torch.hub 与 demucs 载入时（`check_hash=True`）也就核到这个长度，所以我们核的也是它 —— 不多承诺一分。原先 `_finish_weight` 写死与整份 sha256 相等，改成前缀比对（RoFormer 那批给的是 64 位，行为不变，K5 钉住）。
+- **只补缺的，已经在的一个字节不动**；同一时刻只让一个在补（`_DEMUCS_MODEL_LOCK`）—— 两个线程往同一个 `.part` 上写，会互相把对方刚写的字节盖掉，最后谁都不完整。包不在、或一个都不缺，都在起线程之前就回话（K7）。
+- **不进「一键更新」的自动挑选**：几百 MB 的东西不该被一次顺手点掉。那一格旁边单独一枚「补齐 Demucs 模型」，进度写运行日志。
+- **顺手一处卫生**：`_fetch_weight` 以前对任何地址都拼 GitHub 镜像前缀，Demucs 的模型在 facebook 自己的站上，拼出来是一串必然 404 的候选 —— 现在只有 GitHub 的地址才拼。
+- **缓存目录跟着 torch 走**：`TORCH_HUB` / `TORCH_HOME` 改过的机器上，问错地方就会把「有」报成「缺」。
+- 本机读数（跑完自检现问磁盘）：`htdemucs_6s` 1 / 1 个文件在，54,996,327 B；`htdemucs` 0 / 1、`htdemucs_ft` 0 / 4、`mdx_extra` 0 / 4 —— 合计缺 9 个文件。
+- 自检：`tests/separator_test.py` 加 K1–K13（名单来源、签名零漏、状态问磁盘、目录随 torch、前缀校验、镜像不乱拼、端点两条早退、锁、三条新日志带键、状态随 voice_status 回、界面接线与 return、两份词表、不进一键）。F1 的「老端点退干净」改成按整串路径查 —— 新的 `/api/ai/demucs_models` 是另一回事，子串匹配会误伤。
+- 改 / 加的文件：`voice_tools.py`（`demucs_ckpt_dir` / `demucs_remote_dir` / `demucs_model_index` / `demucs_models_status` / `download_demucs_models`，`_finish_weight` 前缀比对，`_fetch_weight` 镜像守卫）、`server.py`（`voice_status` 带 `demucs_model_files`、新 `POST /api/ai/demucs_models`）、`static/index.html`（那一格的状态行与按钮、`sepDemucsState` / `fetchDemucsModels`、端点动作名）、`static/i18n.js`（+11 键 / 份）、`tests/separator_test.py`。
+
+---
+
+## 音频分析接上拍点与段落结构：两个神经网络来源，旧读数不静默替换
+
+「stemdeck 怎么没加入引擎与组件」这一问，查下来的答案是：**它本身不接**（JS/Electron + 一份 305 MB 的独立 Python 运行时，内部还是 demucs，不上 PyPI，接进来等于把同一件事做两遍），**但它那两项能力我们缺** —— 拍点（beat-this）与段落结构（all-in-one）。按批准的口径只接能力：装进 `tools/separator/venv` 复用同一份 torch，产出并入现有「音频分析」的 JSON 与运行日志，两个包进引擎表能检测上游版本与更新，两组模型文件挂进上一节那套「在不在 / 补齐」并且不进一键。
+
+- **为什么值得接：librosa 那个 tempo 不是精度差一点，是读数会错一倍。** 合成 180 BPM 它报 89.1；真歌「說好不哭」实际 76 报成 152、「Brave Shine」实际 85.7 报成 112.3。同一批文件上两个神经网络来源彼此差不到 1%（85.7 / 86.0）。所以**旧读数不静默替换**：`tempo_bpm` 与 `bpm` 各留各的，相差超过 25% 才在日志末尾补一句 `旧读数 112.3（相差 0.76 倍）`（L9 钉住这条判定与那句原文）。
+- **跑的是整首，不是那 180 秒。** 段落结构要看全曲才有意义，而 librosa 那一格仍按 `max_duration=180` 封顶 —— 两个窗口不同这件事写在注释里，不装作同一个口径（L10）。
+- **缺哪一层就报哪一层，不起子进程**：没装包、缺模型、没有环境，三种说法各自的 `reason`（L7），失败路径上那八个键也照样在（L8），界面与旁路 JSON 不用判断「键在不在」。
+- **一个包坏了不连带把另一项报成没有**：`separator_runner.py --analyze` 里两件事各自 `try`，报错原文进 `errors`；`audio_analyze.py` 把 `errors` 并进 `analysis_error`，段落为空但确实跑过时日志多一句「段落结构没算出来」（L6、L21）。以前只看 `ok`，拍点成功会把结构失败整个吞掉。
+- **两个包进上游检测与一键，模型不进**：包有版本号可报，模型没有 —— 缺了要在界面上点名，那是「补齐」不是「有新版」。表上只挂一条「音频分析依赖」，两行并一条，免得变成两条同义通知（L12）。装包与补模型共用分离环境那把锁：两个 pip 同写一个 venv 会互相盖掉对方刚落的文件（L13）。
+- **拍点权重只有第三方镜像可达**：作者那份 `.ckpt` 在 `cloud.cp.jku.at`，本轮实测整站 503。用镜像就把这句话说出口 —— 界面那一行多一句「拍点模型取自第三方镜像（作者站当前不可达），已按钉死的 sha256 核对」，下载时先试作者源、退到镜像必须整份 sha256 对上（L3、L16）。超参也一起钉住：镜像那份是裸 `state_dict`，装不进作者那句 `load_model()`。
+
+三处坑是装到能用这一步才现形的：
+
+1. **钉版本自洽不等于钉得够多。** `omegaconf==2.4.0` 与 `hydra-core==1.3.7`（要 `<2.4`）互斥，pip 直接拒；探针环境当初能跑是因为那两件是 `--no-deps` 装进去的。能用的组合只有一组 —— `omegaconf 2.3.1` 恰好要求 `antlr4-python3-runtime==4.9.*`，与「默认那版 antlr 会让 omegaconf 的语法表反序列化失败」那条实测正好对上（L17 钉住这一组数）。
+2. **递给 all-in-one 的必须是 wav。** venv 里那份 torchaudio 是 2.11，自带解码器已被拿掉、要额外的 torchcodec，mp3 走它就是 `TorchCodec is required`；它自己的 wav / flac 路径用 soundfile。改成**解码一次两边共用**，临时 wav 只递给库，并把它的 `demix_dir` / `spec_dir` 接进临时目录 —— 那两个默认写在当前目录下，会把副产品拉进程序目录（L18~L20）。
+3. **「模型在不在」不能由我们自己翻缓存目录。** 库运行时那句 `hf_hub_download(repo_id, filename)` 不带 revision、只认默认分支，按 commit 号下进缓存的那 8 个 fold 它一个都不认（实测：文件全在，仍报 `LocalEntryNotFound`）。改成**问 venv 里那份库**（`local_files_only=True`），认得出、且逐个文件 sha256 与钉死值对得上才算「在」；钉的东西也随之从 commit 号换成 8 个文件的 sha256（L4、L22~L23）。补齐时同理：`snapshot_download` 只会说「我试过了」，回读对不上就报缺，不拿没核过的权重接着跑。
+
+- **本机读数**（自起沙箱，不碰 8765；真歌整首 252.3 秒）：GPU 55.6 秒出 `bpm 85.7 / 339 拍点 / 88 降拍 / 14 段`，`analysis_error` 为空；CPU 臂一段 180 秒的 93.7 秒，同一个 85.7。装包一次 9 项（含 torchaudio 与 matplotlib），模型 77 MB + 8 × 1,400,571 B。界面那一行中英两种语言都读得出（切语言当场生效，不重启）。
+- **顺带照出来一件真缺陷**：主环境 `numpy 2.5.4` + `numba 0.65.0`（元数据写 `numpy<2.5`）让 `import numba` 直接抛错，「音频分析」与声纹说话人分离整条是坏的 —— 8765 用的是同一个解释器。按选择升到 `numba==0.68.0` + `llvmlite==0.50.0`（允许 `<2.6`）后六项读数全绿。numba 不在「组件与依赖」表里、一键更新不会带着它走，这件事记成下一项。
+- 自检：`tests/separator_test.py` 加 L1–L23（钉版本、镜像哈希与超参、`--analyze` 分派时机、`@@@JSON` 与分开容错、三层早退、八个键、旧读数那句、两个窗口、组件表取数处、检测与一键的取舍、锁、两份词表、界面接线、镜像要说出口、版本自洽、wav、临时目录、一次解码、错误不吞、回读才算补齐、问库不翻目录）。
+- 改 / 加的文件：`voice_tools.py`（`SEP_ANALYSIS_PINS` / `analysis_pkg_versions` / `install_analysis_pkgs` / `analysis_model_states` / `download_analysis_models` / `analysis_status` / `analyze_beats_structure` / `setup_analysis`，venv 探测一次问齐版本与模型）、`separator_runner.py`（`--analyze`：解码一次、拍点、结构）、`audio_analyze.py`（那八个键、旧读数那句、段落标签）、`server.py`（`POST /api/ai/analysis_setup`、`/api/components` 的 `sep_analysis`、上游检测与一键里的一条）、`static/index.html`（那一行与按钮、四个 computed）、`static/i18n.js`（+12 键 / 份）、`tests/separator_test.py`、`tests/i18n_test.py`。
+
+---
+
+## v1.4.0 · 2026-10-15（已发布）
 
 这一批从 #206② 起攒了 15 项（#19~#23 那五条 + #26~#40 那一轮界面收口 + #24/#25 + 两条更正与一条批量跑抓出来的假绿），早过了一个补丁号的量，按要求直接把版本号升到 **v1.4.0** 并**统一出一次包**。下面每一节末尾那句「本轮没出包」写的是当时那一轮自己的状态 —— 那时 `appVersion` 确实还停在 `v1.3.2`，包是这批做完最后一次性打的，见本批末尾的「发布物」。
 
@@ -1413,77 +1511,6 @@ itags 两边完全一致（`91/92/93/94` 的 HLS 切片 + `18` 的 1080p 渐进�
 - README 两份同步（第三轮）：「组件与依赖」与解析插件一节改口 —— PO Token 的插件层现在能从界面装，服务端层不能，那一行的绿灯要三层齐；风控说明补「票这一层通着时卡片会明说不是票的问题」；常见问题里那条 YouTube 高清的解释补上「本机实测：带票与不带票回同一批 itag」；离线自检点名 `potcomponent_test.py`。
 - 第四轮改 / 加的文件：`server.py`（`get_info` 的接受条件与 `client_tries`、新增 `YT_WIDE_CLIENTS` / `POT_SERVER_DIR_NAME` / `_yt_widen_attempt()` / `_yt_has_dash()` / `_yt_max_h()` / `_po_ping_ok()`，`po_token_health()` 加自愈补拉，`_resolve_format()` 的高度上限按备选拆分，`_yt_player_chain` 那条下载分支保住解析用的宽客户端，`_pot_component_note()` / `_po_ready_tip()` / `_po_gate_tip()` 改口，`/api/po_token/check` 回 `daemon`，启动线程 `_boot_pot_server()` 与收尾 `_pot_daemon_stop()`）、**`pot_daemon.py`（新）**、`tools/bgutil-pot-server/`（新，133.69 MB，不进便携包）、`tests/potdaemon_test.py`（新，47 项）、`tests/potcomponent_test.py`（改口后重算，28 项）、`README.md`、`README.en.md`、`CHANGELOG.md`。
 - README 两份同步（第四轮）：把第三轮写进去的「带票与不带票回同一批 itag → 缺的是网络出口」那几处结论改掉 —— 常见问题与「高清档位取决于站点给不给」那两行改成「要『票 + 会吃票的客户端（all）』两样一起，程序在清单被裁成影音同条时自动换 all 重解」；「组件与依赖」的 PO Token 那条不再说服务端「本程序不带」，改成「服务端在 `tools/bgutil-pot-server/`，程序用本机 node 补拉，缺的是 node 而不是要人自己跑 Docker」；「解析插件」一节列上 `pot_daemon.py` 与 `tools/bgutil-pot-server/`；离线自检点名 `potdaemon_test.py`。
-
----
-
-## 分轨：六轨模型与分轨混音台（同一轮内，参照 StemDeck）
-
-有人问「StemDeck 这个能加吗」。核完差距只有两处值得拿：**六轨**与**多轨混音**，其余（它自带 FastAPI + 自己的 Python 运行时、700 MB～1.6 GB 的分发）和我们「venv 与权重都不进包」的口径冲突，不做集成、只借选型。它本身是 Apache-2.0，界面鸣谢名单里补了一条。
-
-- **`htdemucs_6s` 进表的条件是这台机器真跑通**：4 秒合成片段、CPU、262 秒，落出 `bass / drums / guitar / other / piano / vocals` 六条各 705,644 B。`voice_tools.py` 那张表原来的注释写着「没验过的名字不给选项 —— 给了就是让人点下去报『模型下不下来』」，所以先验再列，`mdx23c` 那类仍然不给选项。
-- **分轨范围三档，默认那档就是改动前的行为**：`demucs_stems` 取 `vocal` 时命令与从前逐字相同（仍带 `--two-stems vocals`，出「人声 + 伴奏」两条），`four` / `six` 才去掉那个参数让 Demucs 铺全轨。默认值 `vocal` 写进 `DEFAULTS`、`ConfigBody`、保存闸门与界面初值四处 —— 把默认改成多轨等于替每个老用户重跑一遍分离。
-- **档与模型对不上在起线程之前就说破**：六轨只有 `htdemucs_6s` 出得来，界面那格直接置灰，后端再拒一次。跑完几分钟才发现拿回的轨数不对，是最亏的一种失败。
-- **分轨混音台**（语音页新卡）：`GET /api/voice/stems` 按 `<曲名>/demucs/<模型>/<曲名>/*.wav` 精确取轨（整目录 rglob 会把同一首歌换模型跑过的两批同名轨一起端上来），并排掉自己产出的 `*-mix-*`；`POST /api/voice/mix` 用本机 ffmpeg 合成，静音的轨不进命令，导出 WAV（`pcm_s16le`）或 MP3（320k），成品写在首条轨旁边。
-- **`amix` 关掉 `normalize`**：开着它会把每条轨按轨数等分压下去，人在界面上调好的平衡和写出来的文件就不是一个东西。第一版还翻过一次车 —— filter chain 之间少了 `;`，ffmpeg 直接判非法、接口 500。
-- **音量条只做 0–100%，不做增益**：预览走 `element.volume`，它上不去 1；给一根能拉到 200% 的条就是骗人。要增益得换 Web Audio 的 GainNode，那一层留给以后。
-- 「分离引擎」那一格的措辞从「Demucs（四轨，能出 `no_vocals`）」改成不写死轨数 —— 现在轨数由「分轨范围」决定。
-- 自检：`tests/separator_test.py` 加 I1–I14（`--two-stems` 只出现一次、六轨只配 `htdemucs_6s`、filter chain 用 `;`、自产文件被排除、混音台七个新名字都在 setup 的 return 里）；`hwenc_test.py` H3/H4 与 `platform_test.py` E6 的取样窗口原先按固定字符数 / 全文件扫，被这一轮的改动撑歪，改成按函数边界取。活体端到端在自起沙箱里跑通：6 轨读全 → 导出 4 轨混音（静音吉他与钢琴、贝斯 50%）→ `ffprobe` 回读 `pcm_s16le / 44100 / 2ch` → 浏览器点导出真落盘并弹提示，`pageerror` 0。
-- 改 / 加的文件：`voice_tools.py`（模型表、`DEMUCS_STEMS_MODES` / `DEMUCS_STEMS_BY_MODEL`、`separate_demucs` 的 `stems_mode`）、`server.py`（`DEFAULTS` / `ConfigBody` / 保存闸门 / `api_ai_vocal_separate` / 新 `api_voice_stems` 与 `api_voice_mix`）、`static/index.html`（分轨范围那一格、混音台卡、`CREDITS` 补一条）、`static/i18n.js`（+35 键 / 份）、`tests/separator_test.py`、`tests/hwenc_test.py`、`tests/platform_test.py`、`CHANGELOG.md`、`CHANGELOG.en.md`、`docs/详细功能介绍.md`、`docs/detailed-features.en.md`。
-
----
-
-## 分轨的下一步 · 选择挪到动手的那一步（用户指正）
-
-上面那一轮做完，用户第一句是「人声分离没有选择引擎窗口啊」。六轨与混音台都建在语音页，可分离是从文件页点的 —— 点下去连引擎都没得挑。功能都在，只是摆错了地方。
-
-- **文件行「更多 → 分离人声」先弹一格选择框**：引擎 / 模型 / 分轨范围 / 跑在哪，四项预填自设置，改的只有这一次。语音页那张卡不动，它仍是默认值的家 —— 从对话框点出去不回头写 `settings.*`（自检 J3 钉的就是这条：对话框里不许出现给设置赋值）。开始之后那枚按钮换成「去混音台」，带着这个文件的路径跳过去。
-- **混音台的入口也挂到文件页**：分离过的文件，菜单里多一条「分轨混音」，跳过去直接把那几条轨读回来。这一条不画分组线 —— 它是「分离人声」的下一步，不是一族之首。
-- **模型名单收回到一份**：Demucs 那四个名字原先在界面里写死了两份（语音页一格 + 对话框一格），现在由 `/api/ai/voice_status` 的 `separation.demucs_models` 带回，两处 `v-for` 渲染。界面抄第二份名单迟早和保存闸门那份对不上，把界面自己的选项判成非法值（A4 从「比对写死的四项」改成「两处都是 v-for，且界面里不许再出现写死的 option」）。
-- **活体跑抓到的真 bug（不是接线问题）**：`loadVoiceStatus()` 原先只在 `page === 'voice'` 时调用，从不进语音页的人直接开对话框，两格 `v-for` 的模型下拉是**空的**，选中值退化成裸 id（`htdemucs_6s` / `bs_1297`）。第一次误判成「v-if/v-else 复用组件实例」，加了 `key` 复跑 —— 没用，同一处仍然空；回到 DOM 上看才看清静态选项（引擎 / 设备 / 分轨范围）都在、只有 `v-for` 的没在，指向的是数据没到。修法是 `openSepDlg` 里 `if (!sepInfo.value) loadVoiceStatus()`，`key` 那两处撤回。自检测不到这一条：`voice_status` 的读数在离线批里是桩，桩回包一直有这两个字段。
-- **换模型时范围自己收回**：`htdemucs_6s` 配「六轨」，换成别的模型时那档已经点不得了，`clampSepStems` 把它收回「只取人声」，但**不会**在换回 6s 时自动替人选回六轨 —— 那是替别人决定跑法。
-- 自检：`separator_test.py` 加 J1–J9（老那条裸 POST 断干净、五项覆盖与后端五个 `body.get` 一一对上、对话框不写设置、收回规则、两处 return 都挂名、新键两份词表齐、打开时补取状态），`pagemount_test.py` P8 的菜单项数从 15 改 16（带线的仍是五个组首）。活体在自起沙箱里 12 条全过：预填读数、切引擎换格、收回与再点、请求体五项、跳混音台带路径、从文件页读回六条轨、`pageerror` 0。
-- 改 / 加的文件：`server.py`（`voice_status` 多带 `demucs_models`）、`static/index.html`（对话框、两项菜单、两处 `v-for`、`sepDlg` 一族函数）、`static/i18n.js`（+6 键 / 份）、`tests/separator_test.py`、`tests/pagemount_test.py`、`CHANGELOG.md`、`CHANGELOG.en.md`、`docs/详细功能介绍.md`、`docs/detailed-features.en.md`。
-
----
-
-## Demucs 的模型进「组件与依赖」：能检测缺哪几个，也能一键补齐
-
-上一节做完，用户那句还挂着：「依赖也加上并支持检测更新」。RoFormer 那四条权重本来就在表里，缺的是 Demucs 这一路 —— 它不经过我们，是包自己去 torch 的缓存目录取，所以表上既看不见它，也就没人知道「选了 htdemucs 要等多久」。
-
-- **口径先说死：模型没有独立版本号。** 能检测的只有「在不在、缺几个文件」，能「更新」的只有「补齐缺的那几个」。界面那句话就写 `{ready} / {total} 个模型的文件齐了，还缺 {n} 个`，不写成「有新版可更新」——那是没有的东西。
-- **名单、地址、校验值全部读自装好的那个包**：`remote/files.txt` 是「`root:` 子目录 + 一行一个文件名」，`remote/<模型>.yaml` 的 `models: [...]` 给的是文件名前半那 8 位签名，两张表拼起来才是完整地址。`voice_tools` 里不写第二份名单（K1 钉着：源码里不许出现 `xxxxxxxx-xxxxxxxx.th` 这样的字面量）。yaml 列了而索引没接住的签名必须为 0（K2）—— 真漏了的症状是界面上永远显示「缺」，其实是解析没接住。
-- **校验值按「给多长核多长」**：文件名后半那 8 位是 sha256 前缀，torch.hub 与 demucs 载入时（`check_hash=True`）也就核到这个长度，所以我们核的也是它 —— 不多承诺一分。原先 `_finish_weight` 写死与整份 sha256 相等，改成前缀比对（RoFormer 那批给的是 64 位，行为不变，K5 钉住）。
-- **只补缺的，已经在的一个字节不动**；同一时刻只让一个在补（`_DEMUCS_MODEL_LOCK`）—— 两个线程往同一个 `.part` 上写，会互相把对方刚写的字节盖掉，最后谁都不完整。包不在、或一个都不缺，都在起线程之前就回话（K7）。
-- **不进「一键更新」的自动挑选**：几百 MB 的东西不该被一次顺手点掉。那一格旁边单独一枚「补齐 Demucs 模型」，进度写运行日志。
-- **顺手一处卫生**：`_fetch_weight` 以前对任何地址都拼 GitHub 镜像前缀，Demucs 的模型在 facebook 自己的站上，拼出来是一串必然 404 的候选 —— 现在只有 GitHub 的地址才拼。
-- **缓存目录跟着 torch 走**：`TORCH_HUB` / `TORCH_HOME` 改过的机器上，问错地方就会把「有」报成「缺」。
-- 本机读数（跑完自检现问磁盘）：`htdemucs_6s` 1 / 1 个文件在，54,996,327 B；`htdemucs` 0 / 1、`htdemucs_ft` 0 / 4、`mdx_extra` 0 / 4 —— 合计缺 9 个文件。
-- 自检：`tests/separator_test.py` 加 K1–K13（名单来源、签名零漏、状态问磁盘、目录随 torch、前缀校验、镜像不乱拼、端点两条早退、锁、三条新日志带键、状态随 voice_status 回、界面接线与 return、两份词表、不进一键）。F1 的「老端点退干净」改成按整串路径查 —— 新的 `/api/ai/demucs_models` 是另一回事，子串匹配会误伤。
-- 改 / 加的文件：`voice_tools.py`（`demucs_ckpt_dir` / `demucs_remote_dir` / `demucs_model_index` / `demucs_models_status` / `download_demucs_models`，`_finish_weight` 前缀比对，`_fetch_weight` 镜像守卫）、`server.py`（`voice_status` 带 `demucs_model_files`、新 `POST /api/ai/demucs_models`）、`static/index.html`（那一格的状态行与按钮、`sepDemucsState` / `fetchDemucsModels`、端点动作名）、`static/i18n.js`（+11 键 / 份）、`tests/separator_test.py`。
-
----
-
-## 音频分析接上拍点与段落结构：两个神经网络来源，旧读数不静默替换
-
-「stemdeck 怎么没加入引擎与组件」这一问，查下来的答案是：**它本身不接**（JS/Electron + 一份 305 MB 的独立 Python 运行时，内部还是 demucs，不上 PyPI，接进来等于把同一件事做两遍），**但它那两项能力我们缺** —— 拍点（beat-this）与段落结构（all-in-one）。按批准的口径只接能力：装进 `tools/separator/venv` 复用同一份 torch，产出并入现有「音频分析」的 JSON 与运行日志，两个包进引擎表能检测上游版本与更新，两组模型文件挂进上一节那套「在不在 / 补齐」并且不进一键。
-
-- **为什么值得接：librosa 那个 tempo 不是精度差一点，是读数会错一倍。** 合成 180 BPM 它报 89.1；真歌「說好不哭」实际 76 报成 152、「Brave Shine」实际 85.7 报成 112.3。同一批文件上两个神经网络来源彼此差不到 1%（85.7 / 86.0）。所以**旧读数不静默替换**：`tempo_bpm` 与 `bpm` 各留各的，相差超过 25% 才在日志末尾补一句 `旧读数 112.3（相差 0.76 倍）`（L9 钉住这条判定与那句原文）。
-- **跑的是整首，不是那 180 秒。** 段落结构要看全曲才有意义，而 librosa 那一格仍按 `max_duration=180` 封顶 —— 两个窗口不同这件事写在注释里，不装作同一个口径（L10）。
-- **缺哪一层就报哪一层，不起子进程**：没装包、缺模型、没有环境，三种说法各自的 `reason`（L7），失败路径上那八个键也照样在（L8），界面与旁路 JSON 不用判断「键在不在」。
-- **一个包坏了不连带把另一项报成没有**：`separator_runner.py --analyze` 里两件事各自 `try`，报错原文进 `errors`；`audio_analyze.py` 把 `errors` 并进 `analysis_error`，段落为空但确实跑过时日志多一句「段落结构没算出来」（L6、L21）。以前只看 `ok`，拍点成功会把结构失败整个吞掉。
-- **两个包进上游检测与一键，模型不进**：包有版本号可报，模型没有 —— 缺了要在界面上点名，那是「补齐」不是「有新版」。表上只挂一条「音频分析依赖」，两行并一条，免得变成两条同义通知（L12）。装包与补模型共用分离环境那把锁：两个 pip 同写一个 venv 会互相盖掉对方刚落的文件（L13）。
-- **拍点权重只有第三方镜像可达**：作者那份 `.ckpt` 在 `cloud.cp.jku.at`，本轮实测整站 503。用镜像就把这句话说出口 —— 界面那一行多一句「拍点模型取自第三方镜像（作者站当前不可达），已按钉死的 sha256 核对」，下载时先试作者源、退到镜像必须整份 sha256 对上（L3、L16）。超参也一起钉住：镜像那份是裸 `state_dict`，装不进作者那句 `load_model()`。
-
-三处坑是装到能用这一步才现形的：
-
-1. **钉版本自洽不等于钉得够多。** `omegaconf==2.4.0` 与 `hydra-core==1.3.7`（要 `<2.4`）互斥，pip 直接拒；探针环境当初能跑是因为那两件是 `--no-deps` 装进去的。能用的组合只有一组 —— `omegaconf 2.3.1` 恰好要求 `antlr4-python3-runtime==4.9.*`，与「默认那版 antlr 会让 omegaconf 的语法表反序列化失败」那条实测正好对上（L17 钉住这一组数）。
-2. **递给 all-in-one 的必须是 wav。** venv 里那份 torchaudio 是 2.11，自带解码器已被拿掉、要额外的 torchcodec，mp3 走它就是 `TorchCodec is required`；它自己的 wav / flac 路径用 soundfile。改成**解码一次两边共用**，临时 wav 只递给库，并把它的 `demix_dir` / `spec_dir` 接进临时目录 —— 那两个默认写在当前目录下，会把副产品拉进程序目录（L18~L20）。
-3. **「模型在不在」不能由我们自己翻缓存目录。** 库运行时那句 `hf_hub_download(repo_id, filename)` 不带 revision、只认默认分支，按 commit 号下进缓存的那 8 个 fold 它一个都不认（实测：文件全在，仍报 `LocalEntryNotFound`）。改成**问 venv 里那份库**（`local_files_only=True`），认得出、且逐个文件 sha256 与钉死值对得上才算「在」；钉的东西也随之从 commit 号换成 8 个文件的 sha256（L4、L22~L23）。补齐时同理：`snapshot_download` 只会说「我试过了」，回读对不上就报缺，不拿没核过的权重接着跑。
-
-- **本机读数**（自起沙箱，不碰 8765；真歌整首 252.3 秒）：GPU 55.6 秒出 `bpm 85.7 / 339 拍点 / 88 降拍 / 14 段`，`analysis_error` 为空；CPU 臂一段 180 秒的 93.7 秒，同一个 85.7。装包一次 9 项（含 torchaudio 与 matplotlib），模型 77 MB + 8 × 1,400,571 B。界面那一行中英两种语言都读得出（切语言当场生效，不重启）。
-- **顺带照出来一件真缺陷**：主环境 `numpy 2.5.4` + `numba 0.65.0`（元数据写 `numpy<2.5`）让 `import numba` 直接抛错，「音频分析」与声纹说话人分离整条是坏的 —— 8765 用的是同一个解释器。按选择升到 `numba==0.68.0` + `llvmlite==0.50.0`（允许 `<2.6`）后六项读数全绿。numba 不在「组件与依赖」表里、一键更新不会带着它走，这件事记成下一项。
-- 自检：`tests/separator_test.py` 加 L1–L23（钉版本、镜像哈希与超参、`--analyze` 分派时机、`@@@JSON` 与分开容错、三层早退、八个键、旧读数那句、两个窗口、组件表取数处、检测与一键的取舍、锁、两份词表、界面接线、镜像要说出口、版本自洽、wav、临时目录、一次解码、错误不吞、回读才算补齐、问库不翻目录）。
-- 改 / 加的文件：`voice_tools.py`（`SEP_ANALYSIS_PINS` / `analysis_pkg_versions` / `install_analysis_pkgs` / `analysis_model_states` / `download_analysis_models` / `analysis_status` / `analyze_beats_structure` / `setup_analysis`，venv 探测一次问齐版本与模型）、`separator_runner.py`（`--analyze`：解码一次、拍点、结构）、`audio_analyze.py`（那八个键、旧读数那句、段落标签）、`server.py`（`POST /api/ai/analysis_setup`、`/api/components` 的 `sep_analysis`、上游检测与一键里的一条）、`static/index.html`（那一行与按钮、四个 computed）、`static/i18n.js`（+12 键 / 份）、`tests/separator_test.py`、`tests/i18n_test.py`。
 
 ---
 

@@ -12,7 +12,7 @@ The version number has one source: `appVersion` in `static/index.html`, which
 
 ---
 
-## v1.4.0 · 2026-10-15 — current release
+## v1.4.0 · 2026-10-15 — published
 
 Fifteen items accumulated before this was cut, so the version went from `v1.3.2` straight to **v1.4.0** and was
 packaged once at the end. Sections written earlier inside the same round say "no package this round" — that was
@@ -208,14 +208,43 @@ Caught as false reds, not product bugs:
 
 ---
 
-## After v1.4.0 — the repository is ahead of the published package, none of it in the archive
+## v1.5.0 · 2026-10-22 — this round's package
 
-Everything below landed after the archive was compressed. **None of it is pushed**: `main` sits ahead of
-`origin/main`, the `v1.4.0` tag still points at `d922732` (the byte-for-byte commit behind the published asset), and no
-package has been rebuilt - so the published release trails all of this. The count is deliberately not written here:
-every commit made it stale the moment it was committed (it used to say 37, then 28) - ask git with
-`git rev-list --count origin/main..HEAD`. The readings quoted below are the ones recorded in each round's own commit —
-this entry consolidates them, it does not re-measure them.
+`appVersion` moves from `v1.4.0` to **`v1.5.0`** (the single source is that one line in `static/index.html`;
+`pack_release.py`'s `app_version()` reads the same place, so the sidebar, the package name and the README title
+cannot drift). This release collects the **32 commits** after `d922732` - the commit behind the previously published
+bytes: one feature line (stem separation plus the second layer of audio analysis) and a long run of interface and
+runtime-log clean-up. It is not a patch by size - six-stem separation, a stem mixer, the separation chooser, Demucs
+model fill-in, and beats/structure would each justify their own minor number.
+
+The sections below are that content, kept where each round wrote them. Two notes on readings: the numbers quoted in
+each section are the ones recorded in that round's own commit (this entry consolidates, it does not re-measure), and
+the commit count is deliberately not written down anywhere - every new commit made such a line wrong the moment it
+was made (it used to say 37, then 28), so ask git with `git rev-list --count origin/main..HEAD`.
+
+What shipped: **#129** six-stem Demucs + a three-way stem range (the default stays "vocals only", byte-for-byte the
+behaviour before the option existed) and the stem mixer; **#131** the engine/model/range/device chooser moved to the
+files-page action where the click actually happens, which also exposed a real bug (a status read that only loaded on
+the voice page left two model dropdowns empty); **#132** Demucs model files joined Components & dependencies as
+detect-and-fill, deliberately outside the one-click batch; **#133** beats and song structure folded into the same
+audio-analysis output, with **librosa's old reading kept rather than replaced** (synthetic 180 BPM came back as 89.1,
+a real 76 as 152, 85.7 as 112.3, while the two neural sources agreed within 1%). Plus **#55** backend-log batches
+15-34 - keyed call sites in the gate went **144 → 370**, the dictionary is **3,102 keys per side**, and the
+**#93a** fragment-key and **#93b** split-conditional 口径 both landed after being approved first; **#92** the network
+reset list stops printing Chinese into an English UI; **#80** the collapsed-rail button returns to the logo row;
+**#98** short-window spacing so the live and voice pages need no scrolling; **#96** two test leaks that wrote into
+the project's own `app.log` (a full sweep now appends **0 bytes**).
+
+One environment-level defect was found and fixed on the way: numpy 2.5.x in the main environment with numba 0.65
+(capped at `<2.5`) makes `import numba` raise, which breaks audio analysis and voiceprint diarization outright.
+**This machine hit it twice** - the earlier round rolled numpy back to 2.4.6, this round fixes forward with
+`numba 0.68.0` + `llvmlite 0.50.0`. numba still has no row in the components table, so a numpy-only upgrade can
+desynchronise them again; that gap is open as #134.
+
+Checks: full sweep **62 suites, bad=0**, of which `separator_test.py` **117** (J1-J9 chooser / K1-K13 Demucs models /
+L1-L23 beats and structure), `i18n_test.py` **517 gates, FAILED: none**, `pagemount_test.py` 40. Every live check ran
+in its own sandbox (`MEDIADOWNLOADER_STATE_DIR` + a `bind(0)` port, never 8765): 12 checks for the chooser, 6 for the
+model row, 14 for the analysis layer.
 
 ### Stem separation: a six-stem model, and a stem mixer
 
