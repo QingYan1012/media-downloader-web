@@ -5,7 +5,23 @@
 
 ---
 
-## v1.5.0 · 2026-10-22（本轮出包）
+## v1.5.1 · 2026-10-22（本轮出包）
+
+只为一笔修复出的补丁包：**CPU 上拿 float16 建 Whisper 模型会当场抛，而报错把人往「没装」的方向支使**（#135）。v1.5.0 的发布物里没有这一笔，所以单独走一次。
+
+- **现象**：设置 `whisper_device=auto` + `whisper_compute=float16`，而本机主环境 torch 是 `+cpu` 构建 → 设备落在 CPU、档位仍是 float16。ctranslate2 4.8 在这种组合下**不是偷偷降级，而是在 `WhisperModel()` 那一步直接抛** `ValueError: Requested float16 compute type, but the target device or backend do not support efficient float16 computation.` 同一份 large-v3 本机实测：float16 5.2 秒抛错，int8 5.9 秒载入成功。是 13:02 那次把 faster-whisper 更到 1.2.1（连带 ctranslate2 4.8.2）才现形的 —— 旧版允许 CPU 用 fp16（内部转），新版不允许。
+- **第二处不实**：失败之后最后一句是「未找到 faster-whisper 或 Whisper 可执行文件。请 pip install faster-whisper」，而它明明装着 1.2.1。
+- **改法**：落到 CPU 的 `float16` / `int8_float16` 一律换 int8，并打一句带原档位名的警告；**真有 GPU 时 float16 保留**（那一档本来就是给人有卡的时候用的）；CPU + int8 不多嘴。CLI 兜底那句拆两支：装着但这一项没跑成 → 「原因见上面那行」，不再喊 pip install；真没装 → 照旧给安装指引。
+- **警告那行不挂消息键**：这一式是函数参数里那份裸 `log(...)`，不在闸门扫的三式（`log_mgr.log` / `self.log` / `self.log.log`）里，挂上就是 K6 说的孤儿键 —— 等 #55 把这一式接进扫描再补。
+- **自检**：新增 `tests/whispercompute_test.py` **12 条**（桩掉 `faster_whisper.WhisperModel`，只问最后递进去的是哪一档；**每发都清进程内那份 `_FW_MODEL_CACHE`** —— 不清的话第二轮起根本不再建模型，读到的是上一轮档位，是典型假绿）。全批 **63 套 bad=0**。真语音端到端（edge-tts 合成一段中文、CPU、设置故意留 float16）：警告一句 → `compute=int8` → `转写完成 (lang=zh, 2 句)`，文字逐字对。
+
+### 发布物
+
+（打包完成后回填：zip 字节数与 sha256、条目数、包内自检读数、标签与 Release 核对。）
+
+---
+
+## v1.5.0 · 2026-10-22（已发布）
 
 `appVersion` 从 `v1.4.0` 升到 **`v1.5.0`**（真源只有 `static/index.html` 那一行，`pack_release.py` 的 `app_version()` 从同一处抓，界面显示 / 便携包名 / README 标题跟着一起走）。这一版收的是 `d922732`（上一轮发布物背后的那一笔）之后的 **32 笔**：一条大的功能线（分轨与音频分析的第二层）加一整批界面与日志收口。量上不是补丁 —— 六轨分离、分轨混音台、分离选择框、Demucs 模型补齐、拍点与段落结构、后端日志二十批挂键，任何一件都够单独一个次版本号。
 

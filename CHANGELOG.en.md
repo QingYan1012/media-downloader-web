@@ -208,7 +208,42 @@ Caught as false reds, not product bugs:
 
 ---
 
-## v1.5.0 · 2026-10-22 — this round's package
+## v1.5.1 · 2026-10-22 — this round's package
+
+A patch package for one fix: **asking for float16 while the device is CPU makes Whisper fail to load, and the error
+then told you to install something that was already installed** (#135). The v1.5.0 archive does not contain it, so
+this one goes out separately.
+
+- **What happened**: settings were `whisper_device=auto` + `whisper_compute=float16`, while this machine's main
+  environment ships a `+cpu` torch build - so the device resolved to cpu and the tier stayed float16. ctranslate2 4.8
+  does **not** downgrade silently; it raises inside `WhisperModel()`:
+  `ValueError: Requested float16 compute type, but the target device or backend do not support efficient float16
+  computation.` Measured with the same large-v3 weights here: float16 raises after 5.2 s, int8 loads in 5.9 s. It only
+  appeared after faster-whisper was updated to 1.2.1 (pulling ctranslate2 4.8.2) - older versions accepted fp16 on CPU
+  by converting internally.
+- **The second untruth**: the last log line then said "faster-whisper or the Whisper executable was not found, run
+  pip install faster-whisper" - while 1.2.1 was installed and working up to that call.
+- **What changed**: any `float16` / `int8_float16` tier that lands on cpu becomes int8, with a warning naming the tier
+  it came from; **a real GPU still gets float16** (that is what the option is for); cpu + int8 stays quiet. The CLI
+  fallback message was split: installed-but-this-run-failed now says "see the line above" instead of pushing a pip
+  command, and the genuinely-missing case keeps its installation guidance.
+- The warning carries no message key: it logs through the bare `log(...)` parameter, which is not one of the three
+  receiver forms the i18n gate scans (`log_mgr.log` / `self.log` / `self.log.log`), so keying it would create an
+  orphan key (gate K6). It gets a key when #55 widens that form.
+- **Checks**: new `tests/whispercompute_test.py`, **12 assertions** (it stubs `faster_whisper.WhisperModel` and asks
+  only which `compute_type` was finally passed; **each case clears the in-process `_FW_MODEL_CACHE`**, because
+  otherwise later cases never construct a model and read the previous case's tier - a textbook false green).
+  Full sweep **63 suites, bad=0**. End-to-end with real speech (a Chinese clip synthesized with edge-tts, CPU, the
+  setting deliberately left at float16): one warning, `compute=int8`, `转写完成 (lang=zh, 2 句)`, text correct.
+
+### Release artifacts
+
+(Filled in after the build: zip size and sha256, entry count, in-package self-check readings, tag and Release
+verification.)
+
+---
+
+## v1.5.0 · 2026-10-22 — published
 
 `appVersion` moves from `v1.4.0` to **`v1.5.0`** (the single source is that one line in `static/index.html`;
 `pack_release.py`'s `app_version()` reads the same place, so the sidebar, the package name and the README title
