@@ -333,6 +333,83 @@ the first time.
   `static/index.html` (the status line and button, `sepDemucsState` / `fetchDemucsModels`, the endpoint's action name),
   `static/i18n.js` (+11 keys per language), `tests/separator_test.py`.
 
+### Audio analysis gained beats and song structure - two neural sources, and the old reading is not replaced silently
+
+The follow-up question was "why isn't StemDeck an engine or a component, with model and engine update detection".
+What the comparison found: **StemDeck itself stays out** (JS/Electron plus its own 305 MB Python runtime, demucs
+underneath, not on PyPI - adding it would do the same job twice), **but it has the two capabilities we lack**:
+beats (beat-this) and structure (all-in-one). Per the approved 口径 only the capabilities were taken: install into
+`tools/separator/venv` to reuse the same torch, fold the output into the existing audio-analysis JSON and run log,
+put both packages in the engine table so upstream versions and updates are detected, and hang both model sets on the
+"present / fill it in" machinery from the previous section - not in the one-click batch.
+
+- **Why this was worth taking: librosa's tempo is not imprecise, it is wrong by a factor.** A synthetic 180 BPM clip
+  came back as 89.1; the real song 說好不哭 is 76 and got 152, Brave Shine is 85.7 and got 112.3. The two neural
+  sources agree within 1% on the same files (85.7 / 86.0). So **the old reading is not replaced quietly**:
+  `tempo_bpm` and `bpm` each keep their own number, and only when they differ by more than 25% does the log line gain
+  `旧读数 112.3（相差 0.76 倍）` (L9 pins both the threshold and that wording).
+- **The neural pass reads the whole track, not the same 180 seconds.** Structure only means anything over a full
+  song, while the librosa cell stays capped at `max_duration=180` - the comment says so instead of pretending the two
+  windows are one 口径 (L10).
+- **Whichever layer is missing is the layer that gets named, and no subprocess starts**: packages, models and venv
+  each have their own `reason` (L7), and the eight result keys are present on the failure paths too, so neither the
+  UI nor the sidecar JSON has to ask "is this key there?" (L8).
+- **One broken package costs one item, not both**: the two `try` blocks in `separator_runner.py --analyze` keep their
+  own errors, `audio_analyze.py` merges them into `analysis_error`, and when structure was attempted but produced
+  nothing the log adds "段落结构没算出来" (L6, L21). Reading only `ok` used to swallow a structure failure whenever
+  beats succeeded.
+- **Both packages join the upstream check and the one-click batch; the models do not.** Packages have versions to
+  report, models do not - a missing model must be named on screen, which is "fill it in", not "an update exists".
+  The table shows one row, "音频分析依赖", rather than two near-identical notifications (L12). Installing and fetching
+  share the separator environment's lock: two pips writing one venv overwrite each other's fresh files (L13).
+- **The beat weights are only reachable through a third-party mirror.** The author's `.ckpt` sits on
+  `cloud.cp.jku.at`, which measured as a site-wide 503 this round. Using a mirror means saying it out loud - the row
+  gains "拍点模型取自第三方镜像（作者站当前不可达），已按钉死的 sha256 核对", the author host is tried first, and the
+  fallback must match a pinned full sha256 (L3, L16). The hyperparameters are pinned too: the mirror file is a bare
+  `state_dict` and does not fit the author's `load_model()`.
+
+Three traps only showed up while making the install actually work:
+
+1. **Pinning everything is not the same as pinning a satisfiable set.** `omegaconf==2.4.0` contradicts
+   `hydra-core==1.3.7` (which needs `<2.4`) and pip refused outright; the probe environment had worked only because
+   those two went in with `--no-deps`. Exactly one combination works - `omegaconf 2.3.1` itself requires
+   `antlr4-python3-runtime==4.9.*`, which is precisely the measured "the default antlr breaks omegaconf's grammar"
+   constraint (L17 pins that trio).
+2. **What reaches all-in-one has to be a wav.** The venv's torchaudio is 2.11, whose bundled decoders were removed in
+   favour of torchcodec, so an mp3 gives `TorchCodec is required`; the library's own wav / flac path uses soundfile.
+   The runner now **decodes once and shares it**, hands the library a temporary wav, and redirects that library's
+   `demix_dir` / `spec_dir` into the temp folder - by default they land in the current directory, which would scatter
+   by-products into the program folder (L18-L20).
+3. **"Is the model there?" cannot be answered by us reading the cache layout.** The library's runtime call is
+   `hf_hub_download(repo_id, filename)` with no revision, so it only resolves the default branch: the eight folds we
+   had filed under a pinned commit were invisible to it (measured - files present, still `LocalEntryNotFound`). The
+   check now **asks the venv's own huggingface_hub** (`local_files_only=True`) and counts a file only if the library
+   resolves it *and* its sha256 matches what we pinned; the pin itself moved from a commit number to eight file
+   digests (L4, L22-L23). Filling in follows the same rule: `snapshot_download` only reports that it tried, so a
+   read-back mismatch is reported as missing rather than run with unverified weights.
+
+- Readings (own sandbox, never 8765; a real 252.3 s song): GPU 55.6 s for `bpm 85.7 / 339 beats / 88 downbeats /
+  14 segments` with an empty `analysis_error`; the CPU arm took 93.7 s on a 180 s clip and produced the same 85.7.
+  The install is 9 pinned items (torchaudio and matplotlib included); the weights are 77 MB plus 8 × 1,400,571 B.
+  The row renders in both UI languages, and switching language takes effect without a restart.
+- **The live run also exposed an unrelated real defect**: the main environment had `numpy 2.5.4` with `numba 0.65.0`
+  (metadata says `numpy<2.5`), so `import numba` raised and audio analysis plus voiceprint separation were simply
+  broken - and 8765 runs on the same interpreter. Per the user's choice this was fixed forward with
+  `numba==0.68.0` + `llvmlite==0.50.0` (allows `<2.6`), after which all six readings came back green. numba is not in
+  the components table, so the one-click batch cannot keep it in step with numpy; recorded as the next item.
+- Tests: L1-L23 in `tests/separator_test.py` (pins, mirror digest and hyperparameters, when `--analyze` dispatches,
+  the `@@@JSON` and the separated fault tolerance, the three early exits, the eight keys, the old-reading sentence,
+  the two windows, where the components row reads from, the detection/update trade-off, the lock, both dictionary
+  halves, the UI wiring, saying the mirror out loud, the version trio, the wav, the temp directory, one decode,
+  errors not swallowed, and read-back-instead-of-trust).
+- Files touched: `voice_tools.py` (`SEP_ANALYSIS_PINS` / `analysis_pkg_versions` / `install_analysis_pkgs` /
+  `analysis_model_states` / `download_analysis_models` / `analysis_status` / `analyze_beats_structure` /
+  `setup_analysis`, one venv probe answering both versions and model presence), `separator_runner.py` (`--analyze`:
+  one decode, beats, structure), `audio_analyze.py` (the eight keys, the old-reading sentence, segment labels),
+  `server.py` (`POST /api/ai/analysis_setup`, `sep_analysis` in `/api/components`, one more row in the upstream check
+  and the batch), `static/index.html` (the row, the button, four computeds), `static/i18n.js` (+12 keys per language),
+  `tests/separator_test.py`, `tests/i18n_test.py`.
+
 ### Interface language, second batch: all 17 page bodies
 
 The scope moved from "frontend only, log lines untouched" to **frontend in full plus the runtime log following the
