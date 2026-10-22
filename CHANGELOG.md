@@ -17,7 +17,21 @@
 
 ### 发布物
 
-（打包完成后回填：zip 字节数与 sha256、条目数、包内自检读数、标签与 Release 核对。）
+- **产物**：`dist\MediaDownloader-1.5.1-portable.zip` **230,639,754 B（220.0 MB）**，sha256
+  `b83c5b0deadd9bfc80d48b65a94f24213e33f09103715bc3f8b6b24203f0fbaa`，10,906 个条目，旁路 `.sha256` 同目录可
+  `sha256sum -c` 核。包目录 567.5 MB：runtime 322.4、tools 234.5、static 3.0、chromaprint 4.0、docs 1.4、
+  cookies 184 B（只有占位说明）。
+- **打包自检**：随包清单 18 个依赖 + 3 个工具；必进包文件齐（static 13 项）；清掉 21 个 `__pycache__`；
+  包内 15 个顶层模块 import 全过；包内 pip 装 → 导入通过；起包内服务冒烟，组件接口三档版本齐全、清单命中 12 项。
+  清单记 `app = 1.5.1`、`python = 3.12.2`、`built = 2026-10-22 13:57`。
+- **与源码逐条比对**：包内 42 个应用文件与工作树逐字节一致（折叠 CRLF），4 处「包里有、工作树没有」是打包器生成的；
+  私密同名文件（`config.json` / `cookies.txt` / `history.json` / `library_cache.json` / `music_favorites.json` /
+  `catcatch_rules.json` / `app.log` / `pack_release.py`）零命中，禁带目录零命中，`.pyc` 0 残留。
+  包内那份 `CHANGELOG.md` 是 CRLF、含 `v1.5.1` 这一节、且**不含本节的哈希**（发布记录不写自己的摘要）。
+- **runtime 复用**：`pack_release.py` 与 `requirements.txt` 从 v1.5.0 到现在一字未动，所以 `--skip-runtime`
+  只重跑复制与那四道自检。
+- **标签**：轻量标签 `v1.5.1` 指向 `6e3ac97`（版本号与这一节那一笔，也就是这份包背后的字节）。
+  `v1.5.0`（`fc2a9b4`）与它那条 Release 的资产（230,635,022 B / `6ba9ae84…fe00`）原样留着，没有替换或删除。
 
 ---
 
