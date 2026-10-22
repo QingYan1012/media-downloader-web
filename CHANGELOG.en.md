@@ -244,13 +244,29 @@ greying-out of the two control rows that I proposed from it **was not done**.
 - **Tag**: lightweight `v1.5.2` points at `c26d46c` - the version-and-notes commit, i.e. the bytes this archive was
   built from. `v1.5.1` (`6e3ac97`) and `v1.5.0` (`fc2a9b4`) and their Release assets were left exactly as they are;
   nothing was replaced or deleted.
-- **The half that is not done yet**: `git push` and the Release itself are blocked by the network, not by the build.
-  The local proxy answers CONNECT with 200 and then drops every TLS handshake inside the tunnel (GitHub, PyPI and
-  Hugging Face alike), and a plain HTTP request through it comes back 502; without the proxy, GitHub connections are
-  reset while domestic sites work. So remote `main` is still at `9d33446`, the `v1.5.2` tag exists only locally, and
-  the Release page still serves the 1.5.1 archive. Once the proxy's upstream works again, in order:
-  `git push origin main v1.5.2`, then the publish script (create the Release, upload the zip and the sidecar, fetch
-  both back through the public download URL and compare byte for byte), then fold those readings into this section.
+- **Push and publish (same day, after a wait)**: for about ninety minutes the local proxy answered CONNECT with 200 and
+  then dropped every TLS handshake inside the tunnel (GitHub, PyPI and Hugging Face alike), a plain HTTP request through
+  it came back 502, and without the proxy GitHub connections were reset while domestic sites worked - so the round ended
+  at "package built". Once the proxy's upstream came back the rest was done in order: `git push origin main v1.5.2`
+  (remote `main` moves `9d33446` → `05e0d04`, tag `v1.5.2` lands on `c26d46c`), then the Release (id 420541780,
+  https://github.com/QingYan1012/media-downloader-web/releases/tag/v1.5.2) with both assets uploaded, the byte counts
+  confirmed server-side, and the archive fetched back through `browser_download_url` and re-hashed - identical to the
+  local file (`c9e54336…bbe6e`), 8/8 publish checks green. `v1.5.0` and `v1.5.1` and their assets were left untouched.
+  One honest wrinkle: the `CHANGELOG.md` inside that published archive was written before the push succeeded, so the
+  copy *in the package* still says the push and Release are pending; the repository text above is the corrected one.
+
+---
+
+## After v1.5.2 - "mux audio" on the files page: several audio tracks into one video
+
+The user asked whether the app can mux different audio files into a video. It could not: `_ydl_opts` uses `bv*+ba/b` and yt-dlp merges exactly one best audio stream (there is no `audio_multistreams` anywhere in the repo), the hand-written sniff merge is fixed at `-map 0:v:0 -map 1:a:0?`, and the separator's stems plus the mixer's export are separate audio files that never go back into the video. This adds it (#137, four decisions approved one by one).
+
+- **Entry point**: the video row's "more → mux audio" (`v-if="isVideoFile(row)"`, so audio rows have no such item). The dialog first lists the audio next to this video - its own stems and audio files in the same folder, each tagged with its origin - and browses the download folder for anything else. Every picked track gets language (nine choices) / track name / codec, the arrows set the track order of the output, and the "default track" field decides which one the player opens with.
+- **Backend**: `GET /api/files/audio_candidates` and `POST /api/files/mux_audio`, with the command assembled by the pure function `build_mux_command()` so the suite can compare the argument list directly. The video stream is always copied, the container is always mkv, the output is a separate `name.mux.mkv`, and an existing file needs "overwrite the old output" first (409).
+- **Two things only measurement told**: `-disposition:a:N default=0` is not valid - ffmpeg 8.1 exits with `Unable to parse "disposition" option value`, and clearing the flag means passing the value `-default`; and leaving disposition out entirely makes mkv mark *every* track as default, so each one has to be named. A mov_text subtitle is refused by mkv, so the failure is retried without subtitles and both the log line and the completion message say the output carries video and audio only.
+- **No guessing**: the new tracks' indices start after however many audio tracks the source already has, so when ffprobe cannot answer, the dialog says it cannot tell and points at FFmpeg rather than assuming 0 - assuming 0 would paste the language and track name onto the original track and still report success.
+- **Checks**: new `tests/audio_mux_test.py`, 46 checks (ffmpeg stubbed, temporary directory only); the H20 action-table counter in `tests/i18n_test.py` moves from 140 to 141. Two live passes: one through the real route with the real ffmpeg (17 checks, the output read back track by track with ffprobe for codec, language, name and default flag), one clicking through the real UI (18 checks, sandbox instance, one screenshot of the dialog in each language).
+- **Not packaged**: this is not in the v1.5.2 bytes that were already built - shipping it needs a new package.
 
 ---
 
