@@ -1588,6 +1588,12 @@
     .mix-row { gap: 10px; }
     .mix-row .mix-name { min-width: 76px; font-weight: 600; }
     .mix-row audio { display: none; }
+    /* 封入音轨那张对话框：候选列表自己滚，别把整页撑出滚动条；名字一长就省略，控件都在同一行 */
+    .mux-cands { max-height: 150px; overflow-y: auto; margin-top: 2px; }
+    .mux-cand { gap: 8px; align-items: center; }
+    .mux-cand-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .mux-row { gap: 8px; align-items: center; margin-top: 5px; }
+    .mux-row-name { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .hint {
       font-size: var(--fs-ui-xs);
       color: var(--muted);
@@ -3347,6 +3353,7 @@
                             <el-dropdown-item v-if="isMediaFile(row)" :command="'showPipeline|' + $index">{{ tr('files.miOutputs') }}</el-dropdown-item>
                             <el-dropdown-item v-if="isMediaFile(row) || isAudioFile(row)" :divided="isMediaFile(row)" :command="'openSepDlg|' + $index">{{ tr('files.miVocal') }}</el-dropdown-item>
                             <el-dropdown-item v-if="isMediaFile(row) || isAudioFile(row)" :command="'openStemMixer|' + $index">{{ tr('files.miMixStems') }}</el-dropdown-item>
+                            <el-dropdown-item v-if="isVideoFile(row)" :command="'openMuxDlg|' + $index">{{ tr('files.miMux') }}</el-dropdown-item>
                             <el-dropdown-item v-if="isMediaFile(row)" :command="'analyzeAudioFile|' + $index">{{ tr('files.miAnalyze') }}</el-dropdown-item>
                             <el-dropdown-item v-if="(row.ext||'').toLowerCase()==='.srt'" divided :command="'aiTts|' + $index">{{ tr('files.miTts') }}</el-dropdown-item>
                             <el-dropdown-item v-if="isSrtFile(row)" :command="'aiCalibrateSrt|' + $index">{{ tr('files.miCalibrate') }}</el-dropdown-item>
@@ -3420,6 +3427,83 @@
                   <el-button size="small" @click="sepDlg.visible = false">{{ sepDlg.started ? tr('common.close') : tr('common.cancel') }}</el-button>
                   <el-button v-if="!sepDlg.started" size="small" type="primary" :loading="sepDlg.busy" @click="startVocalSeparate">{{ tr('voice.sepDlgRun') }}</el-button>
                   <el-button v-else size="small" type="primary" @click="goMixer">{{ tr('voice.sepGoMixer') }}</el-button>
+                </div>
+              </template>
+            </el-dialog>
+            <!-- 封入音轨：候选默认给「这条视频旁边的音轨」（分轨产物 + 同目录音频），要封别处的再按目录去翻。
+                 列好的顺序就是成品里的轨序，原片那条永远排在前面（不保留时整条不封）。 -->
+            <el-dialog v-model="muxDlg.visible" :title="tr('files.miMux')" width="640px">
+              <div class="hint hint--block">{{ muxDlg.name }}</div>
+              <div class="row row--tight row--mt" style="align-items:flex-start">
+                <div style="flex:1">
+                  <div class="tile-label">{{ tr('files.muxNearby') }}</div>
+                  <div v-if="muxDlg.cands.length" class="mux-cands">
+                    <div v-for="c in muxDlg.cands" :key="c.path" class="row row--tight mux-cand">
+                      <span class="mux-cand-name" :title="c.path">{{ c.name }}</span>
+                      <span class="hint">{{ c.origin === 'stem' ? tr('files.muxStemTag') : tr('files.muxSideTag') }}</span>
+                      <span class="hint">{{ formatSize(c.size) }}</span>
+                      <el-button size="small" plain @click="muxAdd(c)">{{ tr('files.muxAdd') }}</el-button>
+                    </div>
+                  </div>
+                  <div v-else class="hint">{{ tr('files.muxNoCand') }}</div>
+                </div>
+                <div style="width:230px">
+                  <div class="tile-label">{{ tr('files.muxFromDir') }}</div>
+                  <div class="row row--tight">
+                    <el-input v-model="muxDlg.pickDir" size="small" :placeholder="tr('files.muxDirPh')" @keyup.enter="muxBrowse()"></el-input>
+                    <el-button size="small" :loading="muxDlg.picking" @click="muxBrowse()">{{ tr('files.muxList') }}</el-button>
+                  </div>
+                  <div v-if="muxDlg.pickItems.length" class="mux-cands">
+                    <div v-for="it in muxDlg.pickItems" :key="it.path" class="row row--tight mux-cand">
+                      <span class="mux-cand-name" :title="it.path">{{ it.name }}</span>
+                      <el-button v-if="it.is_dir" size="small" plain @click="muxEnter(it)">{{ tr('files.btnEnter') }}</el-button>
+                      <el-button v-else size="small" plain @click="muxAddFile(it)">{{ tr('files.muxAdd') }}</el-button>
+                    </div>
+                  </div>
+                  <div v-else-if="muxDlg.browsed" class="hint">{{ tr('files.muxEmpty') }}</div>
+                </div>
+              </div>
+              <div class="tile-label" style="margin-top:12px">{{ tr('files.muxPicked') }}</div>
+              <div v-if="!muxDlg.rows.length" class="hint">{{ tr('files.muxNeedTrack') }}</div>
+              <div v-for="(t, i) in muxDlg.rows" :key="t.path" class="row row--tight mux-row">
+                <span class="mux-row-name" :title="t.path">{{ t.name }}</span>
+                <el-select v-model="t.language" size="small" style="width:104px">
+                  <el-option :label="tr('files.muxLangZh')" value="zh"></el-option>
+                  <el-option :label="tr('files.muxLangEn')" value="en"></el-option>
+                  <el-option :label="tr('files.muxLangJa')" value="ja"></el-option>
+                  <el-option :label="tr('files.muxLangKo')" value="ko"></el-option>
+                  <el-option :label="tr('files.muxLangFr')" value="fr"></el-option>
+                  <el-option :label="tr('files.muxLangDe')" value="de"></el-option>
+                  <el-option :label="tr('files.muxLangEs')" value="es"></el-option>
+                  <el-option :label="tr('files.muxLangRu')" value="ru"></el-option>
+                  <el-option :label="tr('files.muxLangUnd')" value="und"></el-option>
+                </el-select>
+                <el-input v-model="t.title" size="small" style="width:150px" :placeholder="tr('files.muxTitlePh')"></el-input>
+                <el-select v-model="t.codec" size="small" style="width:96px">
+                  <el-option :label="tr('files.muxCodecAuto')" value="auto"></el-option>
+                  <el-option label="copy" value="copy"></el-option>
+                  <el-option label="opus" value="opus"></el-option>
+                  <el-option label="aac" value="aac"></el-option>
+                </el-select>
+                <el-button size="small" text :disabled="i === 0" @click="muxMove(i, -1)">↑</el-button>
+                <el-button size="small" text :disabled="i === muxDlg.rows.length - 1" @click="muxMove(i, 1)">↓</el-button>
+                <el-button size="small" text type="danger" @click="muxDlg.rows.splice(i, 1)">✕</el-button>
+              </div>
+              <div class="row row--tight row--mt">
+                <el-checkbox v-model="muxDlg.keep">{{ tr('files.muxKeep') }}</el-checkbox>
+                <el-select v-model="muxDlg.defSel" size="small" style="width:190px">
+                  <el-option v-if="muxDlg.keep" :label="tr('files.muxDefOrig')" value="orig"></el-option>
+                  <el-option v-for="(t, i) in muxDlg.rows" :key="t.path" :label="t.name" :value="'t' + i"></el-option>
+                </el-select>
+                <el-checkbox v-model="muxDlg.overwrite">{{ tr('files.muxOverwrite') }}</el-checkbox>
+              </div>
+              <div class="hint hint--block" style="margin-top:8px">{{ tr('files.muxOutHint', { name: muxDlg.outName }) }}</div>
+              <div v-if="muxDlg.done" class="hint hint--block">{{ muxDlg.done }}</div>
+              <template #footer>
+                <div class="row row--tight" style="justify-content:flex-end">
+                  <el-button size="small" @click="muxDlg.visible = false">{{ muxDlg.done ? tr('common.close') : tr('common.cancel') }}</el-button>
+                  <el-button v-if="!muxDlg.done" size="small" type="primary" :loading="muxDlg.busy"
+                             :disabled="!muxDlg.rows.length" @click="runMuxAudio">{{ tr('files.muxRun') }}</el-button>
                 </div>
               </template>
             </el-dialog>
@@ -7599,7 +7683,7 @@
         /* 文件行「更多」下拉：command 形如「方法名|行号」，行号取当前页切片内的下标。
            列排序全部走 sortable="custom"，Element 不再二次排序，故 $index 与当页切片一一对应。 */
         const FILE_ACTIONS = {
-          aiTranscribe, aiTranslateSrt, aiPipeline, showPipeline, openSepDlg, openStemMixer, analyzeAudioFile,
+          aiTranscribe, aiTranslateSrt, aiPipeline, showPipeline, openSepDlg, openStemMixer, openMuxDlg, analyzeAudioFile,
           aiTts, aiCalibrateSrt, exportBilingual, openBurn, openPicard, mbTagFile,
           mbEnrichFile, fingerprintFile, guessTagsFile,
         };
@@ -7813,6 +7897,7 @@
           '/api/files/delete': 'act.files.delete',
           '/api/files/clear-archive': 'act.files.clear_archive',
           '/api/files/zip': 'act.files.zip',
+          '/api/files/mux_audio': 'act.files.mux_audio',
           '/api/diagnostics/export': 'act.diagnostics.export',
           '/api/history/clear': 'act.history.clear',
           '/api/logs/clear': 'act.logs.clear',
@@ -10140,6 +10225,93 @@
           mixSrc.value = row.path;
           gotoCard('voice', 'mixer-card', 'ui.goto_mixer');
           loadStems();
+        }
+        // ---- 封入音轨：几条音频封进这条视频做成多音轨 mkv（画面 copy），顺序、默认轨、语言都在这儿排 ----
+        const MUX_TRACK_MAX = 8;
+        const MUX_AUDIO_EXT = /\.(wav|mp3|m4a|aac|flac|ogg|oga|opus|wma|mka|ape|ac3|eac3|dts|aiff|aif)$/i;
+        const muxDlg = reactive({
+          visible: false, busy: false, path: '', name: '', outName: '',
+          cands: [], rows: [], keep: true, defSel: 'orig', overwrite: false,
+          pickDir: '', pickItems: [], picking: false, browsed: false, done: '',
+        });
+        function openMuxDlg(row) {
+          muxDlg.visible = true;
+          muxDlg.busy = false;
+          muxDlg.done = '';
+          muxDlg.path = row.path;
+          muxDlg.name = row.name || String(row.path || '');
+          muxDlg.outName = String(muxDlg.name).replace(/\.[^.]+$/, '') + '.mux.mkv';
+          muxDlg.rows = [];
+          muxDlg.cands = [];
+          muxDlg.keep = true;
+          muxDlg.defSel = 'orig';
+          muxDlg.overwrite = false;
+          muxDlg.pickItems = [];
+          muxDlg.browsed = false;
+          muxDlg.pickDir = '';
+          loadMuxCands(row.path);
+        }
+        async function loadMuxCands(p) {
+          try {
+            const r = await api('/api/files/audio_candidates?path=' + encodeURIComponent(p), { noLog: true });
+            muxDlg.cands = r.tracks || [];
+            muxDlg.pickDir = r.dir || '';
+          } catch (e) { ElementPlus.ElMessage.error(String(e.message || e)); }
+        }
+        function muxPush(item) {
+          if (muxDlg.rows.some((t) => t.path === item.path)) return;
+          if (muxDlg.rows.length >= MUX_TRACK_MAX) {
+            ElementPlus.ElMessage.warning(tr('files.muxTooMany', { n: MUX_TRACK_MAX }));
+            return;
+          }
+          muxDlg.rows.push({ name: item.name, path: item.path, language: 'und', title: item.name, codec: 'auto' });
+        }
+        function muxAdd(c) { muxPush(c); }
+        function muxAddFile(it) { muxPush({ name: String(it.name).replace(/\.[^.]+$/, ''), path: it.path }); }
+        function muxMove(i, d) {
+          const j = i + d;
+          if (j < 0 || j >= muxDlg.rows.length) return;
+          muxDlg.rows.splice(j, 0, muxDlg.rows.splice(i, 1)[0]);
+        }
+        async function muxBrowse() {
+          muxDlg.picking = true;
+          muxDlg.browsed = true;
+          try {
+            const q = muxDlg.pickDir ? ('?subdir=' + encodeURIComponent(muxDlg.pickDir)) : '';
+            const r = await api('/api/files' + q, { noLog: true });
+            muxDlg.pickItems = (r.items || []).filter((it) => it.is_dir || MUX_AUDIO_EXT.test(it.name)).slice(0, 60);
+          } catch (e) { ElementPlus.ElMessage.error(String(e.message || e)); }
+          finally { muxDlg.picking = false; }
+        }
+        function muxEnter(it) {
+          muxDlg.pickDir = it.path;
+          muxDlg.pickItems = [];
+          muxBrowse();
+        }
+        async function runMuxAudio() {
+          if (!muxDlg.rows.length) { ElementPlus.ElMessage.warning(tr('files.muxNeedTrack')); return; }
+          muxDlg.busy = true;
+          muxDlg.done = '';
+          try {
+            const defIdx = muxDlg.defSel === 'orig' ? -1 : Number(String(muxDlg.defSel).slice(1));
+            const r = await api('/api/files/mux_audio', {
+              method: 'POST',
+              body: JSON.stringify({
+                path: muxDlg.path,
+                tracks: muxDlg.rows.map((t) => ({ path: t.path, language: t.language, title: t.title, codec: t.codec })),
+                keep_original: muxDlg.keep,
+                default_index: defIdx,
+                overwrite: muxDlg.overwrite,
+              }),
+            });
+            if (r.ok === false) { ElementPlus.ElMessage.error(r.message || tr('files.muxFail')); return; }
+            muxDlg.done = r.message || tr('files.muxDone');
+            // 字幕没带过去是后端那一步的回退，界面必须说清成品里少了什么，不能只报「成了」
+            if (r.dropped_subs) muxDlg.done = muxDlg.done + ' · ' + tr('files.muxSubsDropped');
+            ElementPlus.ElMessage.success(muxDlg.done);
+            loadFiles(filesPath.value);
+          } catch (e) { ElementPlus.ElMessage.error(String(e.message || e)); }
+          finally { muxDlg.busy = false; }
         }
         // ---- 分轨混音台：轨来自上一次分离落盘的那堆 wav，静音/独奏/音量都在前端调，导出交给后端 ffmpeg ----
         const mixSrc = ref('');
@@ -14759,7 +14931,7 @@ const CFG_KEYS = {
           loadSubs, addSub, removeSub, toggleSub, scanOneSub, scanAllSubs, startLiveRecord, pauseLiveTask, resumeLiveTask, endLiveTask, endAllLive, cancelLiveTask, addLiveMonitor, removeLiveMonitor, pauseLiveMonitor, resumeLiveMonitor, scanLiveMonitors, loadLiveMonitors, liveRoomCfg, liveRoomFmts, liveRoomQualities, openLiveMonitorCfg, saveLiveMonitorCfg, liveMonitorCfgText, testTelegram,
           testWecom, applyRiskPreset, loadRiskPresets, loadFavTab, loadFavFolderItems, loadYtPlaylist, onFavSelChange,
           downloadFavSelected, downloadFavOne, subscribeFavSelected, subscribeFavOne, startBiliQr, pollBiliQr,
-          isPlayable, isAudioFile, isMediaFile, isVideoFile, openPicard, mbTagFile, mbEnrichFile, fingerprintFile, guessTagsFile, isSrtFile, openSepDlg, openStemMixer, sepDlg, startVocalSeparate, goMixer, clampSepStems, aiTts, installVoicePkgs, loadVoiceStatus, refreshSepStatus, setupSeparatorEnv, setupSeparatorWeights, setupSeparatorAll, sepModelLabel, sepBusy, sepInfo, sepModels, sepDemucsModels, sepDemucsState, fetchDemucsModels, sepAnalysisOk, sepAnalysisPkgsText, sepAnalysisModelsText, sepAnalysisMirror, setupAnalysisAll, sepHasGpu, sepStatusText, sepDeviceText, sepEngineReason, sepUpdatablePkg, sepUpdatable, sepLatest, updateSeparatorEngines, toggleRealtime, installingVoice, voiceStatusText, rtRecording, rtTranslate, rtTargetLang, rtLog,
+          isPlayable, isAudioFile, isMediaFile, isVideoFile, openPicard, mbTagFile, mbEnrichFile, fingerprintFile, guessTagsFile, isSrtFile, openSepDlg, openStemMixer, sepDlg, startVocalSeparate, goMixer, clampSepStems, openMuxDlg, muxDlg, muxAdd, muxAddFile, muxBrowse, muxEnter, muxMove, runMuxAudio, aiTts, installVoicePkgs, loadVoiceStatus, refreshSepStatus, setupSeparatorEnv, setupSeparatorWeights, setupSeparatorAll, sepModelLabel, sepBusy, sepInfo, sepModels, sepDemucsModels, sepDemucsState, fetchDemucsModels, sepAnalysisOk, sepAnalysisPkgsText, sepAnalysisModelsText, sepAnalysisMirror, setupAnalysisAll, sepHasGpu, sepStatusText, sepDeviceText, sepEngineReason, sepUpdatablePkg, sepUpdatable, sepLatest, updateSeparatorEngines, toggleRealtime, installingVoice, voiceStatusText, rtRecording, rtTranslate, rtTargetLang, rtLog,
           mixSrc, mixRows, mixLoading, mixBusy, mixPlaying, mixLoop, mixFormat, mixOut, mixOutUrl,
           stemLabel, streamUrl, loadStems, applyMixGains, applyMixLoop, toggleMixPlay, exportMix, aiTranscribe, aiTranslateSrt, aiCalibrateSrt, onFileSelectionChange, runBatchAi, runSrtCalibrateSelected,
           burnDlg, burnJob, burnStarting, burnSubChoices, burnOutName, burnRunning, burnPercent, burnStatusText, openBurn, closeBurn, startBurn, stopBurn,

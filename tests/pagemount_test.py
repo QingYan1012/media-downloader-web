@@ -64,9 +64,10 @@ _fm = HTML[_fm_at:HTML.find("</el-dropdown-menu>", _fm_at)] if _fm_at >= 0 else 
 _fm_items = [l for l in _fm.splitlines() if l.strip().startswith("<el-dropdown-item")]
 _fm_div = [l.strip()[:120] for l in _fm_items if re.search(r"(?::divided=|\sdivided(?!=))", l)]
 ck("P8 文件页行内下拉的分组线只挂在五个组首（流水线 / 分离人声 / 配音 / 烧录字幕 / Picard）",
-   # 16 项：「分离人声」改成先弹选择框（项本身还在原位），后面新挂一条「分轨混音」——
-   # 它是分离的下一步，不是一族之首，所以不带线；带线的仍然只有那五个组首。
-   len(_fm_div) == 5 and len(_fm_items) == 16,
+   # 17 项：「分离人声」改成先弹选择框（项本身还在原位），后面新挂一条「分轨混音」——
+   # 它是分离的下一步，不是一族之首，所以不带线；#137 又加一条「封入音轨」（只给视频行），
+   # 同样不带线。带线的仍然只有那五个组首。
+   len(_fm_div) == 5 and len(_fm_items) == 17,
    "项 %d，带线 %d：%s" % (len(_fm_items), len(_fm_div), [d.split("command=")[0].strip()[:40] for d in _fm_div]))
 ck("P9 Picard 那条线是条件的：flac/ogg/wma/opus 不在 isMediaFile 里，这类行的菜单从 Picard 开头，写死就悬空一条",
    ':divided="isMediaFile(row)"' in _fm

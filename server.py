@@ -12974,6 +12974,291 @@ def api_voice_stems(path: str = ""):
     return {"ok": True, "source": media.name, "stems": rows}
 
 
+# ---------------------------------------------------------------- 封入音轨（文件页「更多 → 封入音轨」）
+MUX_AUDIO_EXTS = (".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg", ".oga", ".opus",
+                  ".wma", ".mka", ".ape", ".ac3", ".eac3", ".dts", ".aiff", ".aif")
+# wav / aiff / ape 这类 copy 进 mkv 就是整块 PCM，一条 3 分钟约 30 MB —— 默认压一道，界面上可关
+MUX_LOSSLESS_EXTS = (".wav", ".aiff", ".aif", ".ape")
+MUX_CODECS = ("copy", "opus", "aac")
+MUX_BITRATE = "192k"
+MUX_TRACK_MAX = 8
+MUX_OUT_SUFFIX = ".mux.mkv"
+MUX_TIMEOUT = 3600
+# 界面上给的是「中文 / English / 日本語」，mkv 的 language 字段只认三个字母（Matroska 用 ISO-639-2/B）
+MUX_LANGS = {
+    "zh": "chi", "cn": "chi", "chi": "chi", "en": "eng", "eng": "eng", "ja": "jpn", "jpn": "jpn",
+    "ko": "kor", "kor": "kor", "fr": "fra", "fra": "fra", "de": "deu", "deu": "deu",
+    "es": "spa", "spa": "spa", "ru": "rus", "rus": "rus", "it": "ita", "ita": "ita",
+    "pt": "por", "por": "por", "th": "tha", "vi": "vie",
+}
+MUX_LOCK = threading.Lock()
+MUX_BUSY: set = set()
+
+
+def mux_lang_code(raw: str) -> str:
+    """界面给的语言 → mkv 认的三字母；认不出写 und（未标注），不硬编一个「eng」糊上去。"""
+    v = str(raw or "").strip().lower()
+    if not v:
+        return "und"
+    if v in MUX_LANGS:
+        return MUX_LANGS[v]
+    if re.fullmatch(r"[a-z]{3}", v):
+        return v
+    return "und"
+
+
+def _ffprobe_audio_count(path: Path) -> int:
+    """源文件里有几条音频轨 —— 决定新轨排在第几位（-metadata / -disposition 的下标全靠它）。
+
+    返回 -1 表示「没法判」（本机没有 ffprobe 或读不出），调用方要据此报错，
+    不能当 0 处理 —— 当 0 就把原片的第一条音轨的标签贴到第一条新轨上。
+    """
+    probe = _ffprobe_bin()
+    if not probe:
+        return -1
+    try:
+        r = subprocess.run(
+            [probe, "-v", "error", "-select_streams", "a",
+             "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(path)],
+            capture_output=True, text=True, timeout=30,
+            encoding="utf-8", errors="replace",
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        )
+    except Exception:
+        return -1
+    if r.returncode != 0:
+        return -1
+    return sum(1 for ln in (r.stdout or "").splitlines() if ln.strip() == "audio")
+
+
+def mux_track_codec(path: Path, requested: str = "") -> str:
+    """这条轨是原样 copy 还是压一道：界面上选了就用界面的，没选时无损轨默认压成 opus。
+
+    界面那格给的是 'auto' 而不是空串 —— Element Plus 的下拉里空串等于「没选」，
+    会显示成「请选择」，看着像坏了。
+    """
+    want = str(requested or "").strip().lower()
+    if want in MUX_CODECS:
+        return want
+    return "opus" if path.suffix.lower() in MUX_LOSSLESS_EXTS else "copy"
+
+
+def build_mux_command(ff: str, media: Path, out: Path, tracks: List[dict], *,
+                      src_audio: int, keep_original: bool = True,
+                      default_index: int = -1, with_subs: bool = True) -> List[str]:
+    """拼出封入音轨那条 ffmpeg 命令（纯函数，自检直接比对参数表）。
+
+    三条口径写死在这儿：画面永远 copy（重编就毁了「无损封入」这句话）；
+    原片音轨保留、新轨排在后面（所以下标从 src_audio 起算）；
+    只有被点名为默认的那一条 disposition=default=1，其余显式 default=0，
+    否则播放器会自己挑，挑到的常常是最后追加那条。
+    """
+    cmd = [ff, "-hide_banner", "-nostdin", "-loglevel", "error", "-y",
+           "-err_detect", "ignore_err", "-i", str(media)]
+    for t in tracks:
+        cmd += ["-i", str(t["path"])]
+
+    cmd += ["-map", "0:v:0"]
+    base = 0
+    if keep_original and src_audio > 0:
+        cmd += ["-map", "0:a?"]
+        base = src_audio
+    if with_subs:
+        cmd += ["-map", "0:s?"]
+    for k in range(len(tracks)):
+        cmd += ["-map", f"{k + 1}:a:0"]
+
+    cmd += ["-c", "copy", "-map_metadata", "0", "-map_chapters", "0"]
+
+    if default_index >= 0:
+        default_out = base + min(default_index, len(tracks) - 1)
+    else:
+        default_out = 0          # 原片留着就归原片第一条，没得留就归新轨第一条
+    total = base + len(tracks)
+    # mkv 的 default 标记不写就是 1（实测：只给一条写 default 时三条全是默认轨），
+    # 所以没点名的那些要显式清掉 —— 清掉的写法是值写 -default，写成 default=0 ffmpeg 会当无效参数退出。
+    for j in range(total):
+        cmd += [f"-disposition:a:{j}", "default" if j == default_out else "-default"]
+
+    for k, t in enumerate(tracks):
+        idx = base + k
+        if t["codec"] == "opus":
+            cmd += [f"-c:a:{idx}", "libopus", f"-b:a:{idx}", MUX_BITRATE]
+        elif t["codec"] == "aac":
+            cmd += [f"-c:a:{idx}", "aac", f"-b:a:{idx}", MUX_BITRATE]
+        # copy 交给上面的全局 -c copy
+        cmd += [f"-metadata:s:a:{idx}", f"language={t['language']}"]
+        if t.get("title"):
+            cmd += [f"-metadata:s:a:{idx}", f"title={t['title']}"]
+    return cmd + [str(out)]
+
+
+def _mux_candidate_rows(media: Path) -> List[dict]:
+    """这条视频「就近」的音轨：先它自己的分轨产物（与 /api/voice/stems 同一套三层目录口径），
+    再同目录里的其它音频文件。混音台产出的 -mix- 文件与上一次封入的成品都不算候选。"""
+    rows: List[dict] = []
+    seen: set = set()
+    for sub in ("demucs", "separated"):
+        base = media.parent / sub
+        if not base.is_dir():
+            continue
+        for cand in sorted(base.rglob(f"{media.stem}/*.wav")):
+            if cand.stem in seen or MIX_NAME_MARK in cand.name:
+                continue
+            seen.add(cand.stem)
+            rows.append({"name": cand.stem, "path": _ui_path(cand),
+                         "size": cand.stat().st_size, "origin": "stem"})
+        if rows:
+            break
+    for cand in sorted(media.parent.iterdir(), key=lambda x: x.name.lower()):
+        if not cand.is_file() or cand.suffix.lower() not in MUX_AUDIO_EXTS:
+            continue
+        if cand == media or cand.stem in seen or MIX_NAME_MARK in cand.name:
+            continue
+        if cand.name.endswith(MUX_OUT_SUFFIX):
+            continue
+        seen.add(cand.stem)
+        rows.append({"name": cand.stem, "path": _ui_path(cand),
+                     "size": cand.stat().st_size, "origin": "side"})
+    return rows
+
+
+@app.get("/api/files/audio_candidates")
+def api_files_audio_candidates(path: str = ""):
+    """「封入音轨」对话框打开时先问这个：这条视频旁边有什么音轨可直接封。"""
+    media = resolve_media_path(path)
+    rows = _mux_candidate_rows(media)
+    # 视频就在下载根目录时 _ui_path 回的是 "."，界面拿它去列目录会变成一层假的路径
+    start = _ui_path(media.parent)
+    return {"ok": True, "source": media.name, "tracks": rows, "dir": "" if start == "." else start}
+
+
+class MuxTrackIn(BaseModel):
+    path: str = ""
+    language: str = ""
+    title: str = ""
+    codec: str = ""
+
+
+class MuxAudioIn(BaseModel):
+    path: str = ""
+    tracks: List[MuxTrackIn] = []
+    keep_original: bool = True
+    default_index: int = -1
+    overwrite: bool = False
+
+
+@app.post("/api/files/mux_audio")
+def api_files_mux_audio(body: MuxAudioIn):
+    """把若干音频文件封进这条视频，做成多音轨的 mkv（画面不重编，成品另存 .mux.mkv）。"""
+    ff = ffmpeg_mgr.find(ffmpeg_mgr.manual_path)
+    if not ff:
+        raise HTTPException(400, "没找到 FFmpeg，先去「组件与依赖」装好再封音轨")
+    media = resolve_media_path(body.path)
+    if not _ffprobe_info(media).get("width"):
+        raise HTTPException(400, f"{media.name} 没有画面轨，封进去也还是个音频文件")
+    if not body.tracks:
+        raise HTTPException(400, "至少得选一条要封进去的音轨")
+    if len(body.tracks) > MUX_TRACK_MAX:
+        raise HTTPException(400, f"一次最多封 {MUX_TRACK_MAX} 条音轨，现在选了 {len(body.tracks)} 条")
+
+    prepared: List[dict] = []
+    seen_paths: set = set()
+    for raw in body.tracks:
+        p = resolve_media_path(raw.path)
+        if p.suffix.lower() not in MUX_AUDIO_EXTS:
+            raise HTTPException(400, f"{p.name} 不是可封入的音频文件（认 {' / '.join(MUX_AUDIO_EXTS)}）")
+        if p == media:
+            raise HTTPException(400, f"{p.name} 就是这条视频本身，不能自己封进自己")
+        if str(p) in seen_paths:
+            continue
+        seen_paths.add(str(p))
+        n_a = _ffprobe_audio_count(p)
+        if n_a == 0:
+            raise HTTPException(400, f"{p.name} 里没有音轨，封不进任何东西")
+        if n_a < 0:
+            raise HTTPException(400, f"读不出 {p.name} 里有没有音轨（ffprobe 没跑成），先修好探测再封")
+        prepared.append({"path": p, "codec": mux_track_codec(p, raw.codec),
+                         "language": mux_lang_code(raw.language),
+                         "title": str(raw.title or "").strip()[:80]})
+
+    src_audio = _ffprobe_audio_count(media)
+    if src_audio < 0:
+        raise HTTPException(400, "本机 ffprobe 读不出这条视频已有几条音轨，封进去的轨会排错位置、"
+                                 "标签也会贴错人，先确认「组件与依赖」里 FFmpeg 装好了（ffprobe 要一起有）")
+    if src_audio == 0:
+        keep_original = False
+    else:
+        keep_original = bool(body.keep_original)
+
+    out = media.with_name(media.stem + MUX_OUT_SUFFIX)
+    if out.exists() and not body.overwrite:
+        raise HTTPException(409, f"已经有 {out.name} 了，要重来请勾「覆盖旧成品」")
+    key = str(media)
+    with MUX_LOCK:
+        if key in MUX_BUSY:
+            raise HTTPException(409, f"{media.name} 正在封音轨，等它跑完再动")
+        MUX_BUSY.add(key)
+
+    n = len(prepared)
+    log_mgr.log(f"[文件] 封入音轨：{media.name} 加 {n} 条新轨，成品 {out.name}", "info",
+                k="srv.files.mux_start",
+                kv={"name": media.name, "n": str(n), "out": out.name})
+    try:
+        dropped_subs = False
+        cmd = build_mux_command(ff, media, out, prepared, src_audio=src_audio,
+                                keep_original=keep_original, default_index=body.default_index,
+                                with_subs=True)
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           timeout=MUX_TIMEOUT,
+                           creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
+        if r.returncode != 0 and _mux_subs_blame(r):
+            # 源字幕是 mov_text 这类 mkv 不收的编码：整体失败不值当，退一步只带画面与音轨再来一遍
+            out.unlink(missing_ok=True)
+            dropped_subs = True
+            log_mgr.log("[文件] 字幕没能一起封装（转封装被拒），这次成品只带画面与音轨", "warning",
+                        k="srv.files.mux_subs_dropped")
+            cmd = build_mux_command(ff, media, out, prepared, src_audio=src_audio,
+                                    keep_original=keep_original, default_index=body.default_index,
+                                    with_subs=False)
+            r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                               timeout=MUX_TIMEOUT,
+                               creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
+        if r.returncode != 0:
+            tail = ((r.stderr or "") + (r.stdout or "")).strip()[-300:]
+            out.unlink(missing_ok=True)
+            log_mgr.log(f"[文件] 封入音轨失败：{tail}", "error",
+                        k="srv.files.mux_failed", kv={"e": tail})
+            raise HTTPException(500, f"封音轨没成：{tail[:160]}")
+        if not out.exists() or out.stat().st_size == 0:
+            out.unlink(missing_ok=True)
+            raise HTTPException(500, "ffmpeg 退出码是 0，可成品是空的 —— 这次没算成功")
+    finally:
+        with MUX_LOCK:
+            MUX_BUSY.discard(key)
+
+    total = (src_audio if keep_original else 0) + n
+    mb = f"{out.stat().st_size / 1048576.0:.1f}"
+    log_mgr.log(f"[文件] 封入音轨完成：{out.name}（{total} 条音轨 · {mb} MB）", "info",
+                k="srv.files.mux_done", kv={"name": out.name, "n": str(total), "mb": mb})
+    return {
+        "ok": True,
+        "path": _ui_path(out),
+        "message": f"已封好 {out.name}（{total} 条音轨 · {mb} MB）",
+        "tracks": total,
+        "added": n,
+        "dropped_subs": dropped_subs,
+        "detail": [{"name": t["path"].stem, "codec": t["codec"], "language": t["language"]}
+                   for t in prepared],
+    }
+
+
+def _mux_subs_blame(r) -> bool:
+    """退出码非 0 时，判断是不是字幕那条流闯的祸（只有这种情况值得丢掉字幕再试一遍）。"""
+    text = ((r.stderr or "") + (r.stdout or "")).lower()
+    return "subtitle" in text or "mov_text" in text or "codec_type_sub" in text
+
+
 @app.post("/api/ai/tts")
 def api_ai_tts(body: dict):
     """Edge-TTS：SRT 或纯文本 → mp3。"""
