@@ -252,8 +252,12 @@ greying-out of the two control rows that I proposed from it **was not done**.
   https://github.com/QingYan1012/media-downloader-web/releases/tag/v1.5.2) with both assets uploaded, the byte counts
   confirmed server-side, and the archive fetched back through `browser_download_url` and re-hashed - identical to the
   local file (`c9e54336…bbe6e`), 8/8 publish checks green. `v1.5.0` and `v1.5.1` and their assets were left untouched.
-  One honest wrinkle: the `CHANGELOG.md` inside that published archive was written before the push succeeded, so the
-  copy *in the package* still says the push and Release are pending; the repository text above is the corrected one.
+  One honest wrinkle at that moment: the `CHANGELOG.md` inside that published archive was written before the push
+  succeeded, so the copy *in the package* still said the push and Release were pending.
+- **Rebuilt (same day, after the user ran #137 by hand)**: that wrinkle and the mux-audio feature itself are both
+  settled by rebuilding this archive - `appVersion` stays `v1.5.2` (not one character changed), what changes is the
+  text carried inside the package and the multi-track feature it now has. The readings of the rebuilt archive
+  (byte count, sha256, entry count, in-package self-checks, tag and Release verification) go into the bullet below.
 
 ---
 
@@ -266,7 +270,8 @@ The user asked whether the app can mux different audio files into a video. It co
 - **Two things only measurement told**: `-disposition:a:N default=0` is not valid - ffmpeg 8.1 exits with `Unable to parse "disposition" option value`, and clearing the flag means passing the value `-default`; and leaving disposition out entirely makes mkv mark *every* track as default, so each one has to be named. A mov_text subtitle is refused by mkv, so the failure is retried without subtitles and both the log line and the completion message say the output carries video and audio only.
 - **No guessing**: the new tracks' indices start after however many audio tracks the source already has, so when ffprobe cannot answer, the dialog says it cannot tell and points at FFmpeg rather than assuming 0 - assuming 0 would paste the language and track name onto the original track and still report success.
 - **Checks**: new `tests/audio_mux_test.py`, 46 checks (ffmpeg stubbed, temporary directory only); the H20 action-table counter in `tests/i18n_test.py` moves from 140 to 141. Two live passes: one through the real route with the real ffmpeg (17 checks, the output read back track by track with ffprobe for codec, language, name and default flag), one clicking through the real UI (18 checks, sandbox instance, one screenshot of the dialog in each language).
-- **Not packaged**: this is not in the v1.5.2 bytes that were already built - shipping it needs a new package.
+- **Packaging**: this was not in the first v1.5.2 build; after the user ran it by hand the same version number was
+  rebuilt, so it ships with the `v1.5.2` artifacts (readings in the "Rebuilt" bullet of the section above).
 
 ---
 
