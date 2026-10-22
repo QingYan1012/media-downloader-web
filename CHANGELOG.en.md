@@ -266,6 +266,12 @@ greying-out of the two control rows that I proposed from it **was not done**.
   21 `__pycache__` removed, 15 top-level modules import, in-package pip install -> import passes, smoke answers all
   three component tiers with 12 manifest hits). The bytes behind this archive are `7c7079d` - #137 itself plus the
   reworded release notes - and the tag and the Release assets are aligned to it.
+- **What alignment meant**: tag `v1.5.2` moves `c26d46c` → `7c7079d` (force-pushed; the `v1.5.0` / `v1.5.1` tags were
+  left alone); on Release 420541780 the old zip and `.sha256` were deleted first, then the new pair uploaded (the server
+  took 230,660,015 and 101 bytes, matching the local files), and the body was replaced with the version that carries the
+  mux-audio section. Finally the archive was pulled back through `browser_download_url` and re-hashed -
+  `bcb00cf9…de477`, byte-identical to the local file, and the published `.sha256` names the same digest. The previous
+  body and asset list were backed up first under `tmp/release_backups/` (timestamp 20261022-182323).
 
 ---
 
