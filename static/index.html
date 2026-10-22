@@ -13327,6 +13327,9 @@
           if (!mediaInfo.value || !mediaInfo.value.webpage_url || !qp) return;
           selectedQuality.value = qp.label || '';
           const audioQ = opts.value.audio_quality || 'best';
+          // 这一格是「只改这一次」的：封装也要一起记住再还原。以前只记得还原 force_format 与
+          // audio_only，点了「仅音频」之后封装就停在 m4a 上，下一次点视频档也会被抽成音频
+          const fmtBefore = opts.value.format;
           opts.value.prefer_codec = qp.prefer_codec || 'auto';
           if (qp.height > 0) opts.value.video_quality = qp.height + 'p';
           else if (qp.height === 0) opts.value.video_quality = 'best';
@@ -13344,6 +13347,7 @@
           await startDownload();
           opts.value.force_format = '';
           opts.value.audio_only = false;
+          opts.value.format = fmtBefore;
         }
 
         async function downloadAllEntries() {

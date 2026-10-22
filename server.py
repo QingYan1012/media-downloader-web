@@ -5854,6 +5854,17 @@ def drop_all_cookie_prefs():
         pass
 
 
+def archive_filename(audio_only: bool) -> str:
+    """下载记录按「成品类别」分文件。
+
+    yt-dlp 的 `download_archive` 每行只写「站点键 + 视频 id」，**不带格式**，所以先下过视频、
+    再点「仅音频」会被当成已下载 —— 实测 2026-10-22：三次音频请求全部命中视频那条记录，
+    一个 m4a 都没下，队列行还把那个旧 mkv 当成本次成品显示出来。
+    视频那一档沿用老文件名，升级上来的人已有记录一条都不作废。
+    """
+    return "download_archive_audio.txt" if audio_only else "download_archive.txt"
+
+
 class DownloaderEngine:
     def __init__(self, log_cb=None, ffmpeg_mgr: FFmpegManager = None):
         self.log = log_cb or (lambda m, level="info", k="", kv=None: print(m))
@@ -6069,7 +6080,8 @@ class DownloaderEngine:
                      k="srv.engine.proxy_follow",
                      kv={"tid": task_id[:8], "key": key, "note": _frag_text(note_txt)})
 
-    def _ydl_opts(self, cfg: dict, *, for_info: bool = False, player_clients=None, url: str = "") -> dict:
+    def _ydl_opts(self, cfg: dict, *, for_info: bool = False, player_clients=None, url: str = "",
+                  audio_only: bool = False) -> dict:
         opts: dict = {
             "quiet": True,
             "no_warnings": True,
@@ -6174,7 +6186,7 @@ class DownloaderEngine:
             opts["writeinfojson"] = True
         # 跳过已下载（MediaSync 同类能力）
         if cfg.get("skip_downloaded", True):
-            arch = Path(cfg.get("download_dir") or DEFAULT_DOWNLOAD_DIR) / "download_archive.txt"
+            arch = Path(cfg.get("download_dir") or DEFAULT_DOWNLOAD_DIR) / archive_filename(bool(audio_only))
             try:
                 arch.parent.mkdir(parents=True, exist_ok=True)
                 opts["download_archive"] = str(arch)
@@ -6989,7 +7001,9 @@ class DownloaderEngine:
                     template = _BIDI_CTRL_RE.sub("", str(template))[:120]
                     template = template.replace("/", "_").replace("\\", "_").replace("\0", "")
                     out_tmpl = str(Path(dl_dir) / template)
-                opts = self._ydl_opts(cfg, for_info=False, player_clients=clients, url=url)
+                # 判重要看成品类别：仅音频与视频各走自己的下载记录文件（见 archive_filename）
+                opts = self._ydl_opts(cfg, for_info=False, player_clients=clients, url=url,
+                                      audio_only=bool(audio_only))
                 sl_now, sl_note = resolve_speed_limit(cfg)
                 if opts.get("ratelimit") or sl_note:
                     self.log(f"[{task_id[:8]}] 限速：{sl_now or '不限速'}（{sl_note}）"
@@ -16159,12 +16173,18 @@ def api_files_delete(body: FilePathBody):
 
 @app.post("/api/files/clear-archive")
 def api_clear_archive():
-    arch = Path(cfg.data.get("download_dir") or DEFAULT_DOWNLOAD_DIR) / "download_archive.txt"
+    # 两份都要清：只清视频那份，「仅音频」的记录还留着，界面上写着已清空、实际下次照样跳过
+    base = Path(cfg.data.get("download_dir") or DEFAULT_DOWNLOAD_DIR)
+    cleared = []
     try:
-        if arch.exists():
-            arch.unlink()
-        log_mgr.log("[文件] 已清空下载记录（download_archive.txt）", "warning", k="srv.files.archive_cleared")
-        return {"ok": True, "path": str(arch)}
+        for name in ("download_archive.txt", "download_archive_audio.txt"):
+            arch = base / name
+            if arch.exists():
+                arch.unlink()
+                cleared.append(name)
+        log_mgr.log("[文件] 已清空下载记录（download_archive.txt 与 download_archive_audio.txt）",
+                    "warning", k="srv.files.archive_cleared")
+        return {"ok": True, "path": str(base / "download_archive.txt"), "cleared": cleared}
     except Exception as e:
         log_mgr.log(f"[文件] 清空下载记录失败：{e}", "warning",
                     k="srv.files.archive_clear_failed", kv={"e": str(e)})

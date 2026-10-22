@@ -208,7 +208,50 @@ Caught as false reds, not product bugs:
 
 ---
 
-## v1.5.1 · 2026-10-22 — this round's package
+## After v1.5.1 — an audio-only request must not be blocked by the video's download record
+
+The user asked, screenshot in hand: "I picked audio-only, why did it still download a packaged video?" Comparing the
+log with the disk, **nothing was downloaded at all that time**:
+
+- 14:13:16 the video finished (`….mkv`, 97,043,593 B); at 14:14:37 and 14:15:34 two audio-only requests came in, both
+  correct (`指定格式: ba/bestaudio`, `目标容器=m4a`, `后期处理=FFmpegExtractAudio`), and both answered
+  `本次未重新下载：….mkv 已在下载记录里`. There is **no m4a in the download directory** - the queue rows were showing
+  the old mkv, which is exactly what made it look like "audio-only downloaded a video".
+- **Root cause**: every line in yt-dlp's `download_archive` is only "site key + video id" (here
+  `bilibili BV1AHnB6NEhM`) - **no format**. So once a video has been downloaded, every later request for it,
+  audio-only included, is treated as done and yt-dlp returns without writing anything.
+
+Per the approved 口径 - **mismatch means re-download**:
+
+- `archive_filename(audio_only)` gives audio-only its own record file (`download_archive_audio.txt`) while the video
+  one keeps its exact old name, so nobody's existing 46 records are invalidated. Presence checking now asks
+  "has **this kind of output** been downloaded" instead of "has this video been downloaded": video first then
+  audio-only really downloads, and a second click in the same kind still skips (separate files ≠ re-downloading
+  every time).
+- "Clear download records" deletes both files (clearing only the video one would leave audio requests silently
+  skipped) and returns a `cleared` list; the sentence names both files in both language halves.
+- **A UI state leak fixed on the way**: clicking 仅音频 writes `m4a` into the container selector, and that chip only
+  restored `force_format` and `audio_only` afterwards - **not the container** - so the next video click would extract
+  audio instead. The chip now remembers and restores it, since it was always meant to apply to that one run.
+- **One correction of mine**: I first read `指定格式: 30280` as "bilibili's video-only stream" and from that inferred a
+  self-contradictory request (video stream + audio extraction), and proposed greying the two control rows against
+  each other. Measured: **30280 is the 192k audio stream** (`vcodec none / acodec mp4a`), so both requests were
+  ordinary audio-only ones - the contradiction never existed and the greying idea was built on a wrong premise,
+  so it was not done.
+
+- Checks: new `tests/archivekind_test.py`, 8 assertions (both filenames; one real opts dict built offline to see which
+  record file is attached; neither attached when "skip already downloaded" is off; the download call site really passes
+  `audio_only`; clearing removes both and reports `cleared`; the UI chip remembers and restores the container; the
+  sentence names both files in both dictionary halves). Full sweep **64 suites, bad=0**.
+- Real A/B (own sandbox download dir, never the project's `Downloads/`): seed `bilibili BV1AHnB6NEhM` into the video
+  record, then run a real audio-only download - **this time it is not skipped**, it goes through extraction and writes
+  itself into `download_archive_audio.txt`, and the video record stays byte-identical. (That arm's output was an mp4
+  rather than an m4a because the hand-made probe cfg did not carry the format string the real request path computes -
+  unrelated to this fix.)
+
+---
+
+## v1.5.1 · 2026-10-22 — published
 
 A patch package for one fix: **asking for float16 while the device is CPU makes Whisper fail to load, and the error
 then told you to install something that was already installed** (#135). The v1.5.0 archive does not contain it, so
