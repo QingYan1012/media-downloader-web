@@ -693,6 +693,14 @@ def _whisper_via_faster(
             pass
     if compute_pref and compute_pref != "auto":
         ctype = compute_pref
+    if device == "cpu" and ctype in ("float16", "int8_float16"):
+        # ctranslate2 4.8 在 CPU 上是「建模型就抛」而不是偷偷降级：
+        # ValueError: Requested float16 compute type, but the target device or backend
+        # do not support efficient float16 computation.
+        # 设置里那一档是给人有 GPU 时用的，落到 CPU 上就换 int8，并把换过这件事说出口。
+        log(f"faster-whisper: CPU 跑不动 {ctype}，这次按 int8 走（那一档留给有 GPU 的时候）",
+            "warning")   # 这一式是函数参数里那份裸 log，不在闸门扫的三式里，挂键会变成孤儿键
+        ctype = "int8"
 
     models_dir = WHISPER_DIR / "models"
     models_dir.mkdir(parents=True, exist_ok=True)
@@ -2551,11 +2559,18 @@ def run_local_ai_on_file(
     # 2/3) CLI
     whisper = _find_local_whisper_bin()
     if not whisper:
-        log(
-            "本地 AI: 未找到 faster-whisper 或 Whisper 可执行文件。"
-            f"请 pip install faster-whisper 或把程序放到 {WHISPER_DIR}",
-            "warning",
-        )
+        # 「没跑成」和「没装」是两件事：faster-whisper 装着但这一项失败时，
+        # 再喊一句「请 pip install faster-whisper」就是把人往错的方向支使。
+        import importlib.util
+        if importlib.util.find_spec("faster_whisper") is not None:
+            log("本地 AI: faster-whisper 装着但这一项没跑成（原因见上面那行），"
+                "本机也没有 Whisper 可执行文件可退", "warning")
+        else:
+            log(
+                "本地 AI: 未找到 faster-whisper 或 Whisper 可执行文件。"
+                f"请 pip install faster-whisper 或把程序放到 {WHISPER_DIR}",
+                "warning",
+            )
         _qc_report_written(out_files, p, lang, log)
         return out_files
     out_dir = str(p.parent)
