@@ -16,7 +16,29 @@ v1.5.1 已经带上的 #135（CPU 上 float16 建模型直接抛）不在这一�
 
 ### 发布物
 
-（打包完成后回填：zip 字节数与 sha256、条目数、包内自检读数、标签与 Release 核对。）
+- **产物**：`dist\MediaDownloader-1.5.2-portable.zip` **230,645,942 B（220.0 MB）**，sha256
+  `c9e543369f613c23b64d1581562083c6f7e720fdde06ae78d03bbe9d2ddbbe6e`，10,906 个条目，旁路 `.sha256` 同目录可
+  `sha256sum -c` 核。包目录 567.5 MB：runtime 322.4、tools 234.5、static 3.0、chromaprint 4.0、docs 1.4、
+  cookies 184 B（只有占位说明）。
+- **打包自检**：随包清单 18 个依赖 + 3 个工具；必进包文件齐（static 13 项）；清掉 21 个 `__pycache__`；
+  包内 15 个顶层模块 import 全过；包内 pip 装 → 导入通过；起包内服务冒烟，组件接口三档版本齐全、清单命中 12 项。
+  清单记 `app = 1.5.2`、`python = 3.12.2`、`built = 2026-10-22 15:10`。
+- **与源码逐条比对**：包内 59 个应用文件条目，其中 55 个与工作树逐字节一致（折叠 CRLF），4 处「包里有、工作树没有」
+  是打包器生成的（`components_bundled.json` / `使用说明.txt` / `启动.bat` / cookies 的占位说明）；私密同名文件
+  （`config.json` / `cookies.txt` / `history.json` / `library_cache.json` / `music_favorites.json` /
+  `catcatch_rules.json` / `app.log` / `pack_release.py` / 两份 `download_archive*.txt`）零命中，应用文件里禁带目录
+  零命中，`.pyc` 0 残留，分离引擎那个 `venv` 没进包（`/venv/` 零命中）。包内那份 `CHANGELOG.md` 是 CRLF
+  （1947 行全带回车、裸 LF 0）、含 `v1.5.2` 这一节、且**不含本节的哈希**。
+- **runtime 复用**：`pack_release.py` 与 `requirements.txt` 从 v1.5.1 起一字未动，所以 `--skip-runtime` 只重跑复制与
+  那四道自检；runtime 整目录从 1.5.1 那份复制（9,795 个文件、0 失败）。顺带一个与 #134 有关的读数：包内 runtime
+  根本没有 `numpy` / `numba` / `librosa`，所以那个上限脱钩的坑在便携包里不是开箱即坏，得自己在程序里更新过依赖才会碰上。
+- **标签**：轻量标签 `v1.5.2` 指向 `c26d46c`（版本号进位与这一节那一笔，也就是这份包背后的字节）。
+  `v1.5.1`（`6e3ac97`）与 `v1.5.0`（`fc2a9b4`）的 Release 资产原样留着，没有替换或删除。
+- **还没做的那半**：`git push` 与建 Release 都卡在网络上 —— 本机代理此时只对 CONNECT 回 200，隧道里的 TLS 握手
+  全部断流（GitHub、PyPI、Hugging Face 一律如此），走明文 HTTP 请求它回 502；不走代理直连 GitHub 则被重置，
+  而国内站点直连正常。所以远端 `main` 仍在 `9d33446`、`v1.5.2` 这个标签只有本地有、Release 页上的资产还是 1.5.1 那份。
+  代理上游恢复后按顺序补：`git push origin main v1.5.2` → 跑发布脚本（建 Release、传 zip 与 `.sha256`、
+  从公开下载地址回读逐字节核对）→ 把回读结果补进这一节。
 
 ---
 
