@@ -28,7 +28,25 @@
 
 ### 发布物
 
-（打包完成后回填：zip 字节数与 sha256、条目数、包内自检读数、标签与 Release 资产核对。）
+- **产物**：`dist\MediaDownloader-1.5.0-portable.zip` **230,635,022 B（220.0 MB）**，sha256
+  `6ba9ae84805c92aa5e625357201cdca3e31706f5ddff96f6d5102afa1d60fe00`，10,906 个条目；
+  旁路 `…zip.sha256`（在 `dist/` 里 `sha256sum -c` 可核）。包目录 567.5 MB：runtime 322.4、tools 234.5、
+  static 3.0、chromaprint 4.0、docs 1.4、cookies 184 B（只有那句占位说明）。
+- **打包自检**：随包清单 18 个依赖 + 3 个工具；「必进包的文件与目录齐了（static 里 13 项）」通过；清掉 21 个
+  `__pycache__`；包内 15 个顶层模块 import 全过；包内 pip 装 → 导入通过（程序内依赖更新可用）；起包内服务冒烟，
+  组件接口三档版本齐全、随包清单命中 12 项。清单里 `app = 1.5.0`、`python = 3.12.2`、`built = 2026-10-22 13:23`。
+- **与源码逐条比对**：包内 **42 个应用文件与工作树逐字节一致**（折叠 CRLF 后比）；4 处「包里有、工作树没有」
+  全是打包器自己生成的（`components_bundled.json`、cookies 占位说明、`使用说明.txt`、`启动.bat`）。
+- **runtime 是复用的**：这一段 32 笔里 `pack_release.py` 与 `requirements.txt` 一字未动（`git log` 可查），
+  所以沿用上版装好的内嵌 runtime 重装一遍没有意义，用 `--skip-runtime` 只重跑复制与那四道自检。
+- **私密与状态扫描**：`config.json` / `cookies.txt` / `history.json` / `library_cache.json` /
+  `music_favorites.json` / `catcatch_rules.json` / `app.log` / `pack_release.py` 零命中；禁带目录
+  （`local_index` / `Downloads` / `Whisper` / `tg_session` / `browser_sniff_profile`）零命中；`.pyc` 0 残留。
+- **标签**：轻量标签 `v1.5.0` 指向 `fc2a9b4`（版本号与这一版总览那一笔，也就是这份包背后的字节）。
+  **本节里的字节数与 sha256 是包打完才回填的**，所以包内那份 `CHANGELOG.md` 不含本节 —— 这是
+  「发布记录不写自己的摘要」那条口径的结果，不是漏写；同理包内 `CHANGELOG.md` 是 CRLF（Windows 记事本要读它）。
+- **上一版原样留着**：`v1.4.0` 标签仍指 `d922732`，那条 Release 的资产是 230,529,549 B /
+  `5f570ce7…88c57a`，没有改动或删除。
 
 ---
 
