@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import urllib.request
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
@@ -609,6 +610,312 @@ def download_demucs_models(log: LogFn = print) -> dict:
             ok = _fetch_weight(f["url"], dest, log, f["checksum"]) and ok
         (done if ok else failed).append(name)
     return {"ok": done, "failed": failed, "known": True}
+
+
+# ---- 音频分析的第二批依赖：拍点与段落结构（选型参照 StemDeck，跑在同一个 venv 里）----
+# 版本全部钉死，依据是这轮实测而不是「上游最新」：
+#  · torchaudio 只到 2.11.0 —— PyPI 上没有配 torch 2.14 的那份。装它只为满足两个包的硬 import
+#    （beat_this/preprocessing.py 与 allin1_infer/stems.py 都是 import 期就要），
+#    它自己的 load() 在 2.7 之后要额外的 torchcodec，我们的调用路径不碰它。
+#  · omegaconf 只能 2.3.1：hydra-core 1.3.7 要 omegaconf<2.4，而 2.3.1 自己钉死
+#    antlr4-python3-runtime==4.9.*（2.4.0 换成要 4.13）。三者的交集只有这一组数，
+#    钉错任何一项都会退化成「装上了但 import 不动」—— 实测是 Could not deserialize ATN。
+SEP_ANALYSIS_PINS = [
+    "all-in-one-infer==3.1.0", "beat-this==1.1.0",
+    "torchaudio==2.11.0", "antlr4-python3-runtime==4.9.3",
+    "hydra-core==1.3.7", "omegaconf==2.3.1", "matplotlib==3.11.2",
+    "madmom-infer==0.2.0", "demucs-infer==4.4.0",
+]
+SEP_ANALYSIS_PKGS = ("all-in-one-infer", "beat-this")
+# 结构模型：原作者的 HF 仓库里那 8 个 fold 检查点。钉的是逐个文件的 sha256，不是 commit 号 ——
+# 因为库运行时那句 hf_hub_download(repo_id, filename) 不带 revision、只认默认分支，
+# 按 commit 下的那份它根本不看（实测：8 个文件都在缓存里，仍报 LocalEntryNotFound）。
+# commit 号留在注释里当出处；文件名带随机后缀，所以名字也必须一起钉。
+ALLIN1_HF_REPO = "taejunkim/allinone"
+ALLIN1_HF_REVISION = "379e5fd010b3fdd0ee8381ff8cbcfa51d70b5c19"
+ALLIN1_HF_SIZE = 1400571   # 8 个各这么大（实测），合计 11.2 MB
+ALLIN1_HF_FILES = [
+    ("harmonix-fold0-0vra4ys2.pth", "0db596dfb0995f41d62f6267d76a9d54c046f1649bd35e1dbeca0c5f9a7b8acd"),
+    ("harmonix-fold1-3ozjhtsj.pth", "607b4864eaabccd4f6951410d5ea6676666ad1cfa6ce2e18bc99f3824b77c3b7"),
+    ("harmonix-fold2-gmgo0nsy.pth", "67c28ec7ca612d365e5fcb152f6530eb53e34c4303940afb30fd17a295c958a4"),
+    ("harmonix-fold3-i92b7m8p.pth", "446d05672b2669cdb7d9b8bbbc228a4f3592484335a7995cca89a744e3950ddc"),
+    ("harmonix-fold4-1bql5qo0.pth", "96327222ab9b33c005388b788ba602f529aa03cc4dde1c859c011f1004490493"),
+    ("harmonix-fold5-x4z5zeef.pth", "c87f162a1090290bcbb863688746784919cf912c56744fb3d81a1a7dba3b114e"),
+    ("harmonix-fold6-x7t226rq.pth", "13e7e639bf30fcd3fa049ad863088773a4e57b06d7c68581385b3ef625c60688"),
+    ("harmonix-fold7-qwwskhg6.pth", "b888b7fba95efa3d5a37ca013fe7efe2741621ea9ca335e6b2723e4fd0fade57"),
+]
+# 拍点模型：作者那份 .ckpt 放在 cloud.cp.jku.at，本轮实测整站 503；
+# HF 上只有第三方镜像（裸 state_dict + 它自己的 config.json，不是 Lightning 包）。
+# 用镜像必须钉 sha256，而且界面/日志要写明「非作者发布」—— 这是来源没验到，不是内容没验到。
+BEATTHIS_OFFICIAL_URL = "https://cloud.cp.jku.at/public.php/dav/files/7ik4RrBKTS273gp/final0.ckpt"
+BEATTHIS_MIRROR_REPO = "safe-models/beat-this-final0"
+BEATTHIS_MIRROR_FILE = "model.safetensors"
+BEATTHIS_MIRROR_SHA256 = "f758c77ba5d862cad3718a95705964e9af55298b1fb3544c62c9d79184ea0f2e"
+BEATTHIS_MIRROR_BYTES = 81029488
+# 镜像的权重键是裸 state_dict，装不进作者那句 load_model()（它要 checkpoint["hyper_parameters"]），
+# 所以超参也得钉住 —— 来源同样是第三方仓库里的 config.json。
+BEATTHIS_HPARAMS = {"dropout": {"frontend": 0.1, "transformer": 0.2}, "ff_mult": 4,
+                    "head_dim": 32, "n_layers": 6, "partial_transformers": True,
+                    "spect_dim": 128, "stem_dim": 32, "sum_head": True, "transformer_dim": 512}
+_analysis_probe_cache: dict = {"at": 0.0, "data": {}}
+
+
+def analysis_model_dir() -> Path:
+    """拍点模型落在这儿（和 RoFormer 权重同一目录，都在程序目录下，不进包）。"""
+    return SEP_MODELS_DIR / "beat_this"
+
+
+def _venv_code(probe: bool) -> str:
+    """给 venv 里跑的那段：报两个包的版本 + 库自己能不能从缓存认出这 8 个 fold。
+    必须在 venv 里问 —— 认缓存的是那份 huggingface_hub，换一份库就可能给出另一个答案。
+    probe=False 时缺的就顺手取回来（不带 revision：带了运行时也不看，等于白钉）。"""
+    names = [fn for fn, _ in ALLIN1_HF_FILES]
+    head = ("import importlib.metadata as m, json\n"
+            "out = {'pkgs': {}, 'hf': {}, 'error': ''}\n"
+            f"for p in {list(SEP_ANALYSIS_PKGS)!r}:\n"
+            "    try:\n"
+            "        out['pkgs'][p] = m.version(p)\n"
+            "    except Exception:\n"
+            "        pass\n"
+            f"from huggingface_hub import hf_hub_download as dl\n"
+            f"repo = {ALLIN1_HF_REPO!r}\n"
+            f"for fn in {names!r}:\n")
+    if probe:
+        head += ("    try:\n"
+                 "        out['hf'][fn] = dl(repo_id=repo, filename=fn, local_files_only=True)\n"
+                 "    except Exception:\n"
+                 "        out['hf'][fn] = None\n")
+    else:
+        head += ("    try:\n"
+                 "        try:\n"
+                 "            out['hf'][fn] = dl(repo_id=repo, filename=fn, local_files_only=True)\n"
+                 "        except Exception:\n"
+                 "            out['hf'][fn] = dl(repo_id=repo, filename=fn)\n"
+                 "    except Exception as e:\n"
+                 "        out['hf'][fn] = None\n"
+                 "        out['error'] = out['error'] + fn + ': ' + type(e).__name__ + ' ' + str(e)[:120] + '; '\n")
+    return head + "print('@@@' + json.dumps(out))"
+
+
+def _analysis_probe(refresh: bool = False) -> dict:
+    """只读的那一发（不下载）。和引擎那批一样不 import torch，免得组件页卡住。"""
+    import time
+    py = separator_python()
+    if not py:
+        return {}
+    now = time.time()
+    if not refresh and _analysis_probe_cache["data"] and now - _analysis_probe_cache["at"] < 120:
+        return dict(_analysis_probe_cache["data"])
+    data: dict = {}
+    try:
+        r = subprocess.run([py, "-c", _venv_code(True)], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=120,
+                           env=_subprocess_env())
+        line = next((ln for ln in (r.stdout or "").splitlines() if ln.startswith("@@@")), "")
+        if line:
+            got = json.loads(line[3:])
+            if isinstance(got, dict):
+                data = {"pkgs": {k: str(v) for k, v in (got.get("pkgs") or {}).items() if v},
+                        "hf": got.get("hf") or {}, "error": str(got.get("error") or "")}
+    except Exception:
+        data = {}
+    _analysis_probe_cache.update(at=now, data=data)
+    return dict(data)
+
+
+def _sha_ok(path_str: str, want: str) -> bool:
+    """缓存里那个文件是不是我们钉死的那份内容。"""
+    try:
+        h = hashlib.sha256()
+        with open(path_str, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest() == want
+    except Exception:
+        return False
+
+
+def analysis_pkg_versions(refresh: bool = False) -> dict:
+    """两个分析包的版本（venv 元数据，和缓存探测共用同一次子进程）。"""
+    return dict((_analysis_probe(refresh) or {}).get("pkgs") or {})
+
+
+def install_analysis_pkgs(log: LogFn = print, mirror: str = "") -> str:
+    """把拍点/结构这两个包（连同钉死的依赖）装进分离环境。环境不在就先建环境 ——
+    这两个包都要 torch，没有 torch 的 venv 装了也用不了。"""
+    if not separator_python():
+        got = ensure_separator_venv(log=log, mirror=mirror)
+        if got != "ok":
+            return got
+    have = analysis_pkg_versions(refresh=True)
+    want = [p for p in SEP_ANALYSIS_PINS if p.split("==")[0].replace("-", "_") not in have
+            and p.split("==")[0] not in have]
+    if not want:
+        _log(log, "拍点与结构分析这两个包已经在，跳过安装")
+        return "ok"
+    args = ["install", "--no-warn-script-location", *want]
+    if mirror:
+        args += ["-i", mirror]
+    _log(log, f"安装音频分析依赖（{len(want)} 项，含 torchaudio 与 matplotlib）…")
+    ok, tail = _pip_in_venv(args, log, timeout=3600)
+    if not ok:
+        _log(log, f"音频分析依赖没装上：{tail[:200]}", "error")
+        return "failed"
+    _analysis_probe_cache.update(at=0.0, data={})
+    _log(log, "音频分析依赖到位（all-in-one-infer / beat-this）")
+    return "ok"
+
+
+def analysis_model_states() -> list:
+    """两个模型各在不在。判「在」的标准是库自己能不能认出这份文件：结构模型问的是 venv 里那份
+    huggingface_hub（local_files_only），它认不出来就等于没有 —— 我们自己去翻缓存目录不算数。
+    拍点模型走我们自己的目录 —— 因为它没有官方可达源，必须是我们钉死哈希的那一份。"""
+    rows = []
+    hf = (_analysis_probe() or {}).get("hf") or {}
+    good = sum(1 for fn, sha in ALLIN1_HF_FILES if hf.get(fn) and _sha_ok(str(hf[fn]), sha))
+    rows.append({"id": "allin1_structure", "present": good == len(ALLIN1_HF_FILES),
+                 "files": good, "of": len(ALLIN1_HF_FILES),
+                 "source": f"huggingface.co/{ALLIN1_HF_REPO}",
+                 "verified": "sha256" if good else ""})
+    ck = analysis_model_dir() / f"beat_this-{BEATTHIS_MIRROR_FILE}"
+    rows.append({"id": "beat_this_final0", "present": ck.is_file(), "files": 1 if ck.is_file() else 0,
+                 "of": 1, "source": (f"huggingface.co/{BEATTHIS_MIRROR_REPO}" if ck.is_file()
+                                     else BEATTHIS_OFFICIAL_URL),
+                 "verified": "sha256" if ck.is_file() else ""})
+    return rows
+
+
+def fetch_analysis_models_venv(log: LogFn = print) -> dict:
+    """让 venv 按库自己的问法把那 8 个 fold 取回缓存（不带 revision：带了运行时也不看）。"""
+    py = separator_python()
+    if not py:
+        return {"hf": {}, "error": "venv 不在"}
+    try:
+        r = subprocess.run([py, "-c", _venv_code(False)], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=1800,
+                           env=_subprocess_env())
+        line = next((ln for ln in (r.stdout or "").splitlines() if ln.startswith("@@@")), "")
+        got = json.loads(line[3:]) if line else {}
+        return {"hf": got.get("hf") or {}, "error": str(got.get("error") or "")}
+    except Exception as e:
+        return {"hf": {}, "error": f"{type(e).__name__}: {str(e)[:160]}"}
+
+
+def download_analysis_models(log: LogFn = print) -> dict:
+    """补齐两个模型。拍点模型：先试作者的 .ckpt，503 就退回第三方镜像并核对钉死的 sha256，
+    用了镜像就在日志里明写「非作者发布」；结构模型：让 venv 按库自己的问法取回那 8 个 fold，
+    取回来还要逐个核 sha256 —— 上游换过文件就停在这儿，不拿没核过的权重接着跑。"""
+    ok: List[str] = []
+    failed: List[str] = []
+    d = analysis_model_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    ck = d / f"beat_this-{BEATTHIS_MIRROR_FILE}"
+    if not ck.is_file():
+        got_official = False
+        _log(log, "下载拍点模型（作者源）…")
+        try:
+            with urllib.request.urlopen(BEATTHIS_OFFICIAL_URL, timeout=30) as r:
+                got_official = bool(r.status and r.status < 400)
+        except Exception as e:
+            _log(log, f"作者源取不到（{type(e).__name__}: {str(e)[:90]}），改用第三方镜像", "warning")
+        if not got_official:
+            url = (f"https://huggingface.co/{BEATTHIS_MIRROR_REPO}/resolve/main/"
+                   f"{BEATTHIS_MIRROR_FILE}")
+            _log(log, f"从第三方镜像取：{BEATTHIS_MIRROR_REPO}（非作者发布）")
+            if not _fetch_weight(url, ck, log, BEATTHIS_MIRROR_SHA256):
+                failed.append("beat_this_final0")
+            else:
+                ok.append("beat_this_final0")
+        else:
+            # 作者源活着：按它自己的规矩下 .ckpt，库会自己核
+            if _fetch_weight(BEATTHIS_OFFICIAL_URL, d / "beat_this-final0.ckpt", log, ""):
+                ok.append("beat_this_final0")
+            else:
+                failed.append("beat_this_final0")
+    else:
+        ok.append("beat_this_final0")
+    _log(log, f"补齐结构模型（{len(ALLIN1_HF_FILES)} 个 fold，合计约 "
+              f"{len(ALLIN1_HF_FILES) * ALLIN1_HF_SIZE // 1024 // 1024} MB）…")
+    got = fetch_analysis_models_venv(log)
+    if got.get("error"):
+        _log(log, f"结构模型有文件没取到：{str(got['error'])[:200]}", "error")
+    _analysis_probe_cache.update(at=0.0, data={})   # 刚下完，缓存里那份「认不出来」要作废
+    row = next((r for r in analysis_model_states() if r["id"] == "allin1_structure"), {})
+    # 库认得、且内容对得上钉死的 sha256 才算补好 —— 上游换过文件时会停在这里，而不是拿新权重接着跑
+    if row.get("present"):
+        ok.append("allin1_structure")
+    else:
+        _log(log, f"结构模型只回读到 {row.get('files', 0)}/{len(ALLIN1_HF_FILES)} 个"
+                  f"（认不出或哈希对不上，不拿没核过的权重跑）", "error")
+        failed.append("allin1_structure")
+    return {"ok": ok, "failed": failed}
+
+
+def analysis_status() -> dict:
+    """一屏说完：包装了没、模型在不在、缺的话该点哪个按钮。界面上那句「为什么没有拍点」只读这里。"""
+    vers = analysis_pkg_versions()
+    rows = analysis_model_states()
+    return {"installed": all(p in vers for p in SEP_ANALYSIS_PKGS), "versions": vers,
+            "models": rows, "models_ok": all(r["present"] for r in rows),
+            "missing": [r["id"] for r in rows if not r["present"]],
+            "model_dir": str(analysis_model_dir()),
+            "setup_running": _setup_lock.locked()}
+
+
+def analyze_beats_structure(media_path: str, device: str = "auto",
+                            timeout: int = 1800, log: LogFn = print) -> dict:
+    """在 venv 里跑拍点 + 段落结构，拿回那行 @@@JSON。
+
+    必须在 venv 里跑：主程序那份 torch 是 +cpu 的、也没有 torchaudio，
+    在这里 import beat_this 只会得到「缺依赖」，而不是结果。
+    没装齐就直接回一句「没装」，不去起子进程 —— 让失败说清缺的是哪一层。
+    """
+    st = analysis_status()
+    if not st["installed"]:
+        return {"ok": False, "skipped": True, "reason": "packages",
+                "error": "拍点与段落结构没装：在「设置 → 组件与依赖」点「音频分析依赖」装好，"
+                         "再点「补齐模型」"}
+    if not st["models_ok"]:
+        return {"ok": False, "skipped": True, "reason": "models",
+                "error": "分析模型还缺：%s，点「补齐模型」取回" % "、".join(st["missing"])}
+    py = separator_python()
+    if not py or not SEP_RUNNER.is_file():
+        return {"ok": False, "skipped": True, "reason": "venv", "error": "分离环境不在"}
+    cmd = [py, str(SEP_RUNNER), "--analyze", str(media_path),
+           "--device", device if device in ("auto", "cpu", "cuda") else "auto",
+           "--models-dir", str(SEP_MODELS_DIR)]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=timeout, env=_subprocess_env())
+    except subprocess.TimeoutExpired:
+        _log(log, f"拍点/结构分析超过 {timeout} 秒没回，先按没算出来处理", "warning")
+        return {"ok": False, "error": f"timeout {timeout}s"}
+    line = next((ln for ln in (r.stdout or "").splitlines() if ln.startswith("@@@")), "")
+    if not line:
+        tail = ((r.stderr or "") + (r.stdout or "")).strip()[-240:]
+        _log(log, f"拍点/结构分析没回数据：{tail}", "warning")
+        return {"ok": False, "error": tail or f"exit {r.returncode}"}
+    try:
+        return json.loads(line[3:])
+    except Exception as e:
+        return {"ok": False, "error": f"回包不是合法 JSON: {e}"}
+
+
+def setup_analysis(log: LogFn = print, *, step: str = "all", mirror: str = "") -> str:
+    """一次点齐「装分析用的包 + 补两个模型」。锁和分离环境共用同一把 ——
+    两个 pip 同时往同一个 venv 里写会互相盖掉对方刚落的文件，它们是不是同一类包不改变这件事。"""
+    if not _setup_lock.acquire(blocking=False):
+        return "busy"
+    try:
+        missing: List[str] = []
+        if step in ("pkgs", "all"):
+            if install_analysis_pkgs(log, mirror) != "ok":
+                missing.append("packages")
+        if step in ("models", "all"):
+            missing += list((download_analysis_models(log) or {}).get("failed") or [])
+        return "ok" if not missing else "failed:" + "、".join(missing)
+    finally:
+        _setup_lock.release()
 
 
 def setup_separator(log: LogFn = print, *, step: str = "all", mirror: str = "") -> str:

@@ -58,6 +58,102 @@ def probe() -> int:
     return 0
 
 
+def analyze(path: str, device: str, models_dir: str) -> int:
+    """拍点 / 降拍（beat-this）+ 段落结构（all-in-one），一行 @@@JSON 回给主程序。
+
+    两件事分开容错：一个包坏了或模型没下，只缺它那一项，不连带把另一项也报成没有。
+    超参与镜像文件的规矩都取自 voice_tools 里钉死的那份 —— 这里再抄一遍就会和补齐时核对的不是同一份。
+    """
+    out = {"ok": False, "path": path, "device": "", "bpm": None, "beats": [], "downbeats": [],
+           "beat_source": "", "segments": [], "bpm_allin1": None, "errors": []}
+    try:
+        import numpy as np
+        import torch
+    except Exception as e:
+        out["errors"].append("torch: %s: %s" % (type(e).__name__, str(e)[:160]))
+        print("@@@" + json.dumps(out, ensure_ascii=False))
+        return 1
+    if device == "cpu":
+        torch.cuda.is_available = lambda: False
+    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    out["device"] = dev
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    try:
+        import voice_tools as VT
+    except Exception:
+        VT = None
+
+    # ---- 解码一次，两边共用：soundfile 在这台机器上不需要 torchcodec，mp3 也解得开 ----
+    y = None
+    sr = 0
+    try:
+        import soundfile as sf
+        y, sr = sf.read(path)
+        if getattr(y, "ndim", 1) > 1:
+            y = y.mean(axis=1)
+        y = np.asarray(y, dtype="float32")
+    except Exception as e:
+        out["errors"].append("decode: %s: %s" % (type(e).__name__, str(e)[:180]))
+
+    # ---- 拍点：镜像那份是裸 state_dict，装不进作者那句 load_model()，只能自己按钉死的超参构造 ----
+    try:
+        from safetensors.torch import load_file
+        from beat_this.model.beat_tracker import BeatThis
+        from beat_this.inference import Audio2Beats
+        ck = os.path.join(models_dir or "", "beat_this", "beat_this-model.safetensors")
+        if not os.path.isfile(ck):
+            raise FileNotFoundError(ck)
+        if y is None:
+            raise RuntimeError("音频没解码成功，拍点没法跑")
+        cfg = dict(VT.BEATTHIS_HPARAMS) if VT else json.load(open(ck + ".config.json", encoding="utf-8"))
+        model = BeatThis(**cfg)
+        model.load_state_dict(load_file(ck), strict=False)   # 缺的只有 init 算出来的 rotary 缓冲
+        model.to(dev).eval()
+        a2b = Audio2Beats(None, device=dev)
+        a2b.model = model
+        beats, downs = a2b(y, sr)
+        b = [round(float(x), 3) for x in np.asarray(beats, dtype=float).reshape(-1)]
+        d = [round(float(x), 3) for x in np.asarray(downs, dtype=float).reshape(-1)]
+        out["beats"], out["downbeats"] = b, d
+        if len(b) > 1:
+            out["bpm"] = round(float(60.0 / np.median(np.diff(b))), 1)
+        out["beat_source"] = "beat_this"
+    except Exception as e:
+        out["errors"].append("beat_this: %s: %s" % (type(e).__name__, str(e)[:180]))
+
+    # ---- 段落结构：all-in-one 自己去 HF 取那 8 个 fold（补齐时已经按 commit 号下过）----
+    try:
+        import shutil
+        import tempfile
+        import allin1_infer as A
+        if y is None:
+            raise RuntimeError("音频没解码成功，结构分析没法跑")
+        # 它读 mp3 走 torchaudio，而这份 torchaudio（2.11）自己不带解码器、要额外的 torchcodec；
+        # wav/flac 那条路它用的是 soundfile，和上面解出来的就是同一份数据，所以这里递一份临时 wav，
+        # 不为一个解码器再拖一层依赖。临时目录也接住它的 demix/spec 副产品 —— 那两个默认写在
+        # 当前目录下，会把文件拉进程序自己的目录里。
+        tmp = tempfile.mkdtemp(prefix="a1_")
+        try:
+            wav = os.path.join(tmp, "in.wav")
+            sf.write(wav, np.asarray(y, dtype="float32"), sr, subtype="PCM_16")
+            r = A.analyze(wav, device=dev, out_dir=None, demix_dir=os.path.join(tmp, "demix"),
+                          spec_dir=os.path.join(tmp, "spec"), keep_byproducts=False)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        d = r if isinstance(r, dict) else getattr(r, "__dict__", {})
+        segs = d.get("segments") or []
+        out["segments"] = [{"start": round(float(s.start), 2), "end": round(float(s.end), 2),
+                            "label": str(s.label)} for s in segs]
+        if d.get("bpm"):
+            out["bpm_allin1"] = round(float(d["bpm"]), 1)
+    except Exception as e:
+        out["errors"].append("allin1: %s: %s" % (type(e).__name__, str(e)[:180]))
+
+    out["ok"] = bool(out["beats"] or out["segments"])
+    print("@@@" + json.dumps(out, ensure_ascii=False))
+    return 0 if out["ok"] else 1
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="audio-separator 子进程入口（供主程序调用）")
     ap.add_argument("--probe", action="store_true", help="只报这个 python 看到的 torch/CUDA/包状态")
@@ -67,10 +163,13 @@ def main() -> int:
     ap.add_argument("--output-dir", default="", help="成品目录")
     ap.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     ap.add_argument("--native-fp16", action="store_true")
+    ap.add_argument("--analyze", help="只分析不分离：给音频路径，回一行 @@@JSON（拍点 + 段落结构）")
     a = ap.parse_args()
 
     if a.probe:
         return probe()
+    if a.analyze:
+        return analyze(a.analyze, a.device, a.models_dir)
     missing = [k for k in ("input", "model") if not getattr(a, k)]
     if missing:
         print("缺少参数：%s" % ", ".join("--" + m for m in missing), file=sys.stderr)

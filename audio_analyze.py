@@ -115,6 +115,15 @@ def analyze_audio(
         "rms_mean": None,
         "rms_db": None,
         "spectral_centroid_hz": None,
+        # 可选那两项：没装分析依赖时这几个键也要在，界面与旁路 JSON 不用判断「键在不在」
+        "bpm": None,
+        "beats": [],
+        "downbeats": [],
+        "segments": [],
+        "bpm_allin1": None,
+        "analysis_device": "",
+        "analysis_note": "",
+        "analysis_error": "",
         "message": "",
         "json_path": "",
     }
@@ -159,6 +168,26 @@ def analyze_audio(
         # 调性：chroma + key profile 相关
         key_name, key_strength = _estimate_key(y, sr)
 
+        # 拍点与段落结构：装在分离那个独立环境里，没装就只少这两项，上面那五个指标照旧。
+        # 注意跑的是整首（段落结构要看全曲），和上面 180 秒封顶的 tempo 不是同一个窗口。
+        extra: dict = {}
+        try:
+            from voice_tools import analyze_beats_structure
+            extra = analyze_beats_structure(str(p), device="auto", log=log) or {}
+        except Exception as e:
+            extra = {"ok": False, "error": "%s: %s" % (type(e).__name__, str(e)[:160])}
+        bpm_new = extra.get("bpm")
+        note = ""
+        if bpm_new and tempo and tempo > 0:
+            ratio = float(bpm_new) / float(tempo)
+            if ratio >= 1.25 or ratio <= 0.8:
+                # 实测样本：180 BPM 的歌 librosa 报 89.1、76 报成 152 —— 差一倍不是精度差一点，
+                # 所以这里不静默替换，把两个数都留着让人自己看
+                note = f"旧读数 {tempo:.1f}（相差 {ratio:.2f} 倍）"
+        segs = extra.get("segments") or []
+        # 起点留一位小数：整秒会把 0.0 与 0.1 两段并成同一个「@0s」，看着像同一段重复了
+        lab_txt = "、".join(f"{s.get('label', '?')}@{s.get('start', 0):.1f}s" for s in segs[:3])
+
         out.update({
             "ok": True,
             "duration_sec": round(full_dur, 3),
@@ -170,9 +199,23 @@ def analyze_audio(
             "rms_mean": round(rms_mean, 6),
             "rms_db": round(rms_db, 2),
             "spectral_centroid_hz": round(cent_mean, 1),
+            "bpm": bpm_new,
+            "beats": extra.get("beats") or [],
+            "downbeats": extra.get("downbeats") or [],
+            "segments": segs,
+            "bpm_allin1": extra.get("bpm_allin1"),
+            "analysis_device": extra.get("device") or "",
+            "analysis_note": note,
+            "analysis_error": ("" if extra.get("ok")
+                               else str(extra.get("error") or extra.get("reason") or ""))
+                              or "; ".join(str(x) for x in (extra.get("errors") or [])),
             "message": (
-                f"{p.name}: {full_dur:.1f}s · {tempo:.1f} BPM · "
+                f"{p.name}: {full_dur:.1f}s · {bpm_new or tempo:.1f} BPM · "
                 f"调性 {key_name or '?'} · 响度 {rms_db:.1f} dB"
+                + (f" · 拍点 {len(extra.get('beats') or [])} 段 {len(segs)}"
+                   f"（{lab_txt}…）" if segs else "")
+                + (" · 段落结构没算出来" if (extra and not segs and not extra.get("skipped")) else "")
+                + (f" · {note}" if note else "")
             ),
         })
         _log(log, f"[分析] {out['message']}")

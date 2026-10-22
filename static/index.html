@@ -6128,6 +6128,18 @@
                     <el-button size="small" :loading="sepBusy" @click="setupSeparatorAll">{{ tr('settings.sepModelsBtn') }}</el-button>
                     <el-button size="small" :loading="sepBusy" @click="fetchDemucsModels">{{ tr('settings.sepDemucsBtn') }}</el-button>
                   </div>
+                  <!-- 拍点与段落结构：另一件事，所以另起一行 —— 它不分离音频，只给音频分析加读数，
+                       装与不装都不影响上面那行「缺哪一层」的问法。 -->
+                  <div class="comp-item comp-item--wide" :title="tr('settings.sepAnalysisLabel')">
+                    <span :style="{ color: sepAnalysisOk ? 'var(--ok)' : 'var(--warn)', fontSize: '14px' }">●</span>
+                    <div class="comp-main">
+                      <div style="font-weight:600">{{ tr('settings.sepAnalysisLabel') }}</div>
+                      <div class="comp-ver">{{ sepAnalysisPkgsText }}</div>
+                      <div class="comp-ver">{{ sepAnalysisModelsText }}</div>
+                      <div v-if="sepAnalysisMirror" class="comp-ver" style="color:var(--muted)">{{ tr('settings.sepAnalysisMirror') }}</div>
+                    </div>
+                    <el-button size="small" :loading="sepBusy" @click="setupAnalysisAll">{{ tr('settings.sepAnalysisBtn') }}</el-button>
+                  </div>
                 </div>
                 <div class="btn-grid">
                   <el-button size="small" type="primary" plain :loading="compAll.running || compAllBusy" @click="updateAllComponents()">{{ tr('settings.compAllBtn') }}</el-button>
@@ -7174,6 +7186,33 @@
         // Demucs 的模型没有版本号可比，能报的只有「几个模型的文件齐了、还缺几个文件」。
         // 回包里没这个字段（旧进程）只算「说不准」，不算「缺依赖」—— 和上面那两个包同一口径。
         const sepDemucsFiles = computed(() => (sepInfo.value && sepInfo.value.demucs_model_files) || null);
+        // 拍点与段落结构的读数取自 /api/components 的 sep_analysis，不是 voice_status ——
+        // 这一页自己加载就会取到它，不依赖用户先去过语音页（那个坑刚在分离对话框上踩过一次）。
+        const sepAnalysis = computed(() => (compInfo.value || {}).sep_analysis || null);
+        const sepAnalysisOk = computed(() => !!(sepAnalysis.value && sepAnalysis.value.installed
+          && sepAnalysis.value.models_ok));
+        const sepAnalysisPkgsText = computed(() => {
+          const a = sepAnalysis.value;
+          if (!a) return tr('settings.sepAnalysisUnknown');
+          if (!a.installed) return tr('settings.sepAnalysisNone');
+          return (a.items || []).map(x => `${x.pkg} ${x.active || tr('settings.notInstalled')}`
+            + (x.latest ? ` · ${tr('settings.compLatestWord')} ${x.latest}` : '')).join(' · ');
+        });
+        const sepAnalysisModelsText = computed(() => {
+          const a = sepAnalysis.value;
+          const ms = (a && a.models) || [];
+          if (!a || !ms.length) return tr('settings.sepAnalysisUnknown');
+          const miss = ms.filter(m => !m.present).map(m => m.id).join('、');
+          return tr('settings.sepAnalysisModels', { ready: ms.filter(m => m.present).length, total: ms.length })
+            + (miss ? ` · ${tr('settings.sepAnalysisMissing', { list: miss })}` : '');
+        });
+        // 拍点模型现在只有第三方镜像可达（作者站 503），用了镜像就必须把这句话说出口，
+        // 不能让它悄悄冒充「作者的权重」。
+        const sepAnalysisMirror = computed(() => {
+          const ms = (sepAnalysis.value && sepAnalysis.value.models) || [];
+          const b = ms.find(m => m.id === 'beat_this_final0');
+          return !!(b && b.present && String(b.source || '').indexOf('huggingface') >= 0);
+        });
         const sepDemucsState = computed(() => {
           const d = sepDemucsFiles.value;
           if (!d) return tr('settings.sepDemucsUnknown');
@@ -7838,6 +7877,7 @@
           '/api/ai/hardsub_stop': 'act.ai.hardsub_stop',
           '/api/ai/vocal_separate': 'act.ai.vocal_separate',
           '/api/ai/demucs_models': 'act.ai.demucs_models',
+          '/api/ai/analysis_setup': 'act.ai.analysis_setup',
           '/api/ai/tts': 'act.ai.tts',
           '/api/ai/install_voice': 'act.ai.install_voice',
           '/api/telegram/test': 'act.telegram.test',
@@ -10224,6 +10264,18 @@
         }
         async function setupSeparatorEnv() { await setupSeparator('venv'); }
         async function setupSeparatorWeights() { await setupSeparator('weights'); }
+        async function setupAnalysisAll() {
+          // 装包 + 补模型一次点齐：这两步的先后是有依赖的（模型要用库里的 huggingface_hub 取），
+          // 所以后端那把锁把它们串起来，不在这里分两个按钮让人猜顺序。
+          sepBusy.value = true;
+          try {
+            const r = await api('/api/ai/analysis_setup', { method: 'POST', body: JSON.stringify({ step: 'all' }) });
+            if (r.ok === false) { ElementPlus.ElMessage.error(r.message || tr('settings.sepAnalysisFail')); return; }
+            ElementPlus.ElMessage.success(r.message || tr('settings.sepAnalysisStarted'));
+            setTimeout(() => loadComponents(), 4000);
+          } catch (e) { ElementPlus.ElMessage.error(String(e.message || e)); }
+          finally { sepBusy.value = false; }
+        }
         async function fetchDemucsModels() {
           // 只补缺的那几个文件，已经在的一个不动；几百 MB，所以后端起线程、进度写运行日志。
           sepBusy.value = true;
@@ -14697,13 +14749,13 @@ const CFG_KEYS = {
           srtEditBox, srtQc, runSrtQc, runSrtRewrap, qcJumpTo, qcDropNoise,
           searchQuery, searchPlatform, searchContentType, searchSort, setSearchSort,
           searchTotal, searchTruncated, searchNotes, SEARCH_PLAT_NAMES, searchResults, searching, platformCookies, cookieIssueCount, syncFileInput,
-          musicKeyword, musicResults, musicSearching, musicSourceErrors, musicNeedsMatch, musicScoreLine, musicHasScore, musicdlVersion, musicdlReady, musicPreset, musicStrategy, saveMusicStrategy, musicSearchType, musicIncludeLocal, musicFilenameTemplate, musicEmbedMeta, musicSkipExisting, musicHideUnavailable, musicBlockReupload, musicIncludeReference, musicQualitySpec, musicQualityOptions, musicQualitySummary, refHint, matchHint, openRefLink, player, playerEl, playerPlaying, playerTime, playerDur, playerVol, playerMuted, playerSeeking, playerSeekVal, playerStep, playerToggle, playerClose, playerSeek, onPlayerTick, onPlayerMeta, onPlayerEnded, musicLrcLines, musicLrcActive, previewMusicRow, probeMusicRow, switchMusicSource, musicSwitching, scanLocalMusic, musicSources, musicSourceOptions, musicMatchSourceOptions, musicPresetOptions, musicSourceOrdered, musicPlaylistUrl, musicPlaylistMode, saveMusicPlaylistMode, musicCookies, musicSelected, aiPipeline, analyzeAudioFile, openSepDlg, openStemMixer, sepDlg, startVocalSeparate, goMixer, clampSepStems, aiTts, installVoicePkgs, loadVoiceStatus, refreshSepStatus, setupSeparatorEnv, setupSeparatorWeights, setupSeparatorAll, sepModelLabel, sepBusy, sepInfo, sepModels, sepDemucsModels, sepDemucsState, fetchDemucsModels, sepHasGpu, sepStatusText, sepDeviceText, sepEngineReason, sepModelsState, sepModelsMissing, sepModelsReady, sepRoformerVer, sepDemucsVer, sepTorchVer, sepUpdatablePkg, sepUpdatable, sepLatest, updateSeparatorEngines, toggleRealtime, installingVoice, voiceStatusText, rtRecording, rtTranslate, rtTargetLang, rtLog,
+          musicKeyword, musicResults, musicSearching, musicSourceErrors, musicNeedsMatch, musicScoreLine, musicHasScore, musicdlVersion, musicdlReady, musicPreset, musicStrategy, saveMusicStrategy, musicSearchType, musicIncludeLocal, musicFilenameTemplate, musicEmbedMeta, musicSkipExisting, musicHideUnavailable, musicBlockReupload, musicIncludeReference, musicQualitySpec, musicQualityOptions, musicQualitySummary, refHint, matchHint, openRefLink, player, playerEl, playerPlaying, playerTime, playerDur, playerVol, playerMuted, playerSeeking, playerSeekVal, playerStep, playerToggle, playerClose, playerSeek, onPlayerTick, onPlayerMeta, onPlayerEnded, musicLrcLines, musicLrcActive, previewMusicRow, probeMusicRow, switchMusicSource, musicSwitching, scanLocalMusic, musicSources, musicSourceOptions, musicMatchSourceOptions, musicPresetOptions, musicSourceOrdered, musicPlaylistUrl, musicPlaylistMode, saveMusicPlaylistMode, musicCookies, musicSelected, aiPipeline, analyzeAudioFile, openSepDlg, openStemMixer, sepDlg, startVocalSeparate, goMixer, clampSepStems, aiTts, installVoicePkgs, loadVoiceStatus, refreshSepStatus, setupSeparatorEnv, setupSeparatorWeights, setupSeparatorAll, sepModelLabel, sepBusy, sepInfo, sepModels, sepDemucsModels, sepDemucsState, fetchDemucsModels, sepAnalysisOk, sepAnalysisPkgsText, sepAnalysisModelsText, sepAnalysisMirror, setupAnalysisAll, sepHasGpu, sepStatusText, sepDeviceText, sepEngineReason, sepModelsState, sepModelsMissing, sepModelsReady, sepRoformerVer, sepDemucsVer, sepTorchVer, sepUpdatablePkg, sepUpdatable, sepLatest, updateSeparatorEngines, toggleRealtime, installingVoice, voiceStatusText, rtRecording, rtTranslate, rtTargetLang, rtLog,
           mixSrc, mixRows, mixLoading, mixBusy, mixPlaying, mixLoop, mixFormat, mixOut, mixOutUrl,
           stemLabel, streamUrl, loadStems, applyMixGains, applyMixLoop, toggleMixPlay, exportMix, searchMusic, batchSearchDownload, applyMusicPreset, parseMusicPlaylist, onMusicSelection, downloadMusicSelected, downloadMusicRow, showAlreadyHave, musicFavItems, musicFavMissing, musicFavSelected, musicFavReadySel, musicFavSwitching, musicFavDownloading, onMusicFavSelection, addMusicFav, removeMusicFav, clearMusicFav, previewMusicFav, switchMusicFav, downloadMusicFav, loadMusicFavs, installMusicdl,
           loadSubs, addSub, removeSub, toggleSub, scanOneSub, scanAllSubs, startLiveRecord, pauseLiveTask, resumeLiveTask, endLiveTask, endAllLive, cancelLiveTask, addLiveMonitor, removeLiveMonitor, pauseLiveMonitor, resumeLiveMonitor, scanLiveMonitors, loadLiveMonitors, liveRoomCfg, liveRoomFmts, liveRoomQualities, openLiveMonitorCfg, saveLiveMonitorCfg, liveMonitorCfgText, testTelegram,
           testWecom, applyRiskPreset, loadRiskPresets, loadFavTab, loadFavFolderItems, loadYtPlaylist, onFavSelChange,
           downloadFavSelected, downloadFavOne, subscribeFavSelected, subscribeFavOne, startBiliQr, pollBiliQr,
-          isPlayable, isAudioFile, isMediaFile, isVideoFile, openPicard, mbTagFile, mbEnrichFile, fingerprintFile, guessTagsFile, isSrtFile, openSepDlg, openStemMixer, sepDlg, startVocalSeparate, goMixer, clampSepStems, aiTts, installVoicePkgs, loadVoiceStatus, refreshSepStatus, setupSeparatorEnv, setupSeparatorWeights, setupSeparatorAll, sepModelLabel, sepBusy, sepInfo, sepModels, sepDemucsModels, sepDemucsState, fetchDemucsModels, sepHasGpu, sepStatusText, sepDeviceText, sepEngineReason, sepUpdatablePkg, sepUpdatable, sepLatest, updateSeparatorEngines, toggleRealtime, installingVoice, voiceStatusText, rtRecording, rtTranslate, rtTargetLang, rtLog,
+          isPlayable, isAudioFile, isMediaFile, isVideoFile, openPicard, mbTagFile, mbEnrichFile, fingerprintFile, guessTagsFile, isSrtFile, openSepDlg, openStemMixer, sepDlg, startVocalSeparate, goMixer, clampSepStems, aiTts, installVoicePkgs, loadVoiceStatus, refreshSepStatus, setupSeparatorEnv, setupSeparatorWeights, setupSeparatorAll, sepModelLabel, sepBusy, sepInfo, sepModels, sepDemucsModels, sepDemucsState, fetchDemucsModels, sepAnalysisOk, sepAnalysisPkgsText, sepAnalysisModelsText, sepAnalysisMirror, setupAnalysisAll, sepHasGpu, sepStatusText, sepDeviceText, sepEngineReason, sepUpdatablePkg, sepUpdatable, sepLatest, updateSeparatorEngines, toggleRealtime, installingVoice, voiceStatusText, rtRecording, rtTranslate, rtTargetLang, rtLog,
           mixSrc, mixRows, mixLoading, mixBusy, mixPlaying, mixLoop, mixFormat, mixOut, mixOutUrl,
           stemLabel, streamUrl, loadStems, applyMixGains, applyMixLoop, toggleMixPlay, exportMix, aiTranscribe, aiTranslateSrt, aiCalibrateSrt, onFileSelectionChange, runBatchAi, runSrtCalibrateSelected,
           burnDlg, burnJob, burnStarting, burnSubChoices, burnOutName, burnRunning, burnPercent, burnStatusText, openBurn, closeBurn, startBurn, stopBurn,

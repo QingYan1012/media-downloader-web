@@ -12477,7 +12477,8 @@ def api_voice_status(refresh: int = 0):
     最后一种是换设备或装驱动）。所以这里不打包成一个 bool。
     """
     try:
-        from voice_tools import (SEP_RUNNER, DEMUCS_MODELS, EDGE_VOICE_PRESETS, deep_translator_available,
+        from voice_tools import (SEP_RUNNER, DEMUCS_MODELS, EDGE_VOICE_PRESETS, analysis_status,
+                                 deep_translator_available,
                                  demucs_models_status,
                                  edge_tts_available, roformer_model_states, separation_probe,
                                  separator_setup_running)
@@ -12525,6 +12526,8 @@ def api_voice_status(refresh: int = 0):
                 # Demucs 的模型名同样从这里出：界面上有两处下拉，抄第二份名单就会和保存闸门那份对不上。
                 "demucs_models": list(DEMUCS_MODELS),
                 "demucs_model_files": dmodels,
+                # 拍点与段落结构这一路（音频分析的第二批依赖）：装没装、模型在不在、缺哪几个
+                "analysis": analysis_status(),
                 "engines": [
                     {"id": "roformer", "available": venv and runner and as_ok and bool(ready),
                      "reason": why(as_ok and bool(ready), as_ok)},
@@ -12696,7 +12699,7 @@ def api_subtitle_rewrap(body: dict):
 
 @app.post("/api/ai/analyze")
 def api_ai_analyze(body: dict):
-    """Librosa 音频分析摘要 → 日志 + .analysis.json"""
+    """音频分析：librosa 摘要 + 拍点/段落结构 → 日志 + .analysis.json"""
     import importlib.util
 
     media = resolve_media_path(body.get("path") or "")
@@ -13030,6 +13033,36 @@ def api_separator_setup(body: dict = None):
     return {"ok": True,
             "message": "分离引擎更新中，进度看运行日志" if step == "engines"
                        else "分离环境搭建中，进度看运行日志"}
+
+
+@app.post("/api/ai/analysis_setup")
+def api_ai_analysis_setup(body: dict = None):
+    """装「拍点 + 段落结构」这两个包、补它们的模型。
+
+    和分离环境同一口径：便携包不带（体积与依赖树都不小），所以缺的时候要在程序里点得齐。
+    装完不用重启 —— 音频分析每次都是现问 venv 里有没有这两个包。
+    """
+    step = ((body or {}).get("step") or "all").strip().lower()
+    if step not in ("pkgs", "models", "all"):
+        raise HTTPException(400, f"step 只认 pkgs / models / all，收到的是「{step[:16]}」")
+
+    def job():
+        from voice_tools import setup_analysis
+        r = setup_analysis(log_mgr.log, step=step, mirror=str(cfg.data.get("pip_mirror") or ""))
+        if r == "busy":
+            # 这句是分离与分析共用的那句，词表里只有一个键 —— 别在这里改词，K3 会抓到「一键两句」
+            log_mgr.log("已经有一个搭建任务在跑了，这一次先不叠加", "warning",
+                        k="srv.ai.setup_busy")
+        elif r == "ok":
+            log_mgr.log("音频分析的拍点与结构模型就绪，下次音频分析就会带上",
+                        k="srv.ai.analysis_ready")
+        else:
+            miss = r.split(":", 1)[1] if ":" in r else r
+            log_mgr.log(f"音频分析依赖没备齐，还缺：{miss}", "error",
+                        k="srv.ai.analysis_failed", kv={"missing": miss})
+
+    threading.Thread(target=job, daemon=True).start()
+    return {"ok": True, "message": "音频分析依赖安装中，进度看运行日志"}
 
 
 @app.post("/api/ai/realtime")
@@ -14206,8 +14239,10 @@ def latest_versions_cached(mirror: str) -> dict:
     now = time.time()
     if _latest_cache["data"] and _latest_cache["mirror"] == mirror and now - _latest_cache["ts"] < LATEST_TTL:
         return _latest_cache["data"]
-    from voice_tools import SEP_ENGINE_PKGS
-    names = [p["name"] for p in pkg_update.PIP_PACKAGES] + list(SEP_ENGINE_PKGS)
+    from voice_tools import SEP_ANALYSIS_PKGS, SEP_ENGINE_PKGS
+    # 分离引擎与分析依赖都装在独立 venv 里，组件表那套「当前版本」问不到它们，
+    # 所以上游名单也要把它们一起报进去，否则界面上那两行永远只有「当前」没有「最新」。
+    names = [p["name"] for p in pkg_update.PIP_PACKAGES] + list(SEP_ENGINE_PKGS) + list(SEP_ANALYSIS_PKGS)
     data = pkg_update.latest_versions(names, mirror)
     _latest_cache.update(ts=now, mirror=mirror, data=data)
     return data
@@ -14281,6 +14316,7 @@ def api_components(latest: str = ""):
     return {
         "items": _component_rows(lv, manifest),
         "sep_engine": _sep_engine_state(lv),
+        "sep_analysis": _sep_analysis_state(lv),
         "env_path": env_path_status(),
         "pip": pkg_update.pip_available(),
         "pip_version": pkg_update.pip_version(),
@@ -14349,6 +14385,43 @@ def _sep_engine_available(lv: dict) -> list:
              "current": e["active"], "latest": e["latest"]}]
 
 
+def _sep_analysis_rows(lv: dict) -> list:
+    """拍点与段落结构那两个包：和分离引擎同一套问法（现读 venv 元数据、现比上游版）。"""
+    from voice_tools import SEP_ANALYSIS_PKGS, analysis_pkg_versions
+    have = analysis_pkg_versions()
+    out = []
+    for pkg in SEP_ANALYSIS_PKGS:
+        active = str(have.get(pkg) or "")
+        row = lv.get(pkg) or {}
+        latest = str(row.get("version") or "")
+        out.append({"pkg": pkg, "active": active, "latest": latest,
+                    "latest_note": "" if latest else str(row.get("error") or ""),
+                    "updatable": bool(active and latest and _ver_newer(active, latest))})
+    return out
+
+
+def _sep_analysis_state(lv: dict) -> dict:
+    from voice_tools import analysis_status
+    st = analysis_status()
+    items = _sep_analysis_rows(lv)
+    return {"installed": bool(st.get("installed")), "items": items,
+            "models": st.get("models") or [], "missing": st.get("missing") or [],
+            "models_ok": bool(st.get("models_ok")), "model_dir": st.get("model_dir") or "",
+            "setup_running": bool(st.get("setup_running"))}
+
+
+def _sep_analysis_available(lv: dict) -> list:
+    """只报一条，理由和引擎那条一样：两个包是一组，列两行会变成两条同义通知。
+    模型不在这里报 —— 它们没有版本号可报，缺了要在界面上点名，那是「补齐」不是「有新版」。"""
+    outdated = [i for i in _sep_analysis_rows(lv) if i["updatable"]]
+    if not outdated:
+        return []
+    e = outdated[0]
+    return [{"key": "sep:analysis", "pkg": e["pkg"],
+             "label": "音频分析依赖（all-in-one-infer / beat-this）",
+             "current": e["active"], "latest": e["latest"]}]
+
+
 # 打开程序就自动查一遍上游版本：查一次要两三秒，绝不能挡在启动路径上，
 # 所以只放后台线程跑，界面拿到的永远是「状态 + 上次结果」。
 _COMP_CHECK: Dict[str, Any] = {"status": "idle", "started": "", "finished": "",
@@ -14390,6 +14463,7 @@ def _comp_check_worker() -> None:
         lv = latest_versions_cached(str(cfg.data.get("pip_mirror") or ""))
         available = _comp_available_updates(_component_rows(lv, bundled_manifest()))
         available += _sep_engine_available(lv)
+        available += _sep_analysis_available(lv)
         with _COMP_CHECK_LOCK:
             _COMP_CHECK.update(
                 status="done",
@@ -14460,6 +14534,11 @@ def _comp_update_one(key: str, mirror: str, log: Callable) -> tuple:
         from voice_tools import update_separator_engines
         res = str(update_separator_engines(log=log, mirror=mirror) or "")
         return res == "ok", res
+    if key == "sep:analysis":
+        # 「更新」与「装上」走同一条：setup_analysis 自己会跳过已经在的那些
+        from voice_tools import setup_analysis
+        res = str(setup_analysis(log, step="all", mirror=mirror) or "")
+        return res == "ok", res
     if key == "ffmpeg":
         ok = bool(ffmpeg_mgr.update())
         return ok, f"当前 {ffmpeg_mgr.version() or '未安装'}"
@@ -14485,7 +14564,7 @@ def _comp_update_all(keys: List[str], mirror: str) -> None:
     labels = {p["name"]: p["label"] for p in pkg_update.PIP_PACKAGES}
     labels.update({"ffmpeg": "FFmpeg", "ytdlp": "yt-dlp", "n_m3u8dl": "N_m3u8DL-RE",
                    "faster-whisper": "faster-whisper", "aria2": "aria2c",
-                   "sep:engines": "人声分离引擎"})
+                   "sep:engines": "人声分离引擎", "sep:analysis": "音频分析依赖"})
     try:
         for i, key in enumerate(keys, 1):
             with _COMP_ALL_LOCK:
@@ -14546,7 +14625,7 @@ def api_components_update_all(body: dict = None):
     body = body or {}
     keys = [str(k).strip() for k in (body.get("keys") or []) if str(k).strip()]
     known = {p["name"] for p in pkg_update.PIP_PACKAGES} | {
-        "ffmpeg", "ytdlp", "n_m3u8dl", "faster-whisper", "aria2", "sep:engines"}
+        "ffmpeg", "ytdlp", "n_m3u8dl", "faster-whisper", "aria2", "sep:engines", "sep:analysis"}
     bad = [k for k in keys if k not in known]
     if bad:
         raise HTTPException(400, f"这些条目不能从这里更新：{'、'.join(bad[:6])}")

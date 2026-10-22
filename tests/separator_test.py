@@ -411,7 +411,7 @@ ck("J7 这批新键两份词表都在（各出现两次），zh 那半不带首�
 ck("J8 对话框用到的六个新名字在 setup 的两行 return 里都挂上了（漏一个不是少一行，是整页渲染炸）",
    sum("sepDlg, startVocalSeparate, goMixer, clampSepStems," in ln
        for ln in HTML.splitlines()) == 2
-   and sum("sepModels, sepDemucsModels, sepDemucsState, fetchDemucsModels, sepHasGpu" in ln
+   and sum("sepDemucsState, fetchDemucsModels, sepAnalysisOk," in ln
            for ln in HTML.splitlines()) == 2)
 # 活体抓到的：模型两格是 v-for，读数只在进语音页时取；直接从文件页开对话框 → 一格空白，
 # 选中值退化成裸 id。修法是打开时补一次 voice_status（服务端那侧本来就有 60 秒缓存）。
@@ -486,6 +486,108 @@ ck("K12 这批新键两份词表都在（各出现两次），zh 那半不带首
    str([k for k in _dm_keys if I18N.count(f"'{k}':") != 2]))
 ck("K13 「补齐」不进一键更新的自动挑选（几百 MB，不该被一次顺手点掉），但键本身认",
    "sep:models" not in SERVER and "/api/ai/demucs_models" in HTML)
+
+# ------------------------------------------------- L. 拍点与段落结构（StemDeck 那两项能力）
+AA = (ROOT / "audio_analyze.py").read_text(encoding="utf-8")
+RUN2 = RUNNER
+ck("L1 分析依赖全部钉死版本，且两条实测坑都在（torchaudio 只有 2.11.0、antlr 必须 4.9.x）",
+   all("==" in p for p in V.SEP_ANALYSIS_PINS)
+   and "torchaudio==2.11.0" in V.SEP_ANALYSIS_PINS
+   and "antlr4-python3-runtime==4.9.3" in V.SEP_ANALYSIS_PINS,
+   str(V.SEP_ANALYSIS_PINS))
+ck("L2 连带装的 madmom-infer / demucs-infer 也钉住，且程序里绝不 import 那个同名的 demucs",
+   any(p.startswith("demucs-infer==") for p in V.SEP_ANALYSIS_PINS)
+   and any(p.startswith("madmom-infer==") for p in V.SEP_ANALYSIS_PINS)
+   and not re.search(r"^\s*import demucs\b|^\s*from demucs\b", RUN2, re.M))
+ck("L3 镜像那份钉的是整份 sha256（64 位），超参只有一份、在 runner 里 import 回来而不是抄第二份",
+   re.fullmatch(r"[0-9a-f]{64}", V.BEATTHIS_MIRROR_SHA256) is not None
+   and V.BEATTHIS_MIRROR_BYTES == 81029488
+   and "VT.BEATTHIS_HPARAMS" in RUN2 and "import voice_tools as VT" in RUN2)
+ck("L4 结构模型钉的是逐个文件的 sha256（8 项 × 64 位，名字带随机后缀所以名字也要钉）；"
+   "补齐按库自己的问法取，不传 revision —— 传了运行时也不看（实测按 commit 下的那份它认不出）",
+   len(V.ALLIN1_HF_FILES) == 8
+   and all(re.fullmatch(r"[0-9a-f]{64}", s) for _, s in V.ALLIN1_HF_FILES)
+   and all(re.fullmatch(r"harmonix-fold\d-[a-z0-9]{8}\.pth", fn) for fn, _ in V.ALLIN1_HF_FILES)
+   and "snapshot_download" not in VT_SRC and "revision=" not in VT_SRC)
+ck("L5 --analyze 在 input/model 那道必填检查之前分派（不然分析模式会被自己的参数表拒掉）",
+   '--analyze' in RUN2 and RUN2.index("if a.analyze:") < RUN2.index('missing = [k for k in ("input", "model")'))
+ck("L6 分析子进程回的是 @@@JSON，且两件事分开容错：一个包坏了不连带把另一项报成没有",
+   '"@@@" + json.dumps(out' in RUN2
+   and RUN2.count('out["errors"].append') >= 3
+   and "beat_this:" in RUN2 and "allin1:" in RUN2)
+_abs_fn = _slice(VT_SRC, "def analyze_beats_structure", "def setup_analysis")
+ck("L7 没装 / 缺模型 / 没环境三种情况各有说法，且都不起子进程（缺哪一层就报哪一层）",
+   all(f'"reason": "{x}"' in _abs_fn for x in ("packages", "models", "venv"))
+   and "cmd = [py, str(SEP_RUNNER)" in _abs_fn
+   and _abs_fn.index('if not st["installed"]') < _abs_fn.index("cmd = [py, str(SEP_RUNNER)")
+   and _abs_fn.index('if not st["models_ok"]') < _abs_fn.index("cmd = [py, str(SEP_RUNNER)"))
+ck("L8 分析结果那八个键在失败路径上也在（界面与旁路 JSON 不用判断「键在不在」）",
+   all(f'"{k}":' in AA for k in ("bpm", "beats", "downbeats", "segments",
+                                 "bpm_allin1", "analysis_device", "analysis_note", "analysis_error")))
+ck("L9 旧读数不静默替换：差超过 25% 才记一句，且那句把两个数都留着",
+   "ratio >= 1.25 or ratio <= 0.8" in AA and "旧读数 {tempo:.1f}" in AA)
+ck("L10 拍点跑整首、librosa 那格仍按 180 秒封顶 —— 两个窗口不同这件事写在注释里，不装作同一个口径",
+   "max_duration: float = 180.0" in AA and "整首" in AA)
+ck("L11 组件表拿的是 /api/components 的 sep_analysis，不是 voice_status（分离对话框那个坑就是这么来的）",
+   '"sep_analysis": _sep_analysis_state(lv)' in SERVER
+   and "(compInfo.value || {}).sep_analysis" in HTML
+   and "sepInfo.value.demucs_model_files" in HTML)
+ck("L12 两个包进上游检测与一键（和引擎同权），模型不进（没有版本号可报）",
+   "list(SEP_ANALYSIS_PKGS)" in SERVER and "available += _sep_analysis_available(lv)" in SERVER
+   and '"sep:analysis"' in SERVER and 'k="sep:analysis"' not in SERVER
+   and all("model" not in str(x) for x in re.findall(r'"key": "sep:analysis"[^\n]*', SERVER)))
+ck("L13 端点只认三种 step，锁与分离环境共用一把（两个 pip 同写一个 venv 会互相盖）",
+   'if step not in ("pkgs", "models", "all")' in SERVER
+   and "if not _setup_lock.acquire(blocking=False)" in VT_SRC
+   # 三处共用这一把：引擎升级、分析依赖、建环境 —— 都是往同一个 venv 里写东西的活
+   and VT_SRC.count("_setup_lock.acquire") == 3)
+_aa_keys = ["settings.sepAnalysisLabel", "settings.sepAnalysisUnknown", "settings.sepAnalysisNone",
+            "settings.sepAnalysisModels", "settings.sepAnalysisMissing", "settings.sepAnalysisMirror",
+            "settings.sepAnalysisBtn", "settings.sepAnalysisFail", "settings.sepAnalysisStarted",
+            "act.ai.analysis_setup", "srv.ai.analysis_ready", "srv.ai.analysis_failed"]
+ck("L14 这批新键两份词表都在（各出现两次），zh 那半不带首尾空格、en 那半不含汉字",
+   all(I18N.count(f"'{k}':") == 2 for k in _aa_keys)
+   and not [k for k in _aa_keys
+            if (m := re.search(r"^      '%s': '(.*?)',$" % re.escape(k), _zh_half, re.M))
+            and m.group(1) != m.group(1).strip()]
+   and not [k for k in _aa_keys
+            if re.search(r"[\u4e00-\u9fff]", "".join(re.findall(
+                r"^      '%s': '(.*?)',$" % re.escape(k), _en, re.M)))],
+   str([k for k in _aa_keys if I18N.count(f"'{k}':") != 2]))
+ck("L15 界面那一行的文字全走 tr()，新名字在 setup 的两行 return 里都挂着",
+   "settings.sepAnalysisLabel" in HTML and "setupAnalysisAll" in HTML
+   and sum("sepAnalysisPkgsText, sepAnalysisModelsText, sepAnalysisMirror, setupAnalysisAll," in ln
+           for ln in HTML.splitlines()) == 2)
+ck("L16 用了第三方镜像就必须把这句话说出口：那一行只在镜像源在位时出现，不静默冒充作者权重",
+   "settings.sepAnalysisMirror" in HTML
+   and "indexOf('huggingface') >= 0" in HTML
+   and "非作者发布" not in HTML)   # 那句话在词表里，不在模板里写死
+_pins = dict(p.split("==") for p in V.SEP_ANALYSIS_PINS)
+ck("L17 omegaconf 与 hydra-core、antlr 这三个是一组，钉到任何别处都装不上（实测冲突过一次）："
+   "omegaconf 必须在 hydra 要的 <2.4 里，且只能是配 antlr 4.9.* 的那版",
+   tuple(int(x) for x in _pins["omegaconf"].split(".")) < (2, 4)
+   and _pins["antlr4-python3-runtime"].startswith("4.9.")
+   and _pins["omegaconf"] == "2.3.1", str(_pins))
+_al = _slice(RUN2, "def analyze(", "\ndef main(")
+ck("L18 递给 all-in-one 的必须是 wav：这份 torchaudio（2.11）不带解码器，mp3 走它会要 torchcodec"
+   "（实测就是这句报错），它自己的 wav 路径用 soundfile，与我们解码用的是同一份",
+   "sf.write(wav," in _al and "A.analyze(wav" in _al and "A.analyze(path" not in _al)
+ck("L19 它的 demix/spec 副产品默认落在当前目录 —— 那会把文件写进程序目录，必须接到临时目录里并删干净",
+   'demix_dir=os.path.join(tmp, "demix")' in _al and 'spec_dir=os.path.join(tmp, "spec")' in _al
+   and "shutil.rmtree(tmp" in _al and "finally:" in _al)
+ck("L20 音频只解一次码，两个模型共用；哪一边发现没解出来都各自说，不拿空数组跑下去",
+   _al.count("sf.read(path)") == 1 and _al.count('out["errors"].append("decode:') == 1
+   and _al.count("没解码成功") == 2 and "a2b(y, sr)" in _al)
+ck("L21 一个包坏了只缺它那一项：段落为空但确实跑过时，日志要说出「结构没算出来」，报错原文进 JSON 而不是被 ok 吞掉",
+   'or "; ".join(str(x) for x in (extra.get("errors") or []))' in AA
+   and "段落结构没算出来" in AA and "not extra.get(\"skipped\")" in AA)
+ck("L22 结构模型少一个 fold 也算「缺」：库说下完了不算数，逐个回读并核 sha256 才算",
+   "good == len(ALLIN1_HF_FILES)" in VT_SRC and "_sha_ok(" in VT_SRC
+   and "row.get(\"present\")" in VT_SRC)
+ck("L23 「在不在」问的是 venv 里那份 huggingface_hub（local_files_only），不是我们自己拼缓存目录 —— "
+   "缓存布局或库版本一改，两边就会给出不同答案（实测踩过）",
+   "local_files_only=True" in VT_SRC and "hf_hub_download" in VT_SRC
+   and "models--" not in VT_SRC)
 
 print(f"== 汇总 ==\n共 {TOTAL} 条，失败 {len(FAILED)} 条")
 if FAILED:
