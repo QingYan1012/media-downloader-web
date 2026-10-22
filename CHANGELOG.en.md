@@ -208,6 +208,24 @@ Caught as false reds, not product bugs:
 
 ---
 
+## v1.5.2 · 2026-10-22 — this round's package
+
+One fix ships here: **"skip already downloaded" ignored the kind of output, so anyone who had downloaded the video and
+then asked for audio-only got nothing at all** (#136 - details and the real A/B in the section below). The v1.5.1
+package already carried #135 (float16 on CPU raising at model construction), so this release only brings the published
+bytes up to date. It also corrects something I said earlier: `30280` in that log is bilibili's **192k audio stream**,
+not a video-only stream, so the "video stream + audio extraction" contradiction I described never existed and the
+greying-out of the two control rows that I proposed from it **was not done**.
+
+`appVersion` moves to `v1.5.2` (still the single line in `static/index.html`). Full sweep: **64 suites, bad=0**.
+
+### Release artifacts
+
+(Filled in after the build: zip size and sha256, entry count, in-package self-check readings, tag and Release
+verification.)
+
+---
+
 ## After v1.5.1 — an audio-only request must not be blocked by the video's download record
 
 The user asked, screenshot in hand: "I picked audio-only, why did it still download a packaged video?" Comparing the
