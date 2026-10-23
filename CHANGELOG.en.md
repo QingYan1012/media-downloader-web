@@ -261,7 +261,28 @@ subprocesses one by one, while the loaded Whisper model and the URL parse cache 
   itself. `tests/idlehygiene_test.py` C8 pins it.
 - `appVersion` moves to `v1.5.3`. Full sweep: **68 suites, bad=0**.
 
-(Artifact readings are appended after the build; the `CHANGELOG.md` inside the package does not contain that part.)
+### Artifact readings (built 2026-10-23 16:57)
+
+- **Artifact**: `dist\MediaDownloader-1.5.3-portable.zip`, **230,674,638 B (220.0 MB)**, sha256
+  `e45ca61e391ee9a3da921f4fdbf3e93a89367188c18eb4cf6ffe8ea2141241e3`, 10,906 entries; `sha256sum -c` from `dist/`
+  passes. Staged directory 567.6 MB: runtime 322.4, tools 234.5, static 3.0, chromaprint 4.0, docs 1.4, extension
+  28.7 KB, plugins 2.3 KB, cookies 184 B (placeholder note only).
+- **Packaging self-checks**: 18 dependencies + 3 tools in the manifest; must-include files present (13 under
+  `static`); 21 `__pycache__` removed; 15 top-level modules import inside the package; in-package pip install ->
+  import passes; the packaged service answers the smoke call with all three version tiers present and 12 manifest
+  hits; the manifest records `app = 1.5.3`, `python = 3.12.2`, `built = 2026-10-23 16:57`.
+- **Package versus source**: 58 application entries, 54 byte-identical to the working tree (CRLF folded), 4 generated
+  by the packager (`components_bundled.json`, the usage note, the launcher, the cookies placeholder). Zero
+  private/state hits (including the new `version_cache.json`), zero forbidden directories, no `.pyc`, no `/venv/`.
+  The packaged `CHANGELOG.md` is CRLF (2041 lines, 0 bare LF), carries v1.5.3, and does not contain this digest -
+  the copy inside the zip predates the build and still says readings are appended after it.
+- **Runtime reuse and a failed full build**: the full build was attempted first and stopped at `zhconv==1.4.3` -
+  the index only offers up to 1.4.1; the source-build fallback then hit `MemoryError` while building `construct`.
+  `PKGS` and `requirements.txt` were untouched this round, so the verified v1.5.2 runtime was copied whole into
+  `dist/MediaDownloader-1.5.3-portable/runtime` (9,795 files) and `--skip-runtime` completed the copy and the four
+  self-checks. The pin issue is left for the next packaging round; this archive runs on the same verified
+  combination as 1.5.2.
+- **Tag / release**: nothing pushed, no tag created or moved, no Release touched - awaiting approval.
 
 ## v1.5.2 · 2026-10-22 — this round's package
 

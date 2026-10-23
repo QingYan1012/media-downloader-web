@@ -46,7 +46,25 @@
   换台机器应当自己重探；`tests/idlehygiene_test.py` C8 钉住这条。
 - `appVersion` 进到 `v1.5.3`。全批自检 **68 套 bad=0**。
 
-（发布物读数在出包后补记；包内这份 `CHANGELOG.md` 不含该段。）
+### 发布物读数（2026-10-23 16:57 构建）
+
+- **产物**：`dist\MediaDownloader-1.5.3-portable.zip` **230,674,638 B（220.0 MB）**，sha256
+  `e45ca61e391ee9a3da921f4fdbf3e93a89367188c18eb4cf6ffe8ea2141241e3`，10,906 个条目；旁路 `.sha256` 在 `dist/` 里
+  `sha256sum -c` 通过。包目录 567.6 MB：runtime 322.4、tools 234.5、static 3.0、chromaprint 4.0、docs 1.4、
+  extension 28.7 KB、plugins 2.3 KB、cookies 184 B（只有占位说明）。
+- **打包自检**：随包清单 18 个依赖 + 3 个工具；必进包文件齐（static 13 项）；清掉 21 个 `__pycache__`；
+  15 个顶层模块在包内 import 全过；包内 pip 装 → 导入通过；起包内服务冒烟，组件接口三档版本齐全、清单命中 12 项；
+  清单记 `app = 1.5.3`、`python = 3.12.2`、`built = 2026-10-23 16:57`。
+- **与源码比对**：包内 58 个应用文件条目，54 个与工作树逐字节一致（折叠 CRLF），4 个由打包器生成
+  （`components_bundled.json` / `使用说明.txt` / `启动.bat` / cookies 占位说明）。私密与状态文件零命中
+  （含本轮新增的 `version_cache.json`）、禁带目录零命中、`.pyc` 0、`/venv/` 没进包。包内 `CHANGELOG.md` 是
+  CRLF（2041 行全带回车、裸 LF 0），含 v1.5.3 这一节，不含本节哈希（包内那份停在出包前，写的是「读数在出包后补记」）。
+- **runtime 复用与一次完整构建失败**：先跑了完整构建，pip 在 `zhconv==1.4.3` 上停住 —— 当前源只有到 1.4.1；
+  回退源码构建时 `construct` 的构建环境报 `MemoryError`。`PKGS` 与 `requirements.txt` 这一轮一字未动，于是按既有
+  做法把 v1.5.2 已验证的 runtime 整份复制到 `dist/MediaDownloader-1.5.3-portable/runtime`（9,795 个文件），
+  再用 `--skip-runtime` 完成复制与四道自检。完整构建的 pin 问题留给下一次出包前处理，不影响这一份包的运行环境
+  （与 1.5.2 的验证组合相同）。
+- **标签 / 发布**：未推送、未建/移标签、未动 Release —— 等点头。
 
 ## v1.5.2 · 2026-10-22（本轮出包）
 
