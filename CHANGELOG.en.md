@@ -208,6 +208,61 @@ Caught as false reds, not product bugs:
 
 ---
 
+## v1.5.3 · 2026-10-23 — this round's package
+
+This round first removes the background cost behind "leave it overnight and it comes back sluggish", then adds a
+liquid-glass skin. The version cache and the idle cleanup are two ends of the same thing: do not start a row of
+subprocesses on every start or when coming back from idle, and release the rebuildable models and caches once nobody
+is using the app. The glass skin is visual only - no behaviour changes.
+
+### Why it got sluggish: measure first
+
+The backend was not the culprit: a warm `/api/status` answered in 3.8-4.1 ms, memory was flat, and there was no
+sleep/wake event that night. The remaining cost was in the browser plus asking every dependency for its version
+after each restart - the component check took about 13 seconds to fill in, starting ffmpeg / yt-dlp / whisper
+subprocesses one by one, while the loaded Whisper model and the URL parse cache stayed in memory when idle.
+
+- **Version probes land on disk for 24 hours** (`STATE_DIR/version_cache.json`): ffmpeg / N_m3u8DL / aria2 validate
+  by path + mtime, yt-dlp by the mtime signature of `version.py` and `extractor/youtube.py`, whisper and the
+  upstream-latest table by TTL. A hit returns without starting a subprocess; "Check now" bypasses the cache, and any
+  successful component update drops the affected key. Measured: after a restart the component check is complete in
+  about 3 seconds, previously about 13.
+- **Idle cleanup after 30 minutes**: `_idle_janitor_loop` looks once a minute and only acts when the last user
+  request is at least 30 minutes old, the queue has nothing running or pending, no AI job is active, and no
+  component check or one-click update is running. It releases loaded Whisper models, the parse cache, the in-memory
+  version caches, and removes preview files under `_preview` older than 24 hours; cookies, history and finished
+  downloads are never touched. `/api/status` exposes `idle_clean_at` and `idle_clean` with four counters, and the
+  log gets exactly one keyed line (`srv.idle.cleaned`, Chinese and English).
+- **Health probes and page polling are not "someone is using it"**: `/api/health`, `/api/status` and `/api/tasks` do
+  not refresh the activity clock - otherwise background polling would postpone cleanup forever. The clipboard's
+  2-second poll is gone as well: the server still watches, and the page asks once on entry and once when it returns
+  to the foreground.
+- **Sandbox verification**: with a temporary `STATE_DIR` / `PREVIEW_DIR` and the threshold shortened to 2 seconds, an
+  old preview is removed while a new one stays; a second version read in the same process starts no subprocess, and a
+  restart reads the disk instead of probing again. `tests/idlehygiene_test.py`, `tests/idlecost_test.py`,
+  `tests/components_test.py`, `tests/clipboard_test.py` and `tests/pagemount_test.py` cover all of it.
+
+### Liquid glass: every glass background is now a solid colour
+
+- Page background, cards, sidebar, header, player bar, dialogs, dropdown poppers and primary buttons are all solid;
+  the radial glow on cards and the aurora `body::before` are gone, and the boot splash no longer uses orbs or
+  gradients. `--glass-panel` (0.74 light / 0.8 dark) is dedicated to floating layers so a dialog over the 0.5 black
+  scrim no longer turns mid-grey with unreadable body text.
+- The sidebar follows the theme accent in both the base and the glass skin:
+  `color-mix(in srgb, var(--accent) 30%, #0b1220)`. Blue / orange / pink / green / clay were each captured, the
+  sampled colours differ, and white text still contrasts.
+- Light/dark still follows the system and can still be overridden; both skins were screenshot-checked
+  (`tmp/glass_shots/`).
+
+### Packaging
+
+- `pack_release.py` now excludes `version_cache.json` in both the exclusion regex and the post-build leak check: it
+  holds absolute paths of this machine's components and their upstream versions, and a new machine should probe for
+  itself. `tests/idlehygiene_test.py` C8 pins it.
+- `appVersion` moves to `v1.5.3`. Full sweep: **68 suites, bad=0**.
+
+(Artifact readings are appended after the build; the `CHANGELOG.md` inside the package does not contain that part.)
+
 ## v1.5.2 · 2026-10-22 — this round's package
 
 One fix ships here: **"skip already downloaded" ignored the kind of output, so anyone who had downloaded the video and
