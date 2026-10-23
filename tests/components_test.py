@@ -10,6 +10,7 @@ from __future__ import annotations
 import atexit
 import importlib.util
 import json
+import os
 import re
 import shutil
 import sys
@@ -18,12 +19,14 @@ import threading
 import time
 from pathlib import Path
 
+TMP = Path(tempfile.mkdtemp(prefix="md_components_test_"))
+os.environ["MEDIADOWNLOADER_STATE_DIR"] = str(TMP / "state")
+(TMP / "state").mkdir()
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pkg_update as P  # noqa: E402
 import server as S  # noqa: E402
 
 FAILED: list[str] = []
-TMP = Path(tempfile.mkdtemp(prefix="md_components_test_"))
 atexit.register(shutil.rmtree, TMP, True)   # 自检只在 Temp 里造东西，退出就带走
 
 
@@ -148,6 +151,7 @@ S.log_mgr = type("L", (), {"log": staticmethod(lambda *a, **k: None)})()
 S.BUNDLED_FILE = man
 S._bundled_cache.update(mtime=None, data={})
 S._latest_cache.update(ts=0.0, mirror=None, data={})
+S._ver_cache_drop("latest")
 S.pkg_update = type("PU", (), {
     "PIP_PACKAGES": [{"name": "musicdl", "label": "musicdl（音乐搜索 / 歌词 / 封面）"}],
     "PIP_MIRRORS": P.PIP_MIRRORS,
@@ -191,6 +195,7 @@ try:
             n: {"version": "", "source": "", "error": "没查到（所有候选源都失败）：Timeout"} for n in names}),
     })()
     S._latest_cache.update(ts=0.0, mirror=None, data={})
+    S._ver_cache_drop("latest")
     d4 = S.api_components(latest="1")
     row = [i for i in d4["items"] if i["key"] == "musicdl"][0]
     ck("C9 查不到最新版时把原因交给界面，而不是留一行空白",
@@ -228,9 +233,10 @@ try:
             n: {"version": "9.9.9", "source": "official", "error": ""} for n in names})[1]),
     })()
     S._latest_cache.update(ts=0.0, mirror=None, data={})
+    S._ver_cache_drop("latest")
     S.api_components(latest="1")
     S.api_components(latest="1")
-    ck("C11 上游版本查询 10 分钟内只跑一次（页面重复点不该反复问 pip）", len(hits) == 1, str(hits))
+    ck("C11 上游版本查询 24 小时内只跑一次（页面重复点不该反复问 pip）", len(hits) == 1, str(hits))
 finally:
     S.ffmpeg_mgr, S.engine, S.whisper_status, S.find_n_m3u8dl, S.cfg, S.pkg_update, S.log_mgr = _real
     S._latest_cache.update(_real_latest_cache)
@@ -629,6 +635,7 @@ def g_env(auto=True, latest_map=None, boom=False):
     S.log_mgr = FakeLogMgr()
     LOGS.clear()
     S._latest_cache.update(ts=0.0, mirror=None, data={})
+    S._ver_cache_drop("latest")
     S._COMP_CHECK.update(status="idle", started="", finished="", available=[], error="")
     return _restore
 
@@ -724,7 +731,7 @@ try:
     finally:
         S._comp_check_worker = keep_worker
 
-    # ---- 强制刷新是否真的作废了 10 分钟缓存（不让真线程回填，只验「发起」这一侧）
+    # ---- 强制刷新是否真的作废了 24 小时缓存（不让真线程回填，只验「发起」这一侧）
     print("== G8d/G8e 缓存与 force ==")
     keep_w2 = S._comp_check_worker
     S._comp_check_worker = lambda: None
@@ -732,7 +739,7 @@ try:
         S._COMP_CHECK.update(status="idle")
         S._latest_cache.update(ts=time.time(), mirror="", data={"x": 1})
         S._comp_check_start(force=True)
-        ck("G8d force 会把 10 分钟缓存作废（「立即检测」必须看到真上游）", S._latest_cache["ts"] == 0.0)
+        ck("G8d force 会把 24 小时缓存作废（「立即检测」必须看到真上游）", S._latest_cache["ts"] == 0.0)
         S._COMP_CHECK.update(status="idle")
         S._latest_cache.update(ts=time.time(), mirror="", data={"x": 1})
         S._comp_check_start()

@@ -161,7 +161,7 @@ try:
        str([n for n in _must_in if PK.EXCLUDE_FILE_RE.search(n)]))
     _must_out = ("config.json", "history.json", "notify_outbox.json", "login_state.json",
                  "cookiecloud_state.json", "app.log", "config.json.bak-1712345678",
-                 "mcp_calls.log", "pack_release.py", "x.pyc")
+                 "mcp_calls.log", "pack_release.py", "version_cache.json", "x.pyc")
     ck("A11 该挡的还挡着（本机状态 / 带时间的密钥备份 / 日志 / 打包脚本自己）",
        not [n for n in _must_out if not PK.EXCLUDE_FILE_RE.search(n)],
        str([n for n in _must_out if not PK.EXCLUDE_FILE_RE.search(n)]))

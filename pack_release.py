@@ -94,6 +94,8 @@ EXCLUDE_FILE_RE = re.compile(
     r"rss_feeds\.json|subscriptions\.json|music_favorites\.json|catcatch_rules\.json|"
     # 没送出去的通知记的是这台机器下过什么，锁定名单记的是谁在撞这门，清理状态记的是它删过什么：都不跟着包走
     r"notify_outbox\.json|login_state\.json|cookiecloud_state\.json|cleanup_state\.json|"
+    # 版本探测缓存里是本机组件的绝对路径与取到的上游版本：重装后由新机器自己探
+    r"version_cache\.json|"
     # 同步状态记的是这台机器拉过哪些 Cookie 文件：也不跟着包走
     r"pack_release\.py)$"
 )
@@ -336,7 +338,8 @@ def smoke_test(dst: Path) -> None:
         for f in ("config.json", "history.json", "app.log", "library_cache.json",
                   "subscriptions.json", "live_monitors.json", "rss_feeds.json",
                   "music_favorites.json", "catcatch_rules.json", "mcp_calls.log",
-                  "notify_outbox.json", "login_state.json", "cookiecloud_state.json", "cleanup_state.json"):
+                  "notify_outbox.json", "login_state.json", "cookiecloud_state.json", "cleanup_state.json",
+                  "version_cache.json"):
             (dst / f).unlink(missing_ok=True)
         for p in dst.glob("app-*.log"):   # 按天归档的运行日志同样属于本机数据
             p.unlink(missing_ok=True)
@@ -753,7 +756,7 @@ def main() -> None:
              if p.is_file() and (
                  p.name in ("config.json", "cookies.txt", "history.json", "library_cache.json",
                             "mcp_calls.log", "notify_outbox.json", "login_state.json", "cookiecloud_state.json",
-                    "cleanup_state.json")
+                    "cleanup_state.json", "version_cache.json")
                  or p.name == "app.log"
                  or ".bak-" in p.name      # 编辑/恢复默认留下的带时间备份，里面是这台的密钥与路径
                  or (p.name.startswith("app-") and p.name.endswith(".log")))]

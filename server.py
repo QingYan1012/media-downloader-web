@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import errno
+import functools
 import hashlib
 import hmac
 import io
@@ -69,6 +70,80 @@ LOG_FILE = STATE_DIR / "app.log"
 DEFAULT_DOWNLOAD_DIR = STATE_DIR / "Downloads"  # 项目内 Downloads
 WHISPER_DIR = APP_DIR / "Whisper"             # 本地 Whisper 目录
 PLUGINS_DIR = APP_DIR / "plugins"            # URL 解析插件
+# 音乐试听缓存与运行状态分开：默认仍在工具目录，自检/沙箱可用环境变量挪走。
+PREVIEW_DIR = Path(os.environ.get("MEDIADOWNLOADER_PREVIEW_DIR") or (APP_DIR / "_preview"))
+
+# 依赖版本探测结果落盘：重启、闲置恢复、隔天打开都先读这份，不重复起子进程/联网。
+# 二进制仍按「路径 + mtime」校验，升级换了文件立刻失效；纯 Python 包按 24 小时 TTL。
+VER_CACHE_FILE = STATE_DIR / "version_cache.json"
+VER_CACHE_TTL = 24 * 3600
+_VER_CACHE_LOCK = threading.Lock()
+_VER_CACHE_DISK: Dict[str, Any] = {"loaded": False, "data": {}}
+
+
+def _ver_cache_load() -> dict:
+    st = _VER_CACHE_DISK
+    if st["loaded"]:
+        return st["data"]
+    data: dict = {}
+    try:
+        raw = json.loads(VER_CACHE_FILE.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            data = raw
+    except Exception:
+        pass
+    st["data"] = data
+    st["loaded"] = True
+    return data
+
+
+def _ver_cache_get(key: str, ttl: float = VER_CACHE_TTL) -> dict:
+    with _VER_CACHE_LOCK:
+        row = _ver_cache_load().get(key)
+    if isinstance(row, dict) and time.time() - float(row.get("ts") or 0.0) < ttl:
+        return dict(row)
+    return {}
+
+
+def _ver_cache_put(key: str, row: dict) -> None:
+    with _VER_CACHE_LOCK:
+        data = _ver_cache_load()
+        data[key] = dict(row)
+        try:
+            tmp = VER_CACHE_FILE.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            tmp.replace(VER_CACHE_FILE)
+        except Exception:
+            pass
+
+
+def _ver_cache_drop(*keys: str) -> None:
+    with _VER_CACHE_LOCK:
+        data = _ver_cache_load()
+        hit = [k for k in keys if k in data]
+        if not hit:
+            return
+        for k in hit:
+            data.pop(k, None)
+        try:
+            tmp = VER_CACHE_FILE.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            tmp.replace(VER_CACHE_FILE)
+        except Exception:
+            pass
+
+
+# 闲置清理：没有请求、队列空闲、没有 AI 作业时，释放可重建的内存与临时文件。
+IDLE_CLEAN_SEC = float(os.environ.get("MEDIADOWNLOADER_IDLE_CLEAN_SEC") or 1800)
+IDLE_CLEAN_TICK = float(os.environ.get("MEDIADOWNLOADER_IDLE_CLEAN_TICK") or 60)
+IDLE_PREVIEW_KEEP_SEC = 24 * 3600
+# 这些是界面自己的轮询/探针：页面开着没人动时也会每 1.5 秒打一次，不能拿它当「还在用」。
+_ACTIVITY_EXEMPT = ("/api/health", "/api/status", "/api/tasks")
+_IDLE_STATE: Dict[str, Any] = {"last": time.time(), "cleaned_at": 0.0, "runs": 0, "stats": {}}
+
+
+def _note_activity() -> None:
+    _IDLE_STATE["last"] = time.time()
 
 for _d in (TOOLS_DIR, COOKIES_DIR, DEFAULT_DOWNLOAD_DIR, WHISPER_DIR, PLUGINS_DIR):
     _d.mkdir(parents=True, exist_ok=True)
@@ -2500,6 +2575,25 @@ def _qc_report_written(paths: List[str], media: Path, lang: str, log: Callable =
                 + ("…" if len(d) > 10 else "") + "；要删请在「逐句校对 → 字幕质检」按名单删")
 
 
+_AI_JOBS: Dict[str, Any] = {"active": 0}
+_AI_JOBS_LOCK = threading.Lock()
+
+
+def _ai_job_guard(fn):
+    """数着正在跑的本地 AI 作业：闲置清理在它们结束前不碰模型缓存。"""
+    @functools.wraps(fn)
+    def wrapped(*args, **kwargs):
+        with _AI_JOBS_LOCK:
+            _AI_JOBS["active"] += 1
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            with _AI_JOBS_LOCK:
+                _AI_JOBS["active"] = max(0, _AI_JOBS["active"] - 1)
+    return wrapped
+
+
+@_ai_job_guard
 def run_local_ai_on_file(
     media_path: str,
     *,
@@ -4290,6 +4384,10 @@ class FFmpegManager:
         self.log = log or (lambda m, level="info", k="", kv=None: print(m))
         self.manual_path = ""
         self.local_bin = TOOLS_DIR / ("ffmpeg.exe" if sys.platform == "win32" else "ffmpeg")
+        # version() 要真拉一次子进程，而 /api/status 与「组件与依赖」每次都问 ——
+        # 前端 SSE 断线兜底会把它打到每 1.5 秒一次，挂机一夜就是几万次进程拉起。
+        # 先读进程内缓存，再读落盘缓存；都按「路径 + 文件 mtime」校验，升级换文件自动失效。
+        self._ver_cache: dict = {}
 
     def find(self, manual: str = "") -> Optional[str]:
         # 1) 用户手动指定
@@ -4312,6 +4410,25 @@ class FFmpegManager:
         path = self.find(self.manual_path)
         if not path:
             return "未找到"
+        try:
+            mtime = Path(path).stat().st_mtime
+        except Exception:
+            mtime = 0.0
+        c = self._ver_cache
+        if (c.get("path") == path and c.get("mtime") == mtime
+                and time.time() - float(c.get("ts") or 0.0) < VER_CACHE_TTL):
+            return str(c.get("ver") or "")
+        disk = _ver_cache_get("ffmpeg")
+        if disk.get("path") == path and float(disk.get("mtime") or 0.0) == mtime:
+            self._ver_cache.update(disk)
+            return str(disk.get("ver") or "")
+        ver = self._probe_version(path)
+        row = {"path": path, "mtime": mtime, "ts": time.time(), "ver": ver}
+        self._ver_cache.update(row)
+        _ver_cache_put("ffmpeg", row)
+        return ver
+
+    def _probe_version(self, path: str) -> str:
         try:
             kwargs: dict = {
                 "args": [path, "-version"],
@@ -4699,10 +4816,34 @@ def find_n_m3u8dl() -> Optional[str]:
     return None
 
 
+_N3_VER_CACHE: dict = {}
+
+
 def n_m3u8dl_version() -> str:
     path = find_n_m3u8dl()
     if not path:
         return "未安装"
+    # 与 FFmpegManager.version 同一口径：进程内 → 落盘 → 真拉进程，二进制按路径+mtime 校验
+    try:
+        mtime = Path(path).stat().st_mtime
+    except Exception:
+        mtime = 0.0
+    c = _N3_VER_CACHE
+    if (c.get("path") == path and c.get("mtime") == mtime
+            and time.time() - float(c.get("ts") or 0.0) < VER_CACHE_TTL):
+        return str(c.get("ver") or "")
+    disk = _ver_cache_get("n_m3u8dl")
+    if disk.get("path") == path and float(disk.get("mtime") or 0.0) == mtime:
+        _N3_VER_CACHE.update(disk)
+        return str(disk.get("ver") or "")
+    ver = _n3_probe_version(path)
+    row = {"path": path, "mtime": mtime, "ts": time.time(), "ver": ver}
+    _N3_VER_CACHE.update(row)
+    _ver_cache_put("n_m3u8dl", row)
+    return ver
+
+
+def _n3_probe_version(path: str) -> str:
     try:
         kw: dict = {"capture_output": True, "timeout": 8, "text": True}
         if sys.platform == "win32":
@@ -4883,6 +5024,8 @@ def update_n_m3u8dl(log: Callable = print) -> str:
     return f"成功 {_NM3U8DL_TAG} → {ver}"
 
 
+
+
 # ---------- aria2c：安装入口与「连不上」的人话 ----------
 # 磁力/种子只有 aria2 一条路。本机没有 aria2c 时「自动拉起」是空的，界面只剩 urllib 甩出来的
 # WinError 10061，看不出下一步该干什么，所以这里补两件事：报错按「为什么连不上」分档说清，
@@ -4932,6 +5075,9 @@ def aria2_err_cn(err, cfg_data: Optional[dict] = None, app_dir: Optional[Path] =
     return f"aria2 连接异常：{s[:160]}"
 
 
+_ARIA2_VER_CACHE: dict = {}
+
+
 def aria2_local_version() -> str:
     """本机 aria2c 的版本行；没装返回空串（「组件与依赖」那行按它决定显示「未安装」）。"""
     try:
@@ -4942,15 +5088,31 @@ def aria2_local_version() -> str:
     if not p:
         return ""
     try:
+        mtime = Path(p).stat().st_mtime
+    except Exception:
+        mtime = 0.0
+    c = _ARIA2_VER_CACHE
+    if (c.get("path") == p and c.get("mtime") == mtime
+            and time.time() - float(c.get("ts") or 0.0) < VER_CACHE_TTL):
+        return str(c.get("ver") or "")
+    disk = _ver_cache_get("aria2")
+    if disk.get("path") == p and float(disk.get("mtime") or 0.0) == mtime:
+        _ARIA2_VER_CACHE.update(disk)
+        return str(disk.get("ver") or "")
+    try:
         kw: dict = {"capture_output": True, "timeout": 8, "text": True}
         if sys.platform == "win32":
             kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         r = subprocess.run([p, "--version"], **kw)
         out = ((r.stdout or "") + (r.stderr or "")).strip()
         line = (out.splitlines() or [""])[0].strip()
-        return line[:80] if line else Path(p).name
+        ver = line[:80] if line else Path(p).name
     except Exception:
-        return Path(p).name
+        ver = Path(p).name
+    row = {"path": p, "mtime": mtime, "ts": time.time(), "ver": ver}
+    _ARIA2_VER_CACHE.update(row)
+    _ver_cache_put("aria2", row)
+    return ver
 
 
 def _extract_aria2_archive(tmp: Path, log: Callable) -> bool:
@@ -5865,6 +6027,21 @@ def archive_filename(audio_only: bool) -> str:
     return "download_archive_audio.txt" if audio_only else "download_archive.txt"
 
 
+# check_ytdlp() 的结果缓存（语义见 DownloaderEngine.check_ytdlp 里的注释）
+_YTDLP_VER_CACHE: dict = {}
+
+
+def _ytdlp_probe_sig() -> str:
+    """本地 yt-dlp 换文件（升级/修复提取器）时让落盘缓存立刻失效。"""
+    parts = []
+    for p in (YTDLP_LOCAL_PKG / "version.py", YTDLP_LOCAL_PKG / "extractor" / "youtube.py"):
+        try:
+            parts.append(str(p.stat().st_mtime))
+        except Exception:
+            parts.append("")
+    return "|".join(parts)
+
+
 class DownloaderEngine:
     def __init__(self, log_cb=None, ffmpeg_mgr: FFmpegManager = None):
         self.log = log_cb or (lambda m, level="info", k="", kv=None: print(m))
@@ -5888,6 +6065,25 @@ class DownloaderEngine:
         return self._err_notes.pop(task_id or "", "")
 
     def check_ytdlp(self) -> str:
+        # 探测体里的 gen_extractor_classes() 每次都要实例化近两千个提取器类，
+        # /api/status 却每次都问 —— 挂机轮询下这是内存与 CPU 双重的账。结果落盘 24 小时，
+        # 重启也不重复探测；本地包换了文件（mtime 变）或更新完成时立刻失效。
+        now = time.time()
+        sig = _ytdlp_probe_sig()
+        c = _YTDLP_VER_CACHE
+        if c.get("ver") and c.get("sig") == sig and now - float(c.get("ts") or 0.0) < VER_CACHE_TTL:
+            return str(c["ver"])
+        disk = _ver_cache_get("ytdlp")
+        if disk.get("ver") and disk.get("sig") == sig:
+            _YTDLP_VER_CACHE.update(disk)
+            return str(disk["ver"])
+        out = self._probe_ytdlp_version()
+        row = {"ts": time.time(), "sig": sig, "ver": out}
+        _YTDLP_VER_CACHE.update(row)
+        _ver_cache_put("ytdlp", row)
+        return out
+
+    def _probe_ytdlp_version(self) -> str:
         _prefer_local_ytdlp()
         try:
             import yt_dlp
@@ -11374,6 +11570,76 @@ ffmpeg_mgr.manual_path = (cfg.data.get("ffmpeg_path") or "").strip()
 engine = DownloaderEngine(log_cb=lambda m, level="info", k="", kv=None: log_mgr.log(m, level, k=k, kv=kv),
                           ffmpeg_mgr=ffmpeg_mgr)
 queue = TaskQueue(engine, cfg, log_mgr, history_mgr)
+
+
+def _idle_cleanup_once() -> dict:
+    """释放可重建的缓存；只在没有请求、队列空闲、没有 AI 作业时由守护线程调用。"""
+    stats = {"models": 0, "info": 0, "preview": 0, "preview_mb": 0.0}
+    with _AI_JOBS_LOCK:
+        ai_busy = _AI_JOBS["active"] > 0
+    if not ai_busy:
+        models = globals().get("_FW_MODEL_CACHE")
+        if isinstance(models, dict) and models:
+            stats["models"] = len(models)
+            models.clear()
+    info = getattr(engine, "_info_cache", None)
+    if isinstance(info, dict) and info:
+        stats["info"] = len(info)
+        info.clear()
+    # 版本号只清内存：落盘那份 24 小时有效，下一问立刻读回，不会再起子进程
+    ffmpeg_mgr._ver_cache.clear()
+    _YTDLP_VER_CACHE.clear()
+    _N3_VER_CACHE.clear()
+    _WHISPER_ST_CACHE.clear()
+    _ARIA2_VER_CACHE.clear()
+    if PREVIEW_DIR.is_dir():
+        cutoff = time.time() - IDLE_PREVIEW_KEEP_SEC
+        for p in PREVIEW_DIR.iterdir():
+            try:
+                if p.is_file() and p.stat().st_mtime < cutoff:
+                    size = p.stat().st_size
+                    p.unlink()
+                    stats["preview"] += 1
+                    stats["preview_mb"] += size / (1024 * 1024)
+            except Exception:
+                pass
+    _IDLE_STATE.update(cleaned_at=time.time(), runs=int(_IDLE_STATE["runs"]) + 1,
+                       stats=dict(stats))
+    if stats["models"] or stats["info"] or stats["preview"]:
+        log_mgr.log(
+            f"闲置清理：释放 {stats['models']} 个 AI 模型、{stats['info']} 条解析缓存、"
+            f"{stats['preview']} 个预览文件（{stats['preview_mb']:.1f} MB）",
+            k="srv.idle.cleaned",
+            kv={"models": stats["models"], "info": stats["info"],
+                "preview": stats["preview"], "mb": f"{stats['preview_mb']:.1f}"})
+    return stats
+
+
+def _idle_janitor_tick(now: float = None) -> Optional[dict]:
+    """到点且确实闲着才清；一轮空闲只清一次，新的请求会重新计时。"""
+    now = time.time() if now is None else now
+    last = float(_IDLE_STATE["last"])
+    if now - last < IDLE_CLEAN_SEC or float(_IDLE_STATE["cleaned_at"]) >= last:
+        return None
+    if queue.running or queue.pending:
+        return None
+    with _AI_JOBS_LOCK:
+        if _AI_JOBS["active"] > 0:
+            return None
+    if _COMP_ALL.get("running") or _COMP_CHECK.get("status") == "running":
+        return None
+    return _idle_cleanup_once()
+
+
+def _idle_janitor_loop() -> None:
+    while True:
+        time.sleep(max(0.2, IDLE_CLEAN_TICK))
+        try:
+            _idle_janitor_tick()
+        except Exception:
+            pass
+
+
 tg_notifier = TelegramNotifier(cfg, log=lambda m, level="info", k="", kv=None: log_mgr.log(m, level, k=k, kv=kv))
 # Telegram 用户会话（私有/需登录频道）：客户端要跨请求存活，所以是模块级单例
 from telegram_mt import TelegramSession  # noqa: E402
@@ -11701,6 +11967,8 @@ _auth_state_load()
 
 @app.middleware("http")
 async def web_auth_middleware(request: Request, call_next):
+    if request.url.path not in _ACTIVITY_EXEMPT:
+        _note_activity()
     why = _auth_gate_reason(request)
     if why:
         return _auth_denied(request, why)
@@ -12147,8 +12415,22 @@ def index():
     return HTMLResponse("<h1>缺少 static/index.html</h1>")
 
 
+_WHISPER_ST_CACHE: dict = {}
+
+
 def whisper_status() -> dict:
     """检测 faster-whisper / CLI 是否可用。"""
+    # 未安装时「import faster_whisper」的失败不会被 Python 缓存，/api/status 每问一次
+    # 都要把 sys.path 重扫一遍 —— 挂机轮询下这笔账不小。结果落盘 24 小时，
+    # 重启后先读盘；装完 / 改完会主动失效。返回拷贝，免得调用方改了缓存里的那份。
+    now = time.time()
+    if (_WHISPER_ST_CACHE.get("data") is not None
+            and now - float(_WHISPER_ST_CACHE.get("ts") or 0.0) < VER_CACHE_TTL):
+        return dict(_WHISPER_ST_CACHE["data"])
+    disk = _ver_cache_get("whisper")
+    if isinstance(disk.get("data"), dict):
+        _WHISPER_ST_CACHE.update(disk)
+        return dict(disk["data"])
     info = {
         "faster_whisper": False,
         "cli": _find_local_whisper_bin() or "",
@@ -12167,6 +12449,9 @@ def whisper_status() -> dict:
         info["label"] = f"CLI: {Path(info['cli']).name}"
     elif info["cli"] and info["faster_whisper"]:
         info["label"] = f"{info['label']} + CLI"
+    row = {"ts": time.time(), "data": dict(info)}
+    _WHISPER_ST_CACHE.update(row)
+    _ver_cache_put("whisper", row)
     return info
 
 
@@ -14232,6 +14517,9 @@ def api_update_whisper(body: dict = None):
             log=lambda m, level="info": log_mgr.log(m, level),
             model=str(model),
         )
+        # 装完了就别让 /api/status 继续端旧缓存（没装成也清：让「未安装」重新探一次）
+        _WHISPER_ST_CACHE.clear()
+        _ver_cache_drop("whisper")
         log_mgr.log(f"Whisper 更新结果: {res}", k="srv.comp.whisper_update_result", kv={"res": res})
 
     threading.Thread(target=job, daemon=True).start()
@@ -14278,6 +14566,8 @@ def api_status():
         "throttle": HOST_THROTTLE.snapshot(),
         "adaptive_throttle": bool(cfg.data.get("adaptive_throttle", True)),
         "po_token": po_token_health(),
+        "idle_clean_at": float(_IDLE_STATE["cleaned_at"]),
+        "idle_clean": dict(_IDLE_STATE["stats"]),
     }
 
 
@@ -14337,6 +14627,9 @@ def _disk_free_gb(path: str) -> float:
 def api_update_ytdlp():
     def job():
         res = engine.update_ytdlp()
+        # 版本可能变了：清掉 check_ytdlp 的缓存，让下一次状态查询立刻看到新版本
+        _YTDLP_VER_CACHE.clear()
+        _ver_cache_drop("ytdlp")
         log_mgr.log(f"yt-dlp 更新结果: {res}", k="srv.comp.ytdlp_update_result", kv={"res": res})
 
     threading.Thread(target=job, daemon=True).start()
@@ -14347,6 +14640,9 @@ def api_update_ytdlp():
 def api_update_ffmpeg():
     def job():
         ok = ffmpeg_mgr.update()
+        # 版本可能变了：缓存按 mtime 自动失效，这里顺手再清一次，更新完立刻读到新版本
+        ffmpeg_mgr._ver_cache.clear()
+        _ver_cache_drop("ffmpeg")
         # 条件句拆成两处调用（口径同 #55 前几批）：落盘的中文一个字不变，英文才有两把键可拼
         if ok:
             log_mgr.log("FFmpeg 更新结果: 成功", k="srv.comp.ffmpeg_update_ok")
@@ -14361,6 +14657,9 @@ def api_update_ffmpeg():
 def api_update_n_m3u8dl():
     def job():
         res = update_n_m3u8dl(log=lambda m, level="info": log_mgr.log(m, level))
+        # 版本可能变了：缓存按 mtime 自动失效，这里顺手再清一次
+        _N3_VER_CACHE.clear()
+        _ver_cache_drop("n_m3u8dl")
         log_mgr.log(f"N_m3u8DL-RE 更新结果: {res}", k="srv.comp.nm3u8dl_update_result", kv={"res": res})
 
     threading.Thread(target=job, daemon=True).start()
@@ -14371,6 +14670,8 @@ def api_update_n_m3u8dl():
 def api_update_aria2():
     def job():
         res = update_aria2(log=lambda m, level="info": log_mgr.log(m, level))
+        _ARIA2_VER_CACHE.clear()
+        _ver_cache_drop("aria2")
         log_mgr.log(f"aria2c 安装结果: {res}", k="srv.comp.aria2_install_result", kv={"res": res})
 
     threading.Thread(target=job, daemon=True).start()
@@ -14519,7 +14820,7 @@ def api_env_path(body: dict = None):
 
 BUNDLED_FILE = APP_DIR / "components_bundled.json"
 _bundled_cache: dict = {"mtime": None, "data": {}}
-LATEST_TTL = 600
+LATEST_TTL = VER_CACHE_TTL
 _latest_cache: dict = {"ts": 0.0, "mirror": None, "data": {}}
 
 
@@ -14549,16 +14850,24 @@ def _bundled_version(manifest: dict, item: dict) -> str:
 
 
 def latest_versions_cached(mirror: str) -> dict:
-    """上游最新版要问 pip（一次约两秒），所以只在页面点「查询最新版本」时才查，结果缓存 10 分钟。"""
+    """上游最新版要问 pip（一次约两秒）。结果进程内 + 落盘各存 24 小时：
+    页面重开、程序重启都不会重复联网；只有超过 24 小时或手动「立即检测」才真正去查。"""
     now = time.time()
     if _latest_cache["data"] and _latest_cache["mirror"] == mirror and now - _latest_cache["ts"] < LATEST_TTL:
         return _latest_cache["data"]
+    disk = _ver_cache_get("latest")
+    if (disk.get("mirror") == mirror and isinstance(disk.get("data"), dict)
+            and disk.get("data")):
+        _latest_cache.update(disk)
+        return disk["data"]
     from voice_tools import SEP_ANALYSIS_PKGS, SEP_ENGINE_PKGS
     # 分离引擎与分析依赖都装在独立 venv 里，组件表那套「当前版本」问不到它们，
     # 所以上游名单也要把它们一起报进去，否则界面上那两行永远只有「当前」没有「最新」。
     names = [p["name"] for p in pkg_update.PIP_PACKAGES] + list(SEP_ENGINE_PKGS) + list(SEP_ANALYSIS_PKGS)
     data = pkg_update.latest_versions(names, mirror)
-    _latest_cache.update(ts=now, mirror=mirror, data=data)
+    row = {"ts": now, "mirror": mirror, "data": data}
+    _latest_cache.update(row)
+    _ver_cache_put("latest", row)
     return data
 
 
@@ -14812,7 +15121,8 @@ def _comp_check_start(force: bool = False) -> dict:
             run = False
     if run:
         if force:
-            _latest_cache["ts"] = 0.0  # 「立即检测」要看真实上游，不许吃 10 分钟前的缓存
+            _latest_cache["ts"] = 0.0  # 「立即检测」要看真实上游，不许吃 24 小时前的缓存
+            _ver_cache_drop("latest")
         threading.Thread(target=_comp_check_worker, daemon=True).start()
     return _comp_check_with_flag()
 
@@ -14855,22 +15165,36 @@ def _comp_update_one(key: str, mirror: str, log: Callable) -> tuple:
         return res == "ok", res
     if key == "ffmpeg":
         ok = bool(ffmpeg_mgr.update())
+        # 更新完立刻读到新版本，别把缓存里的旧号端出去（正常靠 mtime 也会失效，这里兜底）
+        getattr(ffmpeg_mgr, "_ver_cache", {}).clear()
+        _ver_cache_drop("ffmpeg")
         return ok, f"当前 {ffmpeg_mgr.version() or '未安装'}"
     if key == "ytdlp":
         res = str(engine.update_ytdlp() or "")
+        _YTDLP_VER_CACHE.clear()
+        _ver_cache_drop("ytdlp")
         return res.startswith("updated"), f"{res}｜当前 {engine.check_ytdlp()}"
     if key == "n_m3u8dl":
         res = str(update_n_m3u8dl(log=log) or "")
+        _N3_VER_CACHE.clear()
+        _ver_cache_drop("n_m3u8dl")
         return res.startswith("成功"), res
     if key == "aria2":
         res = str(update_aria2(log=log) or "")
+        _ARIA2_VER_CACHE.clear()
+        _ver_cache_drop("aria2")
         # 非 Windows 没有官方预编译包，那句「用 apt 装」是指引不是失败，别算成红项
         return (not res.startswith("下载失败") and not res.startswith("解压")
                 and not res.startswith("装好了，但拉起失败")), res
     if key == "faster-whisper":
         res = str(update_whisper(log=log, model="base") or "")
+        _WHISPER_ST_CACHE.clear()
+        _ver_cache_drop("whisper")
         return not res.startswith("failed"), res
     ok, res = pkg_update.pip_install([key], log=log, mirror=mirror)
+    if key == "yt-dlp":
+        _YTDLP_VER_CACHE.clear()
+        _ver_cache_drop("ytdlp")
     return bool(ok), str(res)
 
 
@@ -14978,6 +15302,12 @@ def api_update_pkg(body: dict = None):
 
     def job():
         ok, res = pkg_update.pip_install([name], log=log_mgr.log, mirror=idx)
+        if name == "faster-whisper":
+            _WHISPER_ST_CACHE.clear()
+            _ver_cache_drop("whisper")
+        elif name in ("yt-dlp", "ytdlp"):
+            _YTDLP_VER_CACHE.clear()
+            _ver_cache_drop("ytdlp")
         if ok:
             log_mgr.log(f"{name} 更新结果：成功（{res}）", k="srv.comp.pkg_update_ok",
                         kv={"name": name, "res": res})
@@ -19728,7 +20058,7 @@ def api_music_preview(id: str = "", url: str = ""):
                         audio = pth
                         break
             if audio and audio.is_file():
-                prev_dir = APP_DIR / "_preview"
+                prev_dir = PREVIEW_DIR
                 prev_dir.mkdir(parents=True, exist_ok=True)
                 # 这份缓存以前摊在用户的下载目录里、看得见才会被手动清；搬进工具文件夹后得自己收
                 old_prev = sorted((p for p in prev_dir.iterdir() if p.is_file()),
@@ -25507,6 +25837,9 @@ def main():
                         k="srv.boot.component_check_failed", kv={"e": str(e)})
 
     threading.Thread(target=_boot_component_check, daemon=True).start()
+
+    # 闲置清理守护：长时间没人打开界面时释放模型与临时文件，防止隔夜后带着一堆缓存变慢
+    threading.Thread(target=_idle_janitor_loop, daemon=True).start()
 
     # PO Token 服务端就在 tools/ 里，门控开着却没人在听时由程序补拉一次。
     # 放后台线程：node 起来要一两秒，不该压在启动路径上；拉不起来也只是那行状态变灰，不影响别的功能
