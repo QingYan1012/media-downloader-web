@@ -63,9 +63,32 @@
 - **顺手脱敏**：`server.py` 的一句报错示例、`music_search.py` 的「本机实测」注释与 `telegram_mt.py` 的 docstring 里写死了本机代理端口，换成通用写法（`127.0.0.1:1080` 与 `<端口>` 占位，只替这一截地址，其余读数照抄）。这三处从 v1.4.0 起就在包里，不是本轮引入的；本机状态文件 `config.json` 本来就不进包、也不入库。
 - `appVersion` 进到 `v1.5.4`。
 
-### 发布物读数
+### 发布物读数（2026-10-26 19:08 构建）
 
-（出包后补记：zip 字节数、sha256、条目数、包内与源码的逐字节比对、sidecar 复核。）
+- **产物**：`dist\MediaDownloader-1.5.4-portable.zip` **230,684,164 B（220.0 MB）**，sha256
+  `b13b148c878113f86f0bd85533b795ba31791dd5364d5bb6f426645a10e15c02`，10,906 个条目；旁路 `.sha256` 在 `dist/` 里
+  `sha256sum -c` 通过，另起一遍独立复算与 sidecar 相等。包目录 595,251,353 B（567.7 MB）：runtime 322.4 MB /
+  9,795 个文件、tools 234.5 MB、chromaprint 4.0 MB、static 3.0 MB、docs 1.4 MB，extension / plugins / cookies 都是
+  KB 级占位。
+- **打包自检**：随包清单 18 个依赖 + 3 个工具（ffmpeg 9.0.1、yt-dlp.exe 2026.10.21、N_m3u8DL-RE 0.6.0）；必进包文件齐
+  （static 里 13 项）；清掉 21 个 `__pycache__`；15 个顶层模块在包内 import 全过；包内 pip 装 → 导入通过；起包内服务
+  冒烟，组件接口三档版本齐全、随包清单命中 12 项；清单记 `app = 1.5.4`、`python = 3.12.2`、`built = 2026-10-26 19:08`。
+- **与源码比对**：包内 58 个应用文件条目，54 个与工作树逐字节一致（折叠 CRLF），4 个由打包器生成
+  （`components_bundled.json` / `使用说明.txt` / `启动.bat` / cookies 占位说明），没有来路不明的条目。私密与状态文件
+  零命中（`config.json`、`cookies.txt`、`history.json`、`app.log`、`*.bak-*`、`__pycache__`、`.pyc` 都没进包），
+  `Downloads` / `Whisper` / `browser_sniff_profile` / `local_index` 这几类本机目录在压缩前就被删掉（1.5.3 那份也一样）；
+  包内文本里本机代理端口 0 命中 —— 上一版包里那三处本轮已脱敏。包内 `CHANGELOG.md` 是 CRLF（2123 行全带回车、
+  裸 LF 0），含 v1.5.4 这一节，不含本节哈希（包内那份停在出包前，写的就是「读数在出包后补记」）。
+- **修复确实在包里**：包内 `server.py` 有 `_subtitle_tracks()`、`js_runtimes["node"] = {"path": node_path}` 与
+  `parse_options(["--ignore-config", "--download-sections", sec])`；包内 `voice_tools.py` 有「未产生译文」那道抛错；
+  包内 `static/index.html` 版本号只有一处且是 `v1.5.4`，解析页字幕区块在。
+- **runtime 复用**：`PKGS` 与 `requirements.txt` 本轮一字未动，完整构建仍会卡在 `zhconv==1.4.3`（当前源只到 1.4.1），
+  所以照既有做法把 v1.5.3 那份已验证 runtime 整份复制进来（11,179 个文件，清掉 `__pycache__` 后 9,795 个）再
+  `--skip-runtime` 完成复制与四道自检。运行环境与 1.5.2 / 1.5.3 同一组合。
+- **产物真的变了**：zip 大小与 1.5.3 那份不同（230,684,164 B vs 230,674,638 B），条目 10,906，mtime 是本次构建；
+  构建退出码之外，以上读数才是证据。
+- **标签 / 发布**：本笔提交随后推送 `origin/main`；未建 / 未移标签，未动 GitHub Release —— zip 不在仓库里
+  （`dist/` 被白名单挡住），Release 资产要手动上传，等点头。
 
 ---
 
