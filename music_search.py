@@ -1770,7 +1770,7 @@ PLAYLIST_API_HOSTS: Dict[str, tuple] = {
 def _system_proxy() -> str:
     """返回 OS/环境变量里已生效的 HTTP(S) 代理（没有则 ""）。
 
-    本机实测：应用设置里没填代理，注册表却挂着 127.0.0.1:7897，requests/urllib 会自动走
+    本机实测：应用设置里没填代理，注册表却挂着一个本机代理地址（按脱敏口径这里不写死端口），requests/urllib 会自动走
     它 —— 这时再劝用户「去设置里填 HTTP 代理」是错的，真正该查的是代理节点通不通。
     """
     try:

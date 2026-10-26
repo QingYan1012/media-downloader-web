@@ -279,7 +279,7 @@ class TelegramSession:
         return asyncio.run_coroutine_threadsafe(coro, self._loop).result(timeout)
 
     def _proxy(self):
-        """tgmt_proxy 填 '127.0.0.1:7897' 这种 SOCKS5 地址；留空 = 直连（Python 不读注册表代理）。"""
+        """tgmt_proxy 填 '127.0.0.1:<端口>' 这种 SOCKS5 地址（端口按脱敏口径写成占位）；留空 = 直连（Python 不读注册表代理）。"""
         raw = str(self.cfg_get().get("tgmt_proxy") or "").strip()
         if not raw:
             return None

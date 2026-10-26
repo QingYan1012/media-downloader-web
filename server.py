@@ -17037,7 +17037,7 @@ def api_tgmt_config(body: TgmtConfigBody):
     if body.proxy is not None:
         raw = str(body.proxy).strip()
         if raw and not re.fullmatch(r"(?:socks5h?://)?[\w.-]+:\d{2,5}", raw):
-            raise HTTPException(400, "代理要么留空，要么写成 socks5 的 host:port（例如 127.0.0.1:7897）")
+            raise HTTPException(400, "代理要么留空，要么写成 socks5 的 host:port（例如 127.0.0.1:1080）")
         cfg.data["tgmt_proxy"] = raw
         changed.append("proxy")
     if body.session_name is not None:
