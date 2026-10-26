@@ -7325,11 +7325,18 @@ class DownloaderEngine:
                     if not sec.startswith("*"):
                         sec = "*" + sec
                     try:
-                        from yt_dlp.utils import download_range_func
-                        opts["download_ranges"] = download_range_func(None, [sec])
+                        # 区间是 "*start-end" 字符串，download_range_func 只吃 (start, end) 数值对；
+                        # 直接塞字符串会在遍历时按字符解包（too many values to unpack）。
+                        # 用 yt-dlp 自己的 CLI 解析器，逗号多段/负时间/inf 与命令行同口径。
+                        from yt_dlp import parse_options
+                        parsed = parse_options(["--ignore-config", "--download-sections", sec])
+                        range_func = parsed.ydl_opts.get("download_ranges")
+                        if not range_func:
+                            raise ValueError("没有解析出可用的起止时间")
+                        opts["download_ranges"] = range_func
                         self.log(f"[{task_id[:8]}] 片段裁剪: {sec}",
                                  k="srv.download.section_clip", kv={"tid": task_id[:8], "sec": sec})
-                    except Exception as e:
+                    except (Exception, SystemExit) as e:
                         self.log(f"[{task_id[:8]}] 片段参数无效，忽略: {e}", "warning",
                                  k="srv.download.section_invalid", kv={"tid": task_id[:8], "e": str(e)})
                 # 风控：请求间隔
@@ -10980,6 +10987,8 @@ class TaskQueue:
             "embed_thumb", "embed_meta", "embed_chapters",
             "embed_sub", "subtitle_langs", "audio_only",
             "local_ai_transcribe", "local_ai_translate", "local_ai_lang",
+            "local_ai_mt_after_transcribe",
+            "subtitle_target_lang", "subtitle_translate_provider",
             "whisper_model", "whisper_device", "whisper_compute",
             "skip_downloaded", "verify_download", "allow_playlist", "sponsorblock",
             "playlist_subdir", "playlist_folder",
@@ -12161,6 +12170,9 @@ class AddUrlsBody(BaseModel):
     audio_only: bool = False
     embed_sub: bool = True
     subtitle_langs: str = "all"
+    subtitle_target_lang: Optional[str] = None
+    subtitle_translate_provider: Optional[str] = None
+    local_ai_mt_after_transcribe: Optional[bool] = None
     download_danmaku: bool = True
     embed_thumb: bool = True
     embed_meta: bool = True
@@ -16536,6 +16548,7 @@ def api_analyze(body: AnalyzeBody):
             "webpage_url": info.get("webpage_url") or body.url,
             "entries": entries,
             "formats": [],
+            "subtitles": [],
             "thumbnail": info.get("thumbnail") or "",
         }
     return _analyze_single_formats(info, body.url)
@@ -16640,6 +16653,41 @@ def _audio_abrs(formats: list) -> List[float]:
     return [round(a, 1) for a in got[:8]]
 
 
+def _subtitle_tracks(info: dict) -> List[dict]:
+    """把 yt-dlp 的 subtitles / automatic_captions 收成界面用的一行一条。
+
+    同一语言两边都有时只留人工那份（下载时 yt-dlp 也优先人工），live_chat 是弹幕不是字幕。
+    """
+    out: List[dict] = []
+
+    def _add(lang, arr, auto: bool):
+        lang = str(lang or "").strip()
+        if not lang or lang == "live_chat" or not arr:
+            return
+        name = ""
+        exts: List[str] = []
+        for a in arr:
+            if not isinstance(a, dict):
+                continue
+            if not name and a.get("name"):
+                name = str(a.get("name"))
+            ext = str(a.get("ext") or "").strip()
+            if ext and ext not in exts:
+                exts.append(ext)
+        if not exts:
+            return
+        out.append({"lang": lang, "name": name, "auto": bool(auto), "formats": exts})
+
+    for lang, arr in (info.get("subtitles") or {}).items():
+        _add(lang, arr, False)
+    have = {x["lang"] for x in out}
+    for lang, arr in (info.get("automatic_captions") or {}).items():
+        if lang not in have:
+            _add(lang, arr, True)
+    out.sort(key=lambda x: (x["auto"], x["lang"]))
+    return out
+
+
 def _analyze_single_formats(info: dict, url: str) -> dict:
     """单视频的解析结果：格式清单 + 画质/编码/音质三排选项都从这里来。"""
     formats = []
@@ -16704,6 +16752,7 @@ def _analyze_single_formats(info: dict, url: str) -> dict:
         "webpage_url": info.get("webpage_url") or url,
         "thumbnail": info.get("thumbnail") or "",
         "formats": formats[:120],
+        "subtitles": _subtitle_tracks(info),
         "quality_presets": quality_presets,
         "tier_sizes": _estimate_tier_sizes(formats),
         "platform": detect_platform(info.get("webpage_url") or url),

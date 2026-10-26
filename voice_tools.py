@@ -1114,6 +1114,10 @@ def translate_batch_deep_translator(
     # 对齐长度
     while len(out) < len(texts):
         out.append(texts[len(out)])
+    # 一条都没变 = 这一路实际上没翻译（Google 免费接口限流时就这样）。
+    # 别把原文当译文返回给上层，抛出后由 translate_with_fallback 换下一个引擎。
+    if texts and all((a or "").strip() == (b or "").strip() for a, b in zip(out, texts)):
+        raise RuntimeError("deep-translator 未产生译文（可能被限流）")
     return out[: len(texts)]
 
 

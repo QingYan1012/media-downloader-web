@@ -3254,6 +3254,65 @@
                 <div v-if="tierSizeText" class="hint hint--block" style="margin-top:8px">{{ tierSizeText }}</div>
                 <div class="hint" style="margin-top:8px">{{ tr('info.tierFmtHint') }}</div>
               </div>
+              <div v-if="mediaInfo.type !== 'playlist' && !(mediaInfo.entries && mediaInfo.entries.length)" style="margin-top:18px">
+                <div class="section-title">
+                  {{ tr('info.subTitle', { n: infoSubTracks.length }) }}
+                  <span class="hint" v-if="infoSubTracks.length" style="font-weight:400;margin-left:8px">{{ tr('info.subSelected', { n: subLangList.length }) }}</span>
+                </div>
+                <div v-if="infoSubTracks.length" class="chip-row">
+                  <div
+                    v-for="s in infoSubTracks"
+                    :key="s.lang + (s.auto ? ':auto' : ':manual')"
+                    class="chip"
+                    :class="{ active: subLangList.includes(s.lang) }"
+                    @click="toggleInfoSub(s.lang)"
+                  >{{ subTrackLabel(s) }}<span style="opacity:.55;margin-left:5px;font-size:11px">{{ s.auto ? tr('info.subAuto') : tr('info.subManual') }}</span></div>
+                </div>
+                <div v-else class="hint hint--block">{{ tr('info.subNone') }}</div>
+                <div class="row row--tight" style="margin-top:8px">
+                  <el-button v-if="infoSubTracks.length" size="small" @click="selectAllInfoSubs">{{ tr('info.subAll') }}</el-button>
+                  <el-button v-if="infoSubTracks.length" size="small" @click="clearInfoSubs">{{ tr('info.subClear') }}</el-button>
+                  <el-button size="small" type="primary" plain @click="downloadFromInfo"><svg class="btn-ico"><use href="#i-download"></use></svg>{{ tr('info.subDownload') }}</el-button>
+                  <span class="hint" style="margin:0">{{ tr('info.subHint') }}</span>
+                </div>
+                <div class="row row--loose" style="margin-top:12px;flex-wrap:wrap">
+                  <div class="home-group" style="flex:1;min-width:260px;margin:0">
+                    <div class="tile-label">{{ tr('info.subDlOptions') }}</div>
+                    <div class="home-checks">
+                      <el-checkbox v-model="opts.embed_sub">{{ tr('home.embedSub') }}</el-checkbox>
+                      <el-checkbox v-model="opts.write_sub_files">{{ tr('home.writeSubFiles') }}</el-checkbox>
+                      <el-checkbox v-model="opts.local_ai_transcribe">{{ tr('home.aiTranscribe') }}</el-checkbox>
+                    </div>
+                    <div class="hint">{{ tr('info.subDlHint') }}</div>
+                  </div>
+                  <div class="home-group" style="flex:1;min-width:300px;margin:0">
+                    <div class="tile-label">{{ tr('info.subTranslateOptions') }}</div>
+                    <div class="home-checks">
+                      <el-checkbox v-model="opts.local_ai_mt_after_transcribe">{{ tr('info.subMtAfter') }}</el-checkbox>
+                    </div>
+                    <div class="row row--tight" style="margin-top:8px" v-if="opts.local_ai_mt_after_transcribe">
+                      <span class="hint" style="margin:0">{{ tr('info.subTargetLang') }}</span>
+                      <el-select v-model="opts.subtitle_target_lang" size="small" style="width:110px">
+                        <el-option :label="tr('common.langZh')" value="zh"></el-option>
+                        <el-option :label="tr('common.langEn')" value="en"></el-option>
+                        <el-option :label="tr('common.langJa')" value="ja"></el-option>
+                        <el-option :label="tr('common.langKo')" value="ko"></el-option>
+                      </el-select>
+                      <span class="hint" style="margin:0">{{ tr('info.subMtEngine') }}</span>
+                      <el-select v-model="opts.subtitle_translate_provider" size="small" style="width:130px">
+                        <el-option label="DeepL" value="deepl"></el-option>
+                        <el-option label="OpenAI" value="openai"></el-option>
+                        <el-option label="Claude" value="claude"></el-option>
+                        <el-option label="Gemini" value="gemini"></el-option>
+                        <el-option :label="tr('settings.mtOptGoogle')" value="google"></el-option>
+                        <el-option :label="tr('settings.mtOptDeepTranslator')" value="deep_translator"></el-option>
+                        <el-option :label="tr('settings.mtOptAzure')" value="azure"></el-option>
+                      </el-select>
+                    </div>
+                    <div class="hint">{{ tr('info.subTranslateHint') }}</div>
+                  </div>
+                </div>
+              </div>
               <div v-if="mediaInfo.entries && mediaInfo.entries.length" style="margin-top:18px">
                 <div class="section-title">{{ tr('info.entriesCount', { n: mediaInfo.entries.length }) }}</div>
                 <div class="row row--flush" style="margin-bottom:8px">
@@ -7010,6 +7069,9 @@
           prefer_codec: 'auto',
           write_sub_files: true,
           subtitle_langs: 'zh-Hans,zh-CN,zh,zh-Hant,zh-TW',
+          subtitle_target_lang: 'zh',
+          subtitle_translate_provider: 'deepl',
+          local_ai_mt_after_transcribe: false,
           download_section: '',
           download_later: false,
           use_hls_engine: false,
@@ -7072,6 +7134,39 @@
         const status = ref({ ffmpeg: '-', ytdlp: '-', running: 0, ffmpeg_path: '', cookie_source: 'none' });
         const tasks = ref([]);
         const mediaInfo = ref(null);
+        const infoSubTracks = computed(() => (mediaInfo.value && mediaInfo.value.subtitles) || []);
+        function subTrackLabel(t) {
+          const code = String((t && t.lang) || '');
+          const hit = subLangOptions.value.find(o => o.value === code);
+          return hit ? hit.label : ((t && t.name) || code);
+        }
+        function initInfoSubLangs() {
+          const tracks = infoSubTracks.value;
+          if (!tracks.length) return;
+          const avail = new Set(tracks.map(t => t.lang));
+          let keep = subLangList.value.filter(l => avail.has(l));
+          if (!keep.length) {
+            const manual = tracks.filter(t => !t.auto);
+            keep = (manual.length ? manual : tracks).slice(0, 1).map(t => t.lang);
+          }
+          subLangList.value = keep;
+          syncSubLangsToOpts();
+        }
+        function toggleInfoSub(lang) {
+          if (!lang) return;
+          const i = subLangList.value.indexOf(lang);
+          if (i >= 0) subLangList.value.splice(i, 1);
+          else subLangList.value.push(lang);
+          syncSubLangsToOpts();
+        }
+        function selectAllInfoSubs() {
+          subLangList.value = infoSubTracks.value.map(t => t.lang);
+          syncSubLangsToOpts();
+        }
+        function clearInfoSubs() {
+          subLangList.value = [];
+          syncSubLangsToOpts();
+        }
         const selectedQuality = ref('');
         // 解析页的画面编码筛选：'' = 全部，其余取 _resolve_format 认的 prefer_codec 值
         const infoCodec = ref('');
@@ -8914,6 +9009,9 @@
             if (!subLangList.value.length) {
               subLangList.value = ['zh-Hans', 'zh-CN', 'zh', 'zh-Hant', 'zh-TW'];
             }
+            opts.value.subtitle_target_lang = data.subtitle_target_lang || 'zh';
+            opts.value.subtitle_translate_provider = data.subtitle_translate_provider || 'deepl';
+            opts.value.local_ai_mt_after_transcribe = !!data.local_ai_mt_after_transcribe;
             settings.value.proxy = data.proxy || '';
             settings.value.proxy_mode = ['auto', 'always', 'none'].includes(data.proxy_mode) ? data.proxy_mode : 'auto';
             const pbp = data.proxy_by_platform || {};
@@ -13731,6 +13829,7 @@
             infoCodec.value = '';
             selectedQuality.value = '';
             entryRange.value = { from: 1, to: (mediaInfo.value.entries || []).length || 1 };
+            initInfoSubLangs();
             page.value = 'info';
             ElementPlus.ElMessage.success(tr('home.tParseDone'));
           } catch (e) {
@@ -15214,6 +15313,7 @@ const CFG_KEYS = {
           page, navCollapsed, navs, navGroups, CREDITS, appVersion, tr, uiLang, UI_LANGS, epLocale, setLang, palette, paletteInput, paletteRows, paletteGroups, kbdMod, openPalette, closePalette, runPalette, banners, dismissBanner, ctxMenu, runCtxItem, queueStat, subNewTotal, navBadge, navDot, pageTitle, urlText, urlPasteStat, extractUrls, friendlyError, glossaryStat, checkGlossary, speedWinStat, checkSpeedWindows, queueWindow, windowHeld, queueRows, queueLabel, runWinStat, checkRunWindows, exportBilingual, exportBilingualSelected, pipelineRow, pipelineView, showPipeline, closePipeline, refreshPipeline, rerunStage, pipeStatusLabel, pipeStatusType, opts, videoQualities, audioQualities, formats, codecOptions,
           pagers, favSort, onFavSortChange, musicSort, onMusicSortChange, tgSort, onTgSortChange,
           subLangOptions, subLangList, selectAllSubLangs, clearSubLangs,
+          infoSubTracks, subTrackLabel, toggleInfoSub, selectAllInfoSubs, clearInfoSubs,
           selectedIds, selectAll, queuePaused, taskSort, sseOn, toggleSelect, toggleSelectAll,
           pauseSelected, resumeSelected, deleteSelected, pinSelected, unpinSelected, moveTopSelected, laterSelected, startLaterSelected, pauseAll, resumeAll, resetThrottle, poStat, poChecking, checkPoToken, browsePath, loadTasks,
           status, tasks, mediaInfo, fileItems, filesPath, filesRoot,
