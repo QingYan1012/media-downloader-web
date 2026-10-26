@@ -6340,6 +6340,13 @@ class DownloaderEngine:
             opts["cookiesfrombrowser"] = (ck_val, None, None, None)
         elif ck_kind == "file":
             opts["cookiefile"] = ck_val
+        # yt-dlp 只默认启用 deno 解 YouTube 的签名/n 挑战；本机只有 node 时挑战求解会静默失败，
+        # 清单里只剩 storyboard（还被当成了 180p 视频），下载必然报 No video formats found
+        js_runtimes = {"deno": {}}
+        node_path = shutil.which("node")
+        if node_path:
+            js_runtimes["node"] = {"path": node_path}
+        opts["js_runtimes"] = js_runtimes
         extra_args = str(cfg.get("ytdlp_extra_args") or "").strip()
         if for_info:
             # 解析阶段也把参数用上，「解析看到的」和「下载做到的」才是同一套设置；
