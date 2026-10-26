@@ -54,6 +54,7 @@
 - 全量自检 **72 套**（69 个 `*_test.py` + 3 个 `*_e2e.py` / `*_selftest.py`）bad=0，逐项按 `^(PASS|OK)` 行计数；
   本轮新增 `tests/info_subtitle_test.py` 42 项。跑批要带 `PYTHONIOENCODING=utf-8`：不带时 5 套会崩在打印
   `↔` `⏎` `−` `⬛` 这些字符上（`UnicodeEncodeError: 'gbk'`），那是控制台编码，不是断言失败。
+- 合并 Release 正文之后又跑了一遍全量：**72 套 bad=0、4864 项 PASS**，与合并前那次按套件名 join 逐项一致（没有任何一套的通过数变化）；真正读这两份文档的是 `cleanup_test` 159 项与 `info_subtitle_test` 42 项。逐套原始表留在会话目录（`sweep_results_merge.txt` 与 `_sweep_logs_merge/`），不入库 —— 仓库只收源码、文档与自检脚本。
 - 活体读数：YouTube 一支 29 条流 / 25 条视频轨 / 最高 1080p / 字幕 1 条；B 站一支 15 条流 / 12 条视频轨 / 最高 1080p；
   组件 18 行齐、`update-check` available 0；PO Token 插件与服务两层都通；aria2 RPC online；tracker 生效 50 条。
 - 浏览器实测解析页：字幕区块渲染「字幕（已解析 1 条）· 日语 (ja) · 人工」，chip 点掉是「已选 0 种」、点回「已选 1 种」；

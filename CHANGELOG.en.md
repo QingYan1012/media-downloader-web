@@ -266,6 +266,11 @@ solver never running. The analyse page also got the whole row of subtitle option
   this round adds `tests/info_subtitle_test.py` with 42 items. The batch needs `PYTHONIOENCODING=utf-8`: without it
   five suites die while printing unusual characters (`UnicodeEncodeError: 'gbk'`) - console encoding, not a failed
   assertion.
+- After folding the release bodies into this file the full sweep was re-run: **72 suites, bad=0, 4864 PASS
+  lines**, joining against the pre-merge run shows no suite changed its count; the two suites that actually read
+  these documents are `cleanup_test` (159) and `info_subtitle_test` (42). The per-suite table stays in the session
+  directory (`sweep_results_merge.txt`, `_sweep_logs_merge/`) and is not committed - the repository holds source,
+  docs and offline self-tests only.
 - Live readings: one YouTube link 29 formats / 25 video tracks / up to 1080p / 1 subtitle; one Bilibili link
   15 formats / 12 video tracks / up to 1080p; 18 component rows with `update-check` reporting nothing to update; PO
   token plugin and service both reachable; aria2 RPC online; 50 effective trackers.
