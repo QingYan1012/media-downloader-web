@@ -308,8 +308,8 @@ solver never running. The analyse page also got the whole row of subtitle option
   `9cc0865` - the readings commit, so the tag no longer trails the release content the way `v1.4.0` did. The
   GitHub Release was created through the API with both assets: `MediaDownloader-1.5.4-portable.zip`
   (230,684,164 B, `application/zip`) and `.zip.sha256` (101 B, `text/plain`); the asset size equals the local zip
-  and a ranged read-back of the first 16 bytes matches (`504b0304…`). `v1.5.3` still has no tag and this round
-  did not add one.
+  and a ranged read-back of the first 16 bytes matches (`504b0304…`). `v1.5.3` got its tag and Release the same day - see *v1.5.3 backfilled on 2026-10-26* at the end of
+  that section.
 
 ---
 
@@ -388,6 +388,26 @@ subprocesses one by one, while the loaded Whisper model and the URL parse cache 
   self-checks. The pin issue is left for the next packaging round; this archive runs on the same verified
   combination as 1.5.2.
 - **Tag / release**: nothing pushed, no tag created or moved, no Release touched - awaiting approval.
+
+### v1.5.3 backfilled on 2026-10-26
+
+The line above records what was true when the package was cut and is left untouched; only what happened later goes
+here.
+
+- **Tag**: `v1.5.3` was created on 2026-10-26 as a lightweight tag pointing at `636c2c5` (this section's readings
+  commit) and pushed.
+- **Release**: created the same day through the API as `v1.5.3 · 便携包` (id `424184240`, not a draft, not a
+  prerelease) with both assets - `MediaDownloader-1.5.3-portable.zip` 230,674,638 B (`application/zip`) and
+  `.zip.sha256` 101 B (`text/plain`). The local digest was recomputed at backfill time and equals the sidecar:
+  `e45ca61e391ee9a3da921f4fdbf3e93a89367188c18eb4cf6ffe8ea2141241e3`; the remote asset size equals the local file and
+  a ranged read-back of the first 16 bytes matches (`504b030414000000080084604d5d626b`).
+- **A note for users of this build (unknown back then)**: on a machine with Node but no Deno this version gets no
+  separated YouTube streams - yt-dlp 2026.10.21 defaults `js_runtimes` to `{'deno': {}}`, the signature / n
+  challenges go unsolved, the list keeps only the cover storyboard (which the log reports as "about 180p") and the
+  download ends with `No video formats found!`. Section downloads never worked here either. Both are fixed in v1.5.4,
+  and the release body says so: use v1.5.4 day to day.
+- **This archive stays as it was**: the three spots where this machine's proxy port was written into source text
+  (redacted in v1.5.4) were not rewritten - the backfill publishes the 2026-10-23 package, it is not a new build.
 
 ## v1.5.2 · 2026-10-22 — this round's package
 
