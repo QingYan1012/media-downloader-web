@@ -5,6 +5,70 @@
 
 ---
 
+## v1.5.4 · 2026-10-26（本轮出包）
+
+这一轮从「YouTube 下不动」的日志查起：解析写着「完成」，清单里却只有 180p，下载连着三次 `No video formats found!`。
+根子在 yt-dlp 的 JS 挑战求解没被启用；顺带把解析页缺的一整排字幕选项补上，并修掉「下载区间」这一路从来没通的传参。
+
+### YouTube 只剩 storyboard：EJS 求解器压根没跑
+
+- **180p 是误读**：日志里「客户端 ['default', 'web_safari'] 最高约 180p」与下载侧同一轮的「列表最高约 0p」都没说谎 ——
+  180 是封面图 `sb0`（320x180）的高度，`_h()` 与 `_yt_max_h()` 按高度挑清单时没排除 storyboard；0p 才是「一条视频轨都没有」。
+- **复现**：同一套代理与 Cookie 下 `yt-dlp -F` 只列 4 条 storyboard，并报 `Signature solving failed` 与
+  `n challenge solving failed`；把 Cookie 摘掉则是 `Sign in to confirm you're not a bot`。Cookie 与 PO Token 两层都是好的
+  （`tools/bgutil-pot-server` 正常出票，`/api/components` 里 bgutil 那行写「插件和服务两层都通了」）。
+- **根因**：yt-dlp 2026.10.21 的 `js_runtimes` 默认只有 `{'deno': {}}`。本机只有 Node、没有 Deno，EJS 挑战求解器就没被启用，
+  签名解不出来 → 上游不给分流清单。
+- **修法**：`_ydl_opts` 保留 deno 默认项，`shutil.which("node")` 探到 Node 时一并启用，解析与下载共用同一套 opts。
+  实测同一支视频：0 条视频轨 → 25 条视频轨、最高 1080p；单条解析 19.6–25.0s → 6.6–9.2s。
+
+### 解析页补齐字幕这一排
+
+- `/api/analyze` 现在回 `subtitles`：`_subtitle_tracks()` 把 `subtitles` / `automatic_captions` 收成一行一条，
+  人工轨优先、同语言的自动轨不再重复列、`live_chat`（弹幕）不算字幕，每条带 `lang` / `name` / `auto` / `formats`。
+- 解析页新增字幕区块：语言 chips 多选（带「人工 / 自动」角标）、全选 / 清空、已选计数、「按此设置下载」；
+  下载选项（嵌入字幕 / 另存独立字幕文件 / 本地 AI 转写）与翻译选项（字幕机翻开关、目标语言、翻译引擎）都在同一屏。
+  本轮解析到的语言与已选没有交集时自动选中第一条人工轨，免得「解析到字幕却一条没选」；合集那一支不显示这一格。
+- `subtitle_target_lang` / `subtitle_translate_provider` / `local_ai_mt_after_transcribe` 进 `AddUrlsBody`
+  并列入任务覆盖白名单：这三格按任务生效，没传时留 None 让全局读数继续管。
+
+### 两处「报成功其实没成」
+
+- **下载区间从来没通**：`download_range_func(None, [sec])` 把 `"*00:00:10-00:00:30"` 当成 ranges，yt-dlp 遍历时按字符
+  解包，任务以 `too many values to unpack (expected 2)` 收尾。改走 `yt_dlp.parse_options(["--ignore-config",
+  "--download-sections", sec])`，逗号多段、负时间、`inf` 全部跟着命令行口径；非法区间仍只记一行 warning 后整片下载。
+  实测 10–30s 区间成品 400,852 B、视频轨 640x360 / 322 帧，日志照实记「片段裁剪」。
+- **免费机翻引擎谎报成功**：`deep-translator` 被 Google 限流时把原文逐条原样返回，而 `translate_with_fallback` 只比长度，
+  于是日志写下「翻译成功: deep_translator」、产物仍是日文。现在「整批一条没变」判为失败抛出，交给回退链换引擎。
+  实测：`引擎 deep_translator 失败 → 尝试 deepl → 翻译成功: deepl`，`.ja.en.srt` 与双语 `.ja.en.bi.srt` 都是真译文。
+
+### 已知限制（本轮没改）
+
+- 带字幕的区间下载里，内嵌字幕轨仍是整片长度，mkv 的容器时长会被撑到全片长（视频轨确实已裁剪，实测那份 400,852 B 的
+  容器时长 271.5s）。要按区间裁字幕得另开一轮。
+- 清单只剩 storyboard 时，`_h()` / `_yt_max_h()` 仍会把封面图的 180 当成「最高约 180p」报出来。启用 Node 之后这条路
+  本来就不会再走到，但口径还没修。
+
+### 自检与打包
+
+- 全量自检 **72 套**（69 个 `*_test.py` + 3 个 `*_e2e.py` / `*_selftest.py`）bad=0，逐项按 `^(PASS|OK)` 行计数；
+  本轮新增 `tests/info_subtitle_test.py` 42 项。跑批要带 `PYTHONIOENCODING=utf-8`：不带时 5 套会崩在打印
+  `↔` `⏎` `−` `⬛` 这些字符上（`UnicodeEncodeError: 'gbk'`），那是控制台编码，不是断言失败。
+- 活体读数：YouTube 一支 29 条流 / 25 条视频轨 / 最高 1080p / 字幕 1 条；B 站一支 15 条流 / 12 条视频轨 / 最高 1080p；
+  组件 18 行齐、`update-check` available 0；PO Token 插件与服务两层都通；aria2 RPC online；tracker 生效 50 条。
+- 浏览器实测解析页：字幕区块渲染「字幕（已解析 1 条）· 日语 (ja) · 人工」，chip 点掉是「已选 0 种」、点回「已选 1 种」；
+  切英文界面这 16 条文案各就各位，再切回中文。拦下 `/api/download` 请求体核对：`subtitle_langs: "ja"`、
+  `embed_sub: true`、`local_ai_mt_after_transcribe: true`、`subtitle_target_lang: "zh"`、
+  `subtitle_translate_provider: "deepl"` 都在。
+- **顺手脱敏**：`server.py` 的一句报错示例、`music_search.py` 的「本机实测」注释与 `telegram_mt.py` 的 docstring 里写死了本机代理端口，换成通用写法（`127.0.0.1:1080` 与 `<端口>` 占位，只替这一截地址，其余读数照抄）。这三处从 v1.4.0 起就在包里，不是本轮引入的；本机状态文件 `config.json` 本来就不进包、也不入库。
+- `appVersion` 进到 `v1.5.4`。
+
+### 发布物读数
+
+（出包后补记：zip 字节数、sha256、条目数、包内与源码的逐字节比对、sidecar 复核。）
+
+---
+
 ## v1.5.3 · 2026-10-23（本轮出包）
 
 这一轮先收掉「放一晚上回来就卡」的后台成本，再给界面加一版液态玻璃。前两笔（依赖探测落盘、闲置清理）是同一件事的两头：

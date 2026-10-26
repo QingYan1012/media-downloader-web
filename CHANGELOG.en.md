@@ -208,6 +208,80 @@ Caught as false reds, not product bugs:
 
 ---
 
+## v1.5.4 · 2026-10-26 — this round's package
+
+This round started from the log of a YouTube download that would not finish: the analysis said "done", the list only
+had 180p, and the download failed three times with `No video formats found!`. The cause was yt-dlp's JS challenge
+solver never running. The analyse page also got the whole row of subtitle options it was missing, and the
+"download section" path was fixed - it had never worked.
+
+### Only storyboards left: the EJS solver was not running
+
+- The 180p was a misreading: it is the height of the cover image `sb0` (320x180). `_h()` and `_yt_max_h()` picked
+  heights without excluding storyboards, while the download side - which only counts video codecs - correctly said 0p.
+- Reproduced with the same proxy and cookies: `yt-dlp -F` listed 4 storyboards and warned `Signature solving failed`
+  and `n challenge solving failed`; without cookies it is `Sign in to confirm you're not a bot`, so cookies and PO
+  tokens were both fine (`tools/bgutil-pot-server` still mints tickets and `/api/components` says the plugin and the
+  service are both reachable).
+- Root cause: yt-dlp 2026.10.21 defaults `js_runtimes` to `{'deno': {}}`. This machine has Node, not Deno, so the
+  challenge solver never ran and YouTube withheld the separated streams.
+- Fix: `_ydl_opts` keeps the deno default and also enables Node when `shutil.which("node")` finds it; analysis and
+  download share one opts builder. Measured on the same video: 0 video tracks -> 25 video tracks, up to 1080p; one
+  parse 19.6-25.0s -> 6.6-9.2s.
+
+### Subtitles on the analyse page
+
+- `/api/analyze` now returns `subtitles`: `_subtitle_tracks()` folds `subtitles` / `automatic_captions` into one row
+  per language, manual wins over the same language's auto track, `live_chat` is not a subtitle, and each row carries
+  `lang` / `name` / `auto` / `formats`.
+- The analyse page gained a subtitle block: language chips with a manual/auto badge, select all / clear, a selected
+  counter and "download with these settings"; download options (embed, separate file, Whisper transcription) and
+  translation options (machine-translation switch, target language, engine) sit in the same view. When none of the
+  previously selected languages is in this batch the first manual track is picked; playlists do not show the block.
+- `subtitle_target_lang`, `subtitle_translate_provider` and `local_ai_mt_after_transcribe` joined `AddUrlsBody` and
+  the per-task override list, so they apply per task; unset stays None and the global reading still rules.
+
+### Two places that reported success without doing it
+
+- **Section downloads never worked**: `download_range_func(None, [sec])` handed the string
+  `"*00:00:10-00:00:30"` to yt-dlp as a range list, which unpacked it character by character and ended the task with
+  `too many values to unpack (expected 2)`. It now goes through `yt_dlp.parse_options(["--ignore-config",
+  "--download-sections", sec])`, so comma-separated ranges, negative timestamps and `inf` follow the CLI. Measured: a
+  10-30 s section produced 400,852 B with a 640x360 / 322-frame video track, and the log records the clip.
+- **The free translation engine cried success**: rate-limited by Google, `deep-translator` returned every line
+  unchanged, and `translate_with_fallback` only compares lengths, so the log said `翻译成功: deep_translator`
+  while the file was still Japanese. "Nothing changed at all" now raises and the fallback chain moves on. Measured:
+  `deep_translator 失败 -> deepl -> 翻译成功: deepl`, with real English in `.ja.en.srt` and `.ja.en.bi.srt`.
+
+### Known limitations (not changed this round)
+
+- In a section download with subtitles the embedded subtitle track is still full length, so the container reads as the
+  whole video (the video track really is cut - that 400,852 B file reports 271.5 s).
+- When only storyboards are left, `_h()` / `_yt_max_h()` still report their 180 as "about 180p". Enabling Node means
+  this path is no longer reached, but the reading itself is unfixed.
+
+### Self-tests and packaging
+
+- Full sweep **72 suites** (69 `*_test.py` + 3 `*_e2e.py` / `*_selftest.py`), bad=0, counted by `^(PASS|OK)` lines;
+  this round adds `tests/info_subtitle_test.py` with 42 items. The batch needs `PYTHONIOENCODING=utf-8`: without it
+  five suites die while printing unusual characters (`UnicodeEncodeError: 'gbk'`) - console encoding, not a failed
+  assertion.
+- Live readings: one YouTube link 29 formats / 25 video tracks / up to 1080p / 1 subtitle; one Bilibili link
+  15 formats / 12 video tracks / up to 1080p; 18 component rows with `update-check` reporting nothing to update; PO
+  token plugin and service both reachable; aria2 RPC online; 50 effective trackers.
+- Browser check of the analyse page: the block renders "Subtitles (1 parsed) - Japanese (ja) - manual", the chip
+  toggles between 0 and 1 selected, all 16 new strings show in English and back in Chinese, and the intercepted
+  `/api/download` body carries `subtitle_langs: "ja"`, `embed_sub: true`, `local_ai_mt_after_transcribe: true`,
+  `subtitle_target_lang: "zh"`, `subtitle_translate_provider: "deepl"`.
+- **Redaction while we were at it**: a user-facing error example in `server.py`, a "measured on this machine" comment in `music_search.py` and a docstring in `telegram_mt.py` carried this machine's proxy port verbatim; they now use a generic example or a `<port>` placeholder - only that address is replaced, every other reading stays literal. These three have been inside the package since v1.4.0 and were not introduced this round; the local state file `config.json` is neither packaged nor committed.
+- `appVersion` moves to `v1.5.4`.
+
+### Artifact readings
+
+(To be appended after the build: zip size, sha256, entry count, package-versus-source comparison, sidecar check.)
+
+---
+
 ## v1.5.3 · 2026-10-23 — this round's package
 
 This round first removes the background cost behind "leave it overnight and it comes back sluggish", then adds a
