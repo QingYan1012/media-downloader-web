@@ -304,9 +304,12 @@ solver never running. The analyse page also got the whole row of subtitle option
   verified combination as 1.5.2 / 1.5.3.
 - **The artifact changed**: 230,684,164 B against 1.5.3's 230,674,638 B, 10,906 entries, mtime from this build -
   readings, not just an exit code.
-- **Tag / release**: this commit is pushed to `origin/main`; no tag created or moved and no GitHub Release
-  touched - the zip is not in the repository (`dist/` sits outside the allow-list), so the Release asset has to
-  be uploaded by hand. Awaiting approval.
+- **Tag / release**: pushed to `origin/main` (`035304b..9cc0865`); the lightweight tag `v1.5.4` points at
+  `9cc0865` - the readings commit, so the tag no longer trails the release content the way `v1.4.0` did. The
+  GitHub Release was created through the API with both assets: `MediaDownloader-1.5.4-portable.zip`
+  (230,684,164 B, `application/zip`) and `.zip.sha256` (101 B, `text/plain`); the asset size equals the local zip
+  and a ranged read-back of the first 16 bytes matches (`504b0304…`). `v1.5.3` still has no tag and this round
+  did not add one.
 
 ---
 
